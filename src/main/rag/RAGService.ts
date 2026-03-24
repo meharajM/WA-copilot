@@ -133,6 +133,16 @@ export class RAGService {
         }
     }
 
+    async getDocumentCount(): Promise<number> {
+        try {
+            const row = this.db.prepare('SELECT COUNT(*) as count FROM documents').get() as { count: number }
+            return row.count
+        } catch (error) {
+            console.error('[RAG] Failed to get document count:', error)
+            return 0
+        }
+    }
+
     async clearAll(): Promise<void> {
         this.db.exec('DELETE FROM documents; DELETE FROM documents_fts;')
     }
@@ -162,6 +172,14 @@ export class RAGService {
                         },
                         required: ['filePath']
                     }
+                },
+                {
+                    name: 'rag_get_count',
+                    description: 'Get the total number of documents indexed in the knowledge base.',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {}
+                    }
                 }
             ]
         }
@@ -178,6 +196,10 @@ export class RAGService {
                     const outcome = await this.ingestFile(args.filePath)
                     if (!outcome.success) return { result: null, error: outcome.error }
                     return { result: outcome }
+                }
+                case 'rag_get_count': {
+                    const count = await this.getDocumentCount()
+                    return { result: count }
                 }
                 default:
                     return { result: null, error: `Unknown RAG tool: ${name}` }

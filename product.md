@@ -36,7 +36,9 @@ Sometimes a customer needs actual work done, not just text answers (e.g., *"Wher
 5.  **Reply**: The LLM formulates a friendly response: *"Yes! We have the Nike shoes in size 10 in stock. Would you like a link to purchase? 👟"*
 6.  **Send**: The app routes that text back through the WhatsApp connection directly to the customer's phone. 
 
-Meanwhile, as the business owner, you are sitting at the **Dashboard (The UI)**, watching the "Messages Today" and "Active Leads" numbers update, knowing your digital support agent is handling the workload autonomously!
+Meanwhile, as the business owner, you are sitting at the **Dashboard (The UI)**, watching the "Messages Today", "Active Leads", and "Indexed Docs" numbers update. You can also monitor **Conversation Topics** (analyzed via LLM) to see what your customers care about most, and upload new training data to the knowledge base at any time.
+
+When a customer's query is handled, you can click **"Resolve Conversation"** to mark it as complete, which triggers an automated AI summary and categorization for your business analytics. 
 
 ---
 

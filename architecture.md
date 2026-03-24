@@ -60,9 +60,9 @@ The main process handles operations that require direct OS/network access, skipp
 The renderer process houses the React UI and, crucially, the autonomous agent logic.
 
 #### UI Layer (`/components`)
-*   **Dashboard (`EmptyState.tsx`)**: The primary view for the business owner. Displays real-time metrics (Messages Today, Active Leads, Knowledge Docs) and connection status.
-*   **Settings (`SettingsPanel.tsx`)**: A clean interface for non-technical users to manage their WhatsApp connection, configure LLM providers, and toggle MCP business tools. It restricts access to the bot's core configuration, including "Autonomous Bot Mode" and permissions.
-*   **Chat View (`ChatView.tsx`)**: A live debugging interface where the business owner can monitor the bot's thoughts, tool execution, and responses to customers in real-time.
+*   **Dashboard (`EmptyState.tsx`)**: The primary view for the business owner. Displays real-time metrics (Messages Today, Active Leads, Knowledge Docs) and **Conversation Topics** analytics. It includes a "Train AI" zone for PDF/TXT ingestion and a "Sync Insights" trigger for LLM-based session analysis.
+*   **Settings (`SettingsPanel.tsx`)**: A clean interface for managing the WhatsApp connection and choosing LLM providers. Access to core bot logic is restricted to ensure safe autonomous operation.
+*   **Chat View (`ChatView.tsx`)**: A live debugging and manual intervention interface. It includes a **"Resolve Conversation"** action that marks a customer interaction as finished, triggering the analytics pipeline.
 
 #### State Management (`/stores`)
 *   **`useChatStore`**: Manages the multi-session context constraint. Crucially, it maps incoming WhatsApp messages from distinct JIDs (phone numbers) to isolated LLM conversation histories.

@@ -46,6 +46,8 @@ export interface ChatSession {
     progress?: number
     eta?: number
     plan?: ExecutionPlan
+    topic?: string           // The AI-analyzed category of this conversation
+    status?: 'active' | 'resolved' // The current state of the conversation
 }
 
 /**
@@ -102,6 +104,8 @@ interface ChatState {
     updateSessionTitle: (id: string, title: string) => void
     updateSessionWorkspace: (id: string, workspacePath: string) => void
     updateSessionProgress: (id: string, progress?: number, eta?: number, plan?: ExecutionPlan) => void
+    updateSessionTopic: (id: string, topic: string) => void
+    updateSessionStatus: (id: string, status: 'active' | 'resolved') => void
     setOfflineSpeech: (enabled: boolean) => void
 
     // Message Actions (primarily target a specific session by ID)
@@ -228,6 +232,7 @@ export const useChatStore = create<ChatState>()(
                     createdAt: Date.now(),
                     updatedAt: Date.now(),
                     workspacePath,
+                    status: 'active',
                 }
                 set((state) => ({
                     sessions: [newSession, ...state.sessions],
@@ -282,6 +287,22 @@ export const useChatStore = create<ChatState>()(
                         s.id === id
                             ? { ...s, progress, eta, plan: plan as ExecutionPlan | undefined, updatedAt: Date.now() }
                             : s
+                    ),
+                }))
+            },
+
+            updateSessionTopic: (id: string, topic: string) => {
+                set((state) => ({
+                    sessions: state.sessions.map((s) =>
+                        s.id === id ? { ...s, topic, updatedAt: Date.now() } : s
+                    ),
+                }))
+            },
+
+            updateSessionStatus: (id: string, status: 'active' | 'resolved') => {
+                set((state) => ({
+                    sessions: state.sessions.map((s) =>
+                        s.id === id ? { ...s, status, updatedAt: Date.now() } : s
                     ),
                 }))
             },
