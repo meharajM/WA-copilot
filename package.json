@@ -1,0 +1,145 @@
+{
+    "name": "ai-worker",
+    "version": "0.1.0",
+    "type": "module",
+    "description": "Voice-first desktop workspace with MCP integration",
+    "main": "./out/main/index.js",
+    "author": "AI-Worker Team",
+    "license": "MIT",
+    "engines": {
+        "node": ">=22.12.0"
+    },
+    "scripts": {
+        "dev": "electron-vite dev",
+        "build": "electron-vite build",
+        "preview": "electron-vite preview",
+        "typecheck": "tsc --noEmit",
+        "lint": "eslint src/",
+        "lint:fix": "eslint src/ --fix",
+        "test:e2e": "node tests/integration_test.cjs && node tests/e2e_ui_mocked.cjs && node tests/speech_e2e.cjs",
+        "test:mock": "node tests/e2e_ui_mocked.cjs",
+        "test:playwright": "node tests/playwright_tools_test.cjs",
+        "test:speech": "node tests/speech_e2e.cjs",
+        "clean": "rm -rf out dist",
+        "clean:state": "rm -rf ~/Library/Application\\ Support/AI-Worker",
+        "dev:clean": "npm run clean && rm -rf node_modules/.vite tsconfig.tsbuildinfo && npm run clean:state && npm run dev",
+        "check:wine": "command -v wine >/dev/null 2>&1 || { echo >&2 'Error: Wine is required for Windows builds on Linux. Please run ./install_build_deps.sh to install it.'; exit 1; }",
+        "rebuild:mac": "npm run clean && npm run build && electron-builder --mac",
+        "rebuild:mac:intel": "npm run clean && npm run build && electron-builder --mac --x64",
+        "rebuild:mac:arm": "npm run clean && npm run build && electron-builder --mac --arm64",
+        "rebuild:mac:universal": "npm run clean && npm run build && electron-builder --mac --universal",
+        "rebuild:win": "npm run check:wine && npm run clean && npm run build && electron-builder --win",
+        "rebuild:win:intel": "npm run check:wine && npm run clean && npm run build && electron-builder --win --x64",
+        "rebuild:win:arm": "npm run check:wine && npm run clean && npm run build && electron-builder --win --arm64",
+        "rebuild:linux": "npm run clean && npm run build && electron-builder --linux",
+        "rebuild:linux:intel": "npm run clean && npm run build && electron-builder --linux --x64",
+        "rebuild:linux:arm": "npm run clean && npm run build && electron-builder --linux --arm64",
+        "build:mac": "npm run build && electron-builder --mac",
+        "build:mac:intel": "npm run build && electron-builder --mac --x64",
+        "build:mac:arm": "npm run build && electron-builder --mac --arm64",
+        "build:mac:universal": "npm run build && electron-builder --mac --universal",
+        "build:win": "npm run check:wine && npm run build && electron-builder --win",
+        "build:win:intel": "npm run check:wine && npm run build && electron-builder --win --x64",
+        "build:win:arm": "npm run check:wine && npm run build && electron-builder --win --arm64",
+        "build:linux": "npm run build && electron-builder --linux",
+        "build:linux:intel": "npm run build && electron-builder --linux --x64",
+        "build:linux:arm": "npm run build && electron-builder --linux --arm64"
+    },
+    "dependencies": {
+        "@electron-toolkit/utils": "^3.0.0",
+        "@mlc-ai/web-llm": "^0.2.80",
+        "@modelcontextprotocol/sdk": "^1.0.1",
+        "@modelcontextprotocol/server-memory": "^2025.11.25",
+        "@playwright/mcp": "^0.0.53",
+        "@radix-ui/react-dialog": "^1.1.15",
+        "@types/react-syntax-highlighter": "^15.5.13",
+        "@whiskeysockets/baileys": "^6.7.21",
+        "@whiskeysockets/libsignal-node": "github:whiskeysockets/libsignal-node",
+        "better-sqlite3": "^12.6.2",
+        "clsx": "^2.1.1",
+        "cmdk": "^1.1.1",
+        "electron-store": "^11.0.2",
+        "firebase": "^12.8.0",
+        "fix-path": "^5.0.0",
+        "formik": "^2.4.9",
+        "framer-motion": "^12.26.2",
+        "lucide-react": "^0.468.0",
+        "playwright": "^1.57.0",
+        "playwright-core": "^1.58.2",
+        "playwright-extra": "^4.3.6",
+        "puppeteer-extra-plugin-stealth": "^2.11.2",
+        "qrcode": "^1.5.4",
+        "react": "^18.2.0",
+        "react-dom": "^18.2.0",
+        "react-markdown": "^10.1.0",
+        "react-syntax-highlighter": "^16.1.0",
+        "remark-gfm": "^4.0.1",
+        "tailwind-merge": "^3.4.0",
+        "tree-kill": "^1.2.2",
+        "vosk-browser": "^0.0.8",
+        "yup": "^1.7.1",
+        "zustand": "^5.0.9"
+    },
+    "devDependencies": {
+        "@electron-toolkit/tsconfig": "^1.0.1",
+        "@eslint/js": "^9.39.3",
+        "@types/node": "^20.11.10",
+        "@types/qrcode": "^1.5.6",
+        "@types/react": "^18.2.48",
+        "@types/react-dom": "^18.2.18",
+        "@vitejs/plugin-react": "^4.2.1",
+        "autoprefixer": "^10.4.17",
+        "electron": "^40.0.0",
+        "electron-builder": "^26.4.0",
+        "electron-vite": "^5.0.0",
+        "eslint": "^9.39.3",
+        "eslint-plugin-react-hooks": "^5.2.0",
+        "eslint-plugin-react-refresh": "^0.4.26",
+        "globals": "^16.5.0",
+        "postcss": "^8.4.35",
+        "tailwindcss": "^3.4.1",
+        "typescript": "^5.3.3",
+        "typescript-eslint": "^8.56.1",
+        "vite": "^7.3.1"
+    },
+    "build": {
+        "appId": "com.aiworker.app",
+        "productName": "AI-Worker",
+        "directories": {
+            "output": "dist"
+        },
+        "files": [
+            "out/**/*",
+            "!out/**/*.map",
+            "node_modules/libsignal/**/*"
+        ],
+        "mac": {
+            "target": [
+                "dmg",
+                "zip"
+            ],
+            "category": "public.app-category.productivity",
+            "icon": "build/icon.png"
+        },
+        "win": {
+            "target": [
+                "nsis",
+                "portable"
+            ],
+            "icon": "build/icon.png"
+        },
+        "linux": {
+            "target": [
+                "AppImage",
+                "deb"
+            ],
+            "category": "Utility",
+            "icon": "build/icon.png",
+            "maintainer": "AI-Worker Team <team@aiworker.app>"
+        },
+        "nsis": {
+            "oneClick": false,
+            "allowToChangeInstallationDirectory": true
+        }
+    }
+}
