@@ -45,6 +45,9 @@ test-results/
 .vscode/
 .idea/
 
+# Secrets
+src/main/services/AntigravityAuthService.ts
+
 # Large binaries from Baileys/Playwright
 **/ffmpeg
 **/ffprobe
