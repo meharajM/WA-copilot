@@ -55,10 +55,15 @@ export const resolveWhatsAppTarget = (text: string): string | null => {
  * Optimized for multimodal interactions.
  */
 export const getWhatsAppSystemPrompt = (): LLMMessage => {
-  const { businessBotMode } = useWhatsAppStore.getState();
+  // Read business context, falling back to basic generic strings if missing
+  const { businessBotMode, businessName, businessHours, businessLanguage } = useWhatsAppStore.getState() as any;
   
+  const bName = businessName || "the business";
+  const bHours = businessHours || "standard business hours";
+  const bLang = businessLanguage || "the language the customer uses";
+
   const persona = businessBotMode 
-    ? "You are a 'Business Customer Support Agent'. Your goal is to help customers professionally based on the local knowledge base."
+    ? `You are a 'Business Customer Support Agent' for ${bName}. Your goal is to help customers professionally based on the local knowledge base. Our business hours are ${bHours}.`
     : "You are the 'WA Co-Pilot', a personal assistant for the business owner.";
 
   return {
@@ -69,7 +74,8 @@ export const getWhatsAppSystemPrompt = (): LLMMessage => {
       "2. Keep replies SHORT — max 3 sentences. Use line breaks (\\n), NOT markdown (*bold*, headers). " +
       "3. Do NOT use asterisks (*) for emphasis — they show literally on some phones. " +
       "4. Add one relevant emoji at the end of each reply. " +
-      "5. If RAG returns no result, say: 'Let me check and get back to you shortly! 🙏' — never guess."
+      `5. Match the customer's language (${bLang}). ` +
+      "6. If RAG returns no result, say: 'Let me check and get back to you shortly! 🙏' — never guess."
   };
 };
 
@@ -129,6 +135,59 @@ export const setWhatsAppPaused = (jid: string) => {
         .catch(err => console.error("[WhatsApp] Failed to send paused presence:", err));
 };
 
+interface QueuedMessage {
+    targetJid: string;
+    text: string;
+    originSessionId: string;
+}
+
+class OutboundManager {
+    private queues: Record<string, QueuedMessage[]> = {};
+    private activeLocks: Record<string, boolean> = {};
+
+    enqueue(targetJid: string, text: string, originSessionId: string) {
+        if (!this.queues[targetJid]) this.queues[targetJid] = [];
+        this.queues[targetJid].push({ targetJid, text, originSessionId });
+        
+        if (!this.activeLocks[targetJid]) {
+            this.processNext(targetJid);
+        }
+    }
+
+    private async processNext(targetJid: string) {
+        const queue = this.queues[targetJid];
+        if (!queue || queue.length === 0) {
+            this.activeLocks[targetJid] = false;
+            return;
+        }
+        
+        this.activeLocks[targetJid] = true;
+        const msg = queue.shift()!;
+
+        // 1. Signal 'composing' — the customer sees the typing indicator
+        setWhatsAppTyping(msg.targetJid);
+
+        // 2. Hold it proportional to word count (simulates ~50 WPM typing speed)
+        const wordCount = msg.text.trim().split(/\s+/).length;
+        const typingMs = Math.max(2000, Math.min(wordCount * 220, 12000));
+        await new Promise<void>(r => setTimeout(r, typingMs));
+
+        // 3. send — mirrors real user behaviour
+        setWhatsAppPaused(msg.targetJid);
+        await new Promise<void>(r => setTimeout(r, 300));
+
+        console.log('[WhatsAppOutbound] Final WhatsApp delivery — typing sim complete, sending...');
+        electron.whatsapp.sendMessage(msg.targetJid, msg.text)
+            .catch(err => console.error('[WhatsApp] Failed to send response:', err));
+
+        // Wait slightly before processing the next message for this JID to simulate human breath/gap
+        await new Promise<void>(r => setTimeout(r, 1000));
+        this.processNext(targetJid);
+    }
+}
+
+const outboundQueue = new OutboundManager();
+
 /**
  * Anti-Ban Gap 2: Typing simulation before every outbound WhatsApp reply.
  *
@@ -150,33 +209,45 @@ export const sendWhatsAppResponse = async (targetJid: string, llmResponse: any, 
             .join('\n');
     }
     
-    const deliverText = async (text: string) => {
-        // 1. Signal 'composing' — the customer sees the typing indicator
-        setWhatsAppTyping(targetJid);
+    let isEscalated = false;
 
-        // 2. Hold it proportional to word count (simulates ~50 WPM typing speed)
-        const wordCount = text.trim().split(/\s+/).length;
-        const typingMs = Math.max(2000, Math.min(wordCount * 220, 12000));
-        await new Promise<void>(r => setTimeout(r, typingMs));
-
-        // 3. Brief 'paused' state then send — mirrors real user behaviour
-        setWhatsAppPaused(targetJid);
-        await new Promise<void>(r => setTimeout(r, 300));
-
-        console.log('[useAgent] Final WhatsApp delivery — typing sim complete, sending...');
-        electron.whatsapp.sendMessage(targetJid, text)
-            .catch(err => console.error('[WhatsApp] Failed to send response:', err));
-    };
-
-    if (responseText) {
-        await deliverText(responseText);
+    // Intercept critical ESCALATE signal to prevent customer leak
+    if (responseText && (responseText.includes("ESCALATE:") || responseText.includes("I understand your frustration"))) {
+        console.warn(`[WhatsAppIntegration] Intercepted escalation signal. Executing warm handoff...`);
+        
+        isEscalated = true;
+        
+        // Dispatch browser event so UI can display an 'Escalated' badge on this session
+        if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('whatsapp:escalate', { 
+                detail: { sessionId: originSessionId, targetJid } 
+            }));
+        }
+        
+        // Override the AI thought with the hardcoded warm handoff
+        responseText = "I understand your frustration and I'm sorry for the trouble. Let me connect you with a team member right away. 🙏";
+        
+        // Push safely to concurrent outbox
+        outboundQueue.enqueue(targetJid, responseText, originSessionId);
+    } else if (responseText) {
+        // Normal text enqueueing
+        outboundQueue.enqueue(targetJid, responseText, originSessionId);
     } else {
         // Fallback: retrieve last plain assistant text from the store
         const finalMessages = useChatStore.getState().sessions.find((s: any) => s.id === originSessionId)?.messages ?? [];
         const lastAssistantMessage = finalMessages.slice().reverse().find((m: any) => m.role === "assistant" && (!m.toolCalls || m.toolCalls.length === 0));
         
-        if (lastAssistantMessage?.content) {
-            await deliverText(lastAssistantMessage.content);
+        if (lastAssistantMessage?.content && typeof lastAssistantMessage.content === 'string') {
+            let fallbackText = lastAssistantMessage.content;
+            if (fallbackText.includes("ESCALATE:") || fallbackText.includes("I understand your frustration")) {
+                fallbackText = "I understand your frustration and I'm sorry for the trouble. Let me connect you with a team member right away. 🙏";
+                if (typeof window !== 'undefined') {
+                    window.dispatchEvent(new CustomEvent('whatsapp:escalate', { 
+                        detail: { sessionId: originSessionId, targetJid } 
+                    }));
+                }
+            }
+            outboundQueue.enqueue(targetJid, fallbackText, originSessionId);
         }
     }
 };
