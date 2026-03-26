@@ -27,6 +27,20 @@ app.commandLine.appendSwitch('allow-file-access-from-files') // Allow fetch from
 // Initialize environment (fix PATH, etc.)
 initEnv()
 
+// --- SINGLE INSTANCE LOCK ---
+const gotTheLock = app.requestSingleInstanceLock()
+if (!gotTheLock) {
+    app.quit()
+} else {
+    app.on('second-instance', () => {
+        const windows = BrowserWindow.getAllWindows()
+        if (windows.length > 0) {
+            if (windows[0].isMinimized()) windows[0].restore()
+            windows[0].focus()
+        }
+    })
+}
+
 // PRODUCTION: Inject Google API Keys if available
 // These are required for Web Speech API to work in built/packaged apps
 // You must provide them via environment variables
@@ -41,6 +55,13 @@ if (process.env.GOOGLE_DEFAULT_CLIENT_SECRET) {
 }
 
 function createWindow(): void {
+    const iconPath = join(__dirname, '../../build/icon.png')
+
+    // Set macOS dock icon in dev mode
+    if (process.platform === 'darwin' && is.dev) {
+        app.dock.setIcon(iconPath)
+    }
+
     const mainWindow = new BrowserWindow({
         width: 1000,
         height: 700,
@@ -51,6 +72,7 @@ function createWindow(): void {
         titleBarStyle: 'hiddenInset',
         trafficLightPosition: { x: 15, y: 15 },
         backgroundColor: '#0f1115',
+        icon: iconPath,
         webPreferences: {
             preload: join(__dirname, '../preload/index.mjs'),
             sandbox: false,
