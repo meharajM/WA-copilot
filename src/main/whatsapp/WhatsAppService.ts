@@ -81,11 +81,29 @@ export class WhatsAppService extends EventEmitter {
 
     private socket: WASocket | null = null
     private authDir: string
-    private lastMessageTime = 0
-    private readonly MESSAGE_RATE_LIMIT_MS = 1000 // 1 message per second
     private wakeLockId: number | null = null
     private explicitDisconnect = false
-    private processedMessageIds = new Set<string>()
+    private reconnectAttempts = 0
+    private readonly MAX_RECONNECT_ATTEMPTS = 8
+
+    // ── Anti-Ban: Time-windowed deduplication (Gap 8) ─────────────────────
+    // Maps message ID → timestamp. Entries auto-expire after DEDUP_WINDOW_MS.
+    private processedMessageIds = new Map<string, number>()
+    private readonly DEDUP_WINDOW_MS = 10 * 60 * 1000 // 10 minutes
+
+    // ── Anti-Ban: Hourly volume throttle (Gap 4) ──────────────────────────
+    private messageTimestamps: number[] = []
+    private readonly MAX_MSGS_PER_HOUR = 120
+    
+    // Dedicated timestamp for handshake rate-limiting (separated from message sending)
+    private _lastHandshakeTime = 0
+
+    // ── Anti-Ban: Sleep / Off-hours Mode (Gap 5) ──────────────────────────
+    private sleepModeConfig = {
+        enabled: true,
+        startHour: 9,  // 9 AM
+        endHour: 21    // 9 PM
+    }
     
     // Handshake state
     private pendingHandshake: {
@@ -190,17 +208,24 @@ export class WhatsAppService extends EventEmitter {
                 child: () => silentLogger,
             }
 
-            // Use default Baileys WebSocket with proper configuration
+            // ── Anti-Ban: Rotate browser fingerprint on every connect (Gap 3) ──
+            const BROWSER_PROFILES: [string, string, string][] = [
+                ['WhatsApp', 'Chrome', '124.0.6367.118'],
+                ['WhatsApp', 'Chrome', '122.0.6261.128'],
+                ['WhatsApp', 'Chrome', '120.0.6099.130'],
+                ['WhatsApp', 'Safari', '17.4'],
+                ['WhatsApp', 'Firefox', '125.0'],
+            ]
+            const browserProfile = BROWSER_PROFILES[Math.floor(Math.random() * BROWSER_PROFILES.length)]
+            console.log(`[WhatsAppService] Using browser profile: ${browserProfile.join(' / ')}`)
+
             const sock = makeWASocket({
                 version,
                 auth: state,
                 logger: silentLogger,
                 printQRInTerminal: false,
-                // Browser identification - helps with WhatsApp server stability
-                browser: ['AI-Worker', 'Chrome', '120.0.0'],
-                // Connection options for better stability
+                browser: browserProfile,
                 connectTimeoutMs: 60000,
-                // Critical for message delivery retries
                 msgRetryCounterCache,
                 getMessage: async (key) => {
                     const id = key.id;
@@ -235,6 +260,8 @@ export class WhatsAppService extends EventEmitter {
 
                 if (connection === 'open') {
                     console.log('[WhatsAppService] Connection opened successfully!')
+                    // ── Anti-Ban: Reset backoff counter on successful connect (Gap 7) ──
+                    this.reconnectAttempts = 0
                     
                     const workerJid = sock.user?.id || ''
                     const workerPhone = workerJid.split(':')[0].split('@')[0]
@@ -313,28 +340,8 @@ export class WhatsAppService extends EventEmitter {
                         statusCode === 504  // Gateway timeout
 
                     if (isNetworkError && effectivePhone) {
-                        console.log('[WhatsAppService] Network disconnected, attempting auto-reconnect in 5s...')
-                        this._setState({
-                            ...this.connectionState,
-                            status: 'connecting',
-                            qrCode: null,
-                            error: null,
-                            phoneNumber: effectivePhone ?? null,
-                            workerNumber: this.connectionState.workerNumber
-                        })
-                        
-                        setTimeout(() => {
-                            if (this.connectionState.status === 'connecting') {
-                                this.connect(effectivePhone).catch(e => {
-                                    console.error('[WhatsAppService] Auto-reconnect failed:', e)
-                                    this._setState({
-                                        ...this.connectionState,
-                                        status: 'error',
-                                        error: 'Failed to reconnect. Please try again.',
-                                    })
-                                })
-                            }
-                        }, 5000)
+                        // ── Anti-Ban: Exponential backoff with jitter (Gap 7) ──
+                        this._scheduleReconnect(effectivePhone)
                         return // Don't clear auth
                     }
 
@@ -369,20 +376,14 @@ export class WhatsAppService extends EventEmitter {
                 
                 for (const raw of messages) {
                     const rawId = raw.key?.id
-                    if (rawId && this.processedMessageIds.has(rawId)) {
+                    // ── Anti-Ban: Time-windowed deduplication (Gap 8) ──
+                    if (rawId && this._isDuplicate(rawId)) {
                         console.log(`[WhatsAppService] Dropping duplicate/seen message ID: ${rawId}`)
                         continue
                     }
 
                     const msg = await this._parseMessage(raw, sock)
                     if (msg) {
-                        if (rawId) {
-                            this.processedMessageIds.add(rawId)
-                            if (this.processedMessageIds.size > 200) {
-                                const first = this.processedMessageIds.values().next().value
-                                if (first) this.processedMessageIds.delete(first)
-                            }
-                        }
 
                         const fromClean = msg.from.split('@')[0].split(':')[0]
                         console.log(`[WhatsAppService] Incoming: from=${msg.from} (clean=${fromClean}) isFromMe=${msg.isFromMe} content="${msg.content.substring(0, 50)}"`)
@@ -492,9 +493,10 @@ export class WhatsAppService extends EventEmitter {
         
         // Rate limiting for handshake requests
         const now = Date.now()
-        if (now - this.lastMessageTime < 5000) { // Throttled to 5 seconds per request
+        if (now - this._lastHandshakeTime < 5000) { // Throttled to 5 seconds per request
             return { success: false, error: 'Handshake slow-down. Please wait 5 seconds between attempts.' }
         }
+        this._lastHandshakeTime = now
 
         // Check if matching worker (self)
         if (this.connectionState.workerNumber) {
@@ -595,16 +597,33 @@ export class WhatsAppService extends EventEmitter {
             return { success: false, error: 'WhatsApp not connected' }
         }
 
-        // Rate limiting
-        const now = Date.now()
-        if (now - this.lastMessageTime < this.MESSAGE_RATE_LIMIT_MS) {
-            return { success: false, error: 'Rate limit exceeded. Please wait a moment.' }
+        // ── Anti-Ban: Hourly volume throttle (Gap 4) ──
+        const throttle = this._checkVolumeThrottle()
+        if (!throttle.allowed) {
+            const waitMin = Math.ceil(throttle.waitMs / 60000)
+            return { success: false, error: `Hourly message limit (${this.MAX_MSGS_PER_HOUR}) reached. Try again in ~${waitMin} minute(s).` }
         }
-        this.lastMessageTime = now
+
+        // ── Anti-Ban: Gaussian jitter delay (Gap 1) ──
+        // Only apply to bot-initiated outbound messages (skip for handshake pings)
+        await this._humanizedDelay()
+
+        // ── Anti-Ban: Sleep / Off-hours Mode (Gap 5) ──
+        if (!this._isInActiveHours()) {
+            return { 
+                success: false, 
+                error: `Sleep Mode Active: Off-hours (${this.sleepModeConfig.startHour}:00 - ${this.sleepModeConfig.endHour}:00). Message suppressed to mitigate ban risk.` 
+            }
+        }
 
         try {
             // Validate and format JID
             const jid = formatWhatsAppJid(to)
+
+            // Emit escalation if we detect a handoff string (optional: can be called explicitly too)
+            if (content.includes("connect you with a team member")) {
+                this.emitEscalation(to, 'frustration_detected')
+            }
             if (!jid) {
                 return { success: false, error: 'Invalid phone number format' }
             }
@@ -697,6 +716,114 @@ export class WhatsAppService extends EventEmitter {
     }
 
     // ── Private helpers ─────────────────────────────────────────────────────
+
+    /**
+     * Anti-Ban: Gaussian jitter delay before each outbound message (Gap 1).
+     * Uses Box-Muller transform to sample from a normal distribution
+     * centred between baseMinMs and baseMaxMs, clamped to that range.
+     */
+    private async _humanizedDelay(baseMinMs = 8000, baseMaxMs = 45000): Promise<void> {
+        let u = 0, v = 0
+        while (u === 0) u = Math.random()
+        while (v === 0) v = Math.random()
+        const gauss = Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v)
+        const mean = (baseMinMs + baseMaxMs) / 2
+        const stddev = (baseMaxMs - baseMinMs) / 6
+        const delayMs = Math.max(baseMinMs, Math.min(baseMaxMs, mean + gauss * stddev))
+        console.log(`[WhatsAppService] Anti-ban delay: ${Math.round(delayMs / 1000)}s`)
+        await new Promise<void>(r => setTimeout(r, delayMs))
+    }
+
+    /**
+     * Anti-Ban: Sliding-window hourly volume throttle (Gap 4).
+     * Returns { allowed: false, waitMs } when the limit is reached.
+     */
+    private _checkVolumeThrottle(): { allowed: boolean; waitMs: number } {
+        const now = Date.now()
+        const oneHourAgo = now - 3_600_000
+        this.messageTimestamps = this.messageTimestamps.filter(t => t > oneHourAgo)
+        if (this.messageTimestamps.length >= this.MAX_MSGS_PER_HOUR) {
+            const waitMs = this.messageTimestamps[0] + 3_600_000 - now
+            console.warn(`[WhatsAppService] Hourly limit hit. Wait ${Math.ceil(waitMs / 60000)}m.`)
+            return { allowed: false, waitMs }
+        }
+        this.messageTimestamps.push(now)
+        return { allowed: true, waitMs: 0 }
+    }
+
+    /**
+     * Anti-Ban: Time-windowed message deduplication (Gap 8).
+     * Returns true if message was already processed within DEDUP_WINDOW_MS.
+     */
+    private _isDuplicate(id: string): boolean {
+        const now = Date.now()
+        // Evict expired entries
+        for (const [k, t] of this.processedMessageIds) {
+            if (now - t > this.DEDUP_WINDOW_MS) this.processedMessageIds.delete(k)
+        }
+        if (this.processedMessageIds.has(id)) return true
+        this.processedMessageIds.set(id, now)
+        return false
+    }
+
+    /**
+     * Anti-Ban: Exponential backoff reconnect with jitter (Gap 7).
+     * Delay grows as 5s × 2^attempt (capped at 5 min) + up to 5s random jitter.
+     */
+    private _scheduleReconnect(effectivePhone: string): void {
+        if (this.reconnectAttempts >= this.MAX_RECONNECT_ATTEMPTS) {
+            console.error('[WhatsAppService] Max reconnect attempts reached. Giving up.')
+            this._setState({
+                ...this.connectionState,
+                status: 'error',
+                error: 'Could not reconnect after multiple attempts. Please reconnect manually.',
+            })
+            return
+        }
+        const base = Math.min(5000 * Math.pow(2, this.reconnectAttempts), 300_000)
+        const jitter = Math.random() * 5000
+        const delay = Math.round(base + jitter)
+        this.reconnectAttempts++
+        console.log(`[WhatsAppService] Reconnect attempt ${this.reconnectAttempts}/${this.MAX_RECONNECT_ATTEMPTS} in ${Math.round(delay / 1000)}s...`)
+        this._setState({
+            ...this.connectionState,
+            status: 'connecting',
+            qrCode: null,
+            error: null,
+            phoneNumber: effectivePhone ?? null,
+            workerNumber: this.connectionState.workerNumber
+        })
+        setTimeout(() => {
+            if (this.connectionState.status !== 'disconnected') {
+                this.connect(effectivePhone).catch(e => {
+                    console.error('[WhatsAppService] Auto-reconnect failed:', e)
+                })
+            }
+        }, delay)
+    }
+
+    /**
+     * Anti-Ban: Sleep / Off-hours Mode check (Gap 5).
+     * Returns true if current time is within active hours.
+     */
+    private _isInActiveHours(): boolean {
+        if (!this.sleepModeConfig.enabled) return true
+        const hour = new Date().getHours()
+        const active = hour >= this.sleepModeConfig.startHour && hour < this.sleepModeConfig.endHour
+        if (!active) {
+            console.log(`[WhatsAppService] Sleep Mode: Suppressing outbound message (current hour: ${hour})`)
+        }
+        return active
+    }
+
+    /**
+     * Anti-Ban: Emit an escalation event (Gap 6).
+     * Called when the agent detects frustration or reaches a loop.
+     */
+    public emitEscalation(jid: string, reason: string): void {
+        console.log(`[WhatsAppService] ESCALATION triggered for ${jid}. Reason: ${reason}`)
+        this.emit('escalation', { jid, reason, timestamp: Date.now() })
+    }
 
     private _setState(state: WhatsAppConnectionState): void {
         this.connectionState = state

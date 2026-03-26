@@ -66,10 +66,10 @@ export const getWhatsAppSystemPrompt = (): LLMMessage => {
     content: `WHATSAPP MODE ACTIVE: ${persona} ` +
       "CRITICAL: Your primary knowledge base is the local 'rag_search' and 'memory_search' tools. " +
       "1. For any business-related query, ALWAYS check the local knowledge base first. " +
-      "2. Respond in the tone appropriate for your persona (Professional for Support, Helpful for Co-Pilot). " +
-      "3. Do NOT use internet search for business-specific information. " +
-      "4. Keep responses concise, use bullet points, and include emojis. 🤖📈 " +
-      "5. If you find multiple related documents, summarize them for the user."
+      "2. Keep replies SHORT — max 3 sentences. Use line breaks (\\n), NOT markdown (*bold*, headers). " +
+      "3. Do NOT use asterisks (*) for emphasis — they show literally on some phones. " +
+      "4. Add one relevant emoji at the end of each reply. " +
+      "5. If RAG returns no result, say: 'Let me check and get back to you shortly! 🙏' — never guess."
   };
 };
 
@@ -130,11 +130,15 @@ export const setWhatsAppPaused = (jid: string) => {
 };
 
 /**
+ * Anti-Ban Gap 2: Typing simulation before every outbound WhatsApp reply.
+ *
  * Safely parses the LLM output (accounting for tool strings or text arrays)
- * and sends the final string to the designated JID over IPC.
+ * and sends the final string to the designated JID over IPC, preceded by
+ * a 'composing' presence update held for a duration proportional to message
+ * length (~50 WPM equivalent: 200-250 ms per word, clamped 2s–12s).
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export const sendWhatsAppResponse = (targetJid: string, llmResponse: any, originSessionId: string) => {
+export const sendWhatsAppResponse = async (targetJid: string, llmResponse: any, originSessionId: string): Promise<void> => {
     let responseText = '';
 
     if (typeof llmResponse.content === 'string') {
@@ -146,19 +150,33 @@ export const sendWhatsAppResponse = (targetJid: string, llmResponse: any, origin
             .join('\n');
     }
     
+    const deliverText = async (text: string) => {
+        // 1. Signal 'composing' — the customer sees the typing indicator
+        setWhatsAppTyping(targetJid);
+
+        // 2. Hold it proportional to word count (simulates ~50 WPM typing speed)
+        const wordCount = text.trim().split(/\s+/).length;
+        const typingMs = Math.max(2000, Math.min(wordCount * 220, 12000));
+        await new Promise<void>(r => setTimeout(r, typingMs));
+
+        // 3. Brief 'paused' state then send — mirrors real user behaviour
+        setWhatsAppPaused(targetJid);
+        await new Promise<void>(r => setTimeout(r, 300));
+
+        console.log('[useAgent] Final WhatsApp delivery — typing sim complete, sending...');
+        electron.whatsapp.sendMessage(targetJid, text)
+            .catch(err => console.error('[WhatsApp] Failed to send response:', err));
+    };
+
     if (responseText) {
-        console.log('[useAgent] Final WhatsApp delivery check...');
-        electron.whatsapp.sendMessage(targetJid, responseText)
-            .catch(err => console.error("[WhatsApp] Failed to send response:", err));
+        await deliverText(responseText);
     } else {
-        // Fallback: try to retrieve the last plain assistant text from the store
-        const finalMessages = useChatStore.getState().sessions.find(s => s.id === originSessionId)?.messages ?? [];
-        const lastAssistantMessage = finalMessages.slice().reverse().find(m => m.role === "assistant" && (!m.toolCalls || m.toolCalls.length === 0));
+        // Fallback: retrieve last plain assistant text from the store
+        const finalMessages = useChatStore.getState().sessions.find((s: any) => s.id === originSessionId)?.messages ?? [];
+        const lastAssistantMessage = finalMessages.slice().reverse().find((m: any) => m.role === "assistant" && (!m.toolCalls || m.toolCalls.length === 0));
         
-        if (lastAssistantMessage && lastAssistantMessage.content) {
-            console.log('[useAgent] Final WhatsApp delivery check...');
-            electron.whatsapp.sendMessage(targetJid, lastAssistantMessage.content)
-                .catch(err => console.error("[WhatsApp] Fallback failed to send response:", err));
+        if (lastAssistantMessage?.content) {
+            await deliverText(lastAssistantMessage.content);
         }
     }
 };

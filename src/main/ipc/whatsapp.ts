@@ -22,11 +22,11 @@ export function registerWhatsAppHandlers(): void {
         }
     })
 
-    // When a new WhatsApp message arrives, push it to all renderer windows.
-    whatsappService.on('message', (message) => {
+    // When a frustration escalation occurs, push it to all renderer windows.
+    whatsappService.on('escalation', (data) => {
         for (const win of BrowserWindow.getAllWindows()) {
             if (!win.isDestroyed()) {
-                win.webContents.send('whatsapp:message', message)
+                win.webContents.send('whatsapp:escalation', data)
             }
         }
     })
