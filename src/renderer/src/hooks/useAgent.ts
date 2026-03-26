@@ -36,7 +36,7 @@ import { useCallback, useEffect } from "react";
 import { useChatStore } from "../stores/chatStore";
 import { useSettingsStore } from "../stores/settingsStore";
 import { type LLMMessage } from "../lib/types";
-import { resolveWhatsAppTarget, setWhatsAppTyping, setWhatsAppPaused, getWhatsAppSystemPrompt, sendWhatsAppResponse, resolveWhatsAppMessageToLLM } from "../lib/whatsapp-integration";
+import { whatsappChannel } from "../lib/whatsapp-integration";
 import { buildAttachmentLLMParts } from "../lib/media-utils";
 
 /**
@@ -93,7 +93,7 @@ export function useAgent(): UseAgentReturn {
             // 1. Resolve starting message shape
             let userLLMMessage: LLMMessage | null = null;
             if (multimodalWhatsAppMessage) {
-                userLLMMessage = await resolveWhatsAppMessageToLLM(multimodalWhatsAppMessage);
+                userLLMMessage = await whatsappChannel.resolveMessageToLLM(multimodalWhatsAppMessage);
             }
 
             // 2. Map Attachment Metadata (for local browser uploads)
@@ -149,7 +149,7 @@ export function useAgent(): UseAgentReturn {
             // and the finally block (paused presence). Resolving it twice risks a race
             // condition if the user disconnects mid-run (the finally call would return null,
             // leaving the typing indicator stuck on the personal phone).
-            const targetJid = resolveWhatsAppTarget(content);
+            const targetJid = whatsappChannel.resolveTarget(content);
 
             try {
                 // ── Step 1: Reconstruct LLM message history ────────────────────────
@@ -208,8 +208,8 @@ export function useAgent(): UseAgentReturn {
 
                 if (targetJid) {
                     console.log(`[useAgent] WhatsApp flow detected/enabled. JID: ${targetJid}`);
-                    setWhatsAppTyping(targetJid);
-                    reconstructedHistory.push(getWhatsAppSystemPrompt());
+                    whatsappChannel.setTyping(targetJid);
+                    reconstructedHistory.push(whatsappChannel.getSystemPrompt());
                 }
 
                 // ── Step 4: Instantiate the agent ──────────────────────────────────
@@ -332,7 +332,7 @@ export function useAgent(): UseAgentReturn {
                 // back to the remote user via IPC.
                 if (targetJid) {
                     console.log(`[useAgent] Triggering WhatsApp delivery for JID: ${targetJid}`);
-                    sendWhatsAppResponse(targetJid, llmResponse, originSessionId);
+                    whatsappChannel.sendResponse(targetJid, llmResponse, originSessionId);
                 } else {
                     console.log(`[useAgent] No targetJid resolved for this prompt. Skipping WhatsApp delivery.`);
                 }
@@ -350,7 +350,7 @@ export function useAgent(): UseAgentReturn {
                 // Uses the same targetJid captured before the try block — safe even if
                 // the user disconnects mid-run (no second resolver call).
                 if (targetJid) {
-                    setWhatsAppPaused(targetJid);
+                    whatsappChannel.setPaused(targetJid);
                 }
 
                 // Always clear the processing state for originSessionId.

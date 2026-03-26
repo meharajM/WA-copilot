@@ -1,8 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import {
-  getWhatsAppSystemPrompt,
-  sendWhatsAppResponse
-} from './whatsapp-integration';
+import { whatsappChannel } from './whatsapp-integration';
 import electron from './electron';
 import { useWhatsAppStore } from '../stores/whatsappStore';
 
@@ -54,7 +51,7 @@ describe('whatsapp-integration', () => {
                 businessLanguage: 'Spanish'
             });
 
-            const prompt = getWhatsAppSystemPrompt();
+            const prompt = whatsappChannel.getSystemPrompt();
             expect(prompt.role).toBe('system');
             
             // Should contain the dynamic variables
@@ -72,7 +69,7 @@ describe('whatsapp-integration', () => {
                 businessLanguage: ''
             });
 
-            const prompt = getWhatsAppSystemPrompt();
+            const prompt = whatsappChannel.getSystemPrompt();
             expect(prompt.content).toContain('the business');
             expect(prompt.content).toContain('standard business hours');
         });
@@ -95,7 +92,7 @@ describe('whatsapp-integration', () => {
                 content: 'I cannot help you. ESCALATE: user is angry.'
             };
 
-            sendWhatsAppResponse(targetJid, llmResponse, sessionId);
+            whatsappChannel.sendResponse(targetJid, llmResponse, sessionId);
             
             await vi.runAllTimersAsync();
 
@@ -111,8 +108,8 @@ describe('whatsapp-integration', () => {
         it('should enqueue standard messages sequentially for same user', async () => {
             const targetJid = 'userA@s.whatsapp.net';
             
-            sendWhatsAppResponse(targetJid, { content: 'Message 1' }, 'sessionA');
-            sendWhatsAppResponse(targetJid, { content: 'Message 2' }, 'sessionA');
+            whatsappChannel.sendResponse(targetJid, { content: 'Message 1' }, 'sessionA');
+            whatsappChannel.sendResponse(targetJid, { content: 'Message 2' }, 'sessionA');
 
             await vi.advanceTimersByTimeAsync(2500); 
             
