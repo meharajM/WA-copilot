@@ -86,7 +86,7 @@ This is the "brain" of the application, intercepting messages and orchestrating 
     *   If it's a new customer, a new isolated `ChatSession` is created.
 4.  **Agent Trigger**: The `app:submit-message` event is fired. The `useAgent` hook instantiates the `AgentRuntime` scoped specifically to that JID's session.
 5.  **Reasoning Loop**: The `AgentRuntime` pulls the conversation history and queries the LLM. The LLM may decide to call `rag_search` to look up store policies.
-6.  **Outbound Dispatch**: Once the LLM finalizes its response (outside of `<think>` tags), `useAgent` makes a cross-process call back to the Main process to dispatch the text via Baileys to the customer's phone.
+6.  **Outbound Dispatch**: Once the LLM finalizes its response, it passes to the `OutboundManager` in `whatsapp-integration.ts`. This manager intercepts `ESCALATE` flags to safely trigger a warm handoff. Normal responses are enqueued per-JID to systematically space out typing simulations (anti-ban) without blocking concurrent customer queries, before finally dispatching via Baileys.
 
 ## Security & Privacy
 *   **Local First**: All business data embedded into the RAG system and all chat history remains stored on the host machine's SQLite/LanceDB implementations.

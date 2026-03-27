@@ -171,6 +171,11 @@ const electronAPI = {
             ipcRenderer.on('whatsapp:message', listener)
             return () => ipcRenderer.removeListener('whatsapp:message', listener)
         },
+        onEscalation: (callback: (data: unknown) => void) => {
+            const listener = (_event: any, data: unknown) => callback(data)
+            ipcRenderer.on('whatsapp:escalation', listener)
+            return () => ipcRenderer.removeListener('whatsapp:escalation', listener)
+        },
     },
     // General utils
     utils: {

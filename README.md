@@ -52,8 +52,8 @@ A single executable that the owner installs on their laptop → scans QR once �
 - Personal WhatsApp number (multi-device protocol)  
 - Local LLM or lightweight API fallback  
 - Vertical knowledge packs (JSON + RAG)  
-- Warm handoff + frustration detection  
-- Anti-ban engine (jitter, typing simulation, delays)
+- Warm handoff + frustration detection (ESCALATE interception)
+- Anti-ban engine (jitter, typing simulation, delays, concurrent queuing)
 
 **Success Criteria (MVP)**  
 - 85%+ auto-resolution rate  
@@ -124,8 +124,8 @@ Mitigation:
 - Reply generation + grounding  
 - Basic dashboard (conversations, stats, export)  
 - Daily summary (text + voice)  
-- Warm handoff (AI pings owner in same chat with pre-written message)  
-- Anti-ban engine  
+- Warm handoff (Intercepts AI "ESCALATE" flags, sends pre-written message, pings owner)  
+- Anti-ban engine (concurrent JID-based OutboundManager queue with typing delays)  
 
 **P1**  
 - Vertical packs (3 pre-loaded)  
@@ -210,8 +210,8 @@ Groq (fastest) or Anthropic – API key stored locally only.
 
 **System Prompt (Vertical-aware):**  
 ```
-You are a helpful, friendly Indian small business assistant for {business_name}.
-Use only the provided knowledge base. Speak in natural {language} mix.
+You are a helpful, friendly Indian small business assistant for {businessName}.
+Our store hours are {businessHours}. Use only the provided knowledge base. Speak in natural {businessLanguage} mix.
 Never hallucinate prices or availability.
 If unsure → say "Let me check with the owner and reply shortly" and trigger warm handoff.
 Tone: polite, fast, local (use "sir/madam", Kannada words when detected).

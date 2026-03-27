@@ -31,6 +31,15 @@ export function registerWhatsAppHandlers(): void {
         }
     })
 
+    // When a frustration escalation occurs, push it to all renderer windows.
+    whatsappService.on('escalation', (data) => {
+        for (const win of BrowserWindow.getAllWindows()) {
+            if (!win.isDestroyed()) {
+                win.webContents.send('whatsapp:escalation', data)
+            }
+        }
+    })
+
     // ── Request/response handlers ────────────────────────────────────────────
 
     ipcMain.handle('whatsapp:get-state', async () => {

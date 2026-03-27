@@ -16,6 +16,8 @@
         "typecheck": "tsc --noEmit",
         "lint": "eslint src/",
         "lint:fix": "eslint src/ --fix",
+        "test": "vitest run",
+        "test:watch": "vitest",
         "test:e2e": "node tests/integration_test.cjs && node tests/e2e_ui_mocked.cjs && node tests/speech_e2e.cjs",
         "test:mock": "node tests/e2e_ui_mocked.cjs",
         "test:playwright": "node tests/playwright_tools_test.cjs",
@@ -83,6 +85,7 @@
     "devDependencies": {
         "@electron-toolkit/tsconfig": "^1.0.1",
         "@eslint/js": "^9.39.3",
+        "@testing-library/react": "^16.3.2",
         "@types/node": "^20.11.10",
         "@types/qrcode": "^1.5.6",
         "@types/react": "^18.2.48",
@@ -96,11 +99,13 @@
         "eslint-plugin-react-hooks": "^5.2.0",
         "eslint-plugin-react-refresh": "^0.4.26",
         "globals": "^16.5.0",
+        "jsdom": "^29.0.1",
         "postcss": "^8.4.35",
         "tailwindcss": "^3.4.1",
         "typescript": "^5.3.3",
         "typescript-eslint": "^8.56.1",
-        "vite": "^7.3.1"
+        "vite": "^7.3.1",
+        "vitest": "^4.1.1"
     },
     "build": {
         "appId": "com.aiworker.app",

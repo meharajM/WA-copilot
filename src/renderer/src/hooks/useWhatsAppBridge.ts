@@ -71,4 +71,21 @@ export function useWhatsAppBridge(): void {
         const unsub = electron.whatsapp.onMessage(handleMessage as any)
         return unsub
     }, [handleMessage])
+
+    // Subscribe to frustration/loop escalation events
+    useEffect(() => {
+        const unsub = electron.whatsapp.onEscalation?.((data: any) => {
+            console.warn(`[WhatsAppBridge] ESCALATION: ${data.reason} for ${data.jid}`);
+            window.dispatchEvent(new CustomEvent('app:escalation', { detail: data }));
+            
+            // Also add a system message to the chat if possible
+            window.dispatchEvent(new CustomEvent('app:submit-message', {
+                detail: { 
+                    content: `⚠️ **Escalation Triggered**: ${data.reason === 'frustration_detected' ? 'Customer frustration detected' : 'Loop detected'}. Manual intervention recommended.`,
+                    system: true
+                }
+            }));
+        });
+        return unsub;
+    }, [])
 }

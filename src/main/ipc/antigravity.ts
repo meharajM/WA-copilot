@@ -95,4 +95,3 @@ export function registerAntigravityHandlers(): void {
         return await svc.callGateway(url, headers, body)
     })
 }
-
