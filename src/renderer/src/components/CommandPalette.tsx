@@ -4,10 +4,10 @@ import { Search, Trash2, Layout, Settings, MessageCircle, WifiOff } from 'lucide
 import { useChatStore } from '../stores/chatStore';
 import { useWhatsAppStore } from '../stores/whatsappStore';
 import { motion, AnimatePresence } from 'framer-motion';
-import { View } from './Sidebar';
+import { ViewMode } from './Sidebar';
 
 interface CommandPaletteProps {
-  onViewChange?: (view: View) => void;
+  onViewChange?: (view: ViewMode) => void;
 }
 
 export function CommandPalette({ onViewChange }: CommandPaletteProps) {

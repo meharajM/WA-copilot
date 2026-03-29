@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# AI-Worker Linux Installer
+# WA Co-Pilot Linux Installer
 # Auto-detects CPU architecture and downloads the matching .AppImage from Cloudflare R2.
 
 set -e
 
 R2_BASE="https://downloads.ai-worker.tech"
 INSTALL_DIR="${HOME}/.local/bin"
-APP_NAME="AI-Worker"
+APP_NAME="WA Co-Pilot"
 
-echo "🚀 AI-Worker Linux Installer"
+echo "🚀 WA Co-Pilot Linux Installer"
 
 # ── Detect architecture ────────────────────────────────────────────────────
 ARCH=$(uname -m)
@@ -17,7 +17,7 @@ case "$ARCH" in
   aarch64|arm64)   ARCH_LABEL="arm64" ;;
   *)
     echo "❌ Unsupported architecture: $ARCH"
-    echo "   AI-Worker supports x86_64 and aarch64 (ARM64)."
+    echo "   WA Co-Pilot supports x86_64 and aarch64 (ARM64)."
     exit 1
     ;;
 esac
@@ -51,6 +51,6 @@ echo "🔐 Setting executable permissions..."
 chmod +x "${DEST}"
 
 echo ""
-echo "✅ AI-Worker (${ARCH_LABEL}) installed to ${DEST}"
-echo "🎉 Launching AI-Worker..."
+echo "✅ WA Co-Pilot (${ARCH_LABEL}) installed to ${DEST}"
+echo "🎉 Launching WA Co-Pilot..."
 "${DEST}" &

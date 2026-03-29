@@ -4,9 +4,9 @@
 # WA Co-Pilot Self-Hosted – Complete Research + Implementation Blueprint  
 **For AI Coding Agent (March 2026 Edition)**  
 
-**Version:** 1.0  
-**Date:** 23 March 2026  
-**Author:** Senior Market Research Analyst (compiled from full conversation history)  
+**Version:** 1.1 (Hardened Persistence & Relay)  
+**Date:** 29 March 2026  
+**Author:** Antigravity AI Agent  
 **Target:** Self-hosted desktop software running 100% on the business owner’s Windows/Mac/Linux machine  
 **Goal:** Turn any personal WhatsApp number into a 24×7 AI customer support agent + local dashboard + summaries. No cloud, no Meta API, no per-message fees.  
 
@@ -50,6 +50,8 @@ A single executable that the owner installs on their laptop → scans QR once �
 **Core Pillars**  
 - 100% self-hosted (no cloud server ever)  
 - Personal WhatsApp number (multi-device protocol)  
+- **Hardened Persistence**: SQLite + Filesystem mirroring for 100% data sovereignty  
+- **Human-in-the-Loop**: Admin relay logic for unresolved query escalation  
 - Local LLM or lightweight API fallback  
 - Vertical knowledge packs (JSON + RAG)  
 - Warm handoff + frustration detection  
@@ -118,14 +120,17 @@ Mitigation:
    - Revenue impact, unresolved tickets, sentiment heatmap
 
 ### 4.2 Core Features (MVP Priority Order)
-**P0 (Must have for launch)**  
+**P0 (Must have for launch) - ✅ COMPLETED**  
 - WhatsApp multi-device connection (Baileys)  
 - Local RAG (knowledge base JSON + vector store)  
 - Reply generation + grounding  
 - Basic dashboard (conversations, stats, export)  
+- **Agent Persistence**: storage.db + brain/sessions/*.json mirroring  
+- **Admin Relay**: Autonomous escalation of unresolved RAG queries  
+- **Proactive Alerts**: 60s processing courtesy notifications  
 - Daily summary (text + voice)  
 - Warm handoff (AI pings owner in same chat with pre-written message)  
-- Anti-ban engine  
+- Anti-ban engine (jitter/typing simulation)
 
 **P1**  
 - Vertical packs (3 pre-loaded)  

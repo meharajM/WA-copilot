@@ -276,9 +276,29 @@ export async function executeToolCall(
           
           if (result && result.error) return { result: null, error: result.error };
           return { result: "Message sent successfully." };
+        } else if (toolName === 'whatsapp_notify_admin') {
+          const summary = safeArgs?.summary as string;
+          const mainQuestion = safeArgs?.mainQuestion as string;
+          if (!summary || !mainQuestion) return { result: null, error: "Missing 'summary' or 'mainQuestion' parameters." };
+
+          const result = await electron.whatsapp.notifyAdmin(targetJid, summary, mainQuestion) as { success: boolean; error?: string };
+          if (result && result.error) return { result: null, error: result.error };
+          return { result: "Admin has been notified. They will get back to the customer soon." };
         }
       } catch (err) {
         return { result: null, error: `Direct whatsapp tool call failed: ${err instanceof Error ? err.message : String(err)}` };
+      }
+    }
+
+    // FALLBACK: Check if it's an internal RAG tool
+    if (toolName.startsWith('rag_')) {
+      logMcpRenderer("info", "Executing RAG tool via direct IPC fallback", { tool: toolName });
+      try {
+        // Find if we have an internal-rag server ID in the store to use, otherwise use default
+        const result = await electron.mcp.callTool('internal-rag', toolName, safeArgs) as { result: unknown; error?: string };
+        return result;
+      } catch (err) {
+        return { result: null, error: `Direct RAG tool call failed: ${err instanceof Error ? err.message : String(err)}` };
       }
     }
 

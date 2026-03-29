@@ -1,9 +1,9 @@
 import { Settings, Network, MessageSquare } from 'lucide-react'
-import { View } from '../Sidebar' // old interface Location, we'll keep it there
+import { ViewMode } from '../Sidebar'
 
 interface SidebarFooterProps {
-  currentView: View
-  onViewChange: (view: View) => void
+  currentView: ViewMode
+  onViewChange: (view: ViewMode) => void
 }
 
 export function SidebarFooter({ currentView, onViewChange }: SidebarFooterProps) {
@@ -18,7 +18,7 @@ export function SidebarFooter({ currentView, onViewChange }: SidebarFooterProps)
       >
         <div className="flex items-center gap-3">
           <MessageSquare size={16} className="opacity-70 group-hover:opacity-100" />
-          <span className="text-xs font-medium">Hub Chat</span>
+          <span className="text-xs font-medium">Conversations</span>
         </div>
       </button>
       <button
@@ -43,7 +43,7 @@ export function SidebarFooter({ currentView, onViewChange }: SidebarFooterProps)
       >
         <div className="flex items-center gap-3">
           <Settings size={16} className="opacity-70 group-hover:opacity-100" />
-          <span className="text-xs font-medium">Hub Settings</span>
+          <span className="text-xs font-medium">Settings</span>
         </div>
       </button>
     </div>

@@ -1,0 +1,7 @@
+{
+  "name": "@copilot/memory-brain",
+  "version": "1.0.0",
+  "description": "Modular Knowledge Graph and Long-term Memory Brain for AI Agents.",
+  "main": "index.ts",
+  "private": true
+}

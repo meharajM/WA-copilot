@@ -129,4 +129,62 @@ GOAL: Extract Facts & State. No Narratives. No Meta-Commentary.
             this.isAnalyzing = false;
         }
     }
+
+    /**
+     * Deep analysis of a newly uploaded document.
+     * Extracts core business facts, entities, and rules into long-term memory.
+     */
+    async analyzeDocument(docContent: string, fileName: string, settings: Record<string, unknown> | null | undefined) {
+        if (this.isAnalyzing) {
+            console.log('[MemoryReflector] Delaying document analysis - busy');
+            return;
+        }
+
+        this.isAnalyzing = true;
+        console.log(`[MemoryReflector] Starting deep learning on document: ${fileName}...`);
+
+        try {
+            const { AgentRuntime } = await import("./agent-runtime");
+            const reflectorAgent: IAgentClient = new AgentRuntime({
+                settings,
+                isSubAgent: true
+            });
+
+            const prompt = `
+SYSTEM_TASK: DOCUMENT_KNOWLEDGE_EXTRACTION
+
+You are the "Knowledge Architect". You have been provided with the full text of a new business document: "${fileName}".
+
+Your mission is to extract **PERMANENT BUSINESS FACTS**, **POLICIES**, **PRICING**, and **ENTITIES** from this document and save them into the Knowledge Graph.
+
+**DEDUPLICATION PROTOCOL (CRITICAL)**:
+1. FIRST: Use \`memory_search\` to identify if a concept (e.g., "Refund Policy") already exists.
+2. IF EXISTS: Use \`memory_update_entity\` to enrich the existing entity with new facts from this document.
+3. IF NEW: Use \`memory_create_entity\` to establish the fact.
+
+DOCUMENT CONTENT:
+"""
+${docContent.substring(0, 10000)}
+"""
+
+EXTRACTION RULES:
+- **Pricing & Products**: Create entities for major product categories and their standard price ranges.
+- **Policies**: Create entities for "Return Policy", "Shipping Policy", "Privacy", etc.
+- **Contact Info**: Create entities for "Support Email", "Store Location", "Business Hours".
+
+DO NOT:
+- Extract transient details (e.g., a specific invoice number).
+- Use narrative style ("The document states...").
+
+GOAL: Convert this document into a structured Knowledge Graph.
+            `;
+
+            await reflectorAgent.chat(prompt);
+            console.log(`[MemoryReflector] Document learning complete for ${fileName}.`);
+        } catch (error) {
+            console.warn('[MemoryReflector] Document analysis failed:', error);
+        } finally {
+            this.isAnalyzing = false;
+        }
+    }
 }

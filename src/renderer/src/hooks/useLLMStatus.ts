@@ -66,7 +66,7 @@ export function useLLMStatus(currentView: string): { llmStatus: LLMStatus } {
     const checkLLM = useCallback(async () => {
         // Skip when in settings view — SettingsPanel does its own LLM check,
         // and running both simultaneously causes flickering status indicators.
-        if (currentView === "settings") return;
+        if (currentView === "settings" || currentView === "connections") return;
 
         // Prevent duplicate concurrent requests. If a check is already running,
         // return the same promise so callers share the result.
@@ -162,7 +162,7 @@ export function useLLMStatus(currentView: string): { llmStatus: LLMStatus } {
     // Catches cases where a provider becomes available after the app loads
     // (e.g., user starts Ollama in the background).
     useEffect(() => {
-        if (currentView === "settings") return; // SettingsPanel handles its own polling
+        if (currentView === "settings" || currentView === "connections") return; // SettingsPanel handles its own polling
         const interval = setInterval(() => { checkLLM(); }, 60_000);
         return () => clearInterval(interval);
     }, [checkLLM, currentView]);

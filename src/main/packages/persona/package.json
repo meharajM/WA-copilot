@@ -1,0 +1,7 @@
+{
+  "name": "@copilot/persona",
+  "version": "1.0.0",
+  "description": "Dynamic Business Identity and Personality Management for AI Agents.",
+  "main": "index.ts",
+  "private": true
+}

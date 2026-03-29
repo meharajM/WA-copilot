@@ -2,12 +2,12 @@ import React from 'react'
 import { Wifi, WifiOff, MessageCircle, LayoutDashboard, MessageSquare } from 'lucide-react'
 import { useWhatsAppStore } from '../stores/whatsappStore'
 import { StatusDot } from './primitives/StatusDot'
-import { View } from './Sidebar'
+import { ViewMode } from './Sidebar'
 
 interface HeaderProps {
     status: { provider: string | null; available: boolean }
-    currentView: View
-    onViewChange: (view: View) => void
+    currentView: ViewMode
+    onViewChange: (view: ViewMode) => void
 }
 
 export function Header({ status, currentView, onViewChange }: HeaderProps) {
@@ -43,7 +43,7 @@ export function Header({ status, currentView, onViewChange }: HeaderProps) {
 
             <div className="text-[10px] uppercase tracking-widest text-[var(--color-text-dim)] hidden sm:flex items-center gap-2">
                 <StatusDot variant="success" size="sm" animated />
-                business-bot: active
+                wa-copilot: active
 
                 {/* WhatsApp status indicator */}
                 {isWhatsAppConnected && (

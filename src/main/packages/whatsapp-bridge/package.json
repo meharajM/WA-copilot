@@ -1,0 +1,10 @@
+{
+  "name": "@copilot/whatsapp-bridge",
+  "version": "1.0.0",
+  "description": "Modular WhatsApp Bridge using Baileys for Enterprise AI Agents.",
+  "main": "index.ts",
+  "private": true,
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.0.0"
+  }
+}

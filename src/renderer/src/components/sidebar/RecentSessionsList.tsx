@@ -1,10 +1,10 @@
 import React, { useState } from 'react'
 import { MessageSquare, Edit2, Trash2 } from 'lucide-react'
 import { useChatStore, ChatSession } from '../../stores/chatStore'
-import { View } from '../Sidebar'
+import { ViewMode } from '../Sidebar'
 
 interface RecentSessionsListProps {
-  onViewChange?: (view: View) => void
+  onViewChange?: (view: ViewMode) => void
 }
 
 export function RecentSessionsList({ onViewChange }: RecentSessionsListProps) {

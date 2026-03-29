@@ -195,7 +195,7 @@ export class AgentRuntime implements IAgentClient {
           import('./task-manager').then(m => m.syncPlanToFile(this.options.workspacePath, this.executionPlan!));
         }
       } catch (e) {
-        console.warn('[AgentRuntime] Failed to recover tasks.json:', e);
+        console.warn('[AgentRuntime] Failed to recover tasks.json:', e instanceof Error ? e.message : String(e));
       }
     }
 
@@ -377,7 +377,13 @@ export class AgentRuntime implements IAgentClient {
           // ── Final response: update the live bubble in-place (no new bubble created) ──
           // Push to internal history without firing onMessage (which would add a new bubble).
           this.messages.push(assistantMsg);
-          const finalUpdates: any = { content: assistantMsg.content };
+          const content = typeof assistantMsg.content === "string"
+            ? assistantMsg.content
+            : Array.isArray(assistantMsg.content)
+              ? (assistantMsg.content as Array<{ text?: string }>).map((c) => c.text ?? "").join("")
+              : "";
+              
+          const finalUpdates: { content?: string; toolCalls?: AccumulatedToolCall[] } = { content };
           if (accumulatedToolCalls.length > 0) {
             finalUpdates.toolCalls = accumulatedToolCalls;
           }
@@ -413,7 +419,7 @@ export class AgentRuntime implements IAgentClient {
         // ── First tool-calling iteration: create the single live UI bubble ──
         // assistantMsg carries this iteration's tool_calls so the LLM history is correct.
         // We also attach the store-format toolCalls so onMessage can persist them.
-        (assistantMsg as any).toolCalls = iterationToolCalls;
+        (assistantMsg as unknown as { toolCalls: AccumulatedToolCall[] }).toolCalls = iterationToolCalls;
         const messageIdResult = this.addMessage(assistantMsg);
         if (typeof messageIdResult === "string") {
           activeAssistantMessageId = messageIdResult;
@@ -430,12 +436,12 @@ export class AgentRuntime implements IAgentClient {
         if (this.options.onMessageUpdate) {
           this.options.onMessageUpdate(activeAssistantMessageId, {
             toolCalls: [...accumulatedToolCalls]
-          } as any);
+          });
         }
       }
 
       // Keep local assistantMsg.toolCalls in sync for the tool execution block below
-      (assistantMsg as any).toolCalls = iterationToolCalls;
+      (assistantMsg as unknown as { toolCalls: AccumulatedToolCall[] }).toolCalls = iterationToolCalls;
 
       const toolPromises = response.toolCalls.map(async (call) => {
         if (this.options.signal?.aborted) return null;
@@ -481,8 +487,9 @@ export class AgentRuntime implements IAgentClient {
             const { resultStr: formatted, isError } = formatToolResult(call.name, rawResult);
             resultStr = formatted;
             consecutiveErrors = isError ? consecutiveErrors + 1 : 0;
-          } catch (err: any) {
-            resultStr = JSON.stringify({ error: err.message || "Unknown error" });
+          } catch (err: unknown) {
+            const error = err as Error;
+            resultStr = JSON.stringify({ error: error.message || "Unknown error" });
             consecutiveErrors++;
           }
 
@@ -518,14 +525,14 @@ export class AgentRuntime implements IAgentClient {
             accumulatedToolCalls[tcIndex] = { ...accumulatedToolCalls[tcIndex], result: truncated, completedAt: Date.now() };
           }
           // Also update the local assistantMsg for finding reporting below
-          const currentToolCalls = (assistantMsg as any).toolCalls as AccumulatedToolCall[] || [];
+          const currentToolCalls = (assistantMsg as unknown as { toolCalls: AccumulatedToolCall[] }).toolCalls || [];
           const updatedLocal = currentToolCalls.map(t =>
             t.id === call.id ? { ...t, result: truncated } : t
           );
-          (assistantMsg as any).toolCalls = updatedLocal;
+          (assistantMsg as unknown as { toolCalls: AccumulatedToolCall[] }).toolCalls = updatedLocal;
           this.options.onMessageUpdate(activeAssistantMessageId, {
             toolCalls: [...accumulatedToolCalls]
-          } as any);
+          });
         }
 
         // ── Progress calculation (Gap 2 fix) ──────────────────────────────
@@ -569,14 +576,14 @@ export class AgentRuntime implements IAgentClient {
               accumulatedToolCalls[tcIdx] = { ...accumulatedToolCalls[tcIdx], isPresentable: true, finding: findingSummary.summary };
             }
             // Also keep local assistantMsg in sync for any downstream use
-            const currentToolCalls = (assistantMsg as any).toolCalls as AccumulatedToolCall[] || [];
+            const currentToolCalls = (assistantMsg as unknown as { toolCalls: AccumulatedToolCall[] }).toolCalls || [];
             const updatedLocal = currentToolCalls.map(t =>
               t.id === call.id ? { ...t, isPresentable: true, finding: findingSummary.summary } : t
             );
-            (assistantMsg as any).toolCalls = updatedLocal;
+            (assistantMsg as unknown as { toolCalls: AccumulatedToolCall[] }).toolCalls = updatedLocal;
             this.options.onMessageUpdate(activeAssistantMessageId, {
               toolCalls: [...accumulatedToolCalls]
-            } as any);
+            });
           }
         }
         return undefined;

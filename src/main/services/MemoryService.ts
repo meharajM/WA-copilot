@@ -6,6 +6,7 @@ import { PIIDetector } from './memory/privacy/PIIDetector'
 import { SecretRedactor } from './memory/privacy/SecretRedactor'
 import { MetricsCollector } from './memory/MetricsCollector'
 import { MigrationService } from './memory/MigrationService'
+import { IntelligenceService } from './IntelligenceService'
 import type { UnifiedMemoryBackend, CreateEntityInput, Entity as BackendEntity, ExportData } from './memory/UnifiedMemoryBackend'
 
 // ============================================================================
@@ -206,6 +207,7 @@ export class MemoryService {
     private legacyDbPath: string
 
     private initialized = false
+    private initPromise: Promise<void> | null = null
 
     private constructor() {
         this.legacyDbPath = path.join(app.getPath('userData'), 'memory.db')
@@ -235,25 +237,34 @@ export class MemoryService {
      */
     async initialize(): Promise<void> {
         if (this.initialized) return
+        if (this.initPromise) return this.initPromise
 
-        try {
-            console.log('[MemoryService] Initializing with UnifiedMemoryBackend architecture...')
+        this.initPromise = (async () => {
+            try {
+                console.log('[MemoryService] Initializing with UnifiedMemoryBackend architecture...')
 
-            // Create backend from factory
-            this.backend = MemoryServiceFactory.create()
-            await this.backend.initialize()
+                // Create backend from factory
+                this.backend = MemoryServiceFactory.create()
+                await this.backend.initialize()
 
-            console.log(`[MemoryService] Backend initialized: ${MemoryServiceFactory.getCurrentBackend()}`)
+                console.log(`[MemoryService] Backend initialized: ${MemoryServiceFactory.getCurrentBackend()}`)
 
-            // Check if legacy SQLite data exists and needs migration
-            await this.migrateLegacyDataIfNeeded()
+                // Check if legacy SQLite data exists and needs migration (memory.db -> memory_v2.db)
+                await this.migrateLegacyDataIfNeeded()
+                
+                // Check if MCP server-memory data exists and needs migration (memory.json -> memory_v2.db)
+                await this.migrationService.migrateToSqlite()
 
-            this.initialized = true
-            console.log('[MemoryService] Initialization complete')
-        } catch (error) {
-            console.error('[MemoryService] Failed to initialize:', error)
-            throw error
-        }
+                this.initialized = true
+                console.log('[MemoryService] Initialization complete')
+            } catch (error) {
+                console.error('[MemoryService] Failed to initialize:', error)
+                this.initPromise = null
+                throw error
+            }
+        })()
+
+        return this.initPromise
     }
 
     /**
@@ -404,6 +415,7 @@ export class MemoryService {
 
         // Update metrics
         this.metricsCollector.increment('entityCount')
+        IntelligenceService.getInstance().logEvent('learning', 'fact_learned', `Learned new fact about ${name}: ${safeDesc.substring(0, 50)}...`)
 
         // Check if migration suggestion needed
         await this.migrationService.checkAndNotify(this.metricsCollector)

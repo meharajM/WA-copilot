@@ -3,6 +3,7 @@ import { useChatStore } from '../stores/chatStore';
 import { type LLMMessage, type LLMContentPart } from './types';
 import { buildMediaLLMParts, type MediaType } from './media-utils';
 import electron from './electron';
+import { isSameWhatsAppIdentity } from '../../../shared/whatsappIdentity';
 
 /**
  * Extracts and resolves the target WhatsApp JID.
@@ -54,22 +55,41 @@ export const resolveWhatsAppTarget = (text: string): string | null => {
  * into the agent's context whenever it is handling a WhatsApp message.
  * Optimized for multimodal interactions.
  */
-export const getWhatsAppSystemPrompt = (): LLMMessage => {
-  const { businessBotMode } = useWhatsAppStore.getState();
-  
-  const persona = businessBotMode 
-    ? "You are a 'Business Customer Support Agent'. Your goal is to help customers professionally based on the local knowledge base."
-    : "You are the 'WA Co-Pilot', a personal assistant for the business owner.";
+export const getWhatsAppSystemPrompt = (fromJid?: string, persona?: { name: string, tone: string }): LLMMessage => {
+  const { connectionState } = useWhatsAppStore.getState();
+  const adminJid = connectionState.phoneNumber;
+  const isAdmin = isSameWhatsAppIdentity(fromJid, adminJid);
+  const businessName = persona?.name || 'Our Business';
+  const businessTone = persona?.tone || 'professional';
 
+  if (isAdmin) {
+    return {
+      role: "system",
+      content: `WHATSAPP ADMIN MODE ACTIVE: You are the 'Business Owner Assistant' for the Admin. 
+1. The Admin (Owner) of *${businessName}* is talking to you. You have full access to all business data and analytics.
+2. If the Admin sends a file, it has already been ingested into your RAG ('rag_search'). Confirm receipt and offer to analyze it.
+3. You can answer ANY question about the business, analytics, or training data.
+4. Use 'rag_search' and 'memory_search' to provide detailed, accurate insights.
+5. Be concise but highly expert. 📈`
+    };
+  }
+
+  // Customer Mode
   return {
     role: "system",
-    content: `WHATSAPP MODE ACTIVE: ${persona} ` +
-      "CRITICAL: Your primary knowledge base is the local 'rag_search' and 'memory_search' tools. " +
-      "1. For any business-related query, ALWAYS check the local knowledge base first. " +
-      "2. Keep replies SHORT — max 3 sentences. Use line breaks (\\n), NOT markdown (*bold*, headers). " +
-      "3. Do NOT use asterisks (*) for emphasis — they show literally on some phones. " +
-      "4. Add one relevant emoji at the end of each reply. " +
-      "5. If RAG returns no result, say: 'Let me check and get back to you shortly! 🙏' — never guess."
+    content: `WHATSAPP CUSTOMER SUPPORT MODE ACTIVE: You are the professional Support Agent for *${businessName}*. 
+Role: Senior Representative.
+Context: Your primary knowledge base is the local 'rag_search' and 'memory_search' tools.
+
+STRICT GROUNDING RULES:
+1. ALWAYS check the local knowledge base ('rag_search') before answering any business query.
+2. NO HALLUCINATIONS: If the information is NOT in the knowledge base, do NOT make it up. 
+3. UNKNOWN ANSWER: If RAG returns no result, say: "I'm sorry, I don't have that specific information. I've flagged this for our human team, and we will get back to you shortly! 🙏"
+
+WHATSAPP FORMATTING RULES:
+4. Keep replies SHORT — max 3 sentences. 
+5. NO MARKDOWN: Use line breaks (\n), NOT asterisks (*bold*) or headers (##). Some phones show markdown characters literally.
+6. One relevant emoji at the end of each reply to stay human. 🤖`
   };
 };
 

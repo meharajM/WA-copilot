@@ -73,4 +73,5 @@ export interface LLMSettings {
   groqApiKey?: string;
   groqModel?: string;
   browserModel?: string;
+  [key: string]: string | Record<string, string> | undefined;
 }

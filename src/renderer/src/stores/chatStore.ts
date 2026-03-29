@@ -41,13 +41,23 @@ export interface ChatSession {
     messages: Message[]
     createdAt: number
     updatedAt: number
+    
+    // --- Omnichannel Provisions ---
+    /** The platform this session originated from (whatsapp, telegram, instagram, email, etc.) */
+    channel?: 'whatsapp' | 'telegram' | 'email' | 'instagram' | 'twitter' | 'web'
+    /** Generic remote identifier (e.g., Telegram Chat ID, Email Address, Twitter Handle) */
+    contact_id?: string
+    
+    /** Legacy WhatsApp identifier (alias for contact_id) */
+    whatsapp_jid?: string 
+    
+    /** Agent task tracking */
+    status?: 'active' | 'resolved'
     workspacePath?: string   // Optional workspace folder for this chat session
-    whatsapp_jid?: string    // Links this session to a specific WhatsApp customer/contact
     progress?: number
     eta?: number
     plan?: ExecutionPlan
     topic?: string           // The AI-analyzed category of this conversation
-    status?: 'active' | 'resolved' // The current state of the conversation
 }
 
 /**
@@ -109,6 +119,10 @@ interface ChatState {
     setOfflineSpeech: (enabled: boolean) => void
 
     // Message Actions (primarily target a specific session by ID)
+    // Session Actions (Legacy & New)
+    addSession: (session: { name: string; lastMessage: string; whatsapp_jid?: string }) => void
+    resolveSession: (id: string, status: 'active' | 'resolved') => void
+    updateSessionActivity: (id: string) => void
     addMessage: (message: Omit<Message, 'id' | 'timestamp'>) => Message
     addSessionMessage: (sessionId: string, message: Omit<Message, 'id' | 'timestamp'>) => Message
     updateMessage: (id: string, updates: Partial<Message>) => void
@@ -461,6 +475,35 @@ export const useChatStore = create<ChatState>()(
                 })
             },
 
+            addSession: (data) =>
+                set((state) => {
+                    const id = `chat_${Date.now()}`
+                    const newSession: ChatSession = {
+                        id,
+                        title: data.name,
+                        messages: [{
+                            id: `msg_${Date.now()}`,
+                            role: 'user',
+                            content: data.lastMessage,
+                            timestamp: Date.now()
+                        }],
+                        createdAt: Date.now(),
+                        updatedAt: Date.now(),
+                        whatsapp_jid: data.whatsapp_jid,
+                        status: 'active'
+                    }
+                    return { sessions: [newSession, ...state.sessions], activeSessionId: id }
+                }),
+
+            resolveSession: (id, status) =>
+                set((state) => ({
+                    sessions: state.sessions.map((s) => (s.id === id ? { ...s, status, updatedAt: Date.now() } : s))
+                })),
+            updateSessionActivity: (id) =>
+                set((state) => ({
+                    sessions: state.sessions.map((s) => (s.id === id ? { ...s, updatedAt: Date.now() } : s))
+                })),
+
             offlineSpeech: false,
             setOfflineSpeech: (enabled: boolean) => set({ offlineSpeech: enabled }),
 
@@ -473,41 +516,48 @@ export const useChatStore = create<ChatState>()(
             // are now derived from _processingSessions (a Map). Old persisted state with the
             // flat fields is incompatible and would hydrate incorrectly.
             name: 'ai-worker-chat-v3',
-            // ── Debounced storage adapter ──────────────────────────────────────
-            // WHY: During agent tool loops, addMessage/updateMessage fire rapidly
-            // (every tool call). Each triggers JSON.stringify + localStorage.setItem
-            // of ALL sessions, blocking the main thread. This adapter coalesces
-            // writes to at most once per second.
-            storage: (() => {
-                const base = createJSONStorage(() => localStorage)
-                let pendingTimer: ReturnType<typeof setTimeout> | null = null
-                let pendingValue: any = null
-                const DEBOUNCE_MS = 1000
-
-                return {
-                    getItem: (name: string) => base!.getItem(name),
-                    removeItem: (name: string) => base!.removeItem(name),
-                    setItem: (name: string, value: any) => {
-                        pendingValue = value
-                        if (pendingTimer === null) {
-                            pendingTimer = setTimeout(() => {
-                                if (pendingValue !== null) {
-                                    base!.setItem(name, pendingValue)
-                                    pendingValue = null
-                                }
-                                pendingTimer = null
-                            }, DEBOUNCE_MS)
-                        }
-                    },
-                }
-            })(),
+            // ── SQLite + Filesystem storage adapter ────────────────────────────
+            // WHY: Provides 100% persistence in SQLite (main process) and 
+            // mirrors each session as individual JSON/MD files.
+            storage: createJSONStorage(() => ({
+                getItem: async (name: string) => {
+                  try {
+                    const result = await (window as any).electron.ipcRenderer.invoke('chat:load-sessions');
+                    if (result.success && result.sessions) {
+                      // We return just the sessions array; persist will wrap it in state
+                      return JSON.stringify({
+                        sessions: result.sessions,
+                        activeSessionId: (window as any).localStorage.getItem(`${name}-active-id`) || null,
+                        offlineSpeech: false,
+                        sidebarOpen: true
+                      });
+                    }
+                  } catch (e) {
+                    console.error('[ChatStore] Failed to load from SQLite:', e);
+                  }
+                  return null;
+                },
+                removeItem: async (_name: string) => {},
+                setItem: async (name: string, value: string) => {
+                    // Zustand gives us a JSON string of the state
+                    const parsed = JSON.parse(value);
+                    const sessions = parsed.state.sessions;
+                    const activeId = parsed.state.activeSessionId;
+                    
+                    (window as any).localStorage.setItem(`${name}-active-id`, activeId);
+                    
+                    try {
+                        await (window as any).electron.ipcRenderer.invoke('chat:save-sessions-with-mirror', sessions);
+                    } catch (e) {
+                        console.error('[ChatStore] Failed to sync to backend:', e);
+                    }
+                },
+            })),
             partialize: (state) => ({
                 sessions: state.sessions,
                 activeSessionId: state.activeSessionId,
                 offlineSpeech: state.offlineSpeech,
                 sidebarOpen: state.sidebarOpen,
-                // _processingSessions is intentionally excluded — Map is not JSON-serialisable
-                // and processing state must always start fresh.
             }),
         }
     )

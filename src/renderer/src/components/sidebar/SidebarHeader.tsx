@@ -9,7 +9,7 @@ export function SidebarHeader() {
       </div>
       <div className="flex flex-col">
         <span className="text-sm font-bold tracking-tight text-[var(--color-text-primary)]">
-          BUSINESS BOT
+          WA CO-PILOT
         </span>
         <span className="text-[10px] uppercase font-bold text-[var(--color-text-muted)] tracking-wider">
           WA Support Agent

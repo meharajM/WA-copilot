@@ -3,12 +3,13 @@ import Store from 'electron-store'
 import { UnifiedMemoryBackend } from './UnifiedMemoryBackend'
 import { ServerMemoryAdapter } from './adapters/ServerMemoryAdapter'
 import { MementoMCPAdapter } from './adapters/MementoMCPAdapter'
+import { SQLiteMemoryAdapter } from './adapters/SQLiteMemoryAdapter'
 
 /**
  * Memory Configuration
  */
 export interface MemoryConfig {
-  backend: 'server-memory' | 'memento-mcp'
+  backend: 'server-memory' | 'memento-mcp' | 'sqlite'
   
   serverMemory?: {
     storagePath: string
@@ -18,6 +19,10 @@ export interface MemoryConfig {
     neo4jUri: string
     username: string
     password: string
+  }
+  
+  sqlite?: {
+    storagePath: string
   }
   
   autoMigration?: {
@@ -34,8 +39,12 @@ export interface MemoryConfig {
  * Default Configuration
  */
 const DEFAULT_CONFIG: MemoryConfig = {
-  backend: 'server-memory',
+  backend: 'sqlite',
   
+  sqlite: {
+    storagePath: app.getPath('userData') + '/memory_v2.db'
+  },
+
   serverMemory: {
     storagePath: app.getPath('userData') + '/memory'
   },
@@ -67,9 +76,9 @@ const DEFAULT_CONFIG: MemoryConfig = {
  */
 export class MemoryServiceFactory {
   // Use same type assertion as store.ts for consistent API
-  private static store = new Store<Record<string, any>>() as Store<Record<string, any>> & {
-    get: (key: string, defaultValue?: any) => any;
-    set: (key: string, value: any) => void;
+  private static store = new Store<Record<string, unknown>>() as Store<Record<string, unknown>> & {
+    get: (key: string, defaultValue?: unknown) => unknown;
+    set: (key: string, value: unknown) => void;
   }
   
   /**
@@ -91,8 +100,16 @@ export class MemoryServiceFactory {
         }
         return new MementoMCPAdapter(finalConfig.memento)
         
-      default:
-        throw new Error(`Unknown backend: ${finalConfig.backend}`)
+      case 'sqlite':
+        if (!finalConfig.sqlite) {
+          throw new Error('sqlite config missing')
+        }
+        return new SQLiteMemoryAdapter(finalConfig.sqlite)
+        
+      default: {
+        const _exhaustiveCheck: never = finalConfig.backend
+        throw new Error(`Unknown backend: ${_exhaustiveCheck}`)
+      }
     }
   }
   
@@ -100,7 +117,7 @@ export class MemoryServiceFactory {
    * Load configuration from electron-store
    */
   static loadConfig(): MemoryConfig {
-    return this.store.get('memory', DEFAULT_CONFIG)
+    return this.store.get('memory', DEFAULT_CONFIG) as MemoryConfig
   }
   
   /**
@@ -113,7 +130,7 @@ export class MemoryServiceFactory {
   /**
    * Update backend (triggers migration)
    */
-  static async switchBackend(newBackend: 'server-memory' | 'memento-mcp'): Promise<void> {
+  static async switchBackend(newBackend: 'server-memory' | 'memento-mcp' | 'sqlite'): Promise<void> {
     const config = MemoryServiceFactory.loadConfig()
     config.backend = newBackend
     MemoryServiceFactory.saveConfig(config)

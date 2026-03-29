@@ -28,22 +28,31 @@ export const electron = {
         }
     },
 
-    // Get app version
-    getVersion: async (): Promise<string> => {
-        if (isElectron() && window.electron?.app) {
-            return await window.electron.app.getVersion()
-        }
-        return '0.1.0' // Fallback to package.json version
-    },
+    // App operations
+    app: {
+        getVersion: async (): Promise<string> => {
+            if (isElectron() && window.electron?.app) {
+                return await window.electron.app.getVersion()
+            }
+            return '0.1.0' // Fallback to package.json version
+        },
 
-    // Select folder dialog
-    selectFolder: async (): Promise<string | null> => {
-        if (isElectron() && window.electron?.app?.selectFolder) {
-            return await window.electron.app.selectFolder()
-        }
-        // Browser fallback - not supported
-        console.warn('[Browser] Folder selection not supported in browser mode')
-        return null
+        selectFolder: async (): Promise<string | null> => {
+            if (isElectron() && window.electron?.app?.selectFolder) {
+                return await window.electron.app.selectFolder()
+            }
+            // Browser fallback - not supported
+            console.warn('[Browser] Folder selection not supported in browser mode')
+            return null
+        },
+
+        selectFile: async (options?: { title?: string, buttonLabel?: string, filters?: { name: string, extensions: string[] }[] }): Promise<string | null> => {
+            if (isElectron() && window.electron?.app?.selectFile) {
+                return await window.electron.app.selectFile(options || {})
+            }
+            console.warn('[Browser] File selection not supported in browser mode')
+            return null
+        },
     },
 
     // MCP operations
@@ -210,13 +219,63 @@ export const electron = {
             if (isElectron() && window.electron?.memory) {
                 return await window.electron.memory.getStats()
             }
-            return { entityCount: 0, relationCount: 0, storageSize: 0, avgSearchLatency: 0, backend: 'mock' }
+            return {
+                success: true,
+                stats: { entityCount: 0, relationCount: 0, storageSize: 0, avgSearchLatency: 0, backend: 'mock' },
+            }
         },
         openFileLocation: async () => {
             if (isElectron() && window.electron?.memory) {
                 return await window.electron.memory.openFileLocation()
             }
         }
+    },
+    intelligence: {
+        getKnowledge: async () => {
+            if (isElectron() && window.electron?.intelligence) {
+                return await window.electron.intelligence.getKnowledge()
+            }
+            return []
+        },
+        deleteKnowledge: async (id: number) => {
+            if (isElectron() && window.electron?.intelligence) {
+                return await window.electron.intelligence.deleteKnowledge(id)
+            }
+            return false
+        },
+        getPersona: async () => {
+            if (isElectron() && window.electron?.intelligence) {
+                return await window.electron.intelligence.getPersona()
+            }
+            return null
+        },
+        updatePersona: async (updates: Record<string, unknown>) => {
+            if (isElectron() && window.electron?.intelligence) {
+                return await window.electron.intelligence.updatePersona(updates)
+            }
+            return null
+        },
+        getLogs: async (limit = 20) => {
+            if (isElectron() && window.electron?.intelligence) {
+                return await window.electron.intelligence.getLogs(limit)
+            }
+            return { success: true, logs: [] }
+        },
+        getStats: async () => {
+            if (isElectron() && window.electron?.intelligence) {
+                return await window.electron.intelligence.getStats()
+            }
+            return {
+                success: true,
+                stats: { totalQueries: 0, resolvedQueries: 0, autonomyRate: 100, trainingCount: 0, learningCount: 0 },
+            }
+        },
+        logAccuracy: async (payload: { event: string; details?: string }) => {
+            if (isElectron() && window.electron?.intelligence) {
+                return await window.electron.intelligence.logAccuracy(payload)
+            }
+            return { success: true }
+        },
     },
 
     // Antigravity OAuth operations (Google sign-in for Gemini access)
@@ -350,6 +409,13 @@ export const electron = {
                 return window.electron.whatsapp.onMessage(callback as any)
             }
             return () => {}
+        },
+        notifyAdmin: async (customerJid: string, summary: string, mainQuestion: string) => {
+            if (isElectron() && window.electron?.whatsapp?.notifyAdmin) {
+                return await window.electron.whatsapp.notifyAdmin(customerJid, summary, mainQuestion)
+            }
+            console.warn('[Browser] WhatsApp notifyAdmin not supported')
+            return { success: false, error: 'Not supported in browser mode' }
         },
     },
 }

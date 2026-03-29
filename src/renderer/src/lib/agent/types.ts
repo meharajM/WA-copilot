@@ -49,10 +49,9 @@ export interface AgentRuntimeOptions {
 
     /**
      * LLM provider configuration (API keys, model names, base URLs).
-     * Typed as `any` to avoid coupling to the settings store shape.
      * In Phase 3, this moves to the backend — the client sends only a session token.
      */
-    settings: any;
+    settings: import('../types').LLMSettings;
 
     /**
      * Called for every new message the agent produces.
@@ -85,9 +84,9 @@ export interface AgentRuntimeOptions {
      * Called to update an existing message in-place (instead of adding a new one).
      * Used by parallel orchestration to update the live status card as sub-agents complete.
      * @param id - The message ID returned by `onMessage`.
-     * @param updates - Partial message fields to merge into the existing message.
+     * @param updates - Partial message fields (LLM or Store format) to merge.
      */
-    onMessageUpdate?: (id: string, updates: Partial<LLMMessage>) => void;
+    onMessageUpdate?: (id: string, updates: Partial<LLMMessage> & { toolCalls?: unknown[] }) => void;
 
     /**
      * Called to update the global active session progress.
