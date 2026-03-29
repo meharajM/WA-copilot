@@ -122,7 +122,7 @@ export function ChatInput({ onSubmit, disabled = false, onAbort }: ChatInputProp
   // Handle folder selection
   const handleSelectFolder = useCallback(async () => {
     try {
-      const selectedPath = await electron.selectFolder()
+      const selectedPath = await electron.app.selectFolder()
       if (selectedPath) {
         setWorkspacePath(selectedPath)
         const {

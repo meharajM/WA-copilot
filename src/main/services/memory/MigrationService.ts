@@ -2,6 +2,9 @@ import { BrowserWindow } from 'electron'
 import type { UnifiedMemoryBackend, ExportData } from './UnifiedMemoryBackend'
 import type { MetricsCollector } from './MetricsCollector'
 import { MemoryServiceFactory } from './MemoryServiceFactory'
+import * as fs from 'fs'
+import * as path from 'path'
+import { app } from 'electron'
 
 /**
  * MigrationService - Handle Backend Migration
@@ -220,6 +223,67 @@ export class MigrationService {
         success: false,
         message: `Rollback failed: ${error.message}`
       }
+    }
+  }
+
+  /**
+   * Migrate from legacy server-memory (JSON) to the new SQLite backend
+   */
+  async migrateToSqlite(): Promise<{ success: boolean; migratedEntities: number; error?: string }> {
+    try {
+      const config = MemoryServiceFactory.loadConfig()
+      const jsonPath = path.join(app.getPath('userData'), 'memory', 'memory.json')
+      
+      if (!fs.existsSync(jsonPath)) {
+        return { success: true, migratedEntities: 0 }
+      }
+
+      console.log(`[Migration] Found legacy JSON at ${jsonPath}. Migrating to SQLite...`)
+      const rawData = fs.readFileSync(jsonPath, 'utf8')
+      const jsonData = JSON.parse(rawData) as { entities?: Array<{ name: string; entityType?: string; observations?: string[] }>; relations?: Array<{ from: string; to: string; type: string }> }
+
+      // Normalize server-memory format to ExportData
+      const exportData: ExportData = {
+        entities: (jsonData.entities || []).map((e) => ({
+          id: e.name,
+          name: e.name,
+          type: e.entityType || 'entity',
+          description: '',
+          observations: e.observations || [],
+          metadata: {},
+          createdAt: new Date().toISOString()
+        })),
+        relations: (jsonData.relations || []).map((r) => ({
+          id: `${r.from}-${r.type}-${r.to}`,
+          fromEntityId: r.from,
+          toEntityId: r.to,
+          relationType: r.type,
+          metadata: {}
+        })),
+        metadata: {
+          exportedAt: new Date().toISOString(),
+          version: '1.0.0',
+          backend: 'server-memory'
+        }
+      }
+
+      const sqliteBackend = MemoryServiceFactory.create({
+        backend: 'sqlite',
+        sqlite: config.sqlite || { storagePath: path.join(app.getPath('userData'), 'memory_v2.db') }
+      })
+
+      await sqliteBackend.initialize()
+      await sqliteBackend.importAll(exportData)
+
+      // Rename old file to prevent re-migration
+      fs.renameSync(jsonPath, `${jsonPath}.migrated`)
+      console.log(`[Migration] Successfully migrated ${exportData.entities.length} entities to SQLite`)
+
+      return { success: true, migratedEntities: exportData.entities.length }
+    } catch (err: unknown) {
+      console.error('[Migration] SQLite migration failed:', err)
+      const message = err instanceof Error ? err.message : String(err)
+      return { success: false, migratedEntities: 0, error: message }
     }
   }
 

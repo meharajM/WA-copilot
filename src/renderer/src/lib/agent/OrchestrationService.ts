@@ -46,7 +46,10 @@ import { laneManager } from "../execution-lanes";
 export type SubAgentFactory = (overrides: Partial<AgentRuntimeOptions> & {
     agentInstanceId: string;
     parentAgentId: string;
-}) => { chat: (prompt: string) => Promise<LLMMessage> };
+}) => { 
+    chat: (prompt: string) => Promise<LLMMessage>;
+    getHistory: () => LLMMessage[];
+};
 
 // ── Parallel Orchestration ─────────────────────────────────────────────────────
 
@@ -79,8 +82,8 @@ export async function executeParallelSubAgents(
     const { contexts } = decomposition;
 
     // Helper to salvage data from a sub-agent
-    const extractPartialFindings = async (subAgentInstance: any): Promise<string[]> => {
-        const history = subAgentInstance.getHistory?.() as LLMMessage[] | undefined;
+    const extractPartialFindings = async (subAgentInstance: { getHistory?: () => LLMMessage[] }): Promise<string[]> => {
+        const history = subAgentInstance.getHistory?.();
         const partials: string[] = [];
         if (!history) return partials;
 
@@ -94,7 +97,9 @@ export async function executeParallelSubAgents(
                         if (analysis.hasPresentableData && analysis.summary) {
                             partials.push(analysis.summary.substring(0, 300));
                         }
-                    } catch (e) { }
+                        } catch {
+                            // Ignore
+                        }
                 }
             }
         }
@@ -165,9 +170,9 @@ export async function executeParallelSubAgents(
                 } else {
                     console.warn("[OrchestrationService] new_tab result did not contain a tabId:", tabResult.result);
                 }
-            } catch (e) {
-                console.warn("[OrchestrationService] Failed to provision tab for sub-agent", e);
-            }
+                } catch (error) {
+                    console.warn("[OrchestrationService] Failed to provision tab for sub-agent", error);
+                }
         } else {
             console.log(`[OrchestrationService] Headless mode — skipping visible tab for sub-agent ${context}`);
         }
@@ -203,7 +208,9 @@ export async function executeParallelSubAgents(
                 const contentStr =
                     typeof msg.content === "string"
                         ? msg.content
-                        : (msg.content as any[]).map((c: any) => (c.type === "text" ? c.text : "[Image]")).join(" ");
+                        : Array.isArray(msg.content) 
+                            ? (msg.content as Array<{type: string, text?: string}>).map((c) => (c.type === "text" ? c.text : "[Image]")).join(" ")
+                            : "";
                 console.log(`[SubAgent:${context}] ${msg.role}: ${contentStr?.substring(0, 50)}...`);
             },
         });
@@ -213,7 +220,9 @@ export async function executeParallelSubAgents(
             const resultContent =
                 typeof result?.content === "string"
                     ? result.content
-                    : (result?.content as any[])?.map((c: any) => (c.type === "text" ? c.text : "")).join("") ?? "";
+                    : Array.isArray(result?.content)
+                        ? (result.content as Array<{type: string, text?: string}>).map((c) => (c.type === "text" ? c.text : "")).join("") 
+                        : "";
 
             // Detect sub-agent bailout (max consecutive errors)
             const isBailout = resultContent.includes("consecutive errors") ||
@@ -251,8 +260,8 @@ export async function executeParallelSubAgents(
                     console.log(`[OrchestrationService] Closed sub-agent tab ${subAgentTabId}`);
                     // Clean up the execution lane to prevent memory leaks
                     laneManager.cleanupTabLane(subAgentTabId);
-                } catch (e) {
-                    console.warn(`[OrchestrationService] Failed to close sub-agent tab ${subAgentTabId}`, e);
+                } catch (error) {
+                    console.warn(`[OrchestrationService] Failed to close sub-agent tab ${subAgentTabId}`, error);
                 }
             }
 
@@ -271,7 +280,8 @@ export async function executeParallelSubAgents(
             }
 
             return { context, success: isSuccess, result: finalResultStr };
-        } catch (error: any) {
+        } catch (error: unknown) {
+            const err = error as Error;
             agentStatuses[index].isRunning = false;
             agentStatuses[index].status = "Failed";
 
@@ -283,7 +293,9 @@ export async function executeParallelSubAgents(
                     partialsMsg = `\n\nPartial data collected before crash:\n${partials.map((f, i) => `${i + 1}. ${f}`).join("\n")}`;
                     console.warn(`[OrchestrationService] Parallel sub-agent ${context} threw exception. Salvaged ${partials.length} partial findings.`);
                 }
-            } catch (e) { }
+            } catch {
+                // Ignore
+            }
 
             // Close the tab + clean up the lane even on crash path to prevent leaks
             if (subAgentTabId !== undefined) {
@@ -293,12 +305,12 @@ export async function executeParallelSubAgents(
                         executeToolCall("close_tab", { tabId: subAgentTabId })
                     );
                     laneManager.cleanupTabLane(subAgentTabId);
-                } catch (e) {
-                    console.warn(`[OrchestrationService] Failed to close crashed sub-agent tab ${subAgentTabId}`, e);
+                } catch (error) {
+                    console.warn(`[OrchestrationService] Failed to close crashed sub-agent tab ${subAgentTabId}`, error);
                 }
             }
 
-            const errorText = `Error: ${error.message}${partialsMsg}`;
+            const errorText = `Error: ${err.message}${partialsMsg}`;
             agentStatuses[index].result = errorText;
 
             if (statusMessageId && parentOptions.onMessageUpdate) {
@@ -457,8 +469,8 @@ Format as JSON:
         const results: Array<{ step: number; description: string; result: string }> = [];
 
         // Helper to salvage data from a sub-agent
-        const extractPartialFindings = async (subAgentInstance: any): Promise<string[]> => {
-            const history = subAgentInstance.getHistory?.() as LLMMessage[] | undefined;
+        const extractPartialFindings = async (subAgentInstance: { getHistory?: () => LLMMessage[] }): Promise<string[]> => {
+            const history = subAgentInstance.getHistory?.();
             const partials: string[] = [];
             if (!history) return partials;
 
@@ -472,7 +484,9 @@ Format as JSON:
                             if (analysis.hasPresentableData && analysis.summary) {
                                 partials.push(analysis.summary.substring(0, 300));
                             }
-                        } catch (e) { }
+                        } catch {
+                            // Silent fail for non-critical analysis
+                        }
                     }
                 }
             }
@@ -532,7 +546,9 @@ End with "✓ Done" and a brief result.`;
                     const contentStr =
                         typeof msg.content === "string"
                             ? msg.content
-                            : (msg.content as any[]).map((c: any) => (c.type === "text" ? c.text : "[Image]")).join(" ");
+                            : Array.isArray(msg.content)
+                                ? (msg.content as Array<{type: string, text?: string}>).map((c) => (c.type === "text" ? c.text : "[Image]")).join(" ")
+                                : "";
                     console.log(`[SubAgent:Step${step.id}] ${msg.role}: ${contentStr?.substring(0, 50)}...`);
                 },
             });
@@ -542,7 +558,9 @@ End with "✓ Done" and a brief result.`;
                 const stepContent =
                     typeof stepResult.content === "string"
                         ? stepResult.content
-                        : (stepResult.content as any[]).map((c: any) => (c.type === "text" ? c.text : "")).join("");
+                        : Array.isArray(stepResult.content)
+                            ? (stepResult.content as Array<{type: string, text?: string}>).map((c) => (c.type === "text" ? c.text : "")).join("")
+                            : "";
 
                 // Detect bailout
                 const isBailout = stepContent.includes("consecutive errors") ||
@@ -567,8 +585,9 @@ End with "✓ Done" and a brief result.`;
                 };
                 addMessage(progressMessage);
                 parentOptions.onMessage?.(progressMessage);
-            } catch (error: any) {
-                console.error(`[OrchestrationService] Step ${step.id} failed:`, error);
+            } catch (error: unknown) {
+                const err = error as Error;
+                console.error(`[OrchestrationService] Step ${step.id} failed:`, err);
 
                 // Try to salvage partial data even on a hard crash
                 let partialsMsg = "";
@@ -578,12 +597,14 @@ End with "✓ Done" and a brief result.`;
                         partialsMsg = `\n\nPartial data collected before crash:\n${partials.map((f, i) => `${i + 1}. ${f}`).join("\n")}`;
                         console.warn(`[OrchestrationService] Sequential step ${step.id} crashed. Salvaged ${partials.length} findings.`);
                     }
-                } catch (e) { }
+                } catch {
+                    // Ignore
+                }
 
                 results.push({
                     step: step.id,
                     description: step.description,
-                    result: `Error: ${error.message}${partialsMsg}`,
+                    result: `Error: ${err.message}${partialsMsg}`,
                 });
             }
         }
@@ -600,11 +621,12 @@ End with "✓ Done" and a brief result.`;
         parentOptions.onMessage?.(finalMessage);
 
         return finalMessage;
-    } catch (error: any) {
-        console.error("[OrchestrationService] Sequential orchestration failed:", error);
+    } catch (error: unknown) {
+        const err = error as Error;
+        console.error("[OrchestrationService] Sequential orchestration failed:", err);
         return {
             role: "assistant",
-            content: `Failed to orchestrate task: ${error.message}. Falling back to direct execution.`,
+            content: `Failed to orchestrate task: ${err.message}. Falling back to direct execution.`,
         };
     }
 }

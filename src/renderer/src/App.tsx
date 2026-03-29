@@ -4,26 +4,28 @@ import { ChatView } from "./components/ChatView";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { FileChangeReview } from "./components/FileChangeReview";
 import { CommandPalette } from "./components/CommandPalette";
-import { Sidebar, View } from "./components/Sidebar";
+import { Sidebar, ViewMode } from "./components/Sidebar";
+import { KnowledgeBrowser } from "./components/chat/KnowledgeBrowser";
+import { LeadDirectory } from "./components/chat/LeadDirectory";
 import { Header } from "./components/Header";
 import { WhatsAppConnectionDialog } from "./components/WhatsAppConnectionDialog";
+import { EmptyState } from "./components/chat/EmptyState";
+import { ChatInput } from "./components/input/ChatInput";
 
+import { useResolutionAudit } from './hooks/useResolutionAudit'
 import { useChatStore } from "./stores/chatStore";
 import { useMcpStore } from "./stores/mcpStore";
 import { useSettingsSync } from "./hooks/useSettingsSync";
-import { useAgent } from "./hooks/useAgent";
 import { useLLMStatus } from "./hooks/useLLMStatus";
 import { useWhatsAppBridge } from "./hooks/useWhatsAppBridge";
+import { useAgent } from "./hooks/useAgent";
 import { MissingDependenciesScreen } from "./components/MissingDependenciesScreen";
 import { ExperimentProvider } from "./lib/experiments/experimentProvider";
 import { useThemeSync } from "./hooks/useThemeSync";
 
 function App() {
-  const [currentView, setCurrentView] = useState<View>("dashboard");
+  const [currentView, setCurrentView] = useState<ViewMode>("dashboard");
   const [dependenciesResolved, setDependenciesResolved] = useState(() => {
-    // Only skip the long background shell check during automated test runs.
-    // Using process.env.NODE_ENV ensures this bypass is compile-time and
-    // can never leak into production or persist across user sessions.
     return import.meta.env.MODE === 'test'
   });
 
@@ -36,22 +38,53 @@ function App() {
   // ── Store subscriptions ───────────────────────────────────────────────────
   const {
     activeSessionId,
-    sessions,
     isSessionProcessing,
     abortSession,
   } = useChatStore();
 
-  const activeSession = sessions.find((s) => s.id === activeSessionId);
-  // Whether the currently-active session is processing (used to disable the input)
+  const { handleSubmit } = useAgent();
   const activeIsProcessing = activeSessionId ? isSessionProcessing(activeSessionId) : false;
+
+  // Removed automatic redirection from dashboard to chat to allow navigation.
+  // Session navigation is handled explicitly by clicking sessions in the sidebar.
+
+  const renderContent = () => {
+    switch (currentView) {
+      case 'dashboard':
+        return <EmptyState onNavigate={setCurrentView} />
+      case 'brain':
+        return <KnowledgeBrowser />
+      case 'leads':
+        return <LeadDirectory />
+      case 'settings':
+      case 'connections':
+      case 'identity':
+        return <SettingsPanel 
+          initialSection={currentView === 'connections' ? 'tools' : currentView === 'identity' ? 'identity' : 'whatsapp'} 
+          onClose={() => setCurrentView('dashboard')} 
+        />
+      case 'chat':
+        return (
+          <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+            <ChatView />
+            <ChatInput
+              onSubmit={handleSubmit}
+              disabled={activeIsProcessing}
+              onAbort={activeSessionId ? () => abortSession(activeSessionId) : undefined}
+            />
+          </div>
+        )
+      default:
+        return <EmptyState onNavigate={setCurrentView} />
+    }
+  }
 
   // ── Side-effect hooks ─────────────────────────────────────────────────────
   useSettingsSync();
   useThemeSync();
-  useWhatsAppBridge(); // Sync WhatsApp IPC events → whatsappStore
+  useWhatsAppBridge();
+  useResolutionAudit();
 
-  // Ensure MCP is initialized for the chat view. ConnectionsPanel also calls
-  // initialize(), but we need it ready before the user opens that panel.
   useEffect(() => {
     const mcp = useMcpStore.getState();
     if (!mcp.initialized) {
@@ -59,53 +92,35 @@ function App() {
     }
   }, []);
 
-  // ── Business logic hooks ──────────────────────────────────────────────────
-  // All agent execution logic lives in useAgent. All LLM status polling lives
-  // in useLLMStatus. App.tsx just wires their outputs to the UI.
-
-  const { handleSubmit } = useAgent();
   const { llmStatus } = useLLMStatus(currentView);
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <ExperimentProvider>
-    <div className="flex h-screen bg-[var(--color-bg-dark)] text-[var(--color-text-primary)] font-sans overflow-hidden">
-      <CommandPalette onViewChange={setCurrentView} />
-      {!dependenciesResolved && <MissingDependenciesScreen onResolved={() => setDependenciesResolved(true)} />}
-      
-      {currentView !== "settings" && (
-        <Sidebar currentView={currentView} onViewChange={setCurrentView} />
-      )}
+      <div className="flex h-screen bg-[#0f1115] text-white font-sans overflow-hidden">
+        <CommandPalette onViewChange={setCurrentView} />
+        {!dependenciesResolved && <MissingDependenciesScreen onResolved={() => setDependenciesResolved(true)} />}
+        
+        {/* Only show main sidebar when not in system settings to avoid double-sidebar clutter */}
+        {currentView !== 'settings' && currentView !== 'connections' && currentView !== 'identity' && (
+          <Sidebar activeView={currentView} onViewChange={setCurrentView} />
+        )}
 
-      <div className="flex-1 flex flex-col relative min-w-0">
-        <Header 
-          status={llmStatus} 
-          currentView={currentView} 
-          onViewChange={setCurrentView} 
-        />
+        <div className="flex-1 flex flex-col relative min-w-0">
+          <Header 
+            status={llmStatus}
+            currentView={currentView}
+            onViewChange={setCurrentView}
+          />
 
-        <main className="flex-1 flex flex-col overflow-hidden min-w-0">
-          {currentView === "dashboard" && (
-            <div className="flex-1 flex flex-col overflow-hidden min-w-0 relative bg-[var(--color-bg-dark)]">
-              <ChatView /> {/* Updated EmptyState is here */}
-            </div>
-          )}
+          <main className="flex-1 flex flex-col overflow-hidden min-w-0">
+            {renderContent()}
+          </main>
+        </div>
 
-          {currentView === "chat" && (
-            <div className="flex-1 flex flex-col overflow-hidden min-w-0 relative">
-              <div className="flex-1 overflow-hidden flex flex-col relative w-full h-full pb-0 bg-[var(--color-bg-dark)] z-0">
-                <ChatView />
-              </div>
-            </div>
-          )}
-
-          {currentView === "settings" && <SettingsPanel onClose={() => setCurrentView("chat")} />}
-        </main>
+        <FileChangeReview />
+        <WhatsAppConnectionDialog />
       </div>
-
-      <FileChangeReview />
-      <WhatsAppConnectionDialog />
-    </div>
     </ExperimentProvider>
   );
 }

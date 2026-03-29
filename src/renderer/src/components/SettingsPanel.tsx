@@ -15,8 +15,7 @@ import {
     Activity,
     Zap,
     Clock,
-    Trash2,
-    Search
+    UserCircle
 } from 'lucide-react'
 import { useLogStore } from '../stores/logStore'
 import { useSettingsStore, Theme } from '../stores/settingsStore'
@@ -26,22 +25,23 @@ import { APP_INFO } from '../lib/constants'
 import { MemoryPreferencesPanel } from './settings/MemoryPreferencesPanel'
 import { ErrorBoundary } from './ErrorBoundary'
 import { LLMProviderSettings } from './settings/llm/LLMProviderSettings'
-import { SidebarHeader } from './sidebar/SidebarHeader'
 import { McpServerCard } from './mcp/McpServerCard'
 import { McpServerForm } from './mcp/McpServerForm'
 import { useChatStore } from '../stores/chatStore'
 import { Card } from './primitives/Card'
 import { StatusBadge } from './primitives/StatusDot'
 import { SystemDependenciesSettings } from './SystemDependenciesSettings'
+import { BotIdentityPanel } from './settings/BotIdentityPanel'
 
-type SettingsSection = 'whatsapp' | 'tools' | 'llm' | 'memory' | 'browser' | 'appearance' | 'logs' | 'about'
+type SettingsSection = 'whatsapp' | 'tools' | 'identity' | 'llm' | 'memory' | 'browser' | 'appearance' | 'logs' | 'about'
 
 interface SettingsPanelProps {
     onClose: () => void;
+    initialSection?: SettingsSection;
 }
 
-export function SettingsPanel({ onClose }: SettingsPanelProps) {
-    const [activeSection, setActiveSection] = useState<SettingsSection>('whatsapp')
+export function SettingsPanel({ onClose, initialSection = 'whatsapp' }: SettingsPanelProps) {
+    const [activeSection, setActiveSection] = useState<SettingsSection>(initialSection)
     
     // WhatsApp State
     const { connectionState, openDialog, whatsappEnabled, setWhatsAppEnabled, businessBotMode, setBusinessBotMode } = useWhatsAppStore()
@@ -66,6 +66,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
     const sections: { id: SettingsSection | 'whatsapp' | 'tools'; label: string; icon: React.ReactNode }[] = [
         { id: 'whatsapp', label: 'WhatsApp Business', icon: <MessageCircle size={20} /> },
         { id: 'tools', label: 'Business Tools (MCP)', icon: <Database size={20} /> },
+        { id: 'identity', label: 'Bot Identity', icon: <UserCircle size={20} /> },
         { id: 'llm', label: 'AI Model Connection', icon: <Cpu size={20} /> },
         { id: 'memory', label: 'Knowledge Base', icon: <HardDrive size={20} /> },
         { id: 'browser', label: 'Web Automation', icon: <Globe size={20} /> },
@@ -78,7 +79,9 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
         <div className="flex-1 flex overflow-hidden">
             {/* Sidebar styling matched exactly to Co-Worker Hub */}
             <div className="w-64 flex-shrink-0 bg-[var(--color-card-dark)] flex flex-col h-full border-r border-[var(--color-border)] transition-all duration-300">
-                <SidebarHeader />
+                <div className="h-16 flex items-center px-6 border-b border-[var(--color-border)]">
+                   <h2 className="text-sm font-bold text-[var(--color-text-primary)]">System Control</h2>
+                </div>
 
                 <div className="flex-1 overflow-y-auto px-5 py-4">
                     <h3 className="text-[10px] font-[var(--font-weight-bold)] text-[var(--color-text-dim)] tracking-wider uppercase mb-3">
@@ -111,7 +114,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                     >
                         <div className="flex items-center gap-3">
                             <ArrowLeft size={16} className="text-[var(--color-text-dim)] group-hover:text-[var(--color-text-primary)]" />
-                            <span className="text-xs font-medium">Back to Hub</span>
+                            <span className="text-xs font-medium">Back to Dashboard</span>
                         </div>
                     </button>
                 </div>
@@ -278,8 +281,15 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                     </div>
                 )}
 
-                {/* Account Section */}
-                {/* REMOVED account section as requested */}
+                {/* Identity Section */}
+                {activeSection === 'identity' && (
+                    <ErrorBoundary>
+                        <div>
+                            <h3 className="text-xl font-bold mb-6 text-[var(--color-text-primary)]">Bot Identity</h3>
+                            <BotIdentityPanel />
+                        </div>
+                    </ErrorBoundary>
+                )}
 
                 {/* Memory Section */}
                 {activeSection === 'memory' && (
@@ -318,7 +328,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                                 <label className="block text-sm text-[var(--color-text-secondary)] mb-3">Browser Engine</label>
                                 <select
                                     value={settings.playwrightBrowser || 'auto'}
-                                    onChange={(e) => settings.setPlaywrightBrowser(e.target.value as any)}
+                                    onChange={(e) => settings.setPlaywrightBrowser(e.target.value as NonNullable<typeof settings.playwrightBrowser>)}
                                     className="w-full bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg px-4 py-2 text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-brand-teal)]"
                                 >
                                     <option value="auto">Auto (OS Default)</option>
@@ -451,7 +461,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                                 <h4 className="text-[var(--text-2xl)] font-[var(--font-weight-bold)] text-[var(--color-text-primary)]">{APP_INFO.NAME}</h4>
                                 <p className="text-[var(--text-sm)] text-[var(--color-text-muted)] mt-[var(--space-1)]">Version {APP_INFO.VERSION}</p>
                                 <p className="text-[var(--text-sm)] text-[var(--color-text-secondary)] mt-[var(--space-4)] max-w-sm mx-auto">
-                                    Voice-first desktop workspace with MCP integration. Built for AI-assisted productivity.
+                                    Self-hosted WhatsApp AI agent for privacy-first business automation. Built for intelligent support.
                                 </p>
                                 <div className="mt-[var(--space-6)] pt-[var(--space-4)] border-t border-[var(--color-border)]">
                                     <p className="text-[var(--text-xs)] text-[var(--color-text-dim)]">

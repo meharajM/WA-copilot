@@ -3,15 +3,17 @@ import { SidebarHeader } from './sidebar/SidebarHeader'
 import { RecentSessionsList } from './sidebar/RecentSessionsList'
 import { SidebarFooter } from './sidebar/SidebarFooter'
 import { useChatStore } from '../stores/chatStore'
+import { MessageSquare, Brain, Users, LayoutDashboard } from 'lucide-react'
+import { clsx } from "clsx"
 
-export type View = 'chat' | 'settings' | 'dashboard'
+export type ViewMode = 'chat' | 'brain' | 'leads' | 'dashboard' | 'settings' | 'connections' | 'identity'
 
 interface SidebarProps {
-  currentView: View
-  onViewChange: (view: View) => void
+  activeView: ViewMode
+  onViewChange: (view: ViewMode) => void
 }
 
-export function Sidebar({ currentView, onViewChange }: SidebarProps) {
+export function Sidebar({ activeView, onViewChange }: SidebarProps) {
   const { sidebarOpen } = useChatStore()
 
   if (!sidebarOpen) return null
@@ -22,15 +24,59 @@ export function Sidebar({ currentView, onViewChange }: SidebarProps) {
       <SidebarHeader />
 
       {/* 2. Scrollable Body containing Agents & Sessions */}
-      <div className="flex-1 overflow-y-auto flex flex-col">
+      <div className="flex-1 overflow-y-auto py-2 px-3 space-y-6">
+        {/* Core Views */}
+        <div className="space-y-1">
+          <button 
+            onClick={() => onViewChange('dashboard')}
+            className={clsx(
+              "w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-colors",
+              activeView === 'dashboard' ? "bg-white/10 text-white" : "text-gray-400 hover:text-white hover:bg-white/5"
+            )}
+          >
+            <LayoutDashboard className="w-4 h-4" />
+            <span>Command Center</span>
+          </button>
+          <button 
+            onClick={() => onViewChange('chat')}
+            className={clsx(
+              "w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-colors",
+              activeView === 'chat' ? "bg-white/10 text-white" : "text-gray-400 hover:text-white hover:bg-white/5"
+            )}
+          >
+            <MessageSquare className="w-4 h-4" />
+            <span>All Chats</span>
+          </button>
+          <button 
+            onClick={() => onViewChange('brain')}
+            className={clsx(
+              "w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-colors",
+              activeView === 'brain' ? "bg-white/10 text-white" : "text-gray-400 hover:text-white hover:bg-white/5"
+            )}
+          >
+            <Brain className="w-4 h-4" />
+            <span>Brain View</span>
+          </button>
+          <button 
+            onClick={() => onViewChange('leads')}
+            className={clsx(
+              "w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-colors",
+              activeView === 'leads' ? "bg-white/10 text-white" : "text-gray-400 hover:text-white hover:bg-white/5"
+            )}
+          >
+            <Users className="w-4 h-4" />
+            <span>Lead Directory</span>
+          </button>
+        </div>
+
         {/* Divider */}
-        <div className="mx-5 my-2 border-t border-[var(--color-border)]" />
+        <div className="mx-2 border-t border-[var(--color-border)]" />
 
         <RecentSessionsList onViewChange={onViewChange} />
       </div>
 
       {/* 3. Footer with quick settings link */}
-      <SidebarFooter currentView={currentView} onViewChange={onViewChange} />
+      <SidebarFooter currentView={activeView} onViewChange={onViewChange} />
     </div>
   )
 }

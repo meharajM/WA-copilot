@@ -11,6 +11,13 @@ function getBaseModelsDir(): string {
 }
 
 let modelManager: ModelManager | null = null
+const DEFAULT_MODEL_NAME = 'vosk-model-small-en-us-0.15'
+const DEFAULT_MODEL_META = {
+    id: 'en-us',
+    name: 'English (US)',
+    url: 'https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip',
+    lang: 'en-US',
+}
 
 export function registerSpeechHandlers(): void {
     // Initialize manager
@@ -39,6 +46,22 @@ export function registerSpeechHandlers(): void {
 
     ipcMain.handle('speech:get-model-path', async (_event, modelName: string) => {
         return await modelManager!.getModelPath(modelName)
+    })
+
+    ipcMain.handle('speech:get-preferred-model', async () => {
+        return DEFAULT_MODEL_META
+    })
+
+    ipcMain.handle('speech:get-status', async (_event, modelName?: string) => {
+        const targetModelName = modelName || DEFAULT_MODEL_NAME
+        const support = await modelManager!.checkSupport(targetModelName)
+        return {
+            isInitialized: true,
+            isListening: false,
+            error: null,
+            modelsPath: getBaseModelsDir(),
+            modelDownloaded: support.modelDownloaded,
+        }
     })
 
     ipcMain.handle('speech:cleanup', async () => {

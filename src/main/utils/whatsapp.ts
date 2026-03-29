@@ -2,6 +2,8 @@
  * Utility functions for WhatsApp operations.
  */
 
+export { normalizeWhatsAppId, isSameWhatsAppIdentity } from '../../shared/whatsappIdentity'
+
 /**
  * Validates and formats a string into a WhatsApp JID.
  * @param to - The phone number or JID string.

@@ -179,11 +179,6 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
     }, [useNativeSpeech])
 
     // Cleanup on unmount
-    useEffect(() => {
-        return () => {
-            stopVisualization()
-        }
-    }, [])
 
     // Auto-clear notification
     useEffect(() => {
@@ -193,7 +188,7 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
         }
     }, [notification])
 
-    const startVisualization = async () => {
+    const startVisualization = useCallback(async () => {
         try {
             const stream = await navigator.mediaDevices.getUserMedia({
                 audio: {
@@ -204,18 +199,18 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
                 }
             })
             visMediaStreamRef.current = stream
-
+ 
             const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({
                 sampleRate: 16000
             })
             visAudioContextRef.current = audioContext
-
+ 
             if (audioContext.state === 'suspended') {
                 await audioContext.resume()
             }
-
+ 
             const source = audioContext.createMediaStreamSource(stream)
-
+ 
             if (useNativeSpeech) {
                 // Reset recognizer to clear any previous listeners from prior toggle
                 voskService.resetRecognizer()
@@ -224,7 +219,7 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
                     console.error('Recognizer not ready')
                     return
                 }
-
+ 
                 recognizer.on('result', (message: any) => {
                     const text = message.result?.text
                     if (text) {
@@ -239,23 +234,23 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
                         setInterimTranscript(partial)
                     }
                 })
-
+ 
                 const processor = audioContext.createScriptProcessor(4096, 1, 1)
                 visProcessorRef.current = processor
-
+ 
                 processor.onaudioprocess = (event) => {
                     try {
                         const buffer = event.inputBuffer
                         if (buffer.numberOfChannels > 0) {
                             recognizer.acceptWaveform(event.inputBuffer)
                         }
-                    } catch (e) {
-                        console.error('WASM processing error:', e)
+                    } catch (err: unknown) {
+                        console.error('WASM processing error:', err)
                     }
                 }
-
+ 
                 source.connect(processor)
-
+ 
                 // CRITICAL: Processor MUST be connected to destination for the audio clock to run in Chrome/Electron
                 // We connect via a GainNode with 0 gain to prevent feedback (hearing yourself)
                 const muteNode = audioContext.createGain()
@@ -263,11 +258,11 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
                 processor.connect(muteNode)
                 muteNode.connect(audioContext.destination)
             }
-
+ 
             const analyser = audioContext.createAnalyser()
             analyser.fftSize = 256
             source.connect(analyser)
-
+ 
             const dataArray = new Uint8Array(analyser.frequencyBinCount)
             const updateVolume = () => {
                 if (!visAudioContextRef.current) return
@@ -279,14 +274,14 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
                 visAnimationFrameRef.current = requestAnimationFrame(updateVolume)
             }
             updateVolume()
-        } catch (e) {
-            console.warn('[Speech] Audio setup failed:', e)
+        } catch (err: unknown) {
+            console.warn('[Speech] Audio setup failed:', err)
             setError('Microphone initialization failed')
             setIsListening(false)
         }
-    }
+    }, [useNativeSpeech])
 
-    const stopVisualization = () => {
+    const stopVisualization = useCallback(() => {
         if (visProcessorRef.current) {
             visProcessorRef.current.disconnect()
             visProcessorRef.current = null
@@ -304,7 +299,14 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
             visAudioContextRef.current = null
         }
         setAudioLevel(0)
-    }
+    }, [])
+
+    // Cleanup on unmount
+    useEffect(() => {
+        return () => {
+            stopVisualization()
+        }
+    }, [stopVisualization])
 
     const startListening = useCallback(async () => {
         if (isListening || isInitializing) return
@@ -431,7 +433,7 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
                 setError(`Failed to start: ${e.message}`)
             }
         }
-    }, [isListening, isInitializing, useNativeSpeech, addLog, currentModel])
+    }, [isListening, isInitializing, useNativeSpeech, addLog, currentModel, settings.voskModel, startVisualization])
 
     const stopListening = useCallback(async () => {
         const sessionId = useChatStore.getState().activeSessionId || 'unknown'
@@ -448,7 +450,7 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
             setIsListening(false)
             stopVisualization()
         }
-    }, [useNativeSpeech, addLog])
+    }, [useNativeSpeech, addLog, stopVisualization])
 
     const resetTranscript = useCallback(() => {
         setTranscript('')

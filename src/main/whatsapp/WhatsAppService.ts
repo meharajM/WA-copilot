@@ -10,13 +10,16 @@
  */
 
 import { EventEmitter } from 'events'
-import path from 'path'
-import fs from 'fs'
+import * as path from 'path'
+import * as fs from 'fs'
 import { app, powerSaveBlocker } from 'electron'
 import type { WASocket } from '@whiskeysockets/baileys'
-import { formatWhatsAppJid } from '../utils/whatsapp'
+
+import { RAGEngine } from '../packages/rag-engine/index'
+import { BusinessPersona } from '../packages/persona/index'
+import { formatWhatsAppJid, isSameWhatsAppIdentity } from '../utils/whatsapp'
 import { chatLoggingService } from './ChatLoggingService'
-import { RAGService } from '../rag/RAGService'
+import { AdminRelayService } from '../services/AdminRelayService'
 
 
 
@@ -197,7 +200,7 @@ export class WhatsAppService extends EventEmitter {
                 logger: silentLogger,
                 printQRInTerminal: false,
                 // Browser identification - helps with WhatsApp server stability
-                browser: ['AI-Worker', 'Chrome', '120.0.0'],
+                browser: ['WA Co-Pilot', 'Chrome', '120.0.0'],
                 // Connection options for better stability
                 connectTimeoutMs: 60000,
                 // Critical for message delivery retries
@@ -445,18 +448,48 @@ export class WhatsAppService extends EventEmitter {
                             media_url: msg.mediaUrl
                         })
 
+                        // --- Admin Relay Logic ---
+                        // If this is a message from the Admin, check if it's a reply to a Customer Notification
+                        const adminJid = this.connectionState.phoneNumber;
+                        const isAdmin = isSameWhatsAppIdentity(msg.from, adminJid);
+                        
+                        // Access the raw message context for quoted messages
+                        const contextInfo = raw.message?.extendedTextMessage?.contextInfo || 
+                                           raw.message?.imageMessage?.contextInfo ||
+                                           raw.message?.videoMessage?.contextInfo;
+                                           
+                        if (isAdmin && contextInfo?.stanzaId) {
+                            const relayService = AdminRelayService.getInstance();
+                            const customerJid = relayService.getCustomerJid(contextInfo.stanzaId);
+                            
+                            if (customerJid) {
+                                console.log(`[WhatsAppService] Admin replied to notification. Forwarding to customer: ${customerJid}`);
+                                // Forward the admin's reply text to the customer
+                                this.sendMessage(customerJid, msg.content).then(res => {
+                                    if (res.success) {
+                                        // Also notify admin that it was sent
+                                        this.sendMessage(adminJid, `✅ Sent to customer: ${msg.content.substring(0, 20)}...`);
+                                    }
+                                });
+                            }
+                        }
+
                         this.emit('message', msg)
 
                         // --- Local Knowledge Ingestion (RAG) ---
                         // Automatically ingest documents and spreadsheets into the local RAG index
-                        if (msg.type === 'document' || msg.type === 'spreadsheet') {
+                        // SECURITY: Only allow Admin/Owner to ingest files into RAG to prevent knowledge base poisoning.
+                        // Note: adminJid and isAdmin are already defined above for the Relay logic.
+                        if (isAdmin && (msg.type === 'document' || msg.type === 'spreadsheet' || msg.type === 'image')) {
                             if (msg.mediaUrl && msg.mediaUrl.startsWith('file://')) {
                                 const filePath = msg.mediaUrl.replace('file://', '')
-                                RAGService.getInstance().ingestFile(filePath).then(res => {
-                                    if (res.success) {
-                                        console.log(`[WhatsAppService] Auto-ingested document into RAG: ${msg.content}`)
+                                RAGEngine.getInstance().ingestFile(filePath).then(res => {
+                                    if (res.success && res.content) {
+                                        console.log(`[WhatsAppService] Admin auto-ingested knowledge: ${msg.content || filePath}`)
+                                        // Auto-identify business info from new docs
+                                        BusinessPersona.getInstance().identifyBusinessFromContext(res.content)
                                     } else {
-                                        console.warn(`[WhatsAppService] Failed to auto-ingest document: ${res.error}`)
+                                        console.warn(`[WhatsAppService] Failed to auto-ingest admin document: ${res.error}`)
                                     }
                                 }).catch(e => console.error('[WhatsAppService] RAG auto-ingest error:', e))
                             }
@@ -519,7 +552,7 @@ export class WhatsAppService extends EventEmitter {
             // Send the handshake message
             // We do NOT send the code in the message. The code is shown on the computer screen.
             // This proves the person at the computer has control over the phone.
-            const intro = `🤖 *AI-Worker Verification*\n\nPlease reply to this message with the *6-digit verification code* shown on your computer screen to link this as your personal device.`
+            const intro = `🤖 *WA Co-Pilot Verification*\n\nPlease reply to this message with the *6-digit verification code* shown on your computer screen to link this as your personal device.`
             
             const jid = formatWhatsAppJid(normalized)
             console.log(`[WhatsAppService] Attempting handshake to JID: ${jid} (Input: ${normalized})`)
@@ -628,6 +661,31 @@ export class WhatsAppService extends EventEmitter {
             return { success: true }
         } catch (error) {
             return { success: false, error: error instanceof Error ? error.message : String(error) }
+        }
+    }
+
+    /**
+     * Sends a notification to the Admin about an unresolved customer query.
+     * Records the mapping so that the Admin's reply can be relayed back.
+     */
+    async notifyAdminUnresolved(customerJid: string, summary: string, mainQuestion: string): Promise<{ success: boolean; error?: string }> {
+        const adminJid = this.connectionState.phoneNumber;
+        if (!adminJid) return { success: false, error: 'Admin phone number not set' };
+        if (!this.socket || this.connectionState.status !== 'connected') return { success: false, error: 'WhatsApp not connected' };
+
+        const customerHandled = customerJid.split('@')[0];
+        const text = `⚠️ *Unresolved Customer Query*\n\n*Customer*: ${customerHandled}\n*Summary*: ${summary}\n*Main Question*: ${mainQuestion}\n\n_Reply to this message directly to answer the customer._`;
+
+        try {
+            const result = await this.socket.sendMessage(formatWhatsAppJid(adminJid), { text });
+            if (result && result.key && result.key.id) {
+                AdminRelayService.getInstance().setRelay(result.key.id, customerJid);
+                console.log(`[WhatsAppService] Admin notification sent. Relay set for Customer: ${customerJid}`);
+            }
+            return { success: true };
+        } catch (error) {
+            console.error('[WhatsAppService] notifyAdmin error:', error);
+            return { success: false, error: String(error) };
         }
     }
 

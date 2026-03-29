@@ -12,8 +12,8 @@ import {
   MessageSquare,
   Zap,
 } from "lucide-react";
-import { MCPServer } from "../../lib/mcp";
-import { Card, CardContent } from "../primitives/Card";
+import type { MCPServer } from "../../stores/mcpStore";
+import { Card } from "../primitives/Card";
 import { StatusBadge } from "../primitives/StatusDot";
 import { Button } from "../primitives/Button";
 

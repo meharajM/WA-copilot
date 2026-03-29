@@ -141,11 +141,13 @@ export class ServerMemoryAdapter implements UnifiedMemoryBackend {
         throw new Error('No text content in create_entities response')
     }
 
-    let createdEntities: any[]
+    let createdEntities: Array<{ name: string; entityType?: string; observations?: string[] }>
     try {
-        createdEntities = JSON.parse(textContent)
+        const trimmed = textContent.trim()
+        createdEntities = JSON.parse(trimmed)
     } catch (e) {
-        throw new Error(`Failed to parse create_entities response: ${textContent}`)
+        console.error(`[ServerMemoryAdapter] Failed to parse create_entities response. Text starts with: ${textContent.substring(0, 100)}...`, e)
+        throw new Error(`Failed to parse create_entities response: ${textContent.substring(0, 50)}`)
     }
 
     const entityData = createdEntities?.[0]
@@ -263,28 +265,55 @@ export class ServerMemoryAdapter implements UnifiedMemoryBackend {
         return []
     }
 
-    let nodes: any[] = []
+    let nodes: Array<{ name: string; entityType?: string; observations?: string[] }> = []
     try {
-        const parsed = JSON.parse(textContent)
+        const trimmed = textContent.trim()
+        let parsed: unknown
+        try {
+            parsed = JSON.parse(trimmed)
+        } catch {
+            // server-memory sometimes appends diagnostic text after JSON.
+            // Try to extract just the JSON portion.
+            const firstBrace = trimmed.indexOf('{')
+            const firstBracket = trimmed.indexOf('[')
+            const startIdx = firstBrace === -1 ? firstBracket
+                           : firstBracket === -1 ? firstBrace
+                           : Math.min(firstBrace, firstBracket)
+            if (startIdx === -1) throw new Error('No JSON found in response')
+            
+            // Find matching closing bracket
+            const isArray = trimmed[startIdx] === '['
+            const closeChar = isArray ? ']' : '}'
+            let depth = 0
+            let endIdx = -1
+            for (let i = startIdx; i < trimmed.length; i++) {
+                if (trimmed[i] === trimmed[startIdx]) depth++
+                else if (trimmed[i] === closeChar) { depth--; if (depth === 0) { endIdx = i; break } }
+            }
+            if (endIdx === -1) throw new Error('Unclosed JSON in response')
+            parsed = JSON.parse(trimmed.substring(startIdx, endIdx + 1))
+        }
+
         // Handle both direct array and { nodes: [...] } object
         if (Array.isArray(parsed)) {
             nodes = parsed
         } else if (parsed && typeof parsed === 'object') {
-            if (Array.isArray(parsed.nodes)) {
-                nodes = parsed.nodes
-            } else if (Array.isArray(parsed.entities)) {
-                nodes = parsed.entities
+            const p = parsed as Record<string, unknown>
+            if (Array.isArray(p.nodes)) {
+                nodes = p.nodes
+            } else if (Array.isArray(p.entities)) {
+                nodes = p.entities
             } else {
                 console.warn(`[ServerMemoryAdapter] Unexpected search response structure:`, parsed)
             }
         }
     } catch (e) {
         // If content isn't JSON, it might be an issue or just empty
-        console.warn(`[ServerMemoryAdapter] Failed to parse search response: ${textContent}`)
+        console.warn(`[ServerMemoryAdapter] Failed to parse search response. Text starts with: ${textContent.substring(0, 100)}...`, e)
         return []
     }
 
-    let entities = nodes.map((node: any) =>
+    let entities = nodes.map((node) =>
       this.mapNodeToEntity(node)
     )
 
@@ -430,7 +459,7 @@ export class ServerMemoryAdapter implements UnifiedMemoryBackend {
   /**
    * List available MCP tools
    */
-  listTools(): { tools: any[] } {
+  listTools(): { tools: Array<{ name: string; description: string; inputSchema: object }> } {
     return {
       tools: [
         {
@@ -472,7 +501,7 @@ export class ServerMemoryAdapter implements UnifiedMemoryBackend {
   /**
    * Call an MCP tool
    */
-  async callTool(name: string, args: any): Promise<{ result: any; error?: string }> {
+  async callTool(name: string, args: Record<string, unknown>): Promise<{ result: unknown; error?: string }> {
     this.ensureInitialized()
 
     try {
@@ -482,8 +511,8 @@ export class ServerMemoryAdapter implements UnifiedMemoryBackend {
       })
 
       return { result: result.content }
-    } catch (error: any) {
-      return { result: null, error: error.message }
+    } catch (error: unknown) {
+      return { result: null, error: error instanceof Error ? error.message : String(error) }
     }
   }
 
@@ -495,7 +524,7 @@ export class ServerMemoryAdapter implements UnifiedMemoryBackend {
     }
   }
 
-  private mapNodeToEntity(node: any): Entity {
+  private mapNodeToEntity(node: { name: string; entityType?: string; observations?: string[] }): Entity {
     return {
       id: node.name,
       name: node.name,

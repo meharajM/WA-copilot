@@ -111,8 +111,8 @@ export const useMcpStore = create<McpState>()((set, get) => ({
 
     initialize: async (uid = null) => {
         // Force re-initialization if uid changes or if not initialized
-        // const currentUid = get().activeUserId
-        // if (get().initialized && currentUid === uid) return
+        const currentUid = get().activeUserId
+        if (get().initialized && currentUid === uid) return
 
         set({ activeUserId: uid })
         const storageKey = getPersistenceKey(uid)

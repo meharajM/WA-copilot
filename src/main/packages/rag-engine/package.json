@@ -1,0 +1,10 @@
+{
+  "name": "@copilot/rag-engine",
+  "version": "1.0.0",
+  "description": "Modular RAG and Multimodal Search engine for business documents and images.",
+  "main": "index.ts",
+  "private": true,
+  "dependencies": {
+    "better-sqlite3": "^11.0.0"
+  }
+}

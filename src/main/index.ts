@@ -31,13 +31,13 @@ initEnv()
 // These are required for Web Speech API to work in built/packaged apps
 // You must provide them via environment variables
 if (process.env.GOOGLE_API_KEY) {
-    process.env.GOOGLE_API_KEY = process.env.GOOGLE_API_KEY
+    // Already set in environment
 }
 if (process.env.GOOGLE_DEFAULT_CLIENT_ID) {
-    process.env.GOOGLE_DEFAULT_CLIENT_ID = process.env.GOOGLE_DEFAULT_CLIENT_ID
+    // Already set in environment
 }
 if (process.env.GOOGLE_DEFAULT_CLIENT_SECRET) {
-    process.env.GOOGLE_DEFAULT_CLIENT_SECRET = process.env.GOOGLE_DEFAULT_CLIENT_SECRET
+    // Already set in environment
 }
 
 function createWindow(): void {
@@ -111,7 +111,7 @@ function createWindow(): void {
 }
 
 app.whenReady().then(async () => {
-    electronApp.setAppUserModelId('com.aiworker.app')
+    electronApp.setAppUserModelId('com.wacopilot.app')
 
     // Verify environment and paths
     setupIpcHandlers()

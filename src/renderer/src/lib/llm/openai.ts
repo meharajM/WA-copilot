@@ -2,23 +2,29 @@ import { LLMMessage, LLMSettings, LLMTool, LLMResponse, ServerInfo } from "../ty
 import { ProviderStatus } from "./types";
 import { LLM_CONFIG, FEATURE_FLAGS } from "../constants";
 import { ensureRecord, parseToolCallsFromJson } from "./utils";
-import { buildSystemPrompt } from "./prompts";
 
 // Get OpenAI settings from store or use defaults
 async function getOpenAISettings(
   settings?: LLMSettings
 ): Promise<{ apiKey: string; baseUrl: string; model: string }> {
-  // Import electron here to avoid circular dependencies
-  const electron = (await import("../electron")).default;
+  // Avoid loading Electron bridge in test/browser environments when values are provided.
+  const apiKeyFromSettings = settings?.openaiApiKey ?? "";
+  const baseUrlFromSettings = settings?.openaiBaseUrl ?? "";
+  let apiKey = apiKeyFromSettings;
+  let baseUrl = baseUrlFromSettings;
 
-  const apiKey =
-    settings?.openaiApiKey ||
-    (await electron.secure.get("openai_api_key")).value ||
-    "";
-  const baseUrl =
-    settings?.openaiBaseUrl ||
-    (await electron.store.get<string>("openai_base_url")) ||
-    "https://api.openai.com/v1";
+  if (!apiKey || !baseUrl) {
+    const electron = (await import("../electron")).default;
+    if (!apiKey) {
+      apiKey = (await electron.secure.get("openai_api_key")).value || "";
+    }
+    if (!baseUrl) {
+      baseUrl =
+        (await electron.store.get<string>("openai_base_url")) ||
+        "https://api.openai.com/v1";
+    }
+  }
+
   const model =
     settings?.openaiModel || LLM_CONFIG.OPENAI_COMPATIBLE.DEFAULT_MODEL;
   return { apiKey, baseUrl, model };
@@ -28,14 +34,23 @@ async function getOpenAISettings(
 async function getOpenRouterSettings(
   settings?: LLMSettings
 ): Promise<{ apiKey: string; baseUrl: string; model: string }> {
-  const electron = (await import("../electron")).default;
-  const apiKey =
-    settings?.openrouterApiKey ||
-    (await electron.secure.get("openrouter_api_key")).value ||
-    "";
+  const apiKeyFromSettings = settings?.openrouterApiKey ?? "";
+  let apiKey = apiKeyFromSettings;
+  if (!apiKey) {
+    const electron = (await import("../electron")).default;
+    apiKey = (await electron.secure.get("openrouter_api_key")).value || "";
+  }
   const baseUrl = LLM_CONFIG.OPENROUTER.BASE_URL;
   const model = settings?.openrouterModel || LLM_CONFIG.OPENROUTER.DEFAULT_MODEL;
   return { apiKey, baseUrl, model };
+}
+
+async function buildPromptWithFallback(
+  tools?: LLMTool[],
+  servers?: ServerInfo[]
+): Promise<string> {
+  const { buildSystemPrompt } = await import("./prompts");
+  return buildSystemPrompt(tools, servers, true);
 }
 
 // Check if OpenAI-compatible API is configured and fetch available models
@@ -352,8 +367,8 @@ export // Call OpenAI-compatible API
   };
 
   if (isOpenRouter) {
-    headers["HTTP-Referer"] = "https://ai-worker.app";
-    headers["X-Title"] = "AI-Worker";
+    headers["HTTP-Referer"] = "https://wa-copilot.app";
+    headers["X-Title"] = "WA Co-Pilot";
   }
 
   // If using JSON fallback, rebuild system message with JSON instructions
@@ -364,7 +379,7 @@ export // Call OpenAI-compatible API
     const systemMsgIndex = requestMessages.findIndex(
       (m) => m.role === "system"
     );
-    const systemPrompt = await buildSystemPrompt(tools, servers, true);
+    const systemPrompt = await buildPromptWithFallback(tools, servers);
     if (systemMsgIndex >= 0) {
       requestMessages[systemMsgIndex] = {
         role: "system" as const,
@@ -426,7 +441,7 @@ export // Call OpenAI-compatible API
       const systemMsgIndex = retryMessages.findIndex(
         (m) => m.role === "system"
       );
-      const systemPrompt = await buildSystemPrompt(tools, servers, true);
+      const systemPrompt = await buildPromptWithFallback(tools, servers);
       if (systemMsgIndex >= 0) {
         retryMessages[systemMsgIndex] = {
           role: "system" as const,
@@ -438,7 +453,18 @@ export // Call OpenAI-compatible API
           content: systemPrompt,
         });
       }
-      return callOpenAI(retryMessages, tools, settings, true, servers);
+      return callOpenAI(
+        retryMessages,
+        tools,
+        settings,
+        true,
+        servers,
+        isOpenRouter,
+        abortSignal,
+        _dynamicRules,
+        _isSubAgent,
+        _workspacePath
+      );
     }
 
     throw new Error(errorMessage);
@@ -518,7 +544,7 @@ export // Call OpenAI-compatible API
   return {
     content: content,
     toolCalls: toolCalls,
-    provider: "openai",
+    provider: isOpenRouter ? "openrouter" : "openai",
     model: model,
   };
 }

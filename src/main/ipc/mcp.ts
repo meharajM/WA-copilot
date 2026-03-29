@@ -14,6 +14,7 @@ const inProcessPlaywrightConnections = new Set<string>()
 const inProcessMemoryConnections = new Set<string>()
 const inProcessRagConnections = new Set<string>()
 const inProcessFilesystemConnections = new Set<string>()
+const connectingServers = new Set<string>()
 
 // --- Helpers ---
 
@@ -88,8 +89,16 @@ export function registerMcpHandlers(): void {
                 return { success: true, serverId: id }
             }
 
+            if (connectingServers.has(id)) {
+                // Return success if already connecting, SDK client will be available shortly
+                return { success: true, serverId: id }
+            }
+
+            connectingServers.add(id)
+
             // In-process Playwright
             if (isPlaywrightServer(serverConfig)) {
+                if (inProcessPlaywrightConnections.has(id)) return { success: true, serverId: id, inProcess: true }
                 try {
                     await PlaywrightService.getInstance().initialize()
                     inProcessPlaywrightConnections.add(id)
@@ -141,14 +150,14 @@ export function registerMcpHandlers(): void {
                 })
 
                 // MODULAR CHANGE: Track process via Manager
-                const transportAny = transport as any
-                if (transportAny._process) {
-                    McpProcessManager.getInstance().registerProcess(id, transportAny._process)
+                const transportWithProcess = transport as unknown as { _process?: import('child_process').ChildProcess }
+                if (transportWithProcess._process) {
+                    McpProcessManager.getInstance().registerProcess(id, transportWithProcess._process)
                 }
 
                 // Old-style process monitoring logic (Kept for compatibility/logs)
-                if (transportAny._process) {
-                    const proc = transportAny._process
+                if (transportWithProcess._process) {
+                    const proc = transportWithProcess._process
                     proc.on('exit', (code) => {
                         if (code !== 0 && code !== null) {
                             cleanupClosedConnection(id)
@@ -162,6 +171,11 @@ export function registerMcpHandlers(): void {
                         proc.stderr.on('data', (d: Buffer) => {
                             const s = d.toString().trim()
                             if (s) logMcpOperation('info', 'MCP stderr', { operation: 'stderr', serverId: id, stderr: s })
+                        })
+                    }
+                    if (proc.stdin) {
+                        proc.stdin.on('error', (err) => {
+                            logMcpOperation('error', 'MCP stdin error', { operation: 'stdin', serverId: id, error: err.message })
                         })
                     }
                 }
@@ -187,24 +201,26 @@ export function registerMcpHandlers(): void {
             if (msg.includes('ENOENT')) det = getInstallInstructions(command, args)
             cleanupClosedConnection(id)
             return { success: false, error: det }
+        } finally {
+            connectingServers.delete(id)
         }
     })
 
     ipcMain.handle('mcp:disconnect', async (_event, id: string) => {
         const startTime = Date.now()
-        if (inProcessPlaywrightConnections.has(id)) {
+        if (id === 'internal' || inProcessPlaywrightConnections.has(id)) {
             inProcessPlaywrightConnections.delete(id)
             return { success: true }
         }
-        if (inProcessMemoryConnections.has(id)) {
+        if (id === 'internal-memory' || inProcessMemoryConnections.has(id)) {
             inProcessMemoryConnections.delete(id)
             return { success: true }
         }
-        if (inProcessRagConnections.has(id)) {
+        if (id === 'internal-rag' || inProcessRagConnections.has(id)) {
             inProcessRagConnections.delete(id)
             return { success: true }
         }
-        if (inProcessFilesystemConnections.has(id)) {
+        if (id === 'internal-filesystem' || inProcessFilesystemConnections.has(id)) {
             inProcessFilesystemConnections.delete(id)
             return { success: true }
         }
@@ -225,45 +241,47 @@ export function registerMcpHandlers(): void {
     })
 
     ipcMain.handle('mcp:list-tools', async (_event, id: string) => {
-        if (inProcessPlaywrightConnections.has(id)) return { tools: PlaywrightService.getInstance().listTools().tools }
-        if (inProcessMemoryConnections.has(id)) return { tools: MemoryService.getInstance().listTools().tools }
-        if (inProcessRagConnections.has(id)) return { tools: RAGService.getInstance().listTools().tools }
-        if (inProcessFilesystemConnections.has(id)) return { tools: FileSystemService.getInstance().listTools().tools }
+        // Alias support for hardcoded service names
+        if (id === 'internal' || inProcessPlaywrightConnections.has(id)) return { tools: PlaywrightService.getInstance().listTools().tools }
+        if (id === 'internal-memory' || inProcessMemoryConnections.has(id)) return { tools: MemoryService.getInstance().listTools().tools }
+        if (id === 'internal-rag' || inProcessRagConnections.has(id)) return { tools: RAGService.getInstance().listTools().tools }
+        if (id === 'internal-filesystem' || inProcessFilesystemConnections.has(id)) return { tools: FileSystemService.getInstance().listTools().tools }
 
         const client = activeConnections.get(id)
-        if (!client) return { tools: [], error: 'Server not connected' }
+        if (!client) return { tools: [], error: `Server not connected: ${id}` }
 
         try {
             const res = await client.listTools()
             logMcpOperation('info', 'MCP tools listed', { operation: 'list-tools', serverId: id, count: res.tools?.length })
             return { tools: res.tools || [] }
-        } catch (err: any) {
-            if (isConnectionClosedError(err)) cleanupClosedConnection(id)
-            return { tools: [], error: err.message }
+        } catch (err: unknown) {
+            const errorObj = err instanceof Error ? err : new Error(String(err))
+            if (isConnectionClosedError(errorObj)) cleanupClosedConnection(id)
+            return { tools: [], error: errorObj.message }
         }
     })
 
     ipcMain.handle('mcp:call-tool', async (_event, id, toolName, args) => {
-        // In-process calls (Simplified content return as per original)
-        if (inProcessPlaywrightConnections.has(id)) {
+        // In-process calls with alias support
+        if (id === 'internal' || inProcessPlaywrightConnections.has(id)) {
             const res = await PlaywrightService.getInstance().callTool(toolName, args)
             if (res.error) return { result: null, error: res.error }
             const text = typeof res.result === 'string' ? res.result : JSON.stringify(res.result, null, 2)
             return { result: { content: [{ type: 'text', text }] } }
         }
-        if (inProcessMemoryConnections.has(id)) {
+        if (id === 'internal-memory' || inProcessMemoryConnections.has(id)) {
             const res = await MemoryService.getInstance().callTool(toolName, args)
             if (res.error) return { result: null, error: res.error }
             const text = typeof res.result === 'string' ? res.result : JSON.stringify(res.result, null, 2)
             return { result: { content: [{ type: 'text', text }] } }
         }
-        if (inProcessRagConnections.has(id)) {
+        if (id === 'internal-rag' || inProcessRagConnections.has(id)) {
             const res = await RAGService.getInstance().callTool(toolName, args)
             if (res.error) return { result: null, error: res.error }
             const text = typeof res.result === 'string' ? res.result : JSON.stringify(res.result, null, 2)
             return { result: { content: [{ type: 'text', text }] } }
         }
-        if (inProcessFilesystemConnections.has(id)) {
+        if (id === 'internal-filesystem' || inProcessFilesystemConnections.has(id)) {
             const res = await FileSystemService.getInstance().callTool(toolName, args)
             if (res.error) return { result: null, error: res.error }
             const text = typeof res.result === 'string' ? res.result : JSON.stringify(res.result, null, 2)
@@ -278,9 +296,10 @@ export function registerMcpHandlers(): void {
             logMcpOperation('info', `Calling tool: ${toolName}`, { operation: 'call-tool', serverId: id, toolName, args: sanitizeArgs(finalArgs) })
             const res = await client.callTool({ name: toolName, arguments: finalArgs || {} })
             return { result: res }
-        } catch (err: any) {
-            if (isConnectionClosedError(err)) cleanupClosedConnection(id)
-            return { result: null, error: err.message }
+        } catch (err: unknown) {
+            const errorObj = err instanceof Error ? err : new Error(String(err))
+            if (isConnectionClosedError(errorObj)) cleanupClosedConnection(id)
+            return { result: null, error: errorObj.message }
         }
     })
 }

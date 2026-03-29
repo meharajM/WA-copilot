@@ -35,9 +35,12 @@
 import { useCallback, useEffect } from "react";
 import { useChatStore } from "../stores/chatStore";
 import { useSettingsStore } from "../stores/settingsStore";
+import { useWhatsAppStore } from "../stores/whatsappStore";
+import electron from "../lib/electron";
 import { type LLMMessage } from "../lib/types";
 import { resolveWhatsAppTarget, setWhatsAppTyping, setWhatsAppPaused, getWhatsAppSystemPrompt, sendWhatsAppResponse, resolveWhatsAppMessageToLLM } from "../lib/whatsapp-integration";
 import { buildAttachmentLLMParts } from "../lib/media-utils";
+import { isSameWhatsAppIdentity, normalizeWhatsAppId } from "../../../shared/whatsappIdentity";
 
 /**
  * State returned by `useAgent`.
@@ -53,7 +56,7 @@ export interface UseAgentReturn {
      * @param attachments - Optional file attachments (Electron exposes `.path`).
      * @param isHeadless - If true, suppresses browser UI during task execution.
      */
-    handleSubmit: (content: string, attachments?: File[], isHeadless?: boolean, multimodalWhatsAppMessage?: any) => Promise<void>;
+    handleSubmit: (content: string, attachments?: File[], isHeadless?: boolean, multimodalWhatsAppMessage?: import('../lib/whatsapp-integration').WhatsAppMessage) => Promise<void>;
 }
 
 /**
@@ -85,7 +88,7 @@ export function useAgent(): UseAgentReturn {
      * 10. Always: stop per-session processing state, clear session-level progress
      */
     const handleSubmit = useCallback(
-        async (content: string, attachments?: File[], isHeadless?: boolean, multimodalWhatsAppMessage?: any) => {
+        async (content: string, attachments?: File[], isHeadless?: boolean, multimodalWhatsAppMessage?: import('../lib/whatsapp-integration').WhatsAppMessage) => {
             if (!content.trim() && (!attachments || attachments.length === 0) && !multimodalWhatsAppMessage) return;
 
             const { addMessage, startProcessing } = useChatStore.getState();
@@ -98,10 +101,7 @@ export function useAgent(): UseAgentReturn {
 
             // 2. Map Attachment Metadata (for local browser uploads)
             const attachmentData = attachments?.map((file) => {
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                const nativePath = (window as any).electron?.utils?.getPathForFile(file)
-                    || (file as File & { path?: string }).path
-                    || "";
+                const nativePath = (file as File & { path?: string }).path || "";
                 return {
                     name: file.name,
                     path: nativePath,
@@ -125,10 +125,6 @@ export function useAgent(): UseAgentReturn {
             // for brand new chats, rather than "default".
             const originSessionId = useChatStore.getState().activeSessionId ?? "default";
 
-            // Start per-session processing — returns an AbortSignal scoped only to
-            // this session. Other sessions' signals are unaffected.
-            const abortSignal = startProcessing(originSessionId);
-
             // Build a plain settings object to pass to AgentRuntime.
             // WHY not pass the full Zustand store: AgentRuntime lives in lib/ and
             // should not depend on the store shape.
@@ -150,6 +146,35 @@ export function useAgent(): UseAgentReturn {
             // condition if the user disconnects mid-run (the finally call would return null,
             // leaving the typing indicator stuck on the personal phone).
             const targetJid = resolveWhatsAppTarget(content);
+            const { connectionState } = useWhatsAppStore.getState();
+            const adminJid = connectionState.phoneNumber;
+            const fromJid = multimodalWhatsAppMessage?.from;
+            
+            // Resolve Roles
+            const cleanFrom = normalizeWhatsAppId(fromJid) ?? fromJid ?? 'unknown';
+            const isAdmin = isSameWhatsAppIdentity(fromJid, adminJid);
+
+            // 1.5 Handle Customer Multimedia Rejection
+            if (multimodalWhatsAppMessage && !isAdmin && multimodalWhatsAppMessage.type !== 'text') {
+                const rejectionContent = "I'm sorry, I currently only support text-based inquiries for customer assistance. 🤖 Please describe your question in text so I can help you correctly.";
+                
+                // Update Local UI
+                addMessage({
+                    role: "assistant",
+                    content: rejectionContent,
+                });
+                
+                // Send back to WhatsApp
+                if (targetJid) {
+                    await electron.whatsapp.sendMessage(targetJid, rejectionContent);
+                }
+                
+                return;
+            }
+
+            // Start per-session processing after all early-return guards.
+            // This guarantees we always reach the finally cleanup path.
+            const abortSignal = startProcessing(originSessionId);
 
             try {
                 // ── Step 1: Reconstruct LLM message history ────────────────────────
@@ -205,11 +230,12 @@ export function useAgent(): UseAgentReturn {
 
                 // ── Step 3: Dynamically import AgentRuntime ────────────────────────
                 const { AgentRuntime } = await import("../lib/agent-runtime");
+                const persona = await electron.intelligence.getPersona();
 
                 if (targetJid) {
-                    console.log(`[useAgent] WhatsApp flow detected/enabled. JID: ${targetJid}`);
+                    console.log(`[useAgent] WhatsApp flow detected/enabled. JID: ${targetJid} (Admin: ${isAdmin})`);
                     setWhatsAppTyping(targetJid);
-                    reconstructedHistory.push(getWhatsAppSystemPrompt());
+                    reconstructedHistory.push(getWhatsAppSystemPrompt(targetJid, persona as { name: string, tone: string }));
                 }
 
                 // ── Step 4: Instantiate the agent ──────────────────────────────────
@@ -325,7 +351,27 @@ export function useAgent(): UseAgentReturn {
                         : content) // fallback to text prefix for JID context
                     : content;
                 const agentAttachments = userLLMMessage?.attachments ?? attachmentData;
+                
+                // ── 60-Second Courtesy Timer ──────────────────────────────────────
+                // If a customer query takes more than 1 minute, notify them that we're
+                // still working and will notify them once done.
+                let courtesyTimer: NodeJS.Timeout | null = null;
+                if (targetJid && !isAdmin) {
+                    courtesyTimer = setTimeout(async () => {
+                        const courtesyMsg = "I'm still working on your request and will notify you once done. 🤖";
+                        await electron.whatsapp.sendMessage(targetJid, courtesyMsg);
+                        // Log this event for transparency
+                        addMessage({ 
+                            role: "assistant", 
+                            content: `(System: Sent 60s courtesy delay notification to customer)` 
+                        });
+                    }, 60000); // 1 minute
+                }
+
                 const llmResponse = await runtime.chat(agentContent, agentAttachments);
+                
+                // Clear timer as response received
+                if (courtesyTimer) clearTimeout(courtesyTimer);
 
                 // ── Step 7: Handle Outbound WhatsApp Messages ──────────────────────
                 // If WhatsApp mode is enabled, we need to send the final assistant response
@@ -333,6 +379,27 @@ export function useAgent(): UseAgentReturn {
                 if (targetJid) {
                     console.log(`[useAgent] Triggering WhatsApp delivery for JID: ${targetJid}`);
                     sendWhatsAppResponse(targetJid, llmResponse, originSessionId);
+                    
+                    // ── Step 8: Admin Forwarding (No Hallucination logic) ───────────
+                    // If the response contains the "Human Team" flag from the system prompt, 
+                    // notify the admin so they can jump in.
+                    const responseText = typeof llmResponse.content === 'string' ? llmResponse.content : '';
+                    const isEscalation = !isAdmin && (
+                        responseText.includes("flagged this for our human team") || 
+                        responseText.includes("escalating this to a human") ||
+                        responseText.includes("whatsapp_notify_admin") // If tool was called
+                    );
+
+                    if (isEscalation) {
+                        console.log(`[useAgent] Unknown query detected — forwarding to Admin (${adminJid})`);
+                        const adminNotification = `⚠️ *Action Required: Unknown Inquiry*\n\nA customer (${cleanFrom}) asked a question not found in the training data:\n\n> "${agentContent}"\n\nPlease answer them directly. I will learn from your response for next time.`;
+                        if (adminJid) {
+                            await electron.whatsapp.sendMessage(adminJid, adminNotification);
+                            await electron.intelligence.logAccuracy({ event: 'forwarded', details: `Unanswered query from ${targetJid} forwarded to Admin` });
+                        }
+                    } else if (!isAdmin) {
+                        await electron.intelligence.logAccuracy({ event: 'resolved', details: `Successfully answered customer query: "${agentContent.substring(0, 30)}..."` });
+                    }
                 } else {
                     console.log(`[useAgent] No targetJid resolved for this prompt. Skipping WhatsApp delivery.`);
                 }
@@ -402,7 +469,7 @@ export function useAgent(): UseAgentReturn {
         };
 
         const handleAppSubmit = (e: Event) => {
-            const customEvent = e as CustomEvent<{ content: string, whatsappMessage?: any }>;
+            const customEvent = e as CustomEvent<{ content: string, whatsappMessage?: import('../lib/whatsapp-integration').WhatsAppMessage }>;
             const content = customEvent.detail?.content;
             const whatsappMessage = customEvent.detail?.whatsappMessage;
             
@@ -412,22 +479,31 @@ export function useAgent(): UseAgentReturn {
             let sessionId = activeSessionId;
             
             if (whatsappMessage?.from) {
-                const existingSession = sessions.find(s => s.whatsapp_jid === whatsappMessage.from);
+                const existingSession = sessions.find(s => 
+                    s.whatsapp_jid === whatsappMessage.from || 
+                    s.contact_id === whatsappMessage.from
+                );
                 
                 if (existingSession) {
                     sessionId = existingSession.id;
                     setActiveSession(sessionId);
                 } else {
                     sessionId = createSession();
-                    // Set the session metadata so future messages from this user map here
+                    // Set the omnichannel session metadata so future messages map here
                     useChatStore.setState(state => ({
                         sessions: state.sessions.map(s => 
                             s.id === sessionId 
-                                ? { ...s, whatsapp_jid: whatsappMessage.from, title: `💬 ${whatsappMessage.from.split('@')[0]}` } 
+                                ? { 
+                                    ...s, 
+                                    channel: 'whatsapp',
+                                    contact_id: whatsappMessage.from,
+                                    whatsapp_jid: whatsappMessage.from, // Legacy fallback
+                                    title: `💬 ${whatsappMessage.from.split('@')[0]}` 
+                                  } 
                                 : s
                         )
                     }));
-                    console.log(`[useAgent] Created NEW customer session for: ${whatsappMessage.from}`);
+                    console.log(`[useAgent] Created NEW omnichannel session for: ${whatsappMessage.from}`);
                 }
             } else if (!sessionId) {
                 const { createSession } = useChatStore.getState();

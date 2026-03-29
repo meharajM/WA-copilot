@@ -46,6 +46,7 @@ interface ElectronAPI {
         getVersion: () => Promise<string>
         getName: () => Promise<string>
         selectFolder: () => Promise<string | null>
+        selectFile: (options: { title?: string, buttonLabel?: string, filters?: Array<{ name: string, extensions: string[] }> }) => Promise<string | null>
     }
 
     logs?: {
@@ -101,6 +102,16 @@ interface ElectronAPI {
         openFileLocation: () => Promise<{ success: boolean; error?: string }>
     }
 
+    intelligence?: {
+        getKnowledge: () => Promise<Array<{ id: number; file_path: string; file_name: string; created_at: string }>>
+        deleteKnowledge: (id: number) => Promise<boolean>
+        getPersona: () => Promise<unknown>
+        updatePersona: (updates: Record<string, unknown>) => Promise<unknown>
+        getLogs: (limit?: number) => Promise<{ success: boolean; logs?: Array<{ id: number; type: string; event: string; details?: string; timestamp?: string }>; error?: string }>
+        getStats: () => Promise<{ success: boolean; stats?: { totalQueries: number; resolvedQueries: number; autonomyRate: number; trainingCount: number; learningCount: number }; error?: string }>
+        logAccuracy: (payload: { event: string; details?: string }) => Promise<{ success: boolean; error?: string }>
+    }
+
     antigravity?: {
         initialize: () => Promise<{ signedIn: boolean; email: string | null; projectId: string | null }>
         signIn: () => Promise<{ signedIn: boolean; email: string | null; projectId: string | null }>
@@ -130,6 +141,7 @@ interface ElectronAPI {
         sendMediaMessage: (to: string, filePath: string, caption?: string, type?: string) => Promise<{ success: boolean; error?: string }>
         onConnectionChange: (callback: (state: unknown) => void) => () => void
         onMessage: (callback: (message: unknown) => void) => () => void
+        notifyAdmin: (customerJid: string, summary: string, mainQuestion: string) => Promise<{ success: boolean; error?: string }>
     }
 }
 

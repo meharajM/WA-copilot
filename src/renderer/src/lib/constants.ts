@@ -85,17 +85,17 @@ export const VOICE_CONFIG = {
 
 // App Info
 export const APP_INFO = {
-    NAME: 'AI-Worker',
-    VERSION: '0.1.0',
-    CLIENT_ID: 'AI-Worker-Client',
+    NAME: 'WA Co-Pilot',
+    VERSION: '1.0.0',
+    CLIENT_ID: 'WA-CoPilot-Client',
 }
 
 // Storage Keys
 export const STORAGE_KEYS = {
     MCP_SERVERS: 'mcp_servers',
-    CHAT_HISTORY: 'ai-worker-chat',
-    SETTINGS: 'ai-worker-settings',
-    AUTH_STATE: 'ai-worker-auth'
+    CHAT_HISTORY: 'wa-copilot-chat',
+    SETTINGS: 'wa-copilot-settings',
+    AUTH_STATE: 'wa-copilot-auth'
 }
 
 // UI Colors (Tailwind compatible)

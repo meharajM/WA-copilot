@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# AI-Worker macOS Installer
+# WA Co-Pilot macOS Installer
 # Downloads the latest build from Cloudflare R2 and installs it to /Applications.
-# Run this script to install AI-Worker without requiring an Apple developer certificate.
+# Run this script to install WA Co-Pilot without requiring an Apple developer certificate.
 
 set -e
 
 R2_BASE="https://downloads.ai-worker.tech"
 TMP_DIR="$(mktemp -d)"
-APP_NAME="AI-Worker"
+APP_NAME="WA Co-Pilot"
 INSTALL_DIR="/Applications"
 
-echo "🚀 AI-Worker Installer"
+echo "🚀 WA Co-Pilot Installer"
 echo "Fetching latest version info..."
 
 # Download the latest-mac.yml manifest to find the exact DMG filename.
@@ -57,6 +57,6 @@ echo "🧹 Cleaning up..."
 rm -rf "$TMP_DIR"
 
 echo ""
-echo "✅ AI-Worker has been installed to ${INSTALL_DIR}/${APP_NAME}.app"
-echo "🎉 Launching AI-Worker..."
+echo "✅ WA Co-Pilot has been installed to ${INSTALL_DIR}/${APP_NAME}.app"
+echo "🎉 Launching WA Co-Pilot..."
 open "${INSTALL_DIR}/${APP_NAME}.app"
