@@ -207,7 +207,7 @@ if [ "$SKIP_BUILD" = false ]; then
   [ "$BUILD_WIN" = true ]   && (
     echo "🪟 Packaging Windows..."
     reset_output_dir "$WIN_OUT_DIR"
-    npx electron-builder --win --x64 --config.directories.output="${WIN_OUT_DIR}"
+    npx electron-builder --win --x64 --arm64 --config.directories.output="${WIN_OUT_DIR}"
   )
 fi
 
@@ -219,7 +219,7 @@ UPLOAD_PIDS=()
 
 [ "$BUILD_MAC" = true ] && (
   upload_artifacts "${MAC_OUT_DIR}" "*.dmg" "*.zip" "*.blockmap"
-  retry_aws_cp "scripts/install-mac.sh" "${R2}/install-mac.sh"
+  retry_aws_cp "scripts/aica-install-mac.sh" "${R2}/aica-install-mac.sh"
 ) &
 [ "$BUILD_MAC" = true ] && UPLOAD_PIDS+=($!)
 
@@ -231,7 +231,7 @@ UPLOAD_PIDS=()
 
 [ "$BUILD_WIN" = true ] && (
   upload_artifacts "${WIN_OUT_DIR}" "*.exe" "*.blockmap"
-  retry_aws_cp "scripts/install-windows.ps1" "${R2}/install-windows.ps1"
+  retry_aws_cp "scripts/aica-install-windows.ps1" "${R2}/aica-install-windows.ps1"
 ) &
 [ "$BUILD_WIN" = true ] && UPLOAD_PIDS+=($!)
 

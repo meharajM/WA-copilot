@@ -8,6 +8,9 @@ These scripts install:
 - **Node.js** - Required for the app and some MCP servers
 - **Python 3** - Required for MarkItDown and other Python-based MCP servers
 - **uv** - Fast Python package runner for MCP servers
+- **ffmpeg** - Required for audio processing
+- **Playwright** - Required for browser instrumentation (playwright install)
+- **MarkItDown** - Pre-installed with all extras (pdf/docx/audio support)
 
 ## Usage
 

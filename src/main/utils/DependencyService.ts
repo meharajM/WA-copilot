@@ -1,6 +1,8 @@
-import { exec } from 'child_process'
+import { exec, spawn } from 'child_process'
 import { promisify } from 'util'
 import { app, shell } from 'electron'
+import * as path from 'path'
+import { existsSync } from 'fs'
 
 const execAsync = promisify(exec)
 
@@ -37,7 +39,8 @@ export class DependencyService {
         results.push(await this.checkCommand('ffmpeg', '-version', true))
 
         // Check Python (Required for local MCPs)
-        results.push(await this.checkCommand('python3', '--version', true))
+        const pythonCommand = process.platform === 'win32' ? 'python' : 'python3'
+        results.push(await this.checkCommand(pythonCommand, '--version', true))
 
         // Check uv (Required for uvx)
         results.push(await this.checkCommand('uv', '--version', true))
@@ -139,21 +142,36 @@ export class DependencyService {
         return await this.checkDependencies()
     }
 
-    async runSetupScript() {
-        const scriptPath = app.isPackaged
-            ? path.join(process.resourcesPath, 'scripts', 'setup-dependencies.sh')
-            : path.join(app.getAppPath(), 'scripts', 'setup-dependencies.sh')
+    private resolveSetupScriptPath(extension: 'sh' | 'ps1'): string {
+        const fileName = `setup-dependencies.${extension}`
+        const candidates = app.isPackaged
+            ? [path.join(process.resourcesPath, 'scripts', fileName)]
+            : [
+                path.join(app.getAppPath(), 'scripts', fileName),
+                path.join(process.cwd(), 'scripts', fileName)
+            ]
 
+        const existingPath = candidates.find(candidate => existsSync(candidate))
+        return existingPath || candidates[0]
+    }
+
+    async runSetupScript() {
         // Open terminal with command
         if (process.platform === 'darwin') {
+            const scriptPath = this.resolveSetupScriptPath('sh')
             require('child_process').exec(`open -a Terminal "${scriptPath}"`)
         } else if (process.platform === 'win32') {
-            const psScriptPath = scriptPath.replace('.sh', '.ps1')
-            require('child_process').exec(`start powershell.exe -ExecutionPolicy Bypass -File "${psScriptPath}"`)
+            const scriptPath = this.resolveSetupScriptPath('ps1')
+            const child = spawn('powershell.exe', ['-NoExit', '-ExecutionPolicy', 'Bypass', '-File', scriptPath], {
+                detached: true,
+                stdio: 'ignore',
+                windowsHide: false
+            })
+            child.unref()
         } else {
             // Linux fallback 
+            const scriptPath = this.resolveSetupScriptPath('sh')
             shell.showItemInFolder(scriptPath)
         }
     }
 }
-import * as path from 'path'

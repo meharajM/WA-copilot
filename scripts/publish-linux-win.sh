@@ -119,7 +119,7 @@ if [ "$BUILD_WIN" = true ]; then
   shopt -s nullglob
   upload_artifacts "${UPLOAD_DIR}" "*.exe" "*.blockmap" "latest*.yml"
   shopt -u nullglob
-  aws s3 cp "scripts/install-windows.ps1" "${R2}/install-windows.ps1" $ENDPOINT
+  aws s3 cp "scripts/aica-install-windows.ps1" "${R2}/aica-install-windows.ps1" $ENDPOINT
 fi
 
 echo "✅ Done!"

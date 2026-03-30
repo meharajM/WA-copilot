@@ -38,11 +38,11 @@ done
 VERSION=$(node -p "require('./package.json').version" 2>/dev/null || echo "unknown")
 echo ""
 echo "╔══════════════════════════════════════════════════════╗"
-echo "║  ⚠️   WA-Co-Pilot Windows PRODUCTION RELEASE WARNING   ║"
+echo "║  ⚠️   AICA Windows PRODUCTION RELEASE WARNING          ║"
 echo "║                                                      ║"
 echo "║  Version : v${VERSION}                                   ║"
 echo "║  Bucket  : ${R2_BUCKET_NAME}"
-echo "║  Target  : Windows (x64)                             ║"
+echo "║  Target  : Windows (x64, arm64)                      ║"
 echo "║                                                      ║"
 echo "╚══════════════════════════════════════════════════════╝"
 echo ""
@@ -67,7 +67,7 @@ if [ "$SKIP_BUILD" = false ]; then
   npm run build
   rm -rf "${WIN_OUT_DIR}"
   mkdir -p "${WIN_OUT_DIR}"
-  npx electron-builder --win --x64 --config.directories.output="${WIN_OUT_DIR}"
+  npx electron-builder --win --x64 --arm64 --config.directories.output="${WIN_OUT_DIR}"
 fi
 
 # Step 3: Upload
@@ -80,7 +80,10 @@ upload_artifacts() {
   local pattern
   for pattern in "$@"; do
     for file in "${source_dir}"/${pattern}; do
-      aws s3 cp "$file" "${R2}/$(basename "$file")" $ENDPOINT
+      local filename=$(basename "$file")
+      echo "  ↑ $filename"
+      aws s3 rm "${R2}/$filename" $ENDPOINT 2>/dev/null || true
+      aws s3 cp "$file" "${R2}/$filename" $ENDPOINT
     done
   done
 }
@@ -89,8 +92,9 @@ UPLOAD_DIR="${WIN_OUT_DIR}"
 [ "$SKIP_BUILD" = true ] && [ ! -d "${UPLOAD_DIR}" ] && UPLOAD_DIR="dist"
 
 shopt -s nullglob
-upload_artifacts "${UPLOAD_DIR}" "*.exe" "*.blockmap" "latest.yml"
+upload_artifacts "${UPLOAD_DIR}" "*.exe" "*.blockmap" "*.yml"
 shopt -u nullglob
-aws s3 cp "scripts/install-windows.ps1" "${R2}/install-windows.ps1" $ENDPOINT
+aws s3 rm "${R2}/aica-install-windows.ps1" $ENDPOINT 2>/dev/null || true
+aws s3 cp "scripts/aica-install-windows.ps1" "${R2}/aica-install-windows.ps1" $ENDPOINT
 
 echo "✅ Done!"

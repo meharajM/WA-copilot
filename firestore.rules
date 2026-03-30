@@ -1,6 +1,6 @@
 rules_version = '2';
 
-// Firestore Security Rules for AI-Worker
+// Firestore Security Rules for AIConsumerAgent
 // These rules ensure users can only access their own data 
 // and enforce authentication requirements
 

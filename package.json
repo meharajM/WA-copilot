@@ -139,6 +139,7 @@
                 "dmg",
                 "zip"
             ],
+            "artifactName": "${productName}-${version}-${arch}.${ext}",
             "mergeASARs": false,
             "x64ArchFiles": "Contents/Resources/app.asar.unpacked/node_modules/{@img/**,better-sqlite3/**,fsevents/**}",
             "category": "public.app-category.productivity",
@@ -149,6 +150,7 @@
                 "nsis",
                 "portable"
             ],
+            "artifactName": "${productName}-${version}-${arch}.${ext}",
             "icon": "build/icon.png",
             "publish": {
                 "provider": "generic",
@@ -160,6 +162,7 @@
                 "AppImage",
                 "deb"
             ],
+            "artifactName": "${productName}-${version}-${arch}.${ext}",
             "category": "Utility",
             "icon": "build/icon.png",
             "maintainer": "AIConsumerAgent Team <support@aica.tech>",

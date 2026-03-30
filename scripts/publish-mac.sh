@@ -123,7 +123,10 @@ upload_artifacts() {
   local pattern
   for pattern in "$@"; do
     for file in "${source_dir}"/${pattern}; do
-      aws s3 cp "$file" "${R2}/$(basename "$file")" $ENDPOINT
+      local filename=$(basename "$file")
+      echo "  ↑ $filename"
+      aws s3 rm "${R2}/$filename" $ENDPOINT 2>/dev/null || true
+      aws s3 cp "$file" "${R2}/$filename" $ENDPOINT
     done
   done
 }
@@ -134,6 +137,7 @@ UPLOAD_DIR="${MAC_OUT_DIR}"
 shopt -s nullglob
 upload_artifacts "${UPLOAD_DIR}" "*.dmg" "*.zip" "*.blockmap" "latest*.yml"
 shopt -u nullglob
-aws s3 cp "scripts/install-mac.sh" "${R2}/install-mac.sh" $ENDPOINT
+aws s3 rm "${R2}/aica-install-mac.sh" $ENDPOINT 2>/dev/null || true
+aws s3 cp "scripts/aica-install-mac.sh" "${R2}/aica-install-mac.sh" $ENDPOINT
 
 echo "✅ Done!"
