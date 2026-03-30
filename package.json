@@ -70,7 +70,7 @@
         "@types/react-syntax-highlighter": "^15.5.13",
         "@whiskeysockets/baileys": "^6.7.21",
         "@whiskeysockets/libsignal-node": "github:whiskeysockets/libsignal-node",
-        "better-sqlite3": "^12.6.2",
+        "better-sqlite3": "^12.8.0",
         "clsx": "^2.1.1",
         "cmdk": "^1.1.1",
         "electron-store": "^11.0.2",
