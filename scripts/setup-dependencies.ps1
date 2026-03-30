@@ -1,7 +1,7 @@
-# AI Worker - Dependency Setup Script (Windows)
+# AIConsumerAgent - Dependency Setup Script (Windows)
 # This script installs Node.js, Python, and uv for MCP server support
 
-Write-Host "🚀 AI Worker - Setting up dependencies for Windows..." -ForegroundColor Cyan
+Write-Host "🚀 AIConsumerAgent - Setting up dependencies for Windows..." -ForegroundColor Cyan
 Write-Host ""
 
 # Function to check if a command exists
@@ -79,13 +79,18 @@ if (-not (Test-CommandExists ffmpeg)) {
 # Refresh environment variables
 $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
 
+# Install Playwright browsers if missing
+Write-Host "📦 Ensuring Playwright browser binaries are installed..." -ForegroundColor Yellow
+npx playwright install
+
+
 Write-Host ""
 Write-Host "✅ All dependencies installed successfully!" -ForegroundColor Green
 Write-Host "================================================================" -ForegroundColor Cyan
 Write-Host "🎉 YOU'RE ALL SET! " -ForegroundColor Green
 Write-Host ""
 Write-Host "🛑 PLEASE CLOSE THIS TERMINAL WINDOW TO CONTINUE." -ForegroundColor Yellow
-Write-Host "   The AI-Worker app will automatically detect these changes" -ForegroundColor Yellow
+Write-Host "   The AIConsumerAgent app will automatically detect these changes" -ForegroundColor Yellow
 Write-Host "   and dismiss the setup screen." -ForegroundColor Yellow
 Write-Host "================================================================" -ForegroundColor Cyan
 Write-Host ""

@@ -1,10 +1,10 @@
 #!/bin/bash
-# AI Worker - Dependency Setup Script
+# AIConsumerAgent - Dependency Setup Script
 # This script installs Node.js, Python, and uv for MCP server support
 
 set -e  # Exit on error
 
-echo "🚀 AI Worker - Setting up dependencies..."
+echo "🚀 AIConsumerAgent - Setting up dependencies..."
 echo ""
 
 # Detect OS
@@ -175,6 +175,6 @@ echo "================================================================"
 echo "🎉 YOU'RE ALL SET! "
 echo ""
 echo "🛑 PLEASE CLOSE THIS TERMINAL WINDOW TO CONTINUE."
-echo "   The AI-Worker app will automatically detect these changes"
+echo "   The AIConsumerAgent app will automatically detect these changes"
 echo "   and dismiss the setup screen."
 echo "================================================================"

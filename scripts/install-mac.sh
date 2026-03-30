@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
-# WA Co-Pilot macOS Installer
+# AIConsumerAgent macOS Installer
 # Downloads the latest build from Cloudflare R2 and installs it to /Applications.
-# Run this script to install WA Co-Pilot without requiring an Apple developer certificate.
+# Run this script to install AIConsumerAgent without requiring an Apple developer certificate.
 
 set -e
 
-R2_BASE="https://downloads.ai-worker.tech"
+R2_BASE="https://downloads.aica.tech"
 TMP_DIR="$(mktemp -d)"
-APP_NAME="WA Co-Pilot"
+APP_NAME="AIConsumerAgent"
 INSTALL_DIR="/Applications"
 
-echo "🚀 WA Co-Pilot Installer"
+echo "🚀 AIConsumerAgent Installer"
 echo "Fetching latest version info..."
 
 # Download the latest-mac.yml manifest to find the exact DMG filename.
-# electron-builder format example: "  - url: AI-Worker-0.1.0-universal.dmg"
+# electron-builder format example: "  - url: AIConsumerAgent-0.1.0-universal.dmg"
 # The top-level path: points to the .zip (auto-updater), so we find the .dmg from the files list.
 MANIFEST=$(curl -fsSL "${R2_BASE}/latest-mac.yml")
 DMG_FILE=$(echo "$MANIFEST" | grep '\.dmg' | grep 'url:' | awk '{print $NF}' | tr -d '[:space:]')
@@ -57,6 +57,6 @@ echo "🧹 Cleaning up..."
 rm -rf "$TMP_DIR"
 
 echo ""
-echo "✅ WA Co-Pilot has been installed to ${INSTALL_DIR}/${APP_NAME}.app"
-echo "🎉 Launching WA Co-Pilot..."
+echo "✅ AIConsumerAgent has been installed to ${INSTALL_DIR}/${APP_NAME}.app"
+echo "🎉 Launching AIConsumerAgent..."
 open "${INSTALL_DIR}/${APP_NAME}.app"

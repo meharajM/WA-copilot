@@ -239,7 +239,7 @@ DO NOT stop after just navigating - complete the entire workflow!`;
   const userContext = await getUserEnvironmentContext();
 
   const profile = usePersonaStore.getState().profile;
-  const botName = profile?.name || 'WA-Copilot';
+  const botName = profile?.name || 'AIConsumerAgent';
   const botIndustry = profile?.industry || 'Business';
   const botTone = profile?.tone || 'professional';
   const botRules = profile?.customRules ? `\n\nBUSINESS RULES:\n${profile.customRules}` : '';

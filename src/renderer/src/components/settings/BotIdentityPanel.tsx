@@ -54,7 +54,7 @@ export function BotIdentityPanel() {
                         value={localProfile.name || ''}
                         onChange={(e) => setLocalProfile({ ...localProfile, name: e.target.value })}
                         className="w-full bg-[var(--color-bg-dark)] border border-[var(--color-border)] rounded-lg px-4 py-2 text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-brand-teal)] transition-colors"
-                        placeholder="e.g. SupportBot, Sarah, WA-Copilot"
+                        placeholder="e.g. SupportBot, Sarah, AIConsumerAgent"
                     />
                     <p className="text-xs text-[var(--color-text-dim)] mt-1">The name the bot uses to introduce itself.</p>
                 </div>

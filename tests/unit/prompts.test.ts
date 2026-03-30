@@ -30,14 +30,14 @@ describe('System Prompt Generation', () => {
         vi.clearAllMocks()
     })
 
-    it('injects WA-Copilot defaults when persona profile is null', async () => {
+    it('injects AIConsumerAgent defaults when persona profile is null', async () => {
         vi.mocked(usePersonaStore.getState).mockReturnValue({
             profile: null
         } as any)
 
         const prompt = await buildSystemPrompt([{ name: 'mock', description: 'desc' } as any])
         
-        expect(prompt).toContain('You are WA-Copilot, the professional WhatsApp Support Agent for a Business')
+        expect(prompt).toContain('You are AIConsumerAgent, the professional WhatsApp Support Agent for a Business')
         expect(prompt).toContain('MOCK_ENV_CONTEXT')
         expect(prompt).not.toContain('BUSINESS RULES')
     })
@@ -79,7 +79,7 @@ describe('System Prompt Generation', () => {
         const prompt = await buildSystemPrompt([{ name: 'mock', description: 'desc' } as any], undefined, false, undefined, true)
         
         expect(prompt).toContain('You are a focused sub-agent executing a delegated task')
-        expect(prompt).not.toContain('WA-Copilot')
+        expect(prompt).not.toContain('AIConsumerAgent')
         expect(prompt).not.toContain('WhatsApp Support Agent')
     })
 })

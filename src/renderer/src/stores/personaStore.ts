@@ -43,7 +43,7 @@ export const usePersonaStore = create<PersonaState>((set, get) => ({
             // Fallback default if running outside electron/dev mode
             set({
                 profile: {
-                    name: 'WA-Copilot',
+                    name: 'AIConsumerAgent',
                     industry: 'Tech Support',
                     tone: 'professional',
                     coreKnowledge: []

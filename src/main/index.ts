@@ -111,7 +111,7 @@ function createWindow(): void {
 }
 
 app.whenReady().then(async () => {
-    electronApp.setAppUserModelId('com.wacopilot.app')
+    electronApp.setAppUserModelId('com.aica.app')
 
     // Verify environment and paths
     setupIpcHandlers()

@@ -37,15 +37,15 @@ export function registerFsHandlers(): void {
         }
     })
 
-    // Secure internal file writer (Bypasses Safe Mode, restricted to .ai-worker folder)
+    // Secure internal file writer (Bypasses Safe Mode, restricted to .aica folder)
     ipcMain.handle('fs:write-internal-file', async (_event, workspacePath: string | undefined | null, filename: string, content: string) => {
         try {
             if (!filename.match(/^[a-zA-Z0-9_.-]+$/)) throw new Error("Invalid filename");
 
-            // Fallback: If no workspace is selected, save to the app's user data directory (e.g. ~/Library/Application Support/ai-worker)
+            // Fallback: If no workspace is selected, save to the app's user data directory (e.g. ~/Library/Application Support/aica)
             let internalDir: string;
             if (workspacePath && workspacePath.trim() !== '') {
-                internalDir = path.join(workspacePath, '.ai-worker');
+                internalDir = path.join(workspacePath, '.aica');
             } else {
                 internalDir = path.join(app.getPath('userData'), 'tasks-fallback');
             }
@@ -70,7 +70,7 @@ export function registerFsHandlers(): void {
 
             let internalDir: string;
             if (workspacePath && workspacePath.trim() !== '') {
-                internalDir = path.join(workspacePath, '.ai-worker');
+                internalDir = path.join(workspacePath, '.aica');
             } else {
                 internalDir = path.join(app.getPath('userData'), 'tasks-fallback');
             }

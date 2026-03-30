@@ -1,7 +1,7 @@
 # WA-copilot
 
 ```markdown
-# WA Co-Pilot Self-Hosted – Complete Research + Implementation Blueprint  
+# AIConsumerAgent Self-Hosted – Complete Research + Implementation Blueprint  
 **For AI Coding Agent (March 2026 Edition)**  
 
 **Version:** 1.1 (Hardened Persistence & Relay)  
@@ -268,7 +268,7 @@ No recurring → owner owns everything.
 
 ## 11. Competitive Battle Cards (Internal)
 
-(See earlier conversation – WA Co-Pilot wins on privacy & zero fees, loses on reliability vs official API tools.)
+(See earlier conversation – AIConsumerAgent wins on privacy & zero fees, loses on reliability vs official API tools.)
 
 ---
 
@@ -282,7 +282,7 @@ No recurring → owner owns everything.
 
 **Ready to code.**  
 Copy this entire MD into your AI coding agent (Claude 3.5 / Grok-4 / Cursor) and say:  
-“Build the full self-hosted WA Co-Pilot desktop app exactly as specified in this blueprint, starting with Phase 1.”
+“Build the full self-hosted AIConsumerAgent desktop app exactly as specified in this blueprint, starting with Phase 1.”
 
 You now have everything we researched in one executable-ready document.  
 

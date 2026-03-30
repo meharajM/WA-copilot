@@ -1,4 +1,4 @@
-// Global type declarations for AI-Worker
+// Global type declarations for AIConsumerAgent
 // This file ensures TypeScript recognizes window.electron
 
 // Electron API type (matches preload/index.ts)

@@ -91,7 +91,7 @@ export function FeatureFlagsPanel({ isDevMode }: FeatureFlagsPanelProps) {
       return acc
     }, {} as Record<string, boolean>)
 
-    localStorage.setItem('ai-worker-dev-flags', JSON.stringify(flagsData))
+    localStorage.setItem('aica-dev-flags', JSON.stringify(flagsData))
 
     // Show success message
     alert('Feature flags saved! Restart the app to apply changes.')

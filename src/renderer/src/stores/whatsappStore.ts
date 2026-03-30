@@ -73,7 +73,7 @@ export const useWhatsAppStore = create<WhatsAppState>()(
             setConnectionState: (state) => set({ connectionState: state }),
         }),
         {
-            name: 'ai-worker-whatsapp-v1',
+            name: 'aica-whatsapp-v1',
             storage: createJSONStorage(() => localStorage),
             partialize: (state) => ({
                 whatsappEnabled: state.whatsappEnabled,

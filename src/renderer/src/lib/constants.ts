@@ -85,7 +85,7 @@ export const VOICE_CONFIG = {
 
 // App Info
 export const APP_INFO = {
-    NAME: 'WA Co-Pilot',
+    NAME: 'AIConsumerAgent',
     VERSION: '1.0.0',
     CLIENT_ID: 'WA-CoPilot-Client',
 }
@@ -93,9 +93,9 @@ export const APP_INFO = {
 // Storage Keys
 export const STORAGE_KEYS = {
     MCP_SERVERS: 'mcp_servers',
-    CHAT_HISTORY: 'wa-copilot-chat',
-    SETTINGS: 'wa-copilot-settings',
-    AUTH_STATE: 'wa-copilot-auth'
+    CHAT_HISTORY: 'aica-chat',
+    SETTINGS: 'aica-settings',
+    AUTH_STATE: 'aica-auth'
 }
 
 // UI Colors (Tailwind compatible)

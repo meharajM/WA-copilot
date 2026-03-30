@@ -3,7 +3,7 @@ import Store from 'electron-store'
 
 // Dedicated store for encrypted secrets
 const secretStore = new Store<Record<string, string>>({
-    name: 'ai-worker-secrets',
+    name: 'aica-secrets',
     defaults: {},
 }) as Store<Record<string, string>> & {
     get: (key: string) => string | undefined

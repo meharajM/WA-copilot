@@ -3,7 +3,7 @@
  * 
  * This package defines the abstraction layer required to integrate 
  * multiple communication channels (WhatsApp, Telegram, Email, Instagram)
- * into the WA Co-Pilot Business Intelligence Suite.
+ * into the AIConsumerAgent Business Intelligence Suite.
  */
 
 export type ChannelType = 'whatsapp' | 'telegram' | 'email' | 'instagram' | 'twitter' | 'web'

@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# WA Co-Pilot Linux Installer
+# AIConsumerAgent Linux Installer
 # Auto-detects CPU architecture and downloads the matching .AppImage from Cloudflare R2.
 
 set -e
 
-R2_BASE="https://downloads.ai-worker.tech"
+R2_BASE="https://downloads.aica.tech"
 INSTALL_DIR="${HOME}/.local/bin"
-APP_NAME="WA Co-Pilot"
+APP_NAME="AIConsumerAgent"
 
-echo "🚀 WA Co-Pilot Linux Installer"
+echo "🚀 AIConsumerAgent Linux Installer"
 
 # ── Detect architecture ────────────────────────────────────────────────────
 ARCH=$(uname -m)
@@ -17,7 +17,7 @@ case "$ARCH" in
   aarch64|arm64)   ARCH_LABEL="arm64" ;;
   *)
     echo "❌ Unsupported architecture: $ARCH"
-    echo "   WA Co-Pilot supports x86_64 and aarch64 (ARM64)."
+    echo "   AIConsumerAgent supports x86_64 and aarch64 (ARM64)."
     exit 1
     ;;
 esac
@@ -28,12 +28,14 @@ echo "Fetching latest version info..."
 # ── Parse the manifest for the arch-specific AppImage ─────────────────────
 # electron-builder lists all files in the yaml; we grep for the right one.
 MANIFEST=$(curl -fsSL "${R2_BASE}/latest-linux.yml")
-APPIMAGE_FILE=$(echo "$MANIFEST" | grep -E "\.AppImage" | grep "${ARCH_LABEL}" | grep -E '^[[:space:]]*url:' | head -n1 | awk '{print $2}' | tr -d '[:space:]')
+# Grep for the .AppImage with the correct arch label, then extract the URL/filename field reliably.
+APPIMAGE_FILE=$(echo "$MANIFEST" | grep "\.AppImage" | grep "${ARCH_LABEL}" | grep "url:" | awk '{print $NF}' | head -n1 | tr -d '[:space:]')
 
 # Fallback: try the top-level path: field if url: pattern didn't match
 if [ -z "$APPIMAGE_FILE" ]; then
-  APPIMAGE_FILE=$(echo "$MANIFEST" | grep -E "^path:.*${ARCH_LABEL}.*AppImage" | head -n1 | awk '{print $2}' | tr -d '[:space:]')
+  APPIMAGE_FILE=$(echo "$MANIFEST" | grep "^path:.*${ARCH_LABEL}.*AppImage" | head -n1 | awk '{print $NF}' | tr -d '[:space:]')
 fi
+
 
 if [ -z "$APPIMAGE_FILE" ]; then
   echo "❌ Could not find a ${ARCH_LABEL} AppImage in the latest release manifest."
@@ -51,6 +53,6 @@ echo "🔐 Setting executable permissions..."
 chmod +x "${DEST}"
 
 echo ""
-echo "✅ WA Co-Pilot (${ARCH_LABEL}) installed to ${DEST}"
-echo "🎉 Launching WA Co-Pilot..."
+echo "✅ AIConsumerAgent (${ARCH_LABEL}) installed to ${DEST}"
+echo "🎉 Launching AIConsumerAgent..."
 "${DEST}" &

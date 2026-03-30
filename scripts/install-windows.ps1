@@ -1,4 +1,4 @@
-# WA Co-Pilot Windows Installer
+# AIConsumerAgent Windows Installer
 # Downloads the latest build from Cloudflare R2 and runs the NSIS installer.
 # Bypasses Windows SmartScreen "Mark of the Web" by downloading via PowerShell (Invoke-WebRequest)
 # rather than a browser, preventing the Zone.Identifier alternate data stream from being attached.
@@ -7,11 +7,11 @@
 
 $ErrorActionPreference = "Stop"
 
-$R2Base = "https://downloads.ai-worker.tech"
+$R2Base = "https://downloads.aica.tech"
 $TempDir = [System.IO.Path]::GetTempPath()
 $ManifestUrl = "$R2Base/latest.yml"
 
-Write-Host "🚀 WA Co-Pilot Installer" -ForegroundColor Cyan
+Write-Host "🚀 AIConsumerAgent Installer" -ForegroundColor Cyan
 Write-Host "Fetching latest version info..."
 
 try {
@@ -47,6 +47,6 @@ Write-Host "   (Follow the on-screen installation prompts)"
 Start-Process -FilePath $DestPath -Wait
 
 Write-Host ""
-Write-Host "✅ WA Co-Pilot has been installed!" -ForegroundColor Green
+Write-Host "✅ AIConsumerAgent has been installed!" -ForegroundColor Green
 Write-Host "   You can now launch it from the Start Menu or Desktop shortcut."
 pause

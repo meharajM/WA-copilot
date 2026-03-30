@@ -265,7 +265,7 @@ export function EmptyState({ onNavigate }: { onNavigate?: (view: ViewMode) => vo
       <div className="mb-6 w-full flex items-center justify-between px-4">
         <div>
           <h1 className="text-3xl font-bold tracking-tight text-[var(--color-text-primary)]">
-            WA Co-Pilot Dashboard
+            AIConsumerAgent Dashboard
           </h1>
           <h2 className="text-sm font-medium text-[var(--color-text-secondary)] mt-1">
             {isConnected ? "Bot is online and monitoring customer queues" : "Connect your WhatsApp to activate the agent"}

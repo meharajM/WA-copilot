@@ -1,7 +1,7 @@
-# WA Co-Pilot: WhatsApp Business Agent Architecture
+# AIConsumerAgent: WhatsApp Business Agent Architecture
 
 ## Overview
-WA Co-Pilot is an autonomous WhatsApp Business Customer Support Agent built as a desktop application using Electron, React, and local/remote LLM capabilities. It serves as an intelligent middle-layer, connecting a business owner's WhatsApp account directly to a knowledge base (RAG) and external business tools (via MCP) to autonomously handle incoming customer inquiries.
+AIConsumerAgent is an autonomous WhatsApp Business Customer Support Agent built as a desktop application using Electron, React, and local/remote LLM capabilities. It serves as an intelligent middle-layer, connecting a business owner's WhatsApp account directly to a knowledge base (RAG) and external business tools (via MCP) to autonomously handle incoming customer inquiries.
 
 The system is designed with a **"local-first" philosophy**, capable of running entirely on-device (via WebLLM/Ollama) while gracefully falling back to cloud providers (OpenAI/Gemini/OpenRouter) for complex reasoning tasks.
 

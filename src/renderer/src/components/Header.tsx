@@ -43,7 +43,7 @@ export function Header({ status, currentView, onViewChange }: HeaderProps) {
 
             <div className="text-[10px] uppercase tracking-widest text-[var(--color-text-dim)] hidden sm:flex items-center gap-2">
                 <StatusDot variant="success" size="sm" animated />
-                wa-copilot: active
+                aica: active
 
                 {/* WhatsApp status indicator */}
                 {isWhatsAppConnected && (

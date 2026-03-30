@@ -515,7 +515,7 @@ export const useChatStore = create<ChatState>()(
             // WHY: The processing fields (isProcessing, abortController, processingSessionId)
             // are now derived from _processingSessions (a Map). Old persisted state with the
             // flat fields is incompatible and would hydrate incorrectly.
-            name: 'ai-worker-chat-v3',
+            name: 'aica-chat-v3',
             // ── SQLite + Filesystem storage adapter ────────────────────────────
             // WHY: Provides 100% persistence in SQLite (main process) and 
             // mirrors each session as individual JSON/MD files.

@@ -1,6 +1,6 @@
 # Setup Scripts
 
-This directory contains automated setup scripts to install dependencies required for WA Co-Pilot's MCP servers.
+This directory contains automated setup scripts to install dependencies required for AIConsumerAgent's MCP servers.
 
 ## What Gets Installed
 
@@ -14,7 +14,7 @@ These scripts install:
 ### macOS / Linux
 
 ```bash
-cd /path/to/wa-copilot-app
+cd /path/to/aica-app
 ./scripts/setup-dependencies.sh
 ```
 
@@ -23,7 +23,7 @@ cd /path/to/wa-copilot-app
 1. **Right-click PowerShell** and select **"Run as Administrator"**
 2. Run the script:
    ```powershell
-   cd C:\path\to\wa-copilot-app
+   cd C:\path\to\aica-app
    .\scripts\setup-dependencies.ps1
    ```
 
@@ -51,7 +51,7 @@ cd /path/to/wa-copilot-app
 ## After Installation
 
 1. **Restart your terminal** (or source your shell config)
-2. **Restart the WA Co-Pilot app**
+2. **Restart the AIConsumerAgent app**
 3. **Enable MCP servers** in Settings → MCP Servers
 4. **Test it out** by asking the AI to convert a document!
 

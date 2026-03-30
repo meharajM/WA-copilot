@@ -29,7 +29,7 @@ export function isDevelopmentMode(): boolean {
  */
 export function loadFeatureFlags(): Partial<FeatureFlags> | null {
   try {
-    const stored = localStorage.getItem('ai-worker-dev-flags')
+    const stored = localStorage.getItem('aica-dev-flags')
     if (stored) {
       return JSON.parse(stored) as Partial<FeatureFlags>
     }
@@ -44,7 +44,7 @@ export function loadFeatureFlags(): Partial<FeatureFlags> | null {
  */
 export function saveFeatureFlags(flags: Partial<FeatureFlags>): void {
   try {
-    localStorage.setItem('ai-worker-dev-flags', JSON.stringify(flags))
+    localStorage.setItem('aica-dev-flags', JSON.stringify(flags))
   } catch (error) {
     console.warn('Failed to save feature flags to localStorage:', error)
   }
@@ -74,5 +74,5 @@ export function getEffectiveFeatureFlags(): FeatureFlags {
  * Reset feature flags to defaults
  */
 export function resetFeatureFlags(): void {
-  localStorage.removeItem('ai-worker-dev-flags')
+  localStorage.removeItem('aica-dev-flags')
 }

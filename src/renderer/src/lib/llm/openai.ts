@@ -367,8 +367,8 @@ export // Call OpenAI-compatible API
   };
 
   if (isOpenRouter) {
-    headers["HTTP-Referer"] = "https://wa-copilot.app";
-    headers["X-Title"] = "WA Co-Pilot";
+    headers["HTTP-Referer"] = "https://aica.app";
+    headers["X-Title"] = "AIConsumerAgent";
   }
 
   // If using JSON fallback, rebuild system message with JSON instructions

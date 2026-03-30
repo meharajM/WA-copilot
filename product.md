@@ -1,7 +1,7 @@
-# WA-Copilot: Product Overview
+# AIConsumerAgent: Product Overview
 
 ## How it Works
-To understand how **WA-Copilot** works, it’s easiest to think of it as a digital employee sitting at a computer, autonomously handling your customer support. 
+To understand how **AIConsumerAgent** works, it’s easiest to think of it as a digital employee sitting at a computer, autonomously handling your customer support. 
 
 Here is a breakdown of the four main "organs" that make up this application, and exactly what happens when a customer sends a message.
 
@@ -43,7 +43,7 @@ When a customer's query is handled, you can click **"Resolve Conversation"** to 
 ---
 
 ## 🚀 Roadmap: Omnichannel Expansion
-While WA-Copilot currently focuses heavily on WhatsApp, the underlying Agent Architecture (Reasoning loop, RAG integration, and MCP Tools) is entirely platform-agnostic. 
+While AIConsumerAgent currently focuses heavily on WhatsApp, the underlying Agent Architecture (Reasoning loop, RAG integration, and MCP Tools) is entirely platform-agnostic. 
 
 Future updates intend to scale the application into an **Omnichannel Business Hub** by bridging additional communication layers:
 

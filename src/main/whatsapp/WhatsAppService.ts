@@ -459,7 +459,7 @@ export class WhatsAppService extends EventEmitter {
                                            raw.message?.imageMessage?.contextInfo ||
                                            raw.message?.videoMessage?.contextInfo;
                                            
-                        if (isAdmin && contextInfo?.stanzaId) {
+                        if (isAdmin && contextInfo?.stanzaId && adminJid) {
                             const relayService = AdminRelayService.getInstance();
                             const customerJid = relayService.getCustomerJid(contextInfo.stanzaId);
                             
@@ -554,7 +554,7 @@ export class WhatsAppService extends EventEmitter {
             // Send the handshake message
             // We do NOT send the code in the message. The code is shown on the computer screen.
             // This proves the person at the computer has control over the phone.
-            const intro = `🤖 *WA Co-Pilot Verification*\n\nPlease reply to this message with the *6-digit verification code* shown on your computer screen to link this as your personal device.`
+            const intro = `🤖 *AIConsumerAgent Verification*\n\nPlease reply to this message with the *6-digit verification code* shown on your computer screen to link this as your personal device.`
             
             const jid = formatWhatsAppJid(normalized)
             console.log(`[WhatsAppService] Attempting handshake to JID: ${jid} (Input: ${normalized})`)
@@ -696,7 +696,10 @@ export class WhatsAppService extends EventEmitter {
         const text = `⚠️ *Unresolved Customer Query*\n\n*Customer*: ${customerHandled}\n*Summary*: ${summary}\n*Main Question*: ${mainQuestion}\n\n_Reply to this message directly to answer the customer._`;
 
         try {
-            const result = await this.socket.sendMessage(formatWhatsAppJid(adminJid), { text });
+            const jid = formatWhatsAppJid(adminJid);
+            if (!jid) return { success: false, error: 'Invalid admin phone number format' };
+
+            const result = await this.socket.sendMessage(jid, { text });
             if (result && result.key && result.key.id) {
                 AdminRelayService.getInstance().setRelay(result.key.id, customerJid);
                 console.log(`[WhatsAppService] Admin notification sent. Relay set for Customer: ${customerJid}`);

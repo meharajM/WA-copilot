@@ -4,7 +4,7 @@ import Store from "electron-store";
 // Initialize electron-store with proper configuration
 // Using type assertion since electron-store extends Conf which has get/set/delete methods
 const store = new Store<Record<string, unknown>>({
-  name: "ai-worker-store",
+  name: "aica-store",
   defaults: {},
 }) as Store<Record<string, unknown>> & {
   get: (key: string) => unknown;

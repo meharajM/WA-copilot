@@ -55,7 +55,7 @@ describe('Persona Zustand Store', () => {
         expect(state.isLoading).toBe(false)
         expect(state.error).toBe('IPC Error')
         // Important fallback logic
-        expect(state.profile?.name).toBe('WA-Copilot')
+        expect(state.profile?.name).toBe('AIConsumerAgent')
         expect(state.profile?.tone).toBe('professional')
     })
 

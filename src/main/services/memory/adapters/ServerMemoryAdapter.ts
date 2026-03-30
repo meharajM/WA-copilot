@@ -56,7 +56,7 @@ export class ServerMemoryAdapter implements UnifiedMemoryBackend {
 
       this.client = new Client(
         {
-          name: 'ai-worker-memory-client',
+          name: 'aica-memory-client',
           version: '1.0.0'
         },
         {

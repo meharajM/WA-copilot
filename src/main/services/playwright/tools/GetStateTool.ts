@@ -57,7 +57,7 @@ export class GetStateTool extends PlaywrightTool {
 
                     const elements = document.querySelectorAll(interactiveSelectors);
                     const map: Record<number, string> = {};
-                    const overlayId = 'ai-worker-highlight-overlay';
+                    const overlayId = 'aica-highlight-overlay';
 
                     document.getElementById(overlayId)?.remove();
 
@@ -166,7 +166,7 @@ export class GetStateTool extends PlaywrightTool {
 
         if (useHighlighting && includeScreenshot) {
             await page.evaluate(() => {
-                document.getElementById('ai-worker-highlight-overlay')?.remove();
+                document.getElementById('aica-highlight-overlay')?.remove();
             });
         }
 

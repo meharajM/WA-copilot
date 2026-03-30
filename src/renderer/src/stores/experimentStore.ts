@@ -47,8 +47,8 @@ interface ExperimentState {
   assignVariant: (experimentKey: string, variant: string) => void
 }
 
-const STORAGE_KEY = 'ai-worker-experiments'
-const OVERRIDES_KEY = 'ai-worker-experiment-overrides'
+const STORAGE_KEY = 'aica-experiments'
+const OVERRIDES_KEY = 'aica-experiment-overrides'
 
 function loadFromStorage<T>(key: string): T | null {
   try {

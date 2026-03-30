@@ -85,7 +85,7 @@ export function MissingDependenciesScreen({ onResolved }: { onResolved: () => vo
                 <div className="space-y-2">
                     <h2 className="text-2xl font-bold">Missing Dependencies</h2>
                     <p className="text-sm text-gray-400">
-                        AI-Worker requires a few system tools to function properly (e.g. converting audio, running local AI tools).
+                        AIConsumerAgent requires a few system tools to function properly (e.g. converting audio, running local AI tools).
                     </p>
                 </div>
 

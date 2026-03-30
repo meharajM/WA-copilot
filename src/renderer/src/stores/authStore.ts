@@ -367,7 +367,7 @@ export const useAuthStore = create<AuthState>()(
             },
         }),
         {
-            name: 'ai-worker-auth',
+            name: 'aica-auth',
             storage: createJSONStorage(() => localStorage),
             partialize: (state) => ({
                 user: state.user,

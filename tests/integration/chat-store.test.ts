@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { useChatStore } from '../../src/renderer/src/stores/chatStore'
 
 function resetChatStore(): void {
-  localStorage.removeItem('ai-worker-chat-v3')
+  localStorage.removeItem('aica-chat-v3')
   useChatStore.setState({
     sessions: [],
     activeSessionId: null,

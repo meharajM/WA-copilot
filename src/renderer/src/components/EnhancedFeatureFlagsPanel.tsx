@@ -42,7 +42,7 @@ export function EnhancedFeatureFlagsPanel({ isDevMode }: FeatureFlagsPanelProps)
       return acc
     }, {} as Record<string, boolean>)
     
-    localStorage.setItem('ai-worker-dev-flags', JSON.stringify(flagsData))
+    localStorage.setItem('aica-dev-flags', JSON.stringify(flagsData))
     
     // Show success message with flag count
     const changedCount = flags.filter((flag, i) => flag.enabled !== originalFlags[i]?.enabled).length
@@ -60,7 +60,7 @@ export function EnhancedFeatureFlagsPanel({ isDevMode }: FeatureFlagsPanelProps)
 
   const handleClearAll = () => {
     if (confirm('Clear all feature flag overrides? This will reset to default values.')) {
-      localStorage.removeItem('ai-worker-dev-flags')
+      localStorage.removeItem('aica-dev-flags')
       refreshFlags()
       alert('Feature flags cleared! Restart the app to apply defaults.')
     }

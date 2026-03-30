@@ -1,7 +1,7 @@
 /**
  * @copilot/core
  * 
- * Foundational utilities for the WA Co-Pilot intelligence suite.
+ * Foundational utilities for the AIConsumerAgent intelligence suite.
  * Includes: Gemini API client, Multimodal helpers, and Common Types.
  */
 

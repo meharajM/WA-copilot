@@ -185,7 +185,7 @@ export function registerMcpHandlers(): void {
                 throw new Error(`Unsupported transport type: ${type}`)
             }
 
-            const client = new Client({ name: "AI-Worker-Client", version: "0.1.0" }, { capabilities: { sampling: {} } })
+            const client = new Client({ name: "AIConsumerAgent-Client", version: "0.1.0" }, { capabilities: { sampling: {} } })
             await client.connect(transport)
             
             const duration = Date.now() - startTime
@@ -314,7 +314,7 @@ function getInstallInstructions(cmd: string, args?: string[]): string {
     if (cmd.includes('node') || cmd.includes('npx') || cmd.includes('npm')) {
         let steps = ""
         if (isMac) steps = "1. Open your **Terminal** app.\n2. Type `brew install node` and press Enter.\n3. *If you don't have Homebrew, download Node.js from [nodejs.org](https://nodejs.org).* "
-        else if (isWin) steps = "1. Download and run the installer from [nodejs.org](https://nodejs.org).\n2. Follow the setup wizard and make sure 'Add to PATH' is checked.\n3. Restart the AI-Worker app once finished."
+        else if (isWin) steps = "1. Download and run the installer from [nodejs.org](https://nodejs.org).\n2. Follow the setup wizard and make sure 'Add to PATH' is checked.\n3. Restart the AIConsumerAgent app once finished."
         else steps = "1. Install Node.js using your system's package manager (e.g., `sudo apt install nodejs`)."
 
         return header + "\n\n" + steps + internalNodeTip
@@ -339,7 +339,7 @@ function getInstallInstructions(cmd: string, args?: string[]): string {
         else if (isWin) steps += `   Download from [python.org](https://www.python.org/downloads/) and check 'Add to PATH'\n`
         else steps += `   \`sudo apt install python3\`\n`
 
-        steps += `\n2. **Install uv** (Python package runner):\n   \`${installCmd}\`\n\n3. **Restart the AI-Worker app**`
+        steps += `\n2. **Install uv** (Python package runner):\n   \`${installCmd}\`\n\n3. **Restart the AIConsumerAgent app**`
 
         if (args?.some(a => a.includes('mcp-server-git') || a.includes('mcp_server_git'))) {
             steps += `\n\n💡 **Quick Fix:** Use \`uvx mcp-server-git /path/to/your/repo\` to run without installing.`
