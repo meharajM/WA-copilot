@@ -3,7 +3,7 @@ import { useChatStore } from '../stores/chatStore'
 import electron from '../lib/electron'
 import type { ChatSession } from '../stores/chatStore'
 
-const INACTIVITY_TIMEOUT_MS = 10 * 60 * 1000 // 10 minutes
+const INACTIVITY_TIMEOUT_MS = 15 * 60 * 1000 // 15 minutes
 const RESOLUTION_PROMPT = "It's been a while! Just checking in—did that resolve your inquiry? (Reply 'Yes' or 'No', or feel free to ask more questions!)"
 
 export type ResolutionAuditAction =
@@ -39,6 +39,9 @@ export function computeResolutionAuditActions(
     if (!lastMsg) continue
 
     if (lastMsg.role === 'assistant') {
+      // Don't repeat the resolution prompt if it was already sent.
+      if (lastMsg.content === RESOLUTION_PROMPT) continue
+
       actions.push({
         type: 'send_followup',
         sessionId: session.id,
@@ -79,7 +82,7 @@ export function useResolutionAudit() {
                     addSessionMessage(action.sessionId, {
                         role: 'assistant',
                         content: action.prompt,
-                        thought: '[Resolution Audit] 10min inactivity detected. Prompting for closure.',
+                        thought: '[Resolution Audit] 15min inactivity detected. Prompting for closure.',
                     })
 
                     electron.whatsapp
