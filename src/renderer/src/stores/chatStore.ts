@@ -522,7 +522,13 @@ export const useChatStore = create<ChatState>()(
             storage: createJSONStorage(() => ({
                 getItem: async (name: string) => {
                   try {
-                    const result = await (window as any).electron.ipcRenderer.invoke('chat:load-sessions');
+                    const electron = (window as any).electron;
+                    if (!electron?.ipcRenderer) {
+                      console.warn('[ChatStore] Electron bridge not ready for getItem');
+                      return null;
+                    }
+
+                    const result = await electron.ipcRenderer.invoke('chat:load-sessions');
                     if (result.success && result.sessions) {
                       // We return just the sessions array; persist will wrap it in state
                       return JSON.stringify({
@@ -547,7 +553,13 @@ export const useChatStore = create<ChatState>()(
                     (window as any).localStorage.setItem(`${name}-active-id`, activeId);
                     
                     try {
-                        await (window as any).electron.ipcRenderer.invoke('chat:save-sessions-with-mirror', sessions);
+                        const electron = (window as any).electron;
+                        if (electron?.ipcRenderer) {
+                            await electron.ipcRenderer.invoke('chat:save-sessions-with-mirror', sessions);
+                        } else {
+                            // Bridge not ready, sync will happen on next state change
+                            console.warn('[ChatStore] Electron bridge not ready for setItem');
+                        }
                     } catch (e) {
                         console.error('[ChatStore] Failed to sync to backend:', e);
                     }

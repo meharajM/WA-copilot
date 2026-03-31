@@ -59,10 +59,24 @@ export function KnowledgeBrowser() {
             
             // Call the internal RAG ingestion tool
             // We can use callTool directly on the RAG server if we find it
-            const result = await executeToolCall('rag_ingest', { filePath }) as { result?: unknown; error?: string }
+            const response = await executeToolCall('rag_ingest', { filePath }) as { result?: any; error?: string }
             
-            if (result.error) {
-                alert(`Failed to ingest: ${result.error}`)
+            if (response.error) {
+                alert(`Failed to ingest: ${response.error}`)
+                return
+            }
+
+            // The MCP tool results are usually wrapped in result.content[0].text as a JSON string
+            let outcome: { success: boolean; error?: string } = { success: false };
+            try {
+                const text = response.result?.content?.[0]?.text;
+                if (text) outcome = JSON.parse(text);
+            } catch (e) {
+                console.error('[KnowledgeBrowser] Failed to parse tool result:', e);
+            }
+            
+            if (!outcome.success) {
+                alert(`Failed to index: ${outcome.error || 'Unknown conversion error'}`)
             } else {
                 // Small delay to let SQLite commits flush before UI refresh
                 await new Promise(r => setTimeout(r, 500))

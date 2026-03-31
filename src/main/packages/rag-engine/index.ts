@@ -98,16 +98,27 @@ export class RAGEngine {
                 }
                 content = await this.gemini.transcribeImage(filePath)
             } else {
-                const { stdout } = await execAsync(`uvx --with "markitdown[all]" markitdown "${filePath}"`, {
-                    env: { ...process.env, PATH: `${process.env.PATH}:/usr/local/bin:/opt/homebrew/bin:${process.env.HOME || process.env.USERPROFILE}/.local/bin:${process.env.HOME || process.env.USERPROFILE}/.cargo/bin` },
-                    timeout: 120_000, // 2 minutes max per document
-                    maxBuffer: 50 * 1024 * 1024 // 50MB output buffer
-                })
-                content = stdout.trim()
+                try {
+                    const { stdout, stderr } = await execAsync(`uvx --with "markitdown[all]" markitdown "${filePath}"`, {
+                        env: { ...process.env, PATH: `${process.env.PATH}:/usr/local/bin:/opt/homebrew/bin:${process.env.HOME || process.env.USERPROFILE}/.local/bin:${process.env.HOME || process.env.USERPROFILE}/.cargo/bin` },
+                        timeout: 120_000, // 2 minutes max per document
+                        maxBuffer: 50 * 1024 * 1024 // 50MB output buffer
+                    })
+                    
+                    if (stderr && !stdout) {
+                        console.warn(`[RAGEngine] markitdown produced stderr but no stdout:`, stderr)
+                    }
+
+                    content = stdout.trim()
+                } catch (execError: any) {
+                    const errMsg = `markitdown conversion failed: ${execError.stderr || execError.message}`
+                    IntelligenceService.getInstance().logEvent('training', 'accuracy', `FAILED: ${fileName} - ${errMsg}`)
+                    return { success: false, error: errMsg }
+                }
             }
 
             if (!content) {
-                return { success: false, error: `Conversion produced no content.` }
+                return { success: false, error: `Conversion produced no content. Make sure the file is not empty or corrupted.` }
             }
 
             this.db.prepare('DELETE FROM documents WHERE file_path = ?').run(filePath)
