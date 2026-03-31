@@ -46,25 +46,25 @@ export function WhatsAppConnectionDialog(): React.JSX.Element | null {
         }
 
         // 2. Handle Connected state transitions
+        // 2. Handle Connected state transitions
         if (connectionState.status === 'connected') {
-            // If they just scanned QR but we don't have a target phone, go to Verify
-            if (!connectionState.phoneNumber) {
-                setStep('verify')
-            } else if (step === 'verify' || step === 'qr' || step === 'connecting') {
-                // We just finished handshake or scanned QR with existing phone
+            if (step === 'qr' || step === 'connecting') {
+                // We just scanned QR or connected with existing sessions
+                setStep('manage')
+                setWhatsAppEnabled(true)
+            } else if (step === 'verify' && connectionState.phoneNumber) {
+                // Handshake succeeded
                 setStep('connected')
-                
-                // Automatically activate WhatsApp mode in the store
                 setTargetPhoneNumber(connectionState.phoneNumber)
                 setWhatsAppEnabled(true)
-                
                 const timer = setTimeout(() => {
-                    closeDialog()
                     setStep('manage')
+                    closeDialog()
                 }, 2000)
                 return () => clearTimeout(timer)
             } else if (step === 'idle') {
                 setStep('manage')
+                setWhatsAppEnabled(true)
             }
             return
         }
@@ -412,9 +412,9 @@ export function WhatsAppConnectionDialog(): React.JSX.Element | null {
                                         <CheckCircle size={32} className="text-white" />
                                     </div>
                                     <div className="text-center">
-                                        <p className="text-lg font-bold text-[var(--color-text-primary)]">Verified!</p>
+                                        <p className="text-lg font-bold text-[var(--color-text-primary)]">Admin Verified!</p>
                                         <p className="text-xs text-[var(--color-text-muted)] mt-1">
-                                            Your Worker is now linked to your Personal account.
+                                            Your Worker is now linked to your Admin account.
                                         </p>
                                     </div>
                                 </motion.div>
@@ -431,19 +431,27 @@ export function WhatsAppConnectionDialog(): React.JSX.Element | null {
                                             <CheckCircle size={24} className="text-[#25D366]" />
                                         </div>
                                         <div>
-                                            <p className="text-sm font-semibold text-[var(--color-text-primary)]">Status: Active</p>
+                                            <p className="text-sm font-semibold text-[var(--color-text-primary)]">Bot Connected</p>
                                             <p className="text-xs text-[var(--color-text-muted)] mt-0.5">
-                                                {connectionState.phoneNumber ? `Linked to ${connectionState.phoneNumber}` : 'Connected'}
+                                                {connectionState.phoneNumber ? `Admin: ${connectionState.phoneNumber}` : 'No Admin Number Verified'}
                                             </p>
                                         </div>
                                     </div>
 
                                     <div className="space-y-2">
+                                        {!connectionState.phoneNumber && (
+                                            <button
+                                                onClick={() => setStep('verify')}
+                                                className="w-full py-2.5 bg-[#25D366] hover:bg-[#22c55e] text-white text-sm font-semibold rounded-xl transition-colors mb-2"
+                                            >
+                                                Link Admin Number
+                                            </button>
+                                        )}
                                         <button
                                             onClick={() => handleDisconnect(false)}
                                             className="w-full py-2.5 text-sm text-[var(--color-text-secondary)] border border-white/10 rounded-xl hover:bg-white/5 transition-colors"
                                         >
-                                            Pause Connection
+                                            Pause Bot
                                         </button>
                                         <button
                                             onClick={() => handleDisconnect(true)}
