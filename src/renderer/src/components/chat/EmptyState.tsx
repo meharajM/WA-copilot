@@ -175,69 +175,65 @@ export function EmptyState({ onNavigate }: { onNavigate?: (view: ViewMode) => vo
     }
   }
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0) {
-      setUploadStatus('uploading')
-      
+  const handleFileUpload = async () => {
       try {
-          // In Electron, File objects contain the absolute path on the user's filesystem
-          const files = Array.from(e.target.files) as (File & { path?: string })[]
+          const filePaths = await electron.app.selectFiles({
+              title: 'Select Knowledge Resource',
+              buttonLabel: 'Upload',
+              filters: [
+                  { name: 'Documents', extensions: ['pdf', 'txt', 'csv', 'docx', 'xlsx', 'pptx'] },
+                  { name: 'Images', extensions: ['jpg', 'jpeg', 'png', 'webp'] }
+              ]
+          })
+
+          if (!filePaths || filePaths.length === 0) return
+
+          setUploadStatus('uploading')
           let successCount = 0
+          const errors: string[] = []
 
-          for (const file of files) {
-              if (file.path) {
-                  // The rag_ingest tool will use markitdown to convert and embed the file into LanceDB/SQLite
-                  const res = await executeToolCall('rag_ingest', { filePath: file.path })
-                  if (res.error) {
-                    console.error(`Failed to ingest ${file.name}:`, res.error)
-                  } else {
-                    successCount++
-                    
-                    // ── STEP: LINKED EVOLUTION ──
-                    // After Training (RAG), start Learning (Memory extraction)
-                    const resData = res.result as { content?: string }
-                    if (resData?.content) {
-                        import('../../lib/memory-reflector').then(({ MemoryReflector }) => {
-                            MemoryReflector.getInstance().analyzeDocument(
-                                resData.content!, 
-                                file.name, 
-                                {} // Default settings or fetch from store
-                            )
-                        })
-                    }
-                  }
-              } else {
-                  console.warn(`File path not available for ${file.name}. This feature requires the Electron desktop app.`)
+          const results = await Promise.all(
+            filePaths.map(async (filePath) => {
+              try {
+                const res = await electron.mcp.callTool('internal-rag', 'rag_ingest', { filePath }) as { result?: unknown; error?: string }
+                if (res.error) {
+                  errors.push(res.error)
+                  return { success: false }
+                }
+                return { success: true }
+              } catch (e) {
+                errors.push(String(e))
+                return { success: false }
               }
-          }
+            })
+          )
+          
+          successCount = results.filter(r => r.success).length
 
+          // ── STEP: LINKED EVOLUTION ── (Moved to happen only if success)
+          // We moved this out of the Promise block for simplicity in debugging 
           if (successCount > 0) {
               setUploadStatus('done')
-              // Update stats immediately
-              const statsRes = await executeToolCall('rag_get_stats', {})
+              const statsRes = await electron.mcp.callTool('internal-rag', 'rag_get_stats', {}) as { result?: any }
               if (statsRes.result) {
                   try {
-                      // MCP format check
-                      const resObj = statsRes.result as { count: number; fileTypes: Record<string, number>; totalSize: number } | { content?: { text: string }[] }
-                      if ('content' in resObj && resObj.content?.[0]?.text) {
+                      const resObj = statsRes.result
+                      if (resObj?.content?.[0]?.text) {
                           setRagStats(JSON.parse(resObj.content[0].text))
-                      } else if ('count' in resObj) {
+                      } else if (resObj?.count !== undefined) {
                           setRagStats(resObj)
                       }
-                  } catch (err) {
-                      console.error('[EmptyState] Failed to parse stats after upload:', err)
-                  }
+                  } catch (err) {}
               }
               setTimeout(() => setUploadStatus('idle'), 5000)
           } else {
-              alert(`None of the selected files could be processed. Please ensure 'uv' is installed for document conversion.`)
+              alert(`Upload failed! Error: ${errors.join(' | ')}. Please ensure 'uv' is installed.`)
               setUploadStatus('idle')
           }
       } catch (err) {
-          console.error("RAG Ingest Error:", err)
+          alert("RAG Ingest Fatal Error: " + err)
           setUploadStatus('idle')
       }
-    }
   }
 
   // Auto-analyze resolved sessions on mount or when sessions update
@@ -498,7 +494,11 @@ export function EmptyState({ onNavigate }: { onNavigate?: (view: ViewMode) => vo
                 Upload business documents, policies, and pricing charts to teach your bot.
               </p>
 
-              <label className={`
+              <button 
+                type="button"
+                onClick={() => uploadStatus === 'idle' && handleFileUpload()}
+                disabled={uploadStatus !== 'idle'} 
+                className={`
                 flex flex-col items-center justify-center w-full h-32 border-2 border-dashed rounded-xl cursor-pointer transition-colors
                 ${uploadStatus === 'idle' ? 'border-[var(--color-border)] hover:border-[var(--color-brand-teal)] hover:bg-[var(--color-brand-teal)]/5' : ''}
                 ${uploadStatus === 'uploading' ? 'border-blue-500 bg-blue-500/10 cursor-wait' : ''}
@@ -509,7 +509,7 @@ export function EmptyState({ onNavigate }: { onNavigate?: (view: ViewMode) => vo
                       <>
                         <UploadCloud size={28} className="text-[var(--color-text-muted)] mb-3" />
                         <p className="text-sm text-[var(--color-text-secondary)] font-medium">Click to select files</p>
-                        <p className="text-xs text-[var(--color-text-muted)] mt-1">PDF, TXT, CSV (Max 10MB)</p>
+                        <p className="text-xs text-[var(--color-text-muted)] mt-1">PDF, TXT, CSV (Multiple Files Supported)</p>
                       </>
                     )}
                     {uploadStatus === 'uploading' && (
@@ -525,8 +525,7 @@ export function EmptyState({ onNavigate }: { onNavigate?: (view: ViewMode) => vo
                       </>
                     )}
                   </div>
-                  <input type="file" className="hidden" multiple accept=".pdf,.txt,.csv,.docx" onChange={handleFileUpload} disabled={uploadStatus !== 'idle'} />
-              </label>
+              </button>
 
               {/* Show Knowledge Test after successful upload */}
               {ragStats.count > 0 && <KnowledgeTest />}

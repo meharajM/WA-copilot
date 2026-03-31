@@ -1,0 +1,4 @@
+This is a dummy test file for knowledge ingestion. It contains some basic information.
+The company is called Acme Corp.
+We sell anvils and rocket skates.
+Our support email is support@acmecorp.com.

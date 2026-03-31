@@ -43,6 +43,7 @@ const electronAPI = {
         getName: () => ipcRenderer.invoke('app:get-name'),
         selectFolder: () => ipcRenderer.invoke('app:select-folder'),
         selectFile: (options: unknown) => ipcRenderer.invoke('app:select-file', options),
+        selectFiles: (options?: unknown) => ipcRenderer.invoke('app:select-files', options || {}),
         getMissingDependencies: () => ipcRenderer.invoke('app:get-missing-dependencies'),
         getAllDependencies: () => ipcRenderer.invoke('app:get-all-dependencies'),
         runSetupScript: () => ipcRenderer.invoke('app:run-setup-script'),

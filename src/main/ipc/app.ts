@@ -35,6 +35,20 @@ export function registerAppHandlers(): void {
         return result.canceled ? null : result.filePaths[0]
     })
 
+    ipcMain.handle('app:select-files', async (_event, { title, buttonLabel, filters }: { title?: string, buttonLabel?: string, filters?: { name: string, extensions: string[] }[] } = {}) => {
+        const result = await dialog.showOpenDialog({
+            properties: ['openFile', 'multiSelections'],
+            title: title || 'Select Files',
+            buttonLabel: buttonLabel || 'Select',
+            filters: filters || [
+                { name: 'Documents', extensions: ['pdf', 'txt', 'csv', 'docx', 'xlsx', 'pptx'] },
+                { name: 'Images', extensions: ['jpg', 'jpeg', 'png', 'webp'] },
+                { name: 'All Files', extensions: ['*'] }
+            ]
+        })
+        return result.canceled ? null : result.filePaths
+    })
+
     // Dependencies
     ipcMain.handle('app:get-missing-dependencies', async () => {
         const { DependencyService } = await import('../utils/DependencyService')

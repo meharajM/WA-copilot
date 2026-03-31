@@ -139,8 +139,6 @@
                 "dmg",
                 "zip"
             ],
-            "mergeASARs": false,
-            "x64ArchFiles": "Contents/Resources/app.asar.unpacked/node_modules/{@img/**,better-sqlite3/**,fsevents/**}",
             "category": "public.app-category.productivity",
             "icon": "build/icon.png"
         },

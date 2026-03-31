@@ -47,6 +47,7 @@ interface ElectronAPI {
         getName: () => Promise<string>
         selectFolder: () => Promise<string | null>
         selectFile: (options: { title?: string, buttonLabel?: string, filters?: Array<{ name: string, extensions: string[] }> }) => Promise<string | null>
+        selectFiles: (options: { title?: string, buttonLabel?: string, filters?: Array<{ name: string, extensions: string[] }> }) => Promise<string[] | null>
     }
 
     logs?: {

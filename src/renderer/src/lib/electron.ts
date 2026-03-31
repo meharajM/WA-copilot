@@ -53,6 +53,14 @@ export const electron = {
             console.warn('[Browser] File selection not supported in browser mode')
             return null
         },
+
+        selectFiles: async (options?: { title?: string, buttonLabel?: string, filters?: { name: string, extensions: string[] }[] }): Promise<string[] | null> => {
+            if (isElectron() && window.electron?.app?.selectFiles) {
+                return await window.electron.app.selectFiles(options || {})
+            }
+            console.warn('[Browser] Multiple file selection not supported in browser mode')
+            return null
+        },
     },
 
     // MCP operations
