@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AIConsumerAgent: User Manual & Configuration Guide</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+
+        :root {
+            --primary: #25D366;
+            --secondary: #075E54;
+            --bg: #F8FAFC;
+            --surface: #FFFFFF;
+            --text-main: #0F172A;
+            --text-muted: #475569;
+            --border: #E2E8F0;
+            --accent: #3B82F6;
+        }
+
+        body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text-main); line-height: 1.6; margin: 0; padding: 60px; }
+        .container { max-width: 850px; margin: 0 auto; background: var(--surface); padding: 80px; border-radius: 8px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1); border: 1px solid var(--border); }
+
+        .manual-header { border-bottom: 3px solid var(--primary); padding-bottom: 20px; margin-bottom: 40px; }
+        .manual-title { font-size: 42px; font-weight: 800; color: var(--text-main); margin: 0; letter-spacing: -0.04em; }
+        .manual-subtitle { font-size: 16px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.1em; margin-top: 8px; }
+
+        section { margin-bottom: 60px; }
+        h2 { font-size: 24px; font-weight: 800; margin-bottom: 24px; color: var(--secondary); display: flex; align-items: center; gap: 12px; }
+        h2::before { content: ''; display: block; width: 4px; height: 24px; background: var(--primary); border-radius: 2px; }
+
+        h3 { font-size: 18px; font-weight: 700; margin: 30px 0 15px; color: var(--text-main); }
+        p { margin-bottom: 1.2em; font-size: 15px; text-align: justify; }
+
+        .tab-box { 
+            background: #F8FAFC; border: 1px solid var(--border); border-radius: 12px; padding: 24px; margin-bottom: 16px; 
+            display: flex; gap: 20px;
+        }
+        .tab-icon { width: 44px; height: 44px; background: white; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 22px; flex-shrink: 0; border: 1px solid var(--border); }
+        .tab-info { flex: 1; }
+        .tab-title { font-weight: 800; font-size: 16px; margin-bottom: 4px; color: var(--text-main); }
+        .tab-desc { font-size: 14px; color: var(--text-muted); }
+
+        .setup-step { position: relative; padding-left: 50px; margin-bottom: 30px; }
+        .setup-step-number { 
+            position: absolute; left: 0; top: 0; width: 32px; height: 32px; background: var(--primary); color: white; 
+            border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 14px;
+        }
+        .setup-step-content { font-size: 15px; }
+        .setup-step-content b { color: var(--secondary); }
+
+        .usage-grid { display: grid; grid-template-columns: 1fr; gap: 12px; margin-top: 30px; }
+        .usage-card { background: white; border: 1px solid var(--border); border-radius: 8px; padding: 16px; display: flex; align-items: center; gap: 16px; }
+        .usage-card-icon { font-size: 20px; }
+        .usage-card-text { font-size: 13px; color: var(--text-muted); }
+        
+        .connector { width: 2px; height: 12px; background: var(--border); margin: 0 44px; }
+
+        .code-block { font-family: 'JetBrains Mono', monospace; background: #0F172A; color: #38BDF8; padding: 16px; border-radius: 12px; font-size: 13px; margin: 20px 0; }
+
+        .alert-info { background: #EFF6FF; border-left: 5px solid var(--accent); padding: 20px; margin: 30px 0; border-radius: 0 8px 8px 0; font-size: 14px; color: #1E40AF; }
+
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <header class="manual-header">
+        <h1 class="manual-title">User Manual & Setup Guide</h1>
+        <p class="manual-subtitle">AIConsumerAgent v1.2 • Configuration & Lifecycle</p>
+    </header>
+
+    <section id="interface">
+        <h2>1. The Application Interface</h2>
+        <p>The sidebar of AIConsumerAgent provides access to several specialized views. Understanding the purpose of each "tab" is essential for effective testing.</p>
+
+        <div class="tab-box">
+            <div class="tab-icon">📊</div>
+            <div class="tab-info">
+                <div class="tab-title">Command Center (Dashboard)</div>
+                <div class="tab-desc">Your global overview. Monitor **Messages Per Day**, **Active Leads**, and the **Knowledge Doc Count**. Use the "Analysis" section to categorize customer intent via AI.</div>
+            </div>
+        </div>
+
+        <div class="tab-box">
+            <div class="tab-icon">💬</div>
+            <div class="tab-info">
+                <div class="tab-title">All Chats (Conversations)</div>
+                <div class="tab-desc">A unified stream of active WhatsApp sessions. Select a chat to view the AI's internal "Thoughts" and verify if it is using your knowledge base correctly.</div>
+            </div>
+        </div>
+
+        <div class="tab-box">
+            <div class="tab-icon">👥</div>
+            <div class="tab-info">
+                <div class="tab-title">Lead Directory (CRM)</div>
+                <div class="tab-desc">A CRM-lite view. It auto-extracts **Customer Names**, **Phone Numbers**, and **Leads Status**. Use this to track conversions from casual chat to business lead.</div>
+            </div>
+        </div>
+
+        <div class="tab-box">
+            <div class="tab-icon">🧠</div>
+            <div class="tab-info">
+                <div class="tab-title">Brain View (Advanced)</div>
+                <div class="tab-desc">For technical audit. View the **Memory Logs** (what the agent has learned about users) and **RAG Indexed Files** (verify if your PDFs were correctly converted).</div>
+            </div>
+        </div>
+    </section>
+
+    <section id="openrouter">
+        <h2>2. Connecting the AI (OpenRouter Guide)</h2>
+        <p>To enable the agent's "Brain," you must connect an LLM Provider. We recommend <b>OpenRouter</b> for access to top-tier models like GPT-4o or Claude 3.5 Sonnet.</p>
+
+        <div class="setup-step">
+            <div class="setup-step-number">1</div>
+            <div class="setup-step-content">
+                <b>Generate API Key</b>: Visit <a href="https://openrouter.ai/keys" target="_blank">openrouter.ai/keys</a>, sign in, and create a new key. Copy it securely.
+            </div>
+        </div>
+
+        <div class="setup-step">
+            <div class="setup-step-number">2</div>
+            <div class="setup-step-content">
+                <b>Access Settings</b>: Click the **Gear Icon** in the bottom-left sidebar of the AIConsumerAgent app.
+            </div>
+        </div>
+
+        <div class="setup-step">
+            <div class="setup-step-number">3</div>
+            <div class="setup-step-content">
+                <b>Provider Choice</b>: Navigate to the **AI Model Connection** section and select **OpenRouter** from the pill row.
+            </div>
+        </div>
+
+        <div class="setup-step">
+            <div class="setup-step-number">4</div>
+            <div class="setup-step-content">
+                <b>Link & Select</b>: Paste your API Key. The app will fetch available models. Choose <code>openai/gpt-4o</code> or your preferred model.
+            </div>
+        </div>
+
+        <div class="alert-info">
+            <b>🔑 Important</b>: If the "Verify Connection" button fails, ensure your OpenRouter account has at least $1.00 in credits, as the bot performs a small health check on connection.
+        </div>
+    </section>
+
+    <section id="usage-flow">
+        <h2>3. App Usage Lifecycle Flow</h2>
+        <p>This flowchart summarizes the onboarding journey from first install to autonomous business support.</p>
+
+        <div class="usage-grid">
+            <div class="usage-card">
+                <div class="usage-card-icon">1️⃣</div>
+                <div class="usage-card-text"><b>Identity Verification</b>: Pair your "Admin" phone to receive relay notifications.</div>
+            </div>
+            <div class="connector"></div>
+            <div class="usage-card">
+                <div class="usage-card-icon">2️⃣</div>
+                <div class="usage-card-text"><b>Doc Training</b>: Upload Company PDFs/XLS to the Dashboard's "Train AI" section.</div>
+            </div>
+            <div class="connector"></div>
+            <div class="usage-card">
+                <div class="usage-card-icon">3️⃣</div>
+                <div class="usage-card-text"><b>Persona Tuning</b>: Set "Tone" and "Assistant Name" in Identity Settings.</div>
+            </div>
+            <div class="connector"></div>
+            <div class="usage-card">
+                <div class="usage-card-icon">4️⃣</div>
+                <div class="usage-card-text"><b>Go Live</b>: Enable "Bot Mode" switch. The agent is now autonomous.</div>
+            </div>
+            <div class="connector"></div>
+            <div class="usage-card" style="border: 2px solid var(--accent); background: #EFF6FF;">
+                <div class="usage-card-icon">5️⃣</div>
+                <div class="usage-card-text" style="color: var(--accent);"><b>Supervision</b>: Reply to bot escalations on your phone to resolve complex cases.</div>
+            </div>
+        </div>
+    </section>
+
+    <footer style="margin-top: 80px; text-align: center; color: var(--text-muted); font-size: 13px;">
+        NEED SUPPORT? CONTACT THE ENGINEERING CHANNEL • © 2026 AIConsumerAgent
+    </footer>
+</div>
+
+</body>
+</html>

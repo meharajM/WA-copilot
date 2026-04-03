@@ -5,7 +5,7 @@
 
 set -e
 
-R2_BASE="https://downloads.aica.tech"
+R2_BASE="https://downloads.aiconsumeragent.com"
 TMP_DIR="$(mktemp -d)"
 APP_NAME="AIConsumerAgent"
 INSTALL_DIR="/Applications"

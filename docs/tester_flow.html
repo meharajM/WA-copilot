@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AIConsumerAgent: Technical Reference Manual</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+
+        :root {
+            --primary: #25D366;
+            --secondary: #075E54;
+            --bg: #F8FAFC;
+            --surface: #FFFFFF;
+            --text-main: #0F172A;
+            --text-muted: #475569;
+            --border: #E2E8F0;
+            --accent: #3B82F6;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background: var(--bg);
+            color: var(--text-main);
+            line-height: 1.6;
+            margin: 0;
+            padding: 60px;
+        }
+
+        .container {
+            max-width: 850px;
+            margin: 0 auto;
+            background: var(--surface);
+            padding: 80px;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+            border: 1px solid var(--border);
+        }
+
+        /* Manual Header Styling */
+        .manual-header {
+            border-bottom: 3px solid var(--primary);
+            padding-bottom: 20px;
+            margin-bottom: 40px;
+        }
+
+        .manual-title { font-size: 42px; font-weight: 800; color: var(--text-main); margin: 0; letter-spacing: -0.04em; }
+        .manual-subtitle { font-size: 16px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.1em; margin-top: 8px; }
+
+        section { margin-bottom: 60px; }
+        h2 { 
+            font-size: 24px; 
+            font-weight: 800; 
+            margin-bottom: 24px; 
+            color: var(--secondary); 
+            display: flex; 
+            align-items: center; 
+            gap: 12px;
+        }
+        h2::before { content: ''; display: block; width: 4px; height: 24px; background: var(--primary); border-radius: 2px; }
+
+        h3 { font-size: 18px; font-weight: 700; margin: 30px 0 15px; color: var(--text-main); }
+
+        p { margin-bottom: 1.5em; font-size: 15px; text-align: justify; }
+
+        .code { font-family: 'JetBrains Mono', monospace; background: #F1F5F9; padding: 2px 6px; border-radius: 4px; font-size: 14px; }
+
+        /* Flow Chart Styles */
+        .architecture-grid { display: grid; grid-template-columns: 1fr; gap: 16px; margin-top: 30px; }
+        .flow-card {
+            background: var(--surface);
+            border: 2px solid var(--border);
+            border-radius: 12px;
+            padding: 24px;
+            position: relative;
+        }
+        .flow-card:hover { border-color: var(--primary); }
+        .flow-card-header { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+        .flow-card-title { font-weight: 800; font-size: 16px; text-transform: uppercase; letter-spacing: 0.05em; }
+        .flow-card-body { font-size: 14px; color: var(--text-muted); }
+        
+        .connector { width: 2px; height: 16px; background: var(--border); margin: 0 auto; position: relative; }
+        .connector::after { content: '▼'; position: absolute; bottom: -8px; left: -4px; font-size: 10px; color: var(--border); }
+
+        .node-tag { 
+            position: absolute; top: -12px; right: 24px; background: #334155; color: white; 
+            font-size: 9px; padding: 4px 10px; border-radius: 6px; font-weight: 800; 
+        }
+
+        /* Maturity Matrix Table */
+        .matrix-table { width: 100%; border-collapse: collapse; margin-top: 24px; }
+        .matrix-table th { background: #F8FAFC; text-align: left; padding: 16px; font-size: 12px; color: var(--text-muted); text-transform: uppercase; border-bottom: 2px solid var(--border); }
+        .matrix-table td { padding: 16px; border-bottom: 1px solid var(--border); font-size: 14px; border-right: 1px solid var(--border); }
+        .matrix-table td:last-child { border-right: none; }
+
+        .status-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 8px; }
+        .status-ready { background: #22C55E; box-shadow: 0 0 8px #22C55E80; }
+        .status-beta { background: #EAB308; box-shadow: 0 0 8px #EAB30880; }
+        .status-roadmap { background: #EF4444; box-shadow: 0 0 8px #EF444480; }
+
+        .alert-block {
+            background: #F1F5F9;
+            border-left: 5px solid #64748B;
+            padding: 24px;
+            margin: 30px 0;
+            border-radius: 0 12px 12px 0;
+        }
+        .alert-block b { font-size: 16px; color: var(--text-main); display: block; margin-bottom: 8px; }
+
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <header class="manual-header">
+        <h1 class="manual-title">System Technical Reference</h1>
+        <p class="manual-subtitle">AIConsumerAgent v1.2 • Engineering Documentation</p>
+    </header>
+
+    <section id="infrastructure">
+        <h2>1. Infrastructure Overview</h2>
+        <p>
+            AIConsumerAgent is a multi-process Electron application designed for privacy-first, self-hosted WhatsApp automation. Unlike cloud-based SaaS solutions, the application runs entirely on your local hardware, keeping all Signal Protocol keys and SQLite databases under your direct control.
+        </p>
+        
+        <h3>1.1 Compute Layer</h3>
+        <p>
+            The system utilizes <b>Electron IPC (Inter-Process Communication)</b> to separate heavy LLM reasoning and WhatsApp bridge activities. 
+            The <span class="code">Main Process</span> handles raw network sockets and WhatsApp Signal sessions via <b>Baileys</b>, while the <span class="code">Renderer Process</span> manages the React-based UI and the asynchronous Agent Runtime.
+        </p>
+
+        <h3>1.2 Persistence Layer</h3>
+        <p>
+            Persistence is handled by <b>SQLite 3</b> with <b>FTS5 (Full-Text Search)</b> enabled. All conversation histories and learned entities are stored locally. For high-availability auditing, the system mirrors state to <b>JSON audit logs</b> located in the <span class="code">Library/Application Support</span> directory.
+        </p>
+    </section>
+
+    <section id="maturity-matrix">
+        <h2>2. Feature Maturity Matrix</h2>
+        <p>As a tester, it is critical to distinguish between verified production logic and experimental beta features. Use the matrix below to guide your evaluation.</p>
+        
+        <table class="matrix-table">
+            <thead>
+                <tr>
+                    <th>Component</th>
+                    <th>Status</th>
+                    <th>Functionality Details</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><b>WhatsApp Bridge</b></td>
+                    <td><span class="status-dot status-ready"></span><b>Production</b></td>
+                    <td>Full multi-device sync, QR pairing, and self-healing session management.</td>
+                </tr>
+                <tr>
+                    <td><b>Vector RAG Engine</b></td>
+                    <td><span class="status-dot status-ready"></span><b>Production</b></td>
+                    <td>Local document ingestion (PDF/TXT), FTS5 semantic search, and context injection.</td>
+                </tr>
+                <tr>
+                    <td><b>Admin Relay</b></td>
+                    <td><span class="status-dot status-ready"></span><b>Production</b></td>
+                    <td>Real-time escalation notifications to the admin's personal phone via linking.</td>
+                </tr>
+                <tr>
+                    <td><b>Memory Facts</b></td>
+                    <td><span class="status-dot status-beta"></span><b>Beta</b></td>
+                    <td>Long-term entity extraction. Works but requires significant history to stabilize.</td>
+                </tr>
+                <tr>
+                    <td><b>Dashboard Stats</b></td>
+                    <td><span class="status-dot status-beta"></span><b>Beta</b></td>
+                    <td>Core KPIs are real; "AI Topics" requires a manual sync button click to update.</td>
+                </tr>
+                <tr>
+                    <td><b>Browser MCP</b></td>
+                    <td><span class="status-dot status-beta"></span><b>Beta</b></td>
+                    <td>Playwright automation. Requires local Chromium/Chrome installation.</td>
+                </tr>
+                <tr>
+                    <td><b>Social Bridges</b></td>
+                    <td><span class="status-dot status-roadmap"></span><b>Roadmap</b></td>
+                    <td>Instagram, Telegram, and SMS bridges are UI-placeholders for Phase 2.</td>
+                </tr>
+            </tbody>
+        </table>
+    </section>
+
+    <section id="architecture">
+        <h2>3. Detailed Architecture Flowchart</h2>
+        <p>The following diagram outlines the path of a customer message from the Edge to the Reasoning Engine.</p>
+
+        <div class="architecture-grid">
+            <div class="flow-card">
+                <span class="node-tag">Edge Detection</span>
+                <div class="flow-card-header">
+                    <div class="flow-card-title">📱 Inbound Customer Entry</div>
+                </div>
+                <div class="flow-card-body">
+                    Baileys captures <code>upsert.messages</code> event. Signal keys are looked up from the local SQLite key-store.
+                </div>
+            </div>
+
+            <div class="connector"></div>
+
+            <div class="flow-card">
+                <span class="node-tag">Governance Layer</span>
+                <div class="flow-card-header">
+                    <div class="flow-card-title">🛡️ deduplication & security</div>
+                </div>
+                <div class="flow-card-body">
+                    Message hash is checked against a 10-minute sliding window. Spam filter determines if the sender is blacklisted.
+                </div>
+            </div>
+
+            <div class="connector"></div>
+
+            <div class="flow-card">
+                <span class="node-tag">Intelligence Engine</span>
+                <div class="flow-card-header">
+                    <div class="flow-card-title">🧠 Agent Reasoning Loop</div>
+                </div>
+                <div class="flow-card-body">
+                    The Agent performs a recursive search: (1) Check PDF knowledge, (2) check Memory Facts, (3) execute LLM reasoning.
+                </div>
+            </div>
+
+            <div class="connector"></div>
+
+            <div class="flow-card">
+                <span class="node-tag">Engagement Layer</span>
+                <div class="flow-card-header">
+                    <div class="flow-card-title">⏳ Anti-Ban Delivery</div>
+                </div>
+                <div class="flow-card-body">
+                    Gaussian Jitter (8s-45s) is injected. The message is signed and pushed back to the WhatsApp Cloud via the local session.
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <div class="alert-block">
+        <b>💡 Developer Note for Testers</b>
+        If you encounter "Double Messaging," please check if your linked phone has a weak data connection. The app uses an optimistic sync mechanism that can occasionally trigger a retry if the cloud ACK is delayed.
+    </div>
+
+    <footer style="margin-top: 80px; text-align: center; color: var(--text-muted); font-size: 13px;">
+        CONFIDENTIAL • Internal Tester Reference • © 2026 AIConsumerAgent Project
+    </footer>
+</div>
+
+</body>
+</html>

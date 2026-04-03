@@ -168,6 +168,9 @@ else
   echo "  Auto-confirm enabled. Continuing..."
 fi
 
+# ── Step 0: Ensure dependencies ────────────────────────────────────────────────
+check_dependencies false false
+
 export AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID"
 export AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY"
 export AWS_EC2_METADATA_DISABLED=true
