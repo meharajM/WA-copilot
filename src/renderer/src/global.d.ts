@@ -89,6 +89,8 @@ interface ElectronAPI {
         getLogs: (limit?: number) => Promise<{ success: boolean; logs?: Array<{ id: number; type: string; event: string; details?: string; timestamp?: string }>; error?: string }>
         getStats: () => Promise<{ success: boolean; stats?: { totalQueries: number; resolvedQueries: number; autonomyRate: number; trainingCount: number; learningCount: number }; error?: string }>
         logAccuracy: (payload: { event: string; details?: string }) => Promise<{ success: boolean; error?: string }>
+        saveAnalyticsCsv: (args: { sessionId: string; topic: string; messageCount: number }) => Promise<{ success: boolean; error?: string }>
+        getAnalyticsCsv: () => Promise<{ success: boolean; data?: Array<{ sessionId: string; topic: string; messageCount: number; timestamp: string }>; error?: string }>
     }
 }
 

@@ -26,6 +26,7 @@ export function EmptyState({ onNavigate }: { onNavigate?: (view: ViewMode) => vo
   const [intelligenceStats, setIntelligenceStats] = useState<{ totalQueries: number; resolvedQueries: number; autonomyRate: number; trainingCount: number; learningCount: number }>({ totalQueries: 0, resolvedQueries: 0, autonomyRate: 100, trainingCount: 0, learningCount: 0 })
   interface EvolutionLog { id: number; type: string; event: string; details?: string; timestamp?: string }
   const [evolutionLogs, setEvolutionLogs] = useState<EvolutionLog[]>([])
+  const [analyticsCsv, setAnalyticsCsv] = useState<Array<{ sessionId: string; topic: string; messageCount: number; timestamp: string }>>([])
 
   // Load real Intelligence stats on mount
   React.useEffect(() => {
@@ -61,14 +62,22 @@ export function EmptyState({ onNavigate }: { onNavigate?: (view: ViewMode) => vo
             }
 
             // 3. Fetch Intelligence Stats & Logs
-            const intelRes = await electron.intelligence.getStats()
-            if (intelRes.success && intelRes.stats) {
+            const intelRes = await electron.intelligence?.getStats()
+            if (intelRes?.success && intelRes.stats) {
                 setIntelligenceStats(intelRes.stats)
             }
 
-            const logsRes = await electron.intelligence.getLogs(5)
-            if (logsRes.success && logsRes.logs) {
+            const logsRes = await electron.intelligence?.getLogs(5)
+            if (logsRes?.success && logsRes.logs) {
                 setEvolutionLogs(logsRes.logs)
+            }
+
+            // 4. Fetch CSV Analytics
+            if (electron.intelligence?.getAnalyticsCsv) {
+                const csvRes = await electron.intelligence.getAnalyticsCsv()
+                if (csvRes.success && csvRes.data) {
+                    setAnalyticsCsv(csvRes.data)
+                }
             }
         } catch (err) {
             console.error("Failed to fetch analytics:", err)
@@ -106,9 +115,9 @@ export function EmptyState({ onNavigate }: { onNavigate?: (view: ViewMode) => vo
     }
   }, [sessions, ragStats, memoryStats, intelligenceStats])
 
-  // Aggregate Analytics based on successfully analyzed session topics
+  // Aggregate Analytics based on CSV data (decoupled from LLM raw generation parsing)
   const insights = useMemo(() => {
-    const topicsLog = sessions.map(s => s.topic).filter(Boolean) as string[]
+    const topicsLog = analyticsCsv.map(row => row.topic).filter(Boolean)
     
     // If no sessions have been analyzed yet, show the mock/default
     if (topicsLog.length === 0) {
@@ -130,7 +139,7 @@ export function EmptyState({ onNavigate }: { onNavigate?: (view: ViewMode) => vo
       .slice(0, 3) 
   }, [sessions, metrics.messagesToday])
 
-  // Triggers background LLM analysis of un-categorized sessions
+  // Triggers background LLM analysis of un-categorized sessions via Tool Calling
   const analyzeTopics = useCallback(async () => {
     if (analyzing) return
     setAnalyzing(true)
@@ -138,33 +147,61 @@ export function EmptyState({ onNavigate }: { onNavigate?: (view: ViewMode) => vo
       // Lazy load LLM to avoid heavy imports until clicked
       const { chat } = await import('../../lib/llm')
       
-      // Find up to 5 un-analyzed completed sessions
-      const unanalyzed = sessions.filter(s => (s.messages.length > 2 || s.status === 'resolved') && !s.topic).slice(0, 5)
+      // Filter out those already present in our CSV layer
+      const analyzedIds = new Set(analyticsCsv.map(row => row.sessionId))
+      const unanalyzed = sessions.filter(s => (s.messages.length > 2 || s.status === 'resolved') && !analyzedIds.has(s.id)).slice(0, 5)
       
       for (const session of unanalyzed) {
         if (session.messages.length === 0) continue
         const conversationText = session.messages.map(m => `${m.role.toUpperCase()}: ${m.content}`).join('\n')
         
+        const tools = [{
+            name: "save_analytics_to_csv",
+            description: "Save the categorized topic of a customer support session to the analytics database.",
+            parameters: {
+                type: "object",
+                properties: {
+                    sessionId: { type: "string" },
+                    topic: { type: "string", enum: ["Product Queries", "Order Status", "Returns/Refunds", "Technical Support", "Other"] },
+                    messageCount: { type: "number" }
+                },
+                required: ["sessionId", "topic", "messageCount"]
+            }
+        }]
+
         const response = await chat([
-            { role: 'user', content: `Analyze the following customer support conversation and categorize it into exactly ONE of these short topics: "Product Queries", "Order Status", "Returns/Refunds", "Technical Support", or "Other". Reply with ONLY the exact topic name, nothing else.\n\nConversation:\n${conversationText}` }
-        ], [], undefined, undefined, undefined, undefined, true) // subAgent mode
+            { role: 'system', content: 'You are an analytics extraction engine. Analyze the conversation, pick the best topic, and immediately call the `save_analytics_to_csv` tool. DO NOT output free text.' },
+            { role: 'user', content: `Session ID: ${session.id}\nMessage Count: ${session.messages.length}\n\nConversation:\n${conversationText}` }
+        ], tools, undefined, undefined, undefined, undefined, true)
 
-        let parsedTopic = response.content.trim()
-        // Basic cleanup just in case the LLM was chatty
-        if (parsedTopic.includes('Product')) parsedTopic = 'Product Queries'
-        else if (parsedTopic.includes('Order')) parsedTopic = 'Order Status'
-        else if (parsedTopic.includes('Return') || parsedTopic.includes('Refund')) parsedTopic = 'Returns/Refunds'
-        else if (parsedTopic.includes('Tech')) parsedTopic = 'Technical Support'
-        else parsedTopic = 'Other'
+        if (response.toolCalls && response.toolCalls.length > 0) {
+            const call = response.toolCalls.find(tc => tc.name === 'save_analytics_to_csv')
+            if (call && call.arguments && typeof call.arguments.topic === 'string') {
+                if (electron.intelligence?.saveAnalyticsCsv) {
+                   await electron.intelligence.saveAnalyticsCsv({
+                       sessionId: session.id,
+                       topic: String(call.arguments.topic),
+                       messageCount: session.messages.length
+                   })
+                }
+                updateSessionTopic(session.id, String(call.arguments.topic))
+            }
+        }
+      }
 
-        updateSessionTopic(session.id, parsedTopic)
+      // Re-fetch CSV Analytics to reflect newly saved tool calls
+      if (electron.intelligence?.getAnalyticsCsv) {
+          const csvRes = await electron.intelligence.getAnalyticsCsv()
+          if (csvRes.success && csvRes.data) {
+              setAnalyticsCsv(csvRes.data)
+          }
       }
     } catch (err) {
       console.error("Topic Analysis Error:", err)
     } finally {
       setAnalyzing(false)
     }
-  }, [analyzing, sessions, updateSessionTopic])
+  }, [analyzing, sessions, updateSessionTopic, analyticsCsv])
 
   const handleWhatsAppClick = () => {
     if (isConnecting) return

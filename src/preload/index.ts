@@ -124,6 +124,8 @@ const electronAPI = {
         getLogs: (limit = 20) => ipcRenderer.invoke('intelligence:get-logs', limit),
         getStats: () => ipcRenderer.invoke('intelligence:get-stats'),
         logAccuracy: (payload: { event: string; details?: string }) => ipcRenderer.invoke('intelligence:log-accuracy', payload),
+        saveAnalyticsCsv: (args: { sessionId: string; topic: string; messageCount: number }) => ipcRenderer.invoke('intelligence:save-analytics-csv', args),
+        getAnalyticsCsv: () => ipcRenderer.invoke('intelligence:get-analytics-csv'),
     },
     // Antigravity OAuth operations (Google sign-in for Gemini access)
     antigravity: {
