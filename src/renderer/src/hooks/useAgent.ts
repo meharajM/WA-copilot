@@ -167,6 +167,10 @@ export function useAgent(): UseAgentReturn {
                 // Send back to WhatsApp
                 if (targetJid) {
                     await electron.whatsapp.sendMessage(targetJid, rejectionContent);
+                    await electron.intelligence.logAccuracy({ 
+                        event: 'rejected', 
+                        details: `Rejected ${multimodalWhatsAppMessage.type} from ${cleanFrom} (Text-only mode)` 
+                    });
                 }
                 
                 return;
@@ -395,7 +399,7 @@ export function useAgent(): UseAgentReturn {
                         const adminNotification = `⚠️ *Action Required: Unknown Inquiry*\n\nA customer (${cleanFrom}) asked a question not found in the training data:\n\n> "${agentContent}"\n\nPlease answer them directly. I will learn from your response for next time.`;
                         if (adminJid) {
                             await electron.whatsapp.sendMessage(adminJid, adminNotification);
-                            await electron.intelligence.logAccuracy({ event: 'forwarded', details: `Unanswered query from ${targetJid} forwarded to Admin` });
+                            await electron.intelligence.logAccuracy({ event: 'escalated', details: `Unanswered query from ${targetJid} escalated to Admin` });
                         }
                     } else if (!isAdmin) {
                         await electron.intelligence.logAccuracy({ event: 'resolved', details: `Successfully answered customer query: "${agentContent.substring(0, 30)}..."` });

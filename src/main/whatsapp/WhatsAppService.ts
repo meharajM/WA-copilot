@@ -15,6 +15,7 @@ import * as fs from 'fs'
 import { app, powerSaveBlocker } from 'electron'
 import type { WASocket } from '@whiskeysockets/baileys'
 
+import { IntelligenceService } from '../services/IntelligenceService'
 import { RAGEngine } from '../packages/rag-engine/index'
 import { BusinessPersona } from '../packages/persona/index'
 import { formatWhatsAppJid, isSameWhatsAppIdentity } from '../utils/whatsapp'
@@ -525,6 +526,7 @@ export class WhatsAppService extends EventEmitter {
                                 RAGEngine.getInstance().ingestFile(filePath).then(res => {
                                     if (res.success && res.content) {
                                         console.log(`[WhatsAppService] Admin auto-ingested knowledge: ${msg.content || filePath}`)
+                                        IntelligenceService.getInstance().logEvent('training', 'knowledge_ingested', `Auto-ingested knowledge from admin: ${path.basename(filePath)}`)
                                         // Auto-identify business info from new docs
                                         BusinessPersona.getInstance().identifyBusinessFromContext(res.content)
                                     } else {
