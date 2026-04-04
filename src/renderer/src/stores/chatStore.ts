@@ -523,12 +523,12 @@ export const useChatStore = create<ChatState>()(
                 getItem: async (name: string) => {
                   try {
                     const electron = (window as any).electron;
-                    if (!electron?.ipcRenderer) {
+                    if (!electron?.chat) {
                       console.warn('[ChatStore] Electron bridge not ready for getItem');
                       return null;
                     }
 
-                    const result = await electron.ipcRenderer.invoke('chat:load-sessions');
+                    const result = await electron.chat.loadSessions();
                     if (result.success && result.sessions) {
                       // We return just the sessions array; persist will wrap it in state
                       return JSON.stringify({
@@ -554,8 +554,8 @@ export const useChatStore = create<ChatState>()(
                     
                     try {
                         const electron = (window as any).electron;
-                        if (electron?.ipcRenderer) {
-                            await electron.ipcRenderer.invoke('chat:save-sessions-with-mirror', sessions);
+                        if (electron?.chat) {
+                            await electron.chat.saveSessionsWithMirror(sessions);
                         } else {
                             // Bridge not ready, sync will happen on next state change
                             console.warn('[ChatStore] Electron bridge not ready for setItem');

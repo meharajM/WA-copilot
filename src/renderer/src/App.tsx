@@ -19,6 +19,7 @@ import { useSettingsSync } from "./hooks/useSettingsSync";
 import { useLLMStatus } from "./hooks/useLLMStatus";
 import { useWhatsAppBridge } from "./hooks/useWhatsAppBridge";
 import { useAgent } from "./hooks/useAgent";
+import { useAuthPersistence } from "./hooks/useAuthPersistence";
 import { MissingDependenciesScreen } from "./components/MissingDependenciesScreen";
 import { ExperimentProvider } from "./lib/experiments/experimentProvider";
 import { useThemeSync } from "./hooks/useThemeSync";
@@ -82,6 +83,7 @@ function App() {
   // ── Side-effect hooks ─────────────────────────────────────────────────────
   useSettingsSync();
   useThemeSync();
+  useAuthPersistence();
   useWhatsAppBridge();
   useResolutionAudit();
 

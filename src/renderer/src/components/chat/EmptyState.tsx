@@ -3,6 +3,7 @@ import { useWhatsAppStore } from '../../stores/whatsappStore'
 import { useChatStore } from '../../stores/chatStore'
 import { executeToolCall } from '../../lib/mcp'
 import electron from '../../lib/electron'
+import { computeConversationInsights, computeDashboardMetrics } from '../../lib/dashboard-analytics'
 import { MessageSquare, ShieldCheck, CheckCircle2, FileUp, Bot, MessageCircle, Loader2, UploadCloud, PieChart, FileText, RefreshCw } from 'lucide-react'
 import { StatusBadge } from '../primitives/StatusDot'
 import { clsx } from 'clsx'
@@ -21,6 +22,8 @@ export function EmptyState({ onNavigate }: { onNavigate?: (view: ViewMode) => vo
 
   const [uploadStatus, setUploadStatus] = useState<'idle' | 'uploading' | 'done'>('idle')
   const [analyzing, setAnalyzing] = useState(false)
+  const [reporting, setReporting] = useState(false)
+  const [reportInfo, setReportInfo] = useState<string | null>(null)
   const [ragStats, setRagStats] = useState<{ count: number; fileTypes: Record<string, number>; totalSize: number }>({ count: 0, fileTypes: {}, totalSize: 0 })
   const [memoryStats, setMemoryStats] = useState<{ entityCount: number; relationCount: number }>({ entityCount: 0, relationCount: 0 })
   const [intelligenceStats, setIntelligenceStats] = useState<{ totalQueries: number; resolvedQueries: number; autonomyRate: number; trainingCount: number; learningCount: number }>({ totalQueries: 0, resolvedQueries: 0, autonomyRate: 100, trainingCount: 0, learningCount: 0 })
@@ -81,53 +84,12 @@ export function EmptyState({ onNavigate }: { onNavigate?: (view: ViewMode) => vo
 
   // Calculate real metrics
   const metrics = useMemo(() => {
-    const now = Date.now()
-    const oneDayAgo = now - 24 * 60 * 60 * 1000
-    
-    let messagesToday = 0
-    const uniqueJids = new Set<string>()
-
-    sessions.forEach(session => {
-        if (session.updatedAt > oneDayAgo) {
-            messagesToday += session.messages.filter(m => m.role !== 'system').length
-        }
-        if (session.whatsapp_jid) {
-            uniqueJids.add(session.whatsapp_jid)
-        }
-    })
-
-    return {
-        messagesToday,
-        activeLeads: uniqueJids.size,
-        knowledgeDocs: ragStats.count,
-        memoryFacts: memoryStats.entityCount,
-        dataPoints: ragStats.count + memoryStats.entityCount,
-        autonomyRate: intelligenceStats.autonomyRate.toFixed(1)
-    }
+    return computeDashboardMetrics(sessions, ragStats, memoryStats, intelligenceStats)
   }, [sessions, ragStats, memoryStats, intelligenceStats])
 
   // Aggregate Analytics based on successfully analyzed session topics
   const insights = useMemo(() => {
-    const topicsLog = sessions.map(s => s.topic).filter(Boolean) as string[]
-    
-    // If no sessions have been analyzed yet, show the mock/default
-    if (topicsLog.length === 0) {
-      const total = Math.max(metrics.messagesToday, 10) // default to 10 for visual mock if empty
-      return [
-        { name: 'Product Queries', percent: Math.round((total * 0.45) / total * 100) },
-        { name: 'Order Status', percent: Math.round((total * 0.35) / total * 100) },
-        { name: 'Returns/Refunds', percent: Math.round((total * 0.20) / total * 100) },
-      ]
-    }
-
-    const counts: Record<string, number> = {}
-    topicsLog.forEach(t => counts[t] = (counts[t] || 0) + 1)
-    
-    const total = topicsLog.length
-    return Object.entries(counts)
-      .map(([name, count]) => ({ name, percent: Math.round((count / total) * 100) }))
-      .sort((a,b) => b.percent - a.percent)
-      .slice(0, 3) 
+    return computeConversationInsights(sessions, metrics.messagesToday)
   }, [sessions, metrics.messagesToday])
 
   // Triggers background LLM analysis of un-categorized sessions
@@ -172,6 +134,30 @@ export function EmptyState({ onNavigate }: { onNavigate?: (view: ViewMode) => vo
       setWhatsAppEnabled(!whatsappEnabled)
     } else {
       openDialog()
+    }
+  }
+
+  const handleGenerateDailyReport = async () => {
+    setReporting(true)
+    try {
+      const result = await electron.reports.generateDaily()
+      if (result.success && result.report && typeof result.report === 'object') {
+        const report = result.report as { date?: string }
+        setReportInfo(`Daily report generated (${report.date || 'today'})`)
+      } else {
+        setReportInfo(`Report generation failed: ${result.error || 'Unknown error'}`)
+      }
+    } catch (error) {
+      setReportInfo(`Report generation failed: ${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      setReporting(false)
+    }
+  }
+
+  const handleOpenReportsFolder = async () => {
+    const result = await electron.reports.openFolder()
+    if (!result.success) {
+      setReportInfo(`Could not open reports folder: ${result.error || 'Unknown error'}`)
     }
   }
 
@@ -267,8 +253,31 @@ export function EmptyState({ onNavigate }: { onNavigate?: (view: ViewMode) => vo
             {isConnected ? "Bot is online and monitoring customer queues" : "Connect your WhatsApp to activate the agent"}
           </h2>
         </div>
-        <StatusBadge variant={isConnected ? "success" : "warning"} label={isConnected ? "System Active" : "Offline"} animated={isConnected} />
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleGenerateDailyReport}
+            disabled={reporting}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--color-surface)] border border-[var(--color-border)] text-xs font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] disabled:opacity-60"
+          >
+            {reporting ? <Loader2 size={13} className="animate-spin" /> : <FileText size={13} />}
+            {reporting ? 'Generating...' : 'Generate Daily Report'}
+          </button>
+          <button
+            onClick={handleOpenReportsFolder}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--color-surface)] border border-[var(--color-border)] text-xs font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
+          >
+            Open Reports
+          </button>
+          <StatusBadge variant={isConnected ? "success" : "warning"} label={isConnected ? "System Active" : "Offline"} animated={isConnected} />
+        </div>
       </div>
+      {reportInfo && (
+        <div className="w-full px-4 mb-3">
+          <div className="text-xs text-[var(--color-text-secondary)] bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg px-3 py-2">
+            {reportInfo}
+          </div>
+        </div>
+      )}
 
       {/* Layout Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 w-full px-4">

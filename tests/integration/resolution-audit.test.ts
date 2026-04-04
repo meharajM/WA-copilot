@@ -23,13 +23,13 @@ function makeSession(partial: Partial<ChatSession>): ChatSession {
 }
 
 describe('resolution audit decision logic', () => {
-  it('emits follow-up action for inactive active WhatsApp session with last assistant message', () => {
+  it('emits follow-up action when inactivity crosses the threshold and last message is assistant', () => {
     const now = Date.now()
     const sessions: ChatSession[] = [
       makeSession({
         id: 'wa1',
         whatsapp_jid: '14155551212@s.whatsapp.net',
-        updatedAt: now - 11 * 60 * 1000,
+        updatedAt: now - 16 * 60 * 1000,
         messages: [
           {
             id: 'm1',

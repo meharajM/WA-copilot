@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import { VOICE_CONFIG, LLM_CONFIG, STORAGE_KEYS } from '../lib/constants'
+import { getOpenRouterDefaultSettings } from '../lib/openrouter-defaults'
 import electron from '../lib/electron'
 import { getUserProfile } from '../lib/firebase'
 
@@ -86,6 +87,8 @@ interface SettingsState {
     setIsSyncing: (isSyncing: boolean) => void
 }
 
+const openRouterDefaults = getOpenRouterDefaultSettings()
+
 const defaultSettings = {
     ttsEnabled: true,
     ttsRate: 1,
@@ -95,7 +98,7 @@ const defaultSettings = {
     // Force offline speech in Electron, enforce online in browser
     offlineSpeech: !!(window.electron),
     voskModel: 'en-us',
-    preferredProvider: 'auto' as LLMProviderType,
+    preferredProvider: openRouterDefaults.preferredProvider as LLMProviderType,
     ollamaModel: LLM_CONFIG.OLLAMA.DEFAULT_MODEL,
     ollamaBaseUrl: LLM_CONFIG.OLLAMA.BASE_URL,
     openaiApiKey: '',
@@ -103,8 +106,8 @@ const defaultSettings = {
     openaiModel: LLM_CONFIG.OPENAI_COMPATIBLE.DEFAULT_MODEL,
     geminiApiKey: '',
     geminiModel: LLM_CONFIG.GEMINI.DEFAULT_MODEL,
-    openrouterApiKey: '',
-    openrouterModel: LLM_CONFIG.OPENROUTER.DEFAULT_MODEL,
+    openrouterApiKey: openRouterDefaults.openrouterApiKey,
+    openrouterModel: openRouterDefaults.openrouterModel,
     browserModel: 'Qwen2.5-1.5B-Instruct-q4f16_1-MLC', // Default small model
     theme: 'dark' as Theme,
     playwrightBrowser: 'auto' as PlaywrightBrowserType, // Auto-detect based on OS
@@ -215,7 +218,7 @@ export const useSettingsStore = create<SettingsState>()(
                     openaiApiKey: openaiResult.value || '',
                     openaiBaseUrl: openaiUrl || 'https://api.openai.com/v1',
                     geminiApiKey: geminiResult.value || '',
-                    openrouterApiKey: openrouterResult.value || ''
+                    openrouterApiKey: openrouterResult.value || openRouterDefaults.openrouterApiKey
                 })
                 console.log(`[Settings] Loaded secrets for user ${uid} (encrypted: ${openaiResult.encrypted})`)
             },
@@ -225,7 +228,7 @@ export const useSettingsStore = create<SettingsState>()(
                     activeUserId: null,
                     openaiApiKey: '',
                     geminiApiKey: '',
-                    openrouterApiKey: ''
+                    openrouterApiKey: openRouterDefaults.openrouterApiKey
                     // We might typically clear Base URL too, or leave it as default?
                     // Let's clear it to be safe/reset to default
                 })
@@ -319,6 +322,20 @@ export const useSettingsStore = create<SettingsState>()(
                     if (!state.offlineSpeech) {
                         console.log('[Settings] Forcing offlineSpeech=true in Electron environment')
                         state.setOfflineSpeech(true)
+                    }
+
+                    // Migration guard: old installs defaulted to "auto".
+                    // Keep explicit user choices, but switch legacy default to OpenRouter.
+                    if (state.preferredProvider === 'auto') {
+                        state.setPreferredProvider(openRouterDefaults.preferredProvider)
+                    }
+
+                    // Fill missing OpenRouter defaults from env.
+                    if (!state.openrouterApiKey && openRouterDefaults.openrouterApiKey) {
+                        state.setOpenrouterApiKey(openRouterDefaults.openrouterApiKey)
+                    }
+                    if (!state.openrouterModel) {
+                        state.setOpenrouterModel(openRouterDefaults.openrouterModel)
                     }
                 }
             },

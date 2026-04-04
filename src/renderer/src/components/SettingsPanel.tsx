@@ -32,8 +32,9 @@ import { Card } from './primitives/Card'
 import { StatusBadge } from './primitives/StatusDot'
 import { SystemDependenciesSettings } from './SystemDependenciesSettings'
 import { BotIdentityPanel } from './settings/BotIdentityPanel'
+import { AccountSettings } from './settings/AccountSettings'
 
-type SettingsSection = 'whatsapp' | 'tools' | 'identity' | 'llm' | 'memory' | 'browser' | 'appearance' | 'logs' | 'about'
+type SettingsSection = 'whatsapp' | 'tools' | 'identity' | 'account' | 'llm' | 'memory' | 'browser' | 'appearance' | 'logs' | 'about'
 
 interface SettingsPanelProps {
     onClose: () => void;
@@ -67,6 +68,7 @@ export function SettingsPanel({ onClose, initialSection = 'whatsapp' }: Settings
         { id: 'whatsapp', label: 'WhatsApp Business', icon: <MessageCircle size={20} /> },
         { id: 'tools', label: 'Business Tools (MCP)', icon: <Database size={20} /> },
         { id: 'identity', label: 'Bot Identity', icon: <UserCircle size={20} /> },
+        { id: 'account', label: 'Account', icon: <UserCircle size={20} /> },
         { id: 'llm', label: 'AI Model Connection', icon: <Cpu size={20} /> },
         { id: 'memory', label: 'Knowledge Base', icon: <HardDrive size={20} /> },
         { id: 'browser', label: 'Web Automation', icon: <Globe size={20} /> },
@@ -288,6 +290,13 @@ export function SettingsPanel({ onClose, initialSection = 'whatsapp' }: Settings
                             <h3 className="text-xl font-bold mb-6 text-[var(--color-text-primary)]">Bot Identity</h3>
                             <BotIdentityPanel />
                         </div>
+                    </ErrorBoundary>
+                )}
+
+                {/* Account Section */}
+                {activeSection === 'account' && (
+                    <ErrorBoundary>
+                        <AccountSettings />
                     </ErrorBoundary>
                 )}
 

@@ -39,7 +39,7 @@ export interface MemoryConfig {
  * Default Configuration
  */
 const DEFAULT_CONFIG: MemoryConfig = {
-  backend: 'sqlite',
+  backend: 'server-memory',
   
   sqlite: {
     storagePath: app.getPath('userData') + '/memory_v2.db'

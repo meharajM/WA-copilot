@@ -63,7 +63,7 @@ export function computeResolutionAuditActions(
  * Intelligent Resolution Auditor Hook
  * 
  * Monitors active WhatsApp-linked sessions for inactivity.
- * After 10 minutes of silence, it triggers a resolution inquiry.
+ * After 15 minutes of silence, it triggers a resolution inquiry.
  */
 export function useResolutionAudit() {
     const { sessions, addSessionMessage, updateSessionActivity } = useChatStore()

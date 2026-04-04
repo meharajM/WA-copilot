@@ -9,6 +9,8 @@ interface ImportMetaEnv {
     readonly VITE_FIREBASE_MESSAGING_SENDER_ID?: string
     readonly VITE_FIREBASE_APP_ID?: string
     readonly VITE_RECAPTCHA_SITE_KEY?: string
+    readonly VITE_DEFAULT_MODEL?: string
+    readonly VITE_API_KEY?: string
 }
 
 interface ImportMeta {
@@ -36,6 +38,20 @@ interface ElectronAPI {
         get: (key: string) => Promise<unknown>
         set: (key: string, value: unknown) => Promise<boolean>
         delete: (key: string) => Promise<boolean>
+    }
+
+    chat: {
+        loadSessions: () => Promise<{ success: boolean; sessions?: unknown[]; error?: string }>
+        saveSessionsWithMirror: (sessions: unknown[]) => Promise<{ success: boolean; error?: string }>
+        deleteSession: (id: string) => Promise<{ success: boolean; error?: string }>
+    }
+
+    reports: {
+        generateDaily: (dateIso?: string) => Promise<{ success: boolean; report?: unknown; jsonPath?: string; markdownPath?: string; error?: string }>
+        listDaily: (limit?: number) => Promise<{ success: boolean; reports?: string[]; error?: string }>
+        getByDate: (dateKey: string) => Promise<{ success: boolean; report?: unknown; path?: string; error?: string }>
+        getLatest: () => Promise<{ success: boolean; report?: unknown; path?: string; error?: string }>
+        openFolder: () => Promise<{ success: boolean; error?: string }>
     }
 
     shell: {

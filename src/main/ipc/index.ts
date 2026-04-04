@@ -16,6 +16,7 @@ import { whatsappService } from '../whatsapp/WhatsAppService'
 import { IntelligenceService } from '../services/IntelligenceService'
 import { ChatPersistenceService } from '../services/ChatPersistenceService'
 import { SessionMirrorService } from '../services/SessionMirrorService'
+import { DailySummaryService } from '../services/DailySummaryService'
 
 export function setupIpcHandlers(): void {
     registerAppHandlers()
@@ -44,6 +45,7 @@ export function setupIpcHandlers(): void {
         return BusinessPersona.getInstance().updateProfile(updates)
     })
     IntelligenceService.getInstance().registerIpc()
+    DailySummaryService.getInstance().registerIpc()
     
     // Setup Chat Persistence & Mirroring
     const chatPersistence = ChatPersistenceService.getInstance()

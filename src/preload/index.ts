@@ -31,6 +31,21 @@ const electronAPI = {
         set: (key: string, value: unknown) => ipcRenderer.invoke('store:set', key, value),
         delete: (key: string) => ipcRenderer.invoke('store:delete', key),
     },
+    // Chat persistence operations
+    chat: {
+        loadSessions: () => ipcRenderer.invoke('chat:load-sessions'),
+        saveSessionsWithMirror: (sessions: unknown[]) =>
+            ipcRenderer.invoke('chat:save-sessions-with-mirror', sessions),
+        deleteSession: (id: string) => ipcRenderer.invoke('chat:delete-session', id),
+    },
+    // Reporting operations
+    reports: {
+        generateDaily: (dateIso?: string) => ipcRenderer.invoke('report:generate-daily', dateIso),
+        listDaily: (limit?: number) => ipcRenderer.invoke('report:list-daily', limit),
+        getByDate: (dateKey: string) => ipcRenderer.invoke('report:get-by-date', dateKey),
+        getLatest: () => ipcRenderer.invoke('report:get-latest'),
+        openFolder: () => ipcRenderer.invoke('report:open-folder'),
+    },
 
     // Shell operations
     shell: {

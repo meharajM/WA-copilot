@@ -136,6 +136,39 @@ export const electron = {
         },
     },
 
+    reports: {
+        generateDaily: async (dateIso?: string) => {
+            if (isElectron() && window.electron?.reports) {
+                return await window.electron.reports.generateDaily(dateIso)
+            }
+            return { success: false, error: 'Reports are only available in desktop mode' }
+        },
+        listDaily: async (limit?: number) => {
+            if (isElectron() && window.electron?.reports) {
+                return await window.electron.reports.listDaily(limit)
+            }
+            return { success: false, reports: [], error: 'Reports are only available in desktop mode' }
+        },
+        getByDate: async (dateKey: string) => {
+            if (isElectron() && window.electron?.reports) {
+                return await window.electron.reports.getByDate(dateKey)
+            }
+            return { success: false, error: 'Reports are only available in desktop mode' }
+        },
+        getLatest: async () => {
+            if (isElectron() && window.electron?.reports) {
+                return await window.electron.reports.getLatest()
+            }
+            return { success: false, error: 'Reports are only available in desktop mode' }
+        },
+        openFolder: async () => {
+            if (isElectron() && window.electron?.reports) {
+                return await window.electron.reports.openFolder()
+            }
+            return { success: false, error: 'Reports are only available in desktop mode' }
+        },
+    },
+
     // Secure storage for sensitive data (encrypted with OS keychain)
     secure: {
         isAvailable: async (): Promise<boolean> => {

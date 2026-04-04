@@ -27,10 +27,8 @@ export const usePersonaStore = create<PersonaState>((set, get) => ({
         try {
             set({ isLoading: true, error: null })
             
-            // @ts-expect-error - electron is injected by preload script
-            if (window.electron?.ipcRenderer) {
-                // @ts-expect-error - IPC requires any type inference
-                const profile = await window.electron.ipcRenderer.invoke('intelligence:get-persona')
+            if (window.electron?.intelligence) {
+                const profile = await window.electron.intelligence.getPersona()
                 set({ profile, isLoading: false })
             } else {
                 throw new Error("Electron IPC not available")
@@ -61,10 +59,8 @@ export const usePersonaStore = create<PersonaState>((set, get) => ({
             set({ profile: newProfile })
 
             // Sync to backend
-            // @ts-expect-error - electron is injected by preload script
-            if (window.electron?.ipcRenderer) {
-                // @ts-expect-error - IPC requires any type inference
-                await window.electron.ipcRenderer.invoke('intelligence:update-persona', updates)
+            if (window.electron?.intelligence) {
+                await window.electron.intelligence.updatePersona(updates)
             }
         } catch (error) {
             const err = error as Error;
