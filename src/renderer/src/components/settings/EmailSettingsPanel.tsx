@@ -27,8 +27,6 @@ import {
   Wrench,
 } from 'lucide-react'
 
-type SetupStep = 1 | 2 | 3
-
 type TestState =
   | { status: 'idle' }
   | { status: 'running'; message: string }
@@ -103,7 +101,6 @@ export function EmailSettingsPanel() {
     setPollingInterval,
   } = useEmailStore()
 
-  const [step, setStep] = useState<SetupStep>(1)
   const [showAdvanced, setShowAdvanced] = useState(false)
 
   const [localProvider, setLocalProvider] = useState<EmailProvider>(config.provider)
@@ -125,6 +122,7 @@ export function EmailSettingsPanel() {
   const readyForAuth = useMemo(() => normalizeEmail(localEmail).includes('@'), [localEmail])
   const readyForVerify = useMemo(() => localPassword.trim().length > 0, [localPassword])
   const canGoLive = readyForAuth && readyForVerify
+  const isVerified = testState.status === 'success' || (config.enabled && connectionState.status === 'connected')
 
   useEffect(() => {
     setLocalProvider(config.provider)
@@ -243,7 +241,6 @@ export function EmailSettingsPanel() {
         status: 'success',
         message: 'Connection successful. You can now enable the email channel.'
       })
-      setStep(3)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       setTestState({
@@ -295,14 +292,14 @@ export function EmailSettingsPanel() {
 
       <Card variant="glass" padding="md" className="space-y-6">
         <div className="flex items-center gap-3 text-xs font-semibold uppercase tracking-wider text-[var(--color-text-dim)]">
-          <span className={step >= 1 ? 'text-[var(--color-brand-teal)]' : ''}>1. Provider</span>
+          <span className="text-[var(--color-brand-teal)]">1. Provider</span>
           <ChevronRight size={12} />
-          <span className={step >= 2 ? 'text-[var(--color-brand-teal)]' : ''}>2. Authenticate</span>
+          <span className={canGoLive ? 'text-[var(--color-brand-teal)]' : ''}>2. Authenticate</span>
           <ChevronRight size={12} />
-          <span className={step >= 3 ? 'text-[var(--color-brand-teal)]' : ''}>3. Verify & Go Live</span>
+          <span className={isVerified ? 'text-[var(--color-brand-teal)]' : ''}>3. Verify & Go Live</span>
         </div>
         <p className="text-xs text-[var(--color-text-dim)]">
-          {step < 3
+          {!isVerified
             ? 'Run Test Connection to complete verification and unlock Go Live.'
             : 'Verified. You can now safely go live.'}
         </p>
@@ -319,7 +316,6 @@ export function EmailSettingsPanel() {
                 key={provider}
                 onClick={() => {
                   applyProvider(provider)
-                  setStep(2)
                 }}
                 className={`text-left p-3 rounded-lg border transition-colors ${
                   active
@@ -527,23 +523,6 @@ export function EmailSettingsPanel() {
             </span>
           )}
           <div className="ml-auto flex items-center gap-2">
-            <button
-              onClick={() => setStep(step === 1 ? 1 : ((step - 1) as SetupStep))}
-              disabled={step === 1}
-              className="px-3 py-2 rounded-lg text-xs font-semibold bg-[var(--color-surface)] text-[var(--color-text-muted)] disabled:opacity-40"
-            >
-              Back
-            </button>
-            <button
-              onClick={() => {
-                if (step === 1 && readyForAuth) setStep(2)
-                else if (step === 2 && canGoLive) setStep(3)
-              }}
-              disabled={(step === 1 && !readyForAuth) || (step === 2 && !canGoLive) || step === 3}
-              className="px-3 py-2 rounded-lg text-xs font-semibold bg-[var(--color-brand-teal)]/20 text-[var(--color-brand-teal)] disabled:opacity-40"
-            >
-              Next
-            </button>
             <button
               onClick={handleSave}
               disabled={isSaving}
