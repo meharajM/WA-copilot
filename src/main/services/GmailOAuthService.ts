@@ -85,8 +85,14 @@ export class GmailOAuthService {
     if (this.initialized) return
     this.refreshToken = getSecret('gmail_refresh_token')
     this.email = getSecret('gmail_email')
-    this.clientId = getSecret('gmail_client_id')
-    this.clientSecret = getSecret('gmail_client_secret')
+    this.clientId = getSecret('gmail_client_id') || process.env.GMAIL_OAUTH_CLIENT_ID || null
+    this.clientSecret = getSecret('gmail_client_secret') || process.env.GMAIL_OAUTH_CLIENT_SECRET || null
+    if (this.clientId) {
+      setSecret('gmail_client_id', this.clientId)
+    }
+    if (this.clientSecret) {
+      setSecret('gmail_client_secret', this.clientSecret)
+    }
     this.initialized = true
   }
 
@@ -97,12 +103,16 @@ export class GmailOAuthService {
     }
   }
 
-  async signIn(clientId: string, clientSecret = ''): Promise<GmailOAuthStatus> {
+  async signIn(clientId?: string, clientSecret?: string): Promise<GmailOAuthStatus> {
     await this.initialize()
-    if (!clientId.trim()) throw new Error('Google OAuth Client ID is required')
+    const resolvedClientId = (clientId || this.clientId || '').trim()
+    const resolvedClientSecret = (clientSecret || this.clientSecret || '').trim()
+    if (!resolvedClientId) {
+      throw new Error('Google OAuth is not configured in this app. Please contact support.')
+    }
 
-    this.clientId = clientId.trim()
-    this.clientSecret = clientSecret.trim() || null
+    this.clientId = resolvedClientId
+    this.clientSecret = resolvedClientSecret || null
     setSecret('gmail_client_id', this.clientId)
     if (this.clientSecret) setSecret('gmail_client_secret', this.clientSecret)
     else deleteSecret('gmail_client_secret')

@@ -163,7 +163,7 @@ interface ElectronAPI {
     }
     emailOAuth?: {
         initialize: () => Promise<{ signedIn: boolean; email: string | null }>
-        signInGoogle: (clientId: string, clientSecret?: string) => Promise<{ signedIn: boolean; email: string | null }>
+        signInGoogle: (clientId?: string, clientSecret?: string) => Promise<{ signedIn: boolean; email: string | null }>
         signOut: () => Promise<{ success: boolean }>
         getStatus: () => Promise<{ signedIn: boolean; email: string | null }>
         getAccessToken: () => Promise<{ token: string | null }>

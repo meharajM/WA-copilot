@@ -121,8 +121,6 @@ export function EmailSettingsPanel() {
   const [saveStatus, setSaveStatus] = useState<'idle' | 'success' | 'error'>('idle')
   const [testState, setTestState] = useState<TestState>({ status: 'idle' })
   const [oauthStatus, setOauthStatus] = useState<{ signedIn: boolean; email: string | null }>({ signedIn: false, email: null })
-  const [oauthClientId, setOauthClientId] = useState('')
-  const [oauthClientSecret, setOauthClientSecret] = useState('')
   const [oauthBusy, setOauthBusy] = useState(false)
 
   const readyForAuth = useMemo(() => normalizeEmail(localEmail).includes('@'), [localEmail])
@@ -153,12 +151,6 @@ export function EmailSettingsPanel() {
       if (result.success && result.value) setLocalPassword(result.value)
     }).catch(() => {})
     electron.emailOAuth.initialize().then(setOauthStatus).catch(() => {})
-    electron.secure.get('gmail_oauth_client_id').then((r) => {
-      if (r.success && r.value) setOauthClientId(r.value)
-    }).catch(() => {})
-    electron.secure.get('gmail_oauth_client_secret').then((r) => {
-      if (r.success && r.value) setOauthClientSecret(r.value)
-    }).catch(() => {})
   }, [])
 
   const applyProvider = (provider: EmailProvider) => {
@@ -189,18 +181,12 @@ export function EmailSettingsPanel() {
     if (localPassword.trim()) {
       await electron.secure.set('email_mcp_password', localPassword.trim())
     }
-    if (oauthClientId.trim()) {
-      await electron.secure.set('gmail_oauth_client_id', oauthClientId.trim())
-    }
-    if (oauthClientSecret.trim()) {
-      await electron.secure.set('gmail_oauth_client_secret', oauthClientSecret.trim())
-    }
   }
 
   const handleGoogleOAuthSignIn = async () => {
     setOauthBusy(true)
     try {
-      const status = await electron.emailOAuth.signInGoogle(oauthClientId.trim(), oauthClientSecret.trim())
+      const status = await electron.emailOAuth.signInGoogle()
       setOauthStatus(status)
       if (status.email) setLocalEmail(status.email)
     } catch (error) {
@@ -419,29 +405,13 @@ export function EmailSettingsPanel() {
         {localProvider === 'gmail-api' && (
           <div className="space-y-3 pt-2 border-t border-[var(--color-border)]">
             <p className="text-xs text-[var(--color-text-dim)]">
-              Google OAuth (recommended): avoids manual IMAP app-password setup.
+              Google OAuth (recommended): one-click sign-in, no IMAP/app-password setup required.
             </p>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <input
-                type="text"
-                value={oauthClientId}
-                onChange={(e) => setOauthClientId(e.target.value)}
-                className="w-full bg-[var(--color-bg-dark)] border border-[var(--color-border)] rounded-lg px-4 py-2 text-[var(--color-text-primary)]"
-                placeholder="Google OAuth Client ID"
-              />
-              <input
-                type="password"
-                value={oauthClientSecret}
-                onChange={(e) => setOauthClientSecret(e.target.value)}
-                className="w-full bg-[var(--color-bg-dark)] border border-[var(--color-border)] rounded-lg px-4 py-2 text-[var(--color-text-primary)]"
-                placeholder="Google OAuth Client Secret (optional)"
-              />
-            </div>
             <div className="flex items-center gap-3">
               {!oauthStatus.signedIn ? (
                 <button
                   onClick={handleGoogleOAuthSignIn}
-                  disabled={oauthBusy || !oauthClientId.trim()}
+                  disabled={oauthBusy}
                   className="flex items-center gap-2 bg-[var(--color-brand-teal)]/20 hover:bg-[var(--color-brand-teal)]/30 text-[var(--color-brand-teal)] px-4 py-2 rounded-lg text-sm font-semibold disabled:opacity-50"
                 >
                   <LogIn size={14} />
@@ -461,11 +431,6 @@ export function EmailSettingsPanel() {
                 {oauthStatus.signedIn ? `Connected as ${oauthStatus.email || 'Google account'}` : 'Not connected'}
               </span>
             </div>
-            {!oauthClientId.trim() && (
-              <p className="text-xs text-amber-300">
-                Enter Google OAuth Client ID to enable Sign in with Google.
-              </p>
-            )}
           </div>
         )}
 

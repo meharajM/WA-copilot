@@ -489,7 +489,7 @@ export const electron = {
             }
             return { signedIn: false, email: null }
         },
-        signInGoogle: async (clientId: string, clientSecret?: string) => {
+        signInGoogle: async (clientId?: string, clientSecret?: string) => {
             if (isElectron() && window.electron?.emailOAuth) {
                 return window.electron.emailOAuth.signInGoogle(clientId, clientSecret)
             }
