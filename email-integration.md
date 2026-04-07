@@ -175,6 +175,19 @@ Preferred pattern:
 - Keep pinned version documented in release notes + security checklist.
 - Re-run verification before every version bump.
 
+### 6.2) Gmail OAuth Model (Current: Option 3)
+
+Current shipping model for desktop app:
+- App-managed OAuth config (end users do not provide client ID/secret)
+- PKCE enabled in desktop flow
+- `GMAIL_OAUTH_CLIENT_ID` and `GMAIL_OAUTH_CLIENT_SECRET` injected by app owner at runtime/build environment
+- Refresh/access tokens stored in OS-backed secure storage, not in repo files
+
+Important:
+- In desktop distribution, OAuth `client_secret` is treated as client metadata, not a high-security secret.
+- Do not present client ID/secret fields to end users.
+- Planned migration: move token exchange/refresh to backend broker so secret never ships with clients.
+
 ---
 
 ## 7) Acceptance Criteria

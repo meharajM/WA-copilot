@@ -63,6 +63,7 @@ export function useEmailBridge(): void {
     const run = async () => {
       console.log('[EmailBridge] run', {
         enabled: config.enabled,
+        provider: config.provider,
         emailAddress: config.emailAddress,
         accountName: config.accountName
       })
@@ -71,20 +72,11 @@ export function useEmailBridge(): void {
         return
       }
 
-      if (!config.emailAddress || !config.imapHost || !config.smtpHost) {
-        setConnectionState({
-          status: 'error',
-          error: 'Email channel enabled but required settings are missing',
-          lastSyncAt: null,
-          unreadCount: 0
-        })
-        return
-      }
-
-      const passwordResult = await electron.secure.get('email_mcp_password')
-      const password = passwordResult.value || ''
       const oauthStatus = await electron.emailOAuth.getStatus()
       const usingGmailOAuth = config.provider === 'gmail-api' && oauthStatus.signedIn
+      const configuredAddress = normalizeEmailAddress(config.emailAddress || '')
+      const oauthAddress = normalizeEmailAddress(oauthStatus.email || '')
+      const effectiveAddress = usingGmailOAuth ? (oauthAddress || configuredAddress) : configuredAddress
 
       if (config.provider === 'gmail-api' && !oauthStatus.signedIn) {
         setConnectionState({
@@ -96,6 +88,28 @@ export function useEmailBridge(): void {
         return
       }
 
+      if (!effectiveAddress) {
+        setConnectionState({
+          status: 'error',
+          error: 'Email channel enabled but required settings are missing',
+          lastSyncAt: null,
+          unreadCount: 0
+        })
+        return
+      }
+
+      if (!usingGmailOAuth && (!config.imapHost || !config.smtpHost)) {
+        setConnectionState({
+          status: 'error',
+          error: 'Email channel enabled but required settings are missing',
+          lastSyncAt: null,
+          unreadCount: 0
+        })
+        return
+      }
+
+      const passwordResult = await electron.secure.get('email_mcp_password')
+      const password = passwordResult.value || ''
       if (!password && !usingGmailOAuth) {
         setConnectionState({
           status: 'error',
@@ -106,7 +120,7 @@ export function useEmailBridge(): void {
         return
       }
 
-      const address = normalizeEmailAddress(config.emailAddress)
+      const address = effectiveAddress
       const runtimeConfig = {
         provider: config.provider,
         command: 'uvx',
@@ -161,6 +175,7 @@ export function useEmailBridge(): void {
     })
   }, [
     config.enabled,
+    config.provider,
     config.emailAddress,
     config.userName,
     config.accountName,

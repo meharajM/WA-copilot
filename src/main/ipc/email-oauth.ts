@@ -7,8 +7,8 @@ export function registerEmailOAuthHandlers(): void {
     return gmailOAuthService.getStatus()
   })
 
-  ipcMain.handle('email-oauth:sign-in-google', async (_event, payload?: { clientId?: string }) => {
-    return gmailOAuthService.signIn(payload?.clientId)
+  ipcMain.handle('email-oauth:sign-in-google', async () => {
+    return gmailOAuthService.signIn()
   })
 
   ipcMain.handle('email-oauth:sign-out', async () => {

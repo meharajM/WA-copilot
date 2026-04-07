@@ -79,16 +79,22 @@ export class GmailOAuthService {
   private refreshToken: string | null = null
   private email: string | null = null
   private clientId: string | null = null
+  private clientSecret: string | null = null
 
   async initialize(): Promise<void> {
     if (this.initialized) return
     this.refreshToken = getSecret('gmail_refresh_token')
     this.email = getSecret('gmail_email')
-    this.clientId = getSecret('gmail_client_id') || process.env.GMAIL_OAUTH_CLIENT_ID || null
+    const envClientId = (process.env.GMAIL_OAUTH_CLIENT_ID || '').trim()
+    const envClientSecret = (process.env.GMAIL_OAUTH_CLIENT_SECRET || '').trim()
+    const storedClientId = getSecret('gmail_client_id')
+    // Always prefer env to avoid getting stuck on stale local client IDs.
+    this.clientId = envClientId || storedClientId || null
+    this.clientSecret = envClientSecret || null
     if (this.clientId) {
       setSecret('gmail_client_id', this.clientId)
     }
-    // PKCE public client flow: no client secret should be persisted.
+    // Never persist OAuth client secret in app storage.
     deleteSecret('gmail_client_secret')
     this.initialized = true
   }
@@ -164,6 +170,9 @@ export class GmailOAuthService {
       refresh_token: this.refreshToken,
       client_id: this.clientId,
     })
+    if (this.clientSecret) {
+      body.set('client_secret', this.clientSecret)
+    }
 
     const response = await fetch(TOKEN_URL, {
       method: 'POST',
@@ -215,6 +224,9 @@ export class GmailOAuthService {
       redirect_uri: REDIRECT_URI,
       code_verifier: verifier,
     })
+    if (this.clientSecret) {
+      body.set('client_secret', this.clientSecret)
+    }
 
     const response = await fetch(TOKEN_URL, {
       method: 'POST',
@@ -223,10 +235,27 @@ export class GmailOAuthService {
     })
     const json = await response.json() as TokenResponse & { error?: string; error_description?: string }
     if (!response.ok || !json.access_token) {
-      const detail = json.error_description || json.error || 'token exchange failed'
+      const detail = this.normalizeGoogleOAuthError(json.error_description || json.error || 'token exchange failed')
       throw new Error(`Gmail OAuth token exchange failed: ${detail}`)
     }
     return json
+  }
+
+  private normalizeGoogleOAuthError(rawDetail: string): string {
+    const detail = (rawDetail || '').trim()
+    const lowered = detail.toLowerCase()
+
+    // PKCE flow must use a Google OAuth client created as "Desktop app".
+    // Using a Web client ID can trigger "client_secret is missing" during token exchange.
+    if (lowered.includes('client_secret is missing')) {
+      return 'This app is missing server-managed Google OAuth config. App owner: set GMAIL_OAUTH_CLIENT_SECRET in the runtime environment and restart.'
+    }
+
+    if (lowered.includes('redirect_uri_mismatch')) {
+      return 'redirect URI mismatch. Ensure the OAuth client is a "Desktop app" client ID for loopback redirect support.'
+    }
+
+    return detail || 'token exchange failed'
   }
 
   private async fetchUserInfo(accessToken: string): Promise<GoogleUserInfo> {

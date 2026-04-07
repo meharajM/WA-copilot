@@ -215,8 +215,7 @@ const electronAPI = {
     },
     emailOAuth: {
         initialize: () => ipcRenderer.invoke('email-oauth:initialize'),
-        signInGoogle: (clientId?: string) =>
-            ipcRenderer.invoke('email-oauth:sign-in-google', { clientId }),
+        signInGoogle: () => ipcRenderer.invoke('email-oauth:sign-in-google'),
         signOut: () => ipcRenderer.invoke('email-oauth:sign-out'),
         getStatus: () => ipcRenderer.invoke('email-oauth:get-status'),
         getAccessToken: () => ipcRenderer.invoke('email-oauth:get-access-token'),

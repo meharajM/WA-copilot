@@ -407,6 +407,9 @@ export function EmailSettingsPanel() {
             <p className="text-xs text-[var(--color-text-dim)]">
               Google OAuth (recommended): one-click sign-in, no IMAP/app-password setup required.
             </p>
+            <p className="text-xs text-[var(--color-text-dim)]">
+              OAuth is managed by the app. End users only need to click <span className="font-semibold text-[var(--color-text-primary)]">Sign in with Google</span>.
+            </p>
             <div className="flex items-center gap-3">
               {!oauthStatus.signedIn ? (
                 <button
