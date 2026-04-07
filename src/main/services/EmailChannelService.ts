@@ -112,6 +112,61 @@ function readBoolean(obj: Record<string, unknown>, keys: string[], fallback = fa
   return fallback
 }
 
+function parseEmailAddress(input: unknown): string {
+  if (typeof input === 'string') {
+    const trimmed = input.trim()
+    if (!trimmed) return ''
+    const match = trimmed.match(/<([^>]+@[^>]+)>/)
+    if (match?.[1]) return match[1].trim().toLowerCase()
+    if (trimmed.includes('@')) return trimmed.toLowerCase()
+    return ''
+  }
+
+  if (Array.isArray(input)) {
+    for (const item of input) {
+      const parsed = parseEmailAddress(item)
+      if (parsed) return parsed
+    }
+    return ''
+  }
+
+  if (input && typeof input === 'object') {
+    const obj = input as Record<string, unknown>
+    return (
+      parseEmailAddress(obj.email) ||
+      parseEmailAddress(obj.address) ||
+      parseEmailAddress(obj.value) ||
+      parseEmailAddress(obj.mailbox)
+    )
+  }
+
+  return ''
+}
+
+function parseTimestampMs(item: Record<string, unknown>): number {
+  const numeric = readNumber(item, ['date_ts', 'timestamp', 'received_at_ts', 'received_ts', 'internal_date'], 0)
+  if (numeric > 0) {
+    return numeric < 2_000_000_000 ? numeric * 1000 : numeric
+  }
+
+  const candidates = [
+    item.date,
+    item.received_at,
+    item.receivedAt,
+    item.sent_at,
+    item.sentAt,
+    item.internalDate
+  ]
+  for (const c of candidates) {
+    if (typeof c === 'string' && c.trim()) {
+      const parsed = Date.parse(c)
+      if (!Number.isNaN(parsed)) return parsed
+    }
+  }
+
+  return Date.now()
+}
+
 export class EmailChannelService extends EventEmitter {
   private state: EmailConnectionState = {
     status: 'disconnected',
@@ -364,13 +419,26 @@ export class EmailChannelService extends EventEmitter {
   }
 
   private toInboundEmail(item: Record<string, unknown>): InboundEmailMessage {
-    const timestampSec = readNumber(item, ['date_ts', 'timestamp', 'received_at_ts'], Date.now())
-    const timestamp = timestampSec < 2_000_000_000 ? timestampSec * 1000 : timestampSec
+    const timestamp = parseTimestampMs(item)
+    const fromAddress =
+      parseEmailAddress(item.from) ||
+      parseEmailAddress(item.sender) ||
+      parseEmailAddress(item.from_address) ||
+      parseEmailAddress(item.from_email) ||
+      parseEmailAddress(item.sender_email) ||
+      readString(item, ['from', 'sender', 'from_address', 'from_email', 'sender_email'])
+    const toAddress =
+      parseEmailAddress(item.to) ||
+      parseEmailAddress(item.recipients) ||
+      parseEmailAddress(item.to_address) ||
+      parseEmailAddress(item.to_email) ||
+      readString(item, ['to', 'recipients', 'to_address', 'to_email'])
+    const fromMe = readBoolean(item, ['is_from_me', 'isFromMe', 'from_me', 'outgoing', 'sent_by_me'], false)
 
     return {
       id: readString(item, ['id', 'email_id', 'uid'], `email_${Date.now()}`),
-      from: readString(item, ['from', 'sender', 'from_address']),
-      to: readString(item, ['to', 'recipients', 'to_address']),
+      from: fromAddress || 'unknown-sender',
+      to: toAddress,
       subject: readString(item, ['subject'], '(No Subject)'),
       body: readString(item, ['body', 'text', 'plain_text', 'content']),
       bodyType: readString(item, ['body_type', 'content_type'], 'text').toLowerCase().includes('html') ? 'html' : 'text',
@@ -378,12 +446,12 @@ export class EmailChannelService extends EventEmitter {
       messageId: readString(item, ['message_id', 'messageId']),
       inReplyTo: readString(item, ['in_reply_to', 'inReplyTo']),
       references: readString(item, ['references']),
-      isFromMe: false
+      isFromMe: fromMe
     }
   }
 
   private shouldProcessInbound(email: InboundEmailMessage, raw?: Record<string, unknown>): boolean {
-    if (!email.from || email.isFromMe) return false
+    if (email.isFromMe) return false
 
     const now = Date.now()
     if (email.timestamp > 0 && now - email.timestamp > RECENT_EMAIL_WINDOW_MS) return false
