@@ -181,6 +181,7 @@ export class EmailChannelService extends EventEmitter {
   private seenMessageIds = new Set<string>()
   private running = false
   private effectiveAccountName: string | null = null
+  private availableToolNames: string[] = []
 
   configure(config: EmailPollingConfig): void {
     this.config = {
@@ -220,6 +221,18 @@ export class EmailChannelService extends EventEmitter {
       this.client = new Client({ name: 'aica-email-client', version: '0.1.0' }, { capabilities: {} })
       await this.client.connect(transport)
       console.log('[EmailChannelService] MCP client connected')
+      try {
+        const toolsResult = await this.client.listTools()
+        const tools = Array.isArray(toolsResult?.tools) ? toolsResult.tools : []
+        this.availableToolNames = tools
+          .map((t) => (t && typeof t.name === 'string' ? t.name : ''))
+          .filter((n) => n !== '')
+        console.log('[EmailChannelService] available tools', this.availableToolNames)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        this.availableToolNames = []
+        console.log('[EmailChannelService] listTools unavailable', { error: message })
+      }
 
       this.seenMessageIds.clear()
       this.effectiveAccountName = null
@@ -254,6 +267,7 @@ export class EmailChannelService extends EventEmitter {
     }
     this.seenMessageIds.clear()
     this.effectiveAccountName = null
+    this.availableToolNames = []
     this.setState({ status: 'disconnected', error: null, lastSyncAt: null, unreadCount: 0 })
   }
 
@@ -491,6 +505,11 @@ export class EmailChannelService extends EventEmitter {
           .filter((id) => id !== '')
         const ids = idsFromList.length > 0 ? idsFromList : idsFromArray
         const unreadCount = readNumber(structured, ['unread_count', 'unreadCount'], ids.length)
+        console.log('[EmailChannelService] metadata candidate result', {
+          tool: candidate.name,
+          args: Object.keys(candidate.args),
+          ids: ids.length
+        })
         if (ids.length > 0) {
           console.log('[EmailChannelService] metadata candidate matched', {
             tool: candidate.name,
@@ -558,6 +577,11 @@ export class EmailChannelService extends EventEmitter {
         })
         const structured = extractStructured(result)
         const emails = asArray(structured.emails || structured.messages || structured.results || structured.items || structured.data)
+        console.log('[EmailChannelService] direct candidate result', {
+          tool: candidate.name,
+          args: Object.keys(candidate.args),
+          count: emails.length
+        })
         if (emails.length > 0) {
           console.log('[EmailChannelService] direct candidate matched', {
             tool: candidate.name,
