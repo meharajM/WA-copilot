@@ -229,26 +229,39 @@ export class EmailChannelService extends EventEmitter {
 
     try {
       const accountName = this.config.accountName || 'default'
-      const metadata = await this.fetchMetadata(accountName, this.config.maxEmailsPerPoll || 10, this.config.unreadOnly ?? true)
+      const limit = this.config.maxEmailsPerPoll || 10
+      const unreadOnly = this.config.unreadOnly ?? true
+      const metadata = await this.fetchMetadata(accountName, limit, unreadOnly)
       let unreadCount = 0
       let processed = 0
 
       const ids: string[] = metadata.ids
       unreadCount = metadata.unreadCount
 
-      if (ids.length === 0) {
-        this.setState({ ...this.state, status: 'connected', error: null, lastSyncAt: Date.now(), unreadCount })
-        return
+      if (ids.length > 0) {
+        for (const emailId of ids) {
+          const contentPayload = await this.client.callTool({
+            name: 'get_emails_content',
+            arguments: { account_name: accountName, email_ids: [emailId] }
+          })
+          const structured = extractStructured(contentPayload)
+          const emails = asArray(structured.emails || structured.messages || structured.results)
+          for (const emailObj of emails) {
+            const email = this.toInboundEmail(emailObj)
+            const dedupeId = email.messageId || email.id
+            if (dedupeId && this.seenMessageIds.has(dedupeId)) continue
+            if (dedupeId) this.seenMessageIds.add(dedupeId)
+            this.emit('message', email)
+            processed += 1
+          }
+        }
       }
 
-      for (const emailId of ids) {
-        const contentPayload = await this.client.callTool({
-          name: 'get_emails_content',
-          arguments: { account_name: accountName, email_ids: [emailId] }
-        })
-        const structured = extractStructured(contentPayload)
-        const emails = asArray(structured.emails || structured.messages || structured.results)
-        for (const emailObj of emails) {
+      // Some server builds prefer/only expose "fetch_emails".
+      // Fall back to it when metadata/content strategy yields no messages.
+      if (processed === 0) {
+        const directEmails = await this.fetchEmailsDirect(accountName, limit, unreadOnly)
+        for (const emailObj of directEmails) {
           const email = this.toInboundEmail(emailObj)
           const dedupeId = email.messageId || email.id
           if (dedupeId && this.seenMessageIds.has(dedupeId)) continue
@@ -291,10 +304,14 @@ export class EmailChannelService extends EventEmitter {
           arguments: candidate.args
         })
         const structured = extractStructured(result)
+        const idsFromArray = Array.isArray(structured.ids)
+          ? structured.ids.filter((v): v is string => typeof v === 'string' && v.trim() !== '')
+          : []
         const list = asArray(structured.emails || structured.messages || structured.results || structured.items)
-        const ids = list
+        const idsFromList = list
           .map((item) => readString(item, ['id', 'email_id', 'uid']))
           .filter((id) => id !== '')
+        const ids = idsFromList.length > 0 ? idsFromList : idsFromArray
         const unreadCount = readNumber(structured, ['unread_count', 'unreadCount'], ids.length)
         return { ids, unreadCount }
       } catch {
@@ -303,6 +320,29 @@ export class EmailChannelService extends EventEmitter {
     }
 
     return { ids: [], unreadCount: 0 }
+  }
+
+  private async fetchEmailsDirect(
+    accountName: string,
+    limit: number,
+    unreadOnly: boolean
+  ): Promise<Record<string, unknown>[]> {
+    if (!this.client) return []
+    try {
+      const result = await this.client.callTool({
+        name: 'fetch_emails',
+        arguments: {
+          account_name: accountName,
+          max_count: limit,
+          unread_only: unreadOnly
+        }
+      })
+      const structured = extractStructured(result)
+      const emails = asArray(structured.emails || structured.messages || structured.results || structured.items)
+      return emails
+    } catch {
+      return []
+    }
   }
 
   private toInboundEmail(item: Record<string, unknown>): InboundEmailMessage {
@@ -331,4 +371,3 @@ export class EmailChannelService extends EventEmitter {
 }
 
 export const emailChannelService = new EmailChannelService()
-
