@@ -21,7 +21,6 @@ const ALLOWED_SECRET_KEYS = [
     'email_imap_password',
     'email_smtp_password',
     'gmail_oauth_client_id',
-    'gmail_oauth_client_secret',
 ] as const
 
 type SecretKey = typeof ALLOWED_SECRET_KEYS[number]

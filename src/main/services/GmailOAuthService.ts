@@ -79,20 +79,17 @@ export class GmailOAuthService {
   private refreshToken: string | null = null
   private email: string | null = null
   private clientId: string | null = null
-  private clientSecret: string | null = null
 
   async initialize(): Promise<void> {
     if (this.initialized) return
     this.refreshToken = getSecret('gmail_refresh_token')
     this.email = getSecret('gmail_email')
     this.clientId = getSecret('gmail_client_id') || process.env.GMAIL_OAUTH_CLIENT_ID || null
-    this.clientSecret = getSecret('gmail_client_secret') || process.env.GMAIL_OAUTH_CLIENT_SECRET || null
     if (this.clientId) {
       setSecret('gmail_client_id', this.clientId)
     }
-    if (this.clientSecret) {
-      setSecret('gmail_client_secret', this.clientSecret)
-    }
+    // PKCE public client flow: no client secret should be persisted.
+    deleteSecret('gmail_client_secret')
     this.initialized = true
   }
 
@@ -103,19 +100,16 @@ export class GmailOAuthService {
     }
   }
 
-  async signIn(clientId?: string, clientSecret?: string): Promise<GmailOAuthStatus> {
+  async signIn(clientId?: string): Promise<GmailOAuthStatus> {
     await this.initialize()
     const resolvedClientId = (clientId || this.clientId || '').trim()
-    const resolvedClientSecret = (clientSecret || this.clientSecret || '').trim()
     if (!resolvedClientId) {
       throw new Error('Google OAuth is not configured in this app. Please contact support.')
     }
 
     this.clientId = resolvedClientId
-    this.clientSecret = resolvedClientSecret || null
     setSecret('gmail_client_id', this.clientId)
-    if (this.clientSecret) setSecret('gmail_client_secret', this.clientSecret)
-    else deleteSecret('gmail_client_secret')
+    deleteSecret('gmail_client_secret')
 
     const verifier = generateVerifier()
     const challenge = generateChallenge(verifier)
@@ -170,7 +164,6 @@ export class GmailOAuthService {
       refresh_token: this.refreshToken,
       client_id: this.clientId,
     })
-    if (this.clientSecret) body.set('client_secret', this.clientSecret)
 
     const response = await fetch(TOKEN_URL, {
       method: 'POST',
@@ -222,7 +215,6 @@ export class GmailOAuthService {
       redirect_uri: REDIRECT_URI,
       code_verifier: verifier,
     })
-    if (this.clientSecret) body.set('client_secret', this.clientSecret)
 
     const response = await fetch(TOKEN_URL, {
       method: 'POST',
