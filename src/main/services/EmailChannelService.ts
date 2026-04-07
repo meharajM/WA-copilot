@@ -180,6 +180,7 @@ export class EmailChannelService extends EventEmitter {
   private pollTimer: NodeJS.Timeout | null = null
   private seenMessageIds = new Set<string>()
   private running = false
+  private effectiveAccountName: string | null = null
 
   configure(config: EmailPollingConfig): void {
     this.config = {
@@ -213,6 +214,7 @@ export class EmailChannelService extends EventEmitter {
       await this.client.connect(transport)
 
       this.seenMessageIds.clear()
+      this.effectiveAccountName = null
       this.setState({ status: 'connected', error: null, lastSyncAt: Date.now(), unreadCount: 0 })
 
       // Run an immediate poll so first sync is fast.
@@ -241,6 +243,7 @@ export class EmailChannelService extends EventEmitter {
       this.client = null
     }
     this.seenMessageIds.clear()
+    this.effectiveAccountName = null
     this.setState({ status: 'disconnected', error: null, lastSyncAt: null, unreadCount: 0 })
   }
 
@@ -299,7 +302,7 @@ export class EmailChannelService extends EventEmitter {
     if (!this.client || !this.config) return
 
     try {
-      const accountName = this.config.accountName || 'default'
+      const accountName = await this.resolveAccountName()
       const limit = this.config.maxEmailsPerPoll || 10
       const unreadOnly = this.config.unreadOnly ?? true
       const metadata = await this.fetchMetadata(accountName, limit, unreadOnly)
@@ -364,10 +367,33 @@ export class EmailChannelService extends EventEmitter {
   ): Promise<{ ids: string[]; unreadCount: number }> {
     if (!this.client) return { ids: [], unreadCount: 0 }
 
+    const sinceIso = new Date(Date.now() - RECENT_EMAIL_WINDOW_MS).toISOString()
+    const seenFilter = unreadOnly ? false : undefined
+
     const candidates = [
-      { name: 'list_emails_metadata', args: { account_name: accountName, limit, unread_only: unreadOnly } },
-      { name: 'list_emails_metadata', args: { account_name: accountName, max_count: limit, unread_only: unreadOnly } },
-      { name: 'list_emails', args: { account_name: accountName, limit, unread_only: unreadOnly } }
+      {
+        name: 'list_emails_metadata',
+        args: {
+          account_name: accountName,
+          page: 1,
+          page_size: limit,
+          mailbox: 'INBOX',
+          since: sinceIso,
+          seen: seenFilter,
+          answered: false
+        }
+      },
+      {
+        name: 'list_emails_metadata',
+        args: {
+          account_name: accountName,
+          page: 1,
+          page_size: limit,
+          mailbox: 'INBOX',
+          since: sinceIso,
+          seen: seenFilter
+        }
+      }
     ]
 
     for (const candidate of candidates) {
@@ -380,9 +406,9 @@ export class EmailChannelService extends EventEmitter {
         const idsFromArray = Array.isArray(structured.ids)
           ? structured.ids.filter((v): v is string => typeof v === 'string' && v.trim() !== '')
           : []
-        const list = asArray(structured.emails || structured.messages || structured.results || structured.items)
+        const list = asArray(structured.emails || structured.messages || structured.results || structured.items || structured.data)
         const idsFromList = list
-          .map((item) => readString(item, ['id', 'email_id', 'uid']))
+          .map((item) => readString(item, ['id', 'email_id', 'uid', 'emailId']))
           .filter((id) => id !== '')
         const ids = idsFromList.length > 0 ? idsFromList : idsFromArray
         const unreadCount = readNumber(structured, ['unread_count', 'unreadCount'], ids.length)
@@ -401,21 +427,59 @@ export class EmailChannelService extends EventEmitter {
     unreadOnly: boolean
   ): Promise<Record<string, unknown>[]> {
     if (!this.client) return []
+    const sinceIso = new Date(Date.now() - RECENT_EMAIL_WINDOW_MS).toISOString()
     try {
       const result = await this.client.callTool({
         name: 'fetch_emails',
         arguments: {
           account_name: accountName,
           max_count: limit,
-          unread_only: unreadOnly
+          unread_only: unreadOnly,
+          since: sinceIso
         }
       })
       const structured = extractStructured(result)
-      const emails = asArray(structured.emails || structured.messages || structured.results || structured.items)
+      const emails = asArray(structured.emails || structured.messages || structured.results || structured.items || structured.data)
       return emails
     } catch {
       return []
     }
+  }
+
+  private async resolveAccountName(): Promise<string> {
+    if (!this.client || !this.config) return this.config?.accountName || 'default'
+    if (this.effectiveAccountName) return this.effectiveAccountName
+
+    const requested = this.config.accountName || 'default'
+    try {
+      const result = await this.client.callTool({
+        name: 'list_available_accounts',
+        arguments: {}
+      })
+      const raw = result as Record<string, unknown>
+      const structuredUnknown = raw?.structuredContent
+      const structured = extractStructured(result)
+      const accounts = Array.isArray(structuredUnknown)
+        ? structuredUnknown
+        : (Array.isArray(structured.accounts) ? structured.accounts : [])
+      const names = accounts
+        .map((a) => (a && typeof a === 'object' ? readString(a as Record<string, unknown>, ['account_name', 'accountName', 'name']) : ''))
+        .filter((n) => n !== '')
+
+      if (names.includes(requested)) {
+        this.effectiveAccountName = requested
+        return requested
+      }
+      if (names.length > 0) {
+        this.effectiveAccountName = names[0]
+        return names[0]
+      }
+    } catch {
+      // If tool is unavailable, fall back to configured account.
+    }
+
+    this.effectiveAccountName = requested
+    return requested
   }
 
   private toInboundEmail(item: Record<string, unknown>): InboundEmailMessage {
