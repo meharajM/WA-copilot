@@ -317,8 +317,16 @@ export class EmailChannelService extends EventEmitter {
       const limit = this.config.maxEmailsPerPoll || 10
       const unreadOnly = this.config.unreadOnly ?? true
       const metadata = await this.fetchMetadata(accountName, limit, unreadOnly)
+      console.log('[EmailChannelService] poll metadata', {
+        accountName,
+        ids: metadata.ids.length,
+        unreadCount: metadata.unreadCount,
+        limit
+      })
       let unreadCount = 0
       let processed = 0
+      let skippedFiltered = 0
+      let skippedDuplicate = 0
 
       const ids: string[] = metadata.ids
       unreadCount = metadata.unreadCount
@@ -326,11 +334,20 @@ export class EmailChannelService extends EventEmitter {
       if (ids.length > 0) {
         for (const emailId of ids) {
           const emails = await this.getEmailsContent(accountName, emailId)
+          if (emails.length === 0) {
+            console.log('[EmailChannelService] content lookup empty', { emailId })
+          }
           for (const emailObj of emails) {
             const email = this.toInboundEmail(emailObj)
-            if (!this.shouldProcessInbound(email, emailObj)) continue
+            if (!this.shouldProcessInbound(email, emailObj)) {
+              skippedFiltered += 1
+              continue
+            }
             const dedupeId = email.messageId || email.id
-            if (dedupeId && this.seenMessageIds.has(dedupeId)) continue
+            if (dedupeId && this.seenMessageIds.has(dedupeId)) {
+              skippedDuplicate += 1
+              continue
+            }
             if (dedupeId) this.seenMessageIds.add(dedupeId)
             this.emit('message', email)
             processed += 1
@@ -342,17 +359,30 @@ export class EmailChannelService extends EventEmitter {
       // Fall back to it when metadata/content strategy yields no messages.
       if (processed === 0) {
         const directEmails = await this.fetchEmailsDirect(accountName, limit, unreadOnly)
+        console.log('[EmailChannelService] direct fetch fallback', { count: directEmails.length })
         for (const emailObj of directEmails) {
           const email = this.toInboundEmail(emailObj)
-          if (!this.shouldProcessInbound(email, emailObj)) continue
+          if (!this.shouldProcessInbound(email, emailObj)) {
+            skippedFiltered += 1
+            continue
+          }
           const dedupeId = email.messageId || email.id
-          if (dedupeId && this.seenMessageIds.has(dedupeId)) continue
+          if (dedupeId && this.seenMessageIds.has(dedupeId)) {
+            skippedDuplicate += 1
+            continue
+          }
           if (dedupeId) this.seenMessageIds.add(dedupeId)
           this.emit('message', email)
           processed += 1
         }
       }
 
+      console.log('[EmailChannelService] poll result', {
+        processed,
+        skippedFiltered,
+        skippedDuplicate,
+        seenSize: this.seenMessageIds.size
+      })
       this.setState({ ...this.state, status: 'connected', error: null, lastSyncAt: Date.now(), unreadCount })
       if (processed > 0) {
         console.log(`[EmailChannelService] Processed ${processed} inbound email message(s)`)
