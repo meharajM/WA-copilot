@@ -314,12 +314,7 @@ export class EmailChannelService extends EventEmitter {
 
       if (ids.length > 0) {
         for (const emailId of ids) {
-          const contentPayload = await this.client.callTool({
-            name: 'get_emails_content',
-            arguments: { account_name: accountName, email_ids: [emailId] }
-          })
-          const structured = extractStructured(contentPayload)
-          const emails = asArray(structured.emails || structured.messages || structured.results)
+          const emails = await this.getEmailsContent(accountName, emailId)
           for (const emailObj of emails) {
             const email = this.toInboundEmail(emailObj)
             if (!this.shouldProcessInbound(email, emailObj)) continue
@@ -393,6 +388,26 @@ export class EmailChannelService extends EventEmitter {
           since: sinceIso,
           seen: seenFilter
         }
+      },
+      {
+        name: 'page_email',
+        args: {
+          account_name: accountName,
+          page: 1,
+          page_size: limit,
+          mailbox: 'INBOX',
+          since: sinceIso
+        }
+      },
+      {
+        name: 'list_emails',
+        args: {
+          account_name: accountName,
+          page: 1,
+          page_size: limit,
+          mailbox: 'INBOX',
+          since: sinceIso
+        }
       }
     ]
 
@@ -428,22 +443,42 @@ export class EmailChannelService extends EventEmitter {
   ): Promise<Record<string, unknown>[]> {
     if (!this.client) return []
     const sinceIso = new Date(Date.now() - RECENT_EMAIL_WINDOW_MS).toISOString()
-    try {
-      const result = await this.client.callTool({
+    const candidates = [
+      {
         name: 'fetch_emails',
-        arguments: {
+        args: {
           account_name: accountName,
           max_count: limit,
           unread_only: unreadOnly,
           since: sinceIso
         }
-      })
-      const structured = extractStructured(result)
-      const emails = asArray(structured.emails || structured.messages || structured.results || structured.items || structured.data)
-      return emails
-    } catch {
-      return []
+      },
+      {
+        name: 'page_email',
+        args: {
+          account_name: accountName,
+          page: 1,
+          page_size: limit,
+          mailbox: 'INBOX',
+          since: sinceIso
+        }
+      }
+    ]
+
+    for (const candidate of candidates) {
+      try {
+        const result = await this.client.callTool({
+          name: candidate.name,
+          arguments: candidate.args
+        })
+        const structured = extractStructured(result)
+        const emails = asArray(structured.emails || structured.messages || structured.results || structured.items || structured.data)
+        if (emails.length > 0) return emails
+      } catch {
+        // Try next variant.
+      }
     }
+    return []
   }
 
   private async resolveAccountName(): Promise<string> {
@@ -480,6 +515,35 @@ export class EmailChannelService extends EventEmitter {
 
     this.effectiveAccountName = requested
     return requested
+  }
+
+  private async getEmailsContent(accountName: string, emailId: string): Promise<Record<string, unknown>[]> {
+    if (!this.client) return []
+
+    const candidates = [
+      { name: 'get_emails_content', args: { account_name: accountName, email_ids: [emailId] } },
+      { name: 'get_emails_content', args: { account_name: accountName, email_id: emailId } },
+      { name: 'get_email_content', args: { account_name: accountName, email_id: emailId } },
+      { name: 'get_email', args: { account_name: accountName, email_id: emailId } }
+    ]
+
+    for (const candidate of candidates) {
+      try {
+        const payload = await this.client.callTool({
+          name: candidate.name,
+          arguments: candidate.args
+        })
+        const structured = extractStructured(payload)
+        const emails = asArray(structured.emails || structured.messages || structured.results || structured.items || structured.data)
+        if (emails.length > 0) return emails
+        if (structured && typeof structured === 'object' && Object.keys(structured).length > 0) {
+          return [structured]
+        }
+      } catch {
+        // Try next tool variant.
+      }
+    }
+    return []
   }
 
   private toInboundEmail(item: Record<string, unknown>): InboundEmailMessage {
