@@ -12,6 +12,7 @@ interface EmailConnectionState {
 
 export function useEmailBridge(): void {
   const config = useEmailStore((s) => s.config)
+  const connectionState = useEmailStore((s) => s.connectionState)
   const setConnectionState = useEmailStore((s) => s.setConnectionState)
 
   useEffect(() => {
@@ -61,6 +62,11 @@ export function useEmailBridge(): void {
 
   useEffect(() => {
     const run = async () => {
+      console.log('[EmailBridge] run', {
+        enabled: config.enabled,
+        emailAddress: config.emailAddress,
+        accountName: config.accountName
+      })
       if (!config.enabled) {
         await electron.email.stop()
         return
@@ -125,6 +131,7 @@ export function useEmailBridge(): void {
       }
 
       const state = await electron.email.getState()
+      console.log('[EmailBridge] start state', state)
       if (state.status !== 'connected') {
         throw new Error(state.error || `Email channel state is ${state.status}`)
       }
@@ -153,4 +160,22 @@ export function useEmailBridge(): void {
     config.pollingIntervalSeconds,
     setConnectionState
   ])
+
+  // Self-healing watchdog: if channel is enabled but disconnected/error, retry start.
+  useEffect(() => {
+    if (!config.enabled) return
+    if (connectionState.status === 'connected' || connectionState.status === 'connecting') return
+
+    const timer = setTimeout(() => {
+      electron.email.getState()
+        .then((state) => {
+          if (state.status === 'connected' || state.status === 'connecting') return
+          console.log('[EmailBridge] watchdog restart attempt')
+          return electron.email.start()
+        })
+        .catch(() => {})
+    }, 5000)
+
+    return () => clearTimeout(timer)
+  }, [config.enabled, connectionState.status])
 }

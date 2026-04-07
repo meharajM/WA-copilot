@@ -189,6 +189,12 @@ export class EmailChannelService extends EventEmitter {
       maxEmailsPerPoll: Math.max(1, Math.min(config.maxEmailsPerPoll || 10, 50)),
       unreadOnly: config.unreadOnly === true
     }
+    console.log('[EmailChannelService] configured', {
+      accountName: this.config.accountName,
+      pollingIntervalSeconds: this.config.pollingIntervalSeconds,
+      maxEmailsPerPoll: this.config.maxEmailsPerPoll,
+      unreadOnly: this.config.unreadOnly
+    })
   }
 
   getConnectionState(): EmailConnectionState {
@@ -199,6 +205,7 @@ export class EmailChannelService extends EventEmitter {
     if (this.running) return
     if (!this.config) throw new Error('Email channel is not configured')
 
+    console.log('[EmailChannelService] start requested')
     this.running = true
     this.setState({ status: 'connecting', error: null, unreadCount: 0, lastSyncAt: null })
 
@@ -212,6 +219,7 @@ export class EmailChannelService extends EventEmitter {
       })
       this.client = new Client({ name: 'aica-email-client', version: '0.1.0' }, { capabilities: {} })
       await this.client.connect(transport)
+      console.log('[EmailChannelService] MCP client connected')
 
       this.seenMessageIds.clear()
       this.effectiveAccountName = null
@@ -220,6 +228,7 @@ export class EmailChannelService extends EventEmitter {
       // Run an immediate poll so first sync is fast.
       await this.pollOnce()
       this.schedulePoll()
+      console.log('[EmailChannelService] polling scheduled')
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       this.running = false
@@ -229,6 +238,7 @@ export class EmailChannelService extends EventEmitter {
   }
 
   async stop(): Promise<void> {
+    console.log('[EmailChannelService] stop requested')
     this.running = false
     if (this.pollTimer) {
       clearTimeout(this.pollTimer)
@@ -293,6 +303,7 @@ export class EmailChannelService extends EventEmitter {
 
     this.pollTimer = setTimeout(async () => {
       if (!this.running) return
+      console.log('[EmailChannelService] poll tick')
       await this.pollOnce()
       this.schedulePoll()
     }, this.config.pollingIntervalSeconds * 1000)
