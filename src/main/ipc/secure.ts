@@ -17,6 +17,9 @@ const ALLOWED_SECRET_KEYS = [
     'openai_api_key',
     'gemini_api_key',
     'openrouter_api_key',
+    'email_mcp_password',
+    'email_imap_password',
+    'email_smtp_password',
 ] as const
 
 type SecretKey = typeof ALLOWED_SECRET_KEYS[number]

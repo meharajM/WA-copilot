@@ -190,6 +190,29 @@ const electronAPI = {
         notifyAdmin: (customerJid: string, summary: string, mainQuestion: string) =>
             ipcRenderer.invoke('whatsapp:notify-admin', { customerJid, summary, mainQuestion }),
     },
+    // Email channel operations
+    email: {
+        getState: () => ipcRenderer.invoke('email:get-state'),
+        configure: (config: unknown) => ipcRenderer.invoke('email:configure', config),
+        start: () => ipcRenderer.invoke('email:start'),
+        stop: () => ipcRenderer.invoke('email:stop'),
+        send: (payload: unknown) => ipcRenderer.invoke('email:send', payload),
+        onConnectionChange: (callback: (state: unknown) => void) => {
+            const listener = (_event: any, state: unknown) => callback(state)
+            ipcRenderer.on('email:connection-change', listener)
+            return () => ipcRenderer.removeListener('email:connection-change', listener)
+        },
+        onMessage: (callback: (message: unknown) => void) => {
+            const listener = (_event: any, message: unknown) => callback(message)
+            ipcRenderer.on('email:message', listener)
+            return () => ipcRenderer.removeListener('email:message', listener)
+        },
+        onDeliveryStatus: (callback: (status: unknown) => void) => {
+            const listener = (_event: any, status: unknown) => callback(status)
+            ipcRenderer.on('email:delivery-status', listener)
+            return () => ipcRenderer.removeListener('email:delivery-status', listener)
+        },
+    },
     // General utils
     utils: {
         getPathForFile: (file: File): string => {

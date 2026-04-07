@@ -4,6 +4,7 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { initEnv, __dirname } from './utils/env'
 import { setupIpcHandlers } from './ipc'
 import { McpProcessManager } from './services/McpProcessManager'
+import { emailChannelService } from './services/EmailChannelService'
 
 
 // Enable experimental on-device AI features (Gemini Nano / Chrome Prompt API)
@@ -139,6 +140,7 @@ app.on('before-quit', async (event) => {
     event.preventDefault()
     isQuitting = true
     
+    await emailChannelService.stop().catch(() => {})
     await McpProcessManager.getInstance().teardownAll()
     
     app.quit()

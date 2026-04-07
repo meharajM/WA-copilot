@@ -3,10 +3,10 @@ import { SidebarHeader } from './sidebar/SidebarHeader'
 import { RecentSessionsList } from './sidebar/RecentSessionsList'
 import { SidebarFooter } from './sidebar/SidebarFooter'
 import { useChatStore } from '../stores/chatStore'
-import { MessageSquare, Brain, Users, LayoutDashboard } from 'lucide-react'
+import { MessageSquare, Brain, Users, LayoutDashboard, Mail } from 'lucide-react'
 import { clsx } from "clsx"
 
-export type ViewMode = 'chat' | 'brain' | 'leads' | 'dashboard' | 'settings' | 'connections' | 'identity'
+export type ViewMode = 'chat' | 'brain' | 'leads' | 'dashboard' | 'settings' | 'connections' | 'identity' | 'drafts'
 
 interface SidebarProps {
   activeView: ViewMode
@@ -66,6 +66,16 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
           >
             <Users className="w-4 h-4" />
             <span>Lead Directory</span>
+          </button>
+          <button 
+            onClick={() => onViewChange('drafts')}
+            className={clsx(
+              "w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-colors",
+              activeView === 'drafts' ? "bg-white/10 text-white" : "text-gray-400 hover:text-white hover:bg-white/5"
+            )}
+          >
+            <Mail className="w-4 h-4" />
+            <span>Email Drafts</span>
           </button>
         </div>
 

@@ -36,9 +36,13 @@ import { useCallback, useEffect } from "react";
 import { useChatStore } from "../stores/chatStore";
 import { useSettingsStore } from "../stores/settingsStore";
 import { useWhatsAppStore } from "../stores/whatsappStore";
+import { useEmailStore } from "../stores/emailStore";
+import { useDraftStore } from "../stores/draftStore";
 import electron from "../lib/electron";
 import { type LLMMessage } from "../lib/types";
 import { resolveWhatsAppTarget, setWhatsAppTyping, setWhatsAppPaused, getWhatsAppSystemPrompt, sendWhatsAppResponse, resolveWhatsAppMessageToLLM } from "../lib/whatsapp-integration";
+import { getEmailSystemPrompt, normalizeSubject, type EmailMessage } from "../lib/email-integration";
+import { createDraftResponse, evaluateEmailPolicy, getConfidenceGatePrompt } from "../lib/email-policy";
 import { buildAttachmentLLMParts } from "../lib/media-utils";
 import { isSameWhatsAppIdentity, normalizeWhatsAppId } from "../../../shared/whatsappIdentity";
 
@@ -56,7 +60,13 @@ export interface UseAgentReturn {
      * @param attachments - Optional file attachments (Electron exposes `.path`).
      * @param isHeadless - If true, suppresses browser UI during task execution.
      */
-    handleSubmit: (content: string, attachments?: File[], isHeadless?: boolean, multimodalWhatsAppMessage?: import('../lib/whatsapp-integration').WhatsAppMessage) => Promise<void>;
+    handleSubmit: (
+      content: string,
+      attachments?: File[],
+      isHeadless?: boolean,
+      multimodalWhatsAppMessage?: import('../lib/whatsapp-integration').WhatsAppMessage,
+      inboundEmailMessage?: EmailMessage
+    ) => Promise<void>;
 }
 
 /**
@@ -88,8 +98,14 @@ export function useAgent(): UseAgentReturn {
      * 10. Always: stop per-session processing state, clear session-level progress
      */
     const handleSubmit = useCallback(
-        async (content: string, attachments?: File[], isHeadless?: boolean, multimodalWhatsAppMessage?: import('../lib/whatsapp-integration').WhatsAppMessage) => {
-            if (!content.trim() && (!attachments || attachments.length === 0) && !multimodalWhatsAppMessage) return;
+        async (
+          content: string,
+          attachments?: File[],
+          isHeadless?: boolean,
+          multimodalWhatsAppMessage?: import('../lib/whatsapp-integration').WhatsAppMessage,
+          inboundEmailMessage?: EmailMessage
+        ) => {
+            if (!content.trim() && (!attachments || attachments.length === 0) && !multimodalWhatsAppMessage && !inboundEmailMessage) return;
 
             const { addMessage, startProcessing } = useChatStore.getState();
 
@@ -149,10 +165,12 @@ export function useAgent(): UseAgentReturn {
             const { connectionState } = useWhatsAppStore.getState();
             const adminJid = connectionState.phoneNumber;
             const fromJid = multimodalWhatsAppMessage?.from;
+            const emailConfig = useEmailStore.getState().config;
             
             // Resolve Roles
             const cleanFrom = normalizeWhatsAppId(fromJid) ?? fromJid ?? 'unknown';
             const isAdmin = isSameWhatsAppIdentity(fromJid, adminJid);
+            const isEmailFlow = !!inboundEmailMessage;
 
             // 1.5 Handle Customer Multimedia Rejection
             if (multimodalWhatsAppMessage && !isAdmin && multimodalWhatsAppMessage.type !== 'text') {
@@ -236,6 +254,10 @@ export function useAgent(): UseAgentReturn {
                     console.log(`[useAgent] WhatsApp flow detected/enabled. JID: ${targetJid} (Admin: ${isAdmin})`);
                     setWhatsAppTyping(targetJid);
                     reconstructedHistory.push(getWhatsAppSystemPrompt(targetJid, persona as { name: string, tone: string }));
+                }
+                if (isEmailFlow) {
+                    reconstructedHistory.push(getEmailSystemPrompt(persona as { name: string, tone: string }));
+                    reconstructedHistory.push(getConfidenceGatePrompt());
                 }
 
                 // ── Step 4: Instantiate the agent ──────────────────────────────────
@@ -404,6 +426,93 @@ export function useAgent(): UseAgentReturn {
                     console.log(`[useAgent] No targetJid resolved for this prompt. Skipping WhatsApp delivery.`);
                 }
 
+                if (isEmailFlow && inboundEmailMessage) {
+                    const responseText = typeof llmResponse.content === 'string'
+                        ? llmResponse.content
+                        : Array.isArray(llmResponse.content)
+                            ? llmResponse.content
+                                .map((part) => {
+                                    if (part && typeof part === 'object' && 'type' in part) {
+                                        const typed = part as { type?: string; text?: string }
+                                        if (typed.type === 'text') return typed.text || ''
+                                    }
+                                    return ''
+                                })
+                                .join('\n')
+                            : '';
+
+                    if (responseText.trim()) {
+                        const session = useChatStore.getState().sessions.find((s) => s.id === originSessionId);
+                        const toolCallCount = session?.messages
+                            .filter((m) => m.role === 'assistant')
+                            .reduce((count, m) => count + (m.toolCalls?.length || 0), 0) || 0;
+                        const usedRag = session?.messages.some((m) =>
+                            (m.toolCalls || []).some((t) => t.name === 'rag_search')
+                        ) || false;
+
+                        const decision = evaluateEmailPolicy({
+                            responseText,
+                            originalContent: inboundEmailMessage.body || content,
+                            usedRag,
+                            hasUncertaintyMarkers: false,
+                            toolCallCount,
+                            citesKnowledgeBase: usedRag,
+                        });
+
+                        const shouldDraft = emailConfig.draftMode || decision.action !== 'send';
+                        if (shouldDraft) {
+                            const draft = createDraftResponse(
+                                responseText,
+                                decision,
+                                {
+                                    from: inboundEmailMessage.from,
+                                    subject: inboundEmailMessage.subject,
+                                    to: inboundEmailMessage.from,
+                                    inReplyTo: inboundEmailMessage.messageId,
+                                    references: inboundEmailMessage.references || inboundEmailMessage.messageId,
+                                }
+                            );
+                            useDraftStore.getState().addDraft(draft);
+
+                            useChatStore.getState().addSessionMessage(originSessionId, {
+                                role: 'assistant',
+                                content: 'Email response drafted for review in Drafts panel.',
+                                actions: [
+                                    { type: 'custom', label: 'Open Drafts', payload: { action: 'open_drafts' } }
+                                ],
+                            });
+                        } else {
+                            const sendResult = await electron.email.send({
+                                to: inboundEmailMessage.from,
+                                subject: `Re: ${normalizeSubject(inboundEmailMessage.subject || '(No Subject)')}`,
+                                body: responseText,
+                                inReplyTo: inboundEmailMessage.messageId,
+                                references: inboundEmailMessage.references || inboundEmailMessage.messageId,
+                                accountName: emailConfig.accountName || 'default',
+                            });
+                            if (!sendResult.success) {
+                                const fallbackDecision = {
+                                    ...decision,
+                                    action: 'draft' as const,
+                                    rationale: `Direct send failed (${sendResult.error || 'unknown error'}). Draft created for review.`,
+                                };
+                                const fallbackDraft = createDraftResponse(
+                                    responseText,
+                                    fallbackDecision,
+                                    {
+                                        from: inboundEmailMessage.from,
+                                        subject: inboundEmailMessage.subject,
+                                        to: inboundEmailMessage.from,
+                                        inReplyTo: inboundEmailMessage.messageId,
+                                        references: inboundEmailMessage.references || inboundEmailMessage.messageId,
+                                    }
+                                );
+                                useDraftStore.getState().addDraft(fallbackDraft);
+                            }
+                        }
+                    }
+                }
+
             } catch (error) {
                 console.error("[useAgent] Handler error:", error);
                 // Write the error to originSessionId — not whatever is currently active
@@ -469,11 +578,16 @@ export function useAgent(): UseAgentReturn {
         };
 
         const handleAppSubmit = (e: Event) => {
-            const customEvent = e as CustomEvent<{ content: string, whatsappMessage?: import('../lib/whatsapp-integration').WhatsAppMessage }>;
+            const customEvent = e as CustomEvent<{
+                content: string,
+                whatsappMessage?: import('../lib/whatsapp-integration').WhatsAppMessage,
+                emailMessage?: EmailMessage
+            }>;
             const content = customEvent.detail?.content;
             const whatsappMessage = customEvent.detail?.whatsappMessage;
+            const emailMessage = customEvent.detail?.emailMessage;
             
-            if (!content && !whatsappMessage) return;
+            if (!content && !whatsappMessage && !emailMessage) return;
 
             const { activeSessionId, createSession, setActiveSession, sessions } = useChatStore.getState();
             let sessionId = activeSessionId;
@@ -505,13 +619,37 @@ export function useAgent(): UseAgentReturn {
                     }));
                     console.log(`[useAgent] Created NEW omnichannel session for: ${whatsappMessage.from}`);
                 }
+            } else if (emailMessage?.from) {
+                const sender = emailMessage.from.toLowerCase()
+                const existingSession = sessions.find(s =>
+                    s.channel === 'email' &&
+                    (s.contact_id || '').toLowerCase() === sender
+                )
+                if (existingSession) {
+                    sessionId = existingSession.id
+                    setActiveSession(sessionId)
+                } else {
+                    sessionId = createSession();
+                    useChatStore.setState(state => ({
+                        sessions: state.sessions.map(s =>
+                            s.id === sessionId
+                                ? {
+                                    ...s,
+                                    channel: 'email',
+                                    contact_id: sender,
+                                    title: `📧 ${normalizeSubject(emailMessage.subject || sender).slice(0, 48)}`,
+                                }
+                                : s
+                        )
+                    }));
+                }
             } else if (!sessionId) {
                 const { createSession } = useChatStore.getState();
                 sessionId = createSession();
                 console.log('[useAgent] Created new general session for prompt:', sessionId);
             }
             
-            handleSubmit(content || '', undefined, false, whatsappMessage);
+            handleSubmit(content || '', undefined, false, whatsappMessage, emailMessage);
         };
 
         window.addEventListener("agent-action", handleAgentAction as EventListener);

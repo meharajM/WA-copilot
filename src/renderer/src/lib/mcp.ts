@@ -1,6 +1,8 @@
 import { useMcpStore, MCPServer, MCPTool } from "../stores/mcpStore";
 import electron from "./electron";
 import { useWhatsAppStore } from "../stores/whatsappStore";
+import { useDraftStore } from "../stores/draftStore";
+import { createDraftResponse } from "./email-policy";
 
 /// <reference path="../env.d.ts" />
 
@@ -290,17 +292,80 @@ export async function executeToolCall(
       }
     }
 
-    // FALLBACK: Check if it's an internal RAG tool
-    if (toolName.startsWith('rag_')) {
-      logMcpRenderer("info", "Executing RAG tool via direct IPC fallback", { tool: toolName });
-      try {
-        // Find if we have an internal-rag server ID in the store to use, otherwise use default
-        const result = await electron.mcp.callTool('internal-rag', toolName, safeArgs) as { result: unknown; error?: string };
-        return result;
-      } catch (err) {
-        return { result: null, error: `Direct RAG tool call failed: ${err instanceof Error ? err.message : String(err)}` };
-      }
-    }
+     // FALLBACK: Check if it's an internal RAG tool
+     if (toolName.startsWith('rag_')) {
+       logMcpRenderer("info", "Executing RAG tool via direct IPC fallback", { tool: toolName });
+       try {
+         // Find if we have an internal-rag server ID in the store to use, otherwise use default
+         const result = await electron.mcp.callTool('internal-rag', toolName, safeArgs) as { result: unknown; error?: string };
+         return result;
+       } catch (err) {
+         return { result: null, error: `Direct RAG tool call failed: ${err instanceof Error ? err.message : String(err)}` };
+       }
+     }
+
+     // FALLBACK: Check if it's an internal email tool
+     if (toolName.startsWith('email_')) {
+       logMcpRenderer("info", "Executing email tool via direct IPC fallback", { tool: toolName });
+       try {
+         if (toolName === 'email_send_message') {
+           const to = safeArgs?.to as string;
+           const subject = safeArgs?.subject as string;
+           const body = (safeArgs?.body || safeArgs?.content) as string;
+           if (!to || !subject || !body) {
+             return { result: null, error: "Missing 'to', 'subject', or 'body' parameter." };
+           }
+           const result = await electron.email.send({
+             to,
+             subject,
+             body,
+             inReplyTo: safeArgs?.inReplyTo as string | undefined,
+             references: safeArgs?.references as string | undefined,
+             accountName: safeArgs?.accountName as string | undefined,
+           }) as { success: boolean; error?: string };
+           if (!result.success) return { result: null, error: result.error || 'Email send failed' };
+           return { result: 'Email sent successfully.' };
+         }
+
+         if (toolName === 'email_create_draft') {
+           const from = (safeArgs?.from as string) || (safeArgs?.to as string) || 'unknown@example.com'
+           const subject = (safeArgs?.subject as string) || '(No Subject)'
+           const body = (safeArgs?.body || safeArgs?.content) as string
+           if (!body) return { result: null, error: "Missing 'body' parameter." }
+           const draft = createDraftResponse(
+             body,
+             {
+               action: 'draft',
+               confidence: 0.5,
+               rationale: 'Draft created by tool call',
+               hasSensitiveTopic: false,
+               sensitiveTopics: [],
+             },
+             {
+               from,
+               subject,
+               to: (safeArgs?.to as string) || from,
+               inReplyTo: safeArgs?.inReplyTo as string | undefined,
+               references: safeArgs?.references as string | undefined,
+               accountName: safeArgs?.accountName as string | undefined,
+             }
+           )
+           useDraftStore.getState().addDraft(draft)
+           return { result: 'Draft created successfully.' }
+         }
+
+         // Fall back to currently connected MCP server implementation.
+         const emailServer = useMcpStore.getState().servers.find((s) =>
+           s.connected && s.tools.some((t) => t.name === toolName)
+         )
+         if (emailServer) {
+           return await electron.mcp.callTool(emailServer.id, toolName, safeArgs) as { result: unknown; error?: string }
+         }
+         return { result: null, error: `No connected MCP server exposes tool '${toolName}'` }
+       } catch (err) {
+         return { result: null, error: `Direct email tool call failed: ${err instanceof Error ? err.message : String(err)}` };
+       }
+     }
 
     const duration = Date.now() - startTime;
     logMcpRenderer("error", "Tool not found in any connected server", {

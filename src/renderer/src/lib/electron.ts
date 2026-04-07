@@ -418,6 +418,12 @@ export const electron = {
             }
             return () => {}
         },
+        onEscalation: (callback: (data: unknown) => void): (() => void) => {
+            if (isElectron() && window.electron?.whatsapp?.onEscalation) {
+                return window.electron.whatsapp.onEscalation(callback)
+            }
+            return () => {}
+        },
         notifyAdmin: async (customerJid: string, summary: string, mainQuestion: string) => {
             if (isElectron() && window.electron?.whatsapp?.notifyAdmin) {
                 return await window.electron.whatsapp.notifyAdmin(customerJid, summary, mainQuestion)
@@ -425,6 +431,56 @@ export const electron = {
             console.warn('[Browser] WhatsApp notifyAdmin not supported')
             return { success: false, error: 'Not supported in browser mode' }
         },
+    },
+    email: {
+        getState: async () => {
+            if (isElectron() && window.electron?.email) {
+                return window.electron.email.getState()
+            }
+            return { status: 'disconnected' as const, error: null, lastSyncAt: null, unreadCount: 0 }
+        },
+        configure: async (config: unknown) => {
+            if (isElectron() && window.electron?.email) {
+                return window.electron.email.configure(config)
+            }
+            return { success: false, error: 'Not supported in browser mode' }
+        },
+        start: async () => {
+            if (isElectron() && window.electron?.email) {
+                return window.electron.email.start()
+            }
+            return { success: false, error: 'Not supported in browser mode' }
+        },
+        stop: async () => {
+            if (isElectron() && window.electron?.email) {
+                return window.electron.email.stop()
+            }
+            return { success: false, error: 'Not supported in browser mode' }
+        },
+        send: async (payload: unknown) => {
+            if (isElectron() && window.electron?.email) {
+                return window.electron.email.send(payload)
+            }
+            return { success: false, error: 'Not supported in browser mode' }
+        },
+        onConnectionChange: (callback: (state: unknown) => void): (() => void) => {
+            if (isElectron() && window.electron?.email) {
+                return window.electron.email.onConnectionChange(callback)
+            }
+            return () => {}
+        },
+        onMessage: (callback: (message: unknown) => void): (() => void) => {
+            if (isElectron() && window.electron?.email) {
+                return window.electron.email.onMessage(callback)
+            }
+            return () => {}
+        },
+        onDeliveryStatus: (callback: (status: unknown) => void): (() => void) => {
+            if (isElectron() && window.electron?.email) {
+                return window.electron.email.onDeliveryStatus(callback)
+            }
+            return () => {}
+        }
     },
 }
 

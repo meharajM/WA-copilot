@@ -11,6 +11,7 @@ import { Header } from "./components/Header";
 import { WhatsAppConnectionDialog } from "./components/WhatsAppConnectionDialog";
 import { EmptyState } from "./components/chat/EmptyState";
 import { ChatInput } from "./components/input/ChatInput";
+import { DraftApprovalPanel } from "./components/email/DraftApprovalPanel";
 
 import { useResolutionAudit } from './hooks/useResolutionAudit'
 import { useChatStore } from "./stores/chatStore";
@@ -18,6 +19,7 @@ import { useMcpStore } from "./stores/mcpStore";
 import { useSettingsSync } from "./hooks/useSettingsSync";
 import { useLLMStatus } from "./hooks/useLLMStatus";
 import { useWhatsAppBridge } from "./hooks/useWhatsAppBridge";
+import { useEmailBridge } from "./hooks/useEmailBridge";
 import { useAgent } from "./hooks/useAgent";
 import { MissingDependenciesScreen } from "./components/MissingDependenciesScreen";
 import { ExperimentProvider } from "./lib/experiments/experimentProvider";
@@ -32,7 +34,12 @@ function App() {
   useEffect(() => {
     const triggerCheck = () => setDependenciesResolved(false);
     window.addEventListener('app:check-dependencies', triggerCheck);
-    return () => window.removeEventListener('app:check-dependencies', triggerCheck);
+    const openDrafts = () => setCurrentView('drafts');
+    window.addEventListener('app:open-drafts', openDrafts as EventListener);
+    return () => {
+      window.removeEventListener('app:check-dependencies', triggerCheck);
+      window.removeEventListener('app:open-drafts', openDrafts as EventListener);
+    };
   }, []);
 
   // ── Store subscriptions ───────────────────────────────────────────────────
@@ -56,6 +63,12 @@ function App() {
         return <KnowledgeBrowser />
       case 'leads':
         return <LeadDirectory />
+      case 'drafts':
+        return (
+          <div className="flex-1 overflow-y-auto p-10 bg-[var(--color-bg-dark)]">
+            <DraftApprovalPanel />
+          </div>
+        )
       case 'settings':
       case 'connections':
       case 'identity':
@@ -83,6 +96,7 @@ function App() {
   useSettingsSync();
   useThemeSync();
   useWhatsAppBridge();
+  useEmailBridge();
   useResolutionAudit();
 
   useEffect(() => {

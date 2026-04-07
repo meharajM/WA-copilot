@@ -231,6 +231,41 @@ export const WHATSAPP_SEND_MESSAGE_TOOL: MCPTool = {
   }
 };
 
+export const EMAIL_SEND_MESSAGE_TOOL: MCPTool = {
+  name: "email_send_message",
+  description: "Send an email response in the current support flow. Use when handling email-channel conversations.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      to: { type: "string", description: "Recipient email address" },
+      subject: { type: "string", description: "Email subject" },
+      body: { type: "string", description: "Email body (plain text preferred)" },
+      inReplyTo: { type: "string", description: "Optional Message-ID for threading" },
+      references: { type: "string", description: "Optional References header value" },
+      accountName: { type: "string", description: "Optional MCP account name override" }
+    },
+    required: ["to", "subject", "body"]
+  }
+};
+
+export const EMAIL_CREATE_DRAFT_TOOL: MCPTool = {
+  name: "email_create_draft",
+  description: "Create an email draft for human approval instead of sending immediately.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      to: { type: "string", description: "Recipient email address" },
+      from: { type: "string", description: "Original sender email (if available)" },
+      subject: { type: "string", description: "Draft subject" },
+      body: { type: "string", description: "Draft body text" },
+      inReplyTo: { type: "string", description: "Optional Message-ID for threading" },
+      references: { type: "string", description: "Optional References header value" },
+      accountName: { type: "string", description: "Optional MCP account name override" }
+    },
+    required: ["subject", "body"]
+  }
+};
+
 export const CLIENT_TOOLS = [
   PLANNING_TOOL,
   SUB_AGENT_TOOL,
@@ -242,5 +277,6 @@ export const CLIENT_TOOLS = [
   MEMORY_UPDATE_ENTITY_TOOL,
   WHATSAPP_SEND_MEDIA_TOOL,
   WHATSAPP_SEND_MESSAGE_TOOL,
+  EMAIL_SEND_MESSAGE_TOOL,
+  EMAIL_CREATE_DRAFT_TOOL,
 ];
-
