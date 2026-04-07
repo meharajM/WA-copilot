@@ -114,8 +114,20 @@ export function useEmailBridge(): void {
         }
       }
 
-      await electron.email.configure(runtimeConfig)
-      await electron.email.start()
+      const configured = await electron.email.configure(runtimeConfig) as { success?: boolean; error?: string }
+      if (configured && configured.success === false) {
+        throw new Error(configured.error || 'Failed to configure email channel')
+      }
+
+      const started = await electron.email.start() as { success?: boolean; error?: string }
+      if (started && started.success === false) {
+        throw new Error(started.error || 'Failed to start email channel')
+      }
+
+      const state = await electron.email.getState()
+      if (state.status !== 'connected') {
+        throw new Error(state.error || `Email channel state is ${state.status}`)
+      }
     }
 
     run().catch((error) => {
