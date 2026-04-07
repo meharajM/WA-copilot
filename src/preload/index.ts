@@ -213,6 +213,14 @@ const electronAPI = {
             return () => ipcRenderer.removeListener('email:delivery-status', listener)
         },
     },
+    emailOAuth: {
+        initialize: () => ipcRenderer.invoke('email-oauth:initialize'),
+        signInGoogle: (clientId: string, clientSecret?: string) =>
+            ipcRenderer.invoke('email-oauth:sign-in-google', { clientId, clientSecret }),
+        signOut: () => ipcRenderer.invoke('email-oauth:sign-out'),
+        getStatus: () => ipcRenderer.invoke('email-oauth:get-status'),
+        getAccessToken: () => ipcRenderer.invoke('email-oauth:get-access-token'),
+    },
     // General utils
     utils: {
         getPathForFile: (file: File): string => {

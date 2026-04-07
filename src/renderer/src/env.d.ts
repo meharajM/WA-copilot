@@ -161,6 +161,13 @@ interface ElectronAPI {
         onMessage: (callback: (message: unknown) => void) => () => void
         onDeliveryStatus: (callback: (status: unknown) => void) => () => void
     }
+    emailOAuth?: {
+        initialize: () => Promise<{ signedIn: boolean; email: string | null }>
+        signInGoogle: (clientId: string, clientSecret?: string) => Promise<{ signedIn: boolean; email: string | null }>
+        signOut: () => Promise<{ success: boolean }>
+        getStatus: () => Promise<{ signedIn: boolean; email: string | null }>
+        getAccessToken: () => Promise<{ token: string | null }>
+    }
 }
 
 // Web Speech API types - placed inside declare global to be available everywhere

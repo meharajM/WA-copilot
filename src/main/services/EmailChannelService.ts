@@ -1,6 +1,7 @@
 import { EventEmitter } from 'events'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
+import { gmailOAuthService } from './GmailOAuthService'
 
 export interface EmailConnectionState {
   status: 'disconnected' | 'connecting' | 'connected' | 'error'
@@ -17,6 +18,7 @@ export interface EmailPollingConfig {
   maxEmailsPerPoll?: number
   accountName?: string
   unreadOnly?: boolean
+  provider?: string
 }
 
 export interface InboundEmailMessage {
@@ -239,27 +241,36 @@ export class EmailChannelService extends EventEmitter {
     this.setState({ status: 'connecting', error: null, unreadCount: 0, lastSyncAt: null })
 
     try {
-      const env = { ...process.env, ...(this.config.env || {}) } as Record<string, string>
-      const transport = new StdioClientTransport({
-        command: this.config.command,
-        args: this.config.args || [],
-        env,
-        stderr: 'pipe'
-      })
-      this.client = new Client({ name: 'aica-email-client', version: '0.1.0' }, { capabilities: {} })
-      await this.client.connect(transport)
-      console.log('[EmailChannelService] MCP client connected')
-      try {
-        const toolsResult = await this.client.listTools()
-        const tools = Array.isArray(toolsResult?.tools) ? toolsResult.tools : []
-        this.availableToolNames = tools
-          .map((t) => (t && typeof t.name === 'string' ? t.name : ''))
-          .filter((n) => n !== '')
-        console.log('[EmailChannelService] available tools', this.availableToolNames)
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        this.availableToolNames = []
-        console.log('[EmailChannelService] listTools unavailable', { error: message })
+      if (this.config.provider === 'gmail-api') {
+        await gmailOAuthService.initialize()
+        const token = await gmailOAuthService.getAccessToken()
+        if (!token) {
+          throw new Error('Gmail OAuth is not connected. Sign in with Google in Email settings.')
+        }
+        console.log('[EmailChannelService] Gmail OAuth mode enabled')
+      } else {
+        const env = { ...process.env, ...(this.config.env || {}) } as Record<string, string>
+        const transport = new StdioClientTransport({
+          command: this.config.command,
+          args: this.config.args || [],
+          env,
+          stderr: 'pipe'
+        })
+        this.client = new Client({ name: 'aica-email-client', version: '0.1.0' }, { capabilities: {} })
+        await this.client.connect(transport)
+        console.log('[EmailChannelService] MCP client connected')
+        try {
+          const toolsResult = await this.client.listTools()
+          const tools = Array.isArray(toolsResult?.tools) ? toolsResult.tools : []
+          this.availableToolNames = tools
+            .map((t) => (t && typeof t.name === 'string' ? t.name : ''))
+            .filter((n) => n !== '')
+          console.log('[EmailChannelService] available tools', this.availableToolNames)
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          this.availableToolNames = []
+          console.log('[EmailChannelService] listTools unavailable', { error: message })
+        }
       }
 
       this.seenMessageIds.clear()
@@ -300,6 +311,36 @@ export class EmailChannelService extends EventEmitter {
   }
 
   async send(payload: OutboundEmailPayload): Promise<{ success: boolean; error?: string }> {
+    if (this.config?.provider === 'gmail-api') {
+      try {
+        const accessToken = await gmailOAuthService.getAccessToken()
+        if (!accessToken) return { success: false, error: 'Gmail OAuth token missing' }
+        const mime = [
+          `To: ${payload.to}`,
+          `Subject: ${payload.subject}`,
+          'Content-Type: text/plain; charset=UTF-8',
+          '',
+          payload.body
+        ].join('\r\n')
+        const raw = Buffer.from(mime).toString('base64url')
+        const response = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ raw })
+        })
+        if (!response.ok) {
+          const text = await response.text()
+          return { success: false, error: `Gmail send failed: ${text}` }
+        }
+        return { success: true }
+      } catch (error) {
+        return { success: false, error: error instanceof Error ? error.message : String(error) }
+      }
+    }
+
     if (!this.client || !this.config) {
       return { success: false, error: 'Email channel is not connected' }
     }
@@ -352,9 +393,14 @@ export class EmailChannelService extends EventEmitter {
   }
 
   private async pollOnce(): Promise<void> {
-    if (!this.client || !this.config) return
+    if (!this.config) return
 
     try {
+      if (this.config.provider === 'gmail-api') {
+        await this.pollViaGmailApi()
+        return
+      }
+      if (!this.client) return
       this.authFailureInCurrentPoll = false
       const accountName = await this.resolveAccountName()
       const limit = this.config.maxEmailsPerPoll || 10
@@ -442,6 +488,90 @@ export class EmailChannelService extends EventEmitter {
         this.setState({ ...this.state, status: 'error', error: message })
       }
     }
+  }
+
+  private async pollViaGmailApi(): Promise<void> {
+    const accessToken = await gmailOAuthService.getAccessToken()
+    if (!accessToken) {
+      this.setState({ ...this.state, status: 'error', error: 'Gmail OAuth token missing' })
+      return
+    }
+
+    const response = await fetch(
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=${this.config?.maxEmailsPerPoll || 10}&q=newer_than:1h`,
+      { headers: { Authorization: `Bearer ${accessToken}` } }
+    )
+    if (!response.ok) {
+      const text = await response.text()
+      this.setState({ ...this.state, status: 'error', error: `Gmail list failed: ${text}` })
+      return
+    }
+
+    const listData = await response.json() as { messages?: Array<{ id: string }> }
+    const messages = listData.messages || []
+    let processed = 0
+    for (const m of messages) {
+      const detailResp = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${m.id}?format=full`, {
+        headers: { Authorization: `Bearer ${accessToken}` }
+      })
+      if (!detailResp.ok) continue
+      const detail = await detailResp.json() as Record<string, unknown>
+      const email = this.fromGmailMessage(detail)
+      if (!email) continue
+      const dedupeId = email.messageId || email.id
+      if (dedupeId && this.seenMessageIds.has(dedupeId)) continue
+      if (dedupeId) this.seenMessageIds.add(dedupeId)
+      this.emit('message', email)
+      processed += 1
+    }
+
+    this.setState({ ...this.state, status: 'connected', error: null, lastSyncAt: Date.now(), unreadCount: messages.length })
+    if (processed > 0) console.log(`[EmailChannelService] Gmail API processed ${processed} message(s)`)
+  }
+
+  private fromGmailMessage(item: Record<string, unknown>): InboundEmailMessage | null {
+    const payload = (item.payload && typeof item.payload === 'object') ? item.payload as Record<string, unknown> : null
+    const headers = Array.isArray(payload?.headers) ? payload!.headers as Array<Record<string, unknown>> : []
+    const getHeader = (name: string): string => {
+      const found = headers.find((h) => String(h.name || '').toLowerCase() === name.toLowerCase())
+      return typeof found?.value === 'string' ? found.value : ''
+    }
+    const bodyData = this.extractGmailBody(payload)
+    return {
+      id: String(item.id || `gmail_${Date.now()}`),
+      from: parseEmailAddress(getHeader('From')) || 'unknown-sender',
+      to: parseEmailAddress(getHeader('To')) || '',
+      subject: getHeader('Subject') || '(No Subject)',
+      body: bodyData || '',
+      bodyType: 'text',
+      timestamp: Date.now(),
+      messageId: getHeader('Message-Id') || getHeader('Message-ID'),
+      inReplyTo: getHeader('In-Reply-To'),
+      references: getHeader('References'),
+      isFromMe: false
+    }
+  }
+
+  private extractGmailBody(payload: Record<string, unknown> | null): string {
+    if (!payload) return ''
+    const body = payload.body as Record<string, unknown> | undefined
+    if (body?.data && typeof body.data === 'string') {
+      return Buffer.from(body.data, 'base64').toString('utf8')
+    }
+    const parts = Array.isArray(payload.parts) ? payload.parts as Array<Record<string, unknown>> : []
+    for (const part of parts) {
+      if (String(part.mimeType || '').toLowerCase() === 'text/plain') {
+        const partBody = part.body as Record<string, unknown> | undefined
+        if (partBody?.data && typeof partBody.data === 'string') {
+          try {
+            return Buffer.from(partBody.data.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8')
+          } catch {
+            return ''
+          }
+        }
+      }
+    }
+    return ''
   }
 
   private async fetchMetadata(

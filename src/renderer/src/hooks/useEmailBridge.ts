@@ -84,7 +84,10 @@ export function useEmailBridge(): void {
 
       const passwordResult = await electron.secure.get('email_mcp_password')
       const password = passwordResult.value || ''
-      if (!password) {
+      const oauthStatus = await electron.emailOAuth.getStatus()
+      const usingGmailOAuth = config.provider === 'gmail-api' && oauthStatus.signedIn
+
+      if (!password && !usingGmailOAuth) {
         setConnectionState({
           status: 'error',
           error: 'Email password/app token missing in secure storage',
@@ -96,6 +99,7 @@ export function useEmailBridge(): void {
 
       const address = normalizeEmailAddress(config.emailAddress)
       const runtimeConfig = {
+        provider: config.provider,
         command: 'uvx',
         args: ['mcp-email-server==0.6.2', 'stdio'],
         pollingIntervalSeconds: config.pollingIntervalSeconds,

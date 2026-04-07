@@ -482,6 +482,38 @@ export const electron = {
             return () => {}
         }
     },
+    emailOAuth: {
+        initialize: async () => {
+            if (isElectron() && window.electron?.emailOAuth) {
+                return window.electron.emailOAuth.initialize()
+            }
+            return { signedIn: false, email: null }
+        },
+        signInGoogle: async (clientId: string, clientSecret?: string) => {
+            if (isElectron() && window.electron?.emailOAuth) {
+                return window.electron.emailOAuth.signInGoogle(clientId, clientSecret)
+            }
+            return { signedIn: false, email: null }
+        },
+        signOut: async () => {
+            if (isElectron() && window.electron?.emailOAuth) {
+                return window.electron.emailOAuth.signOut()
+            }
+            return { success: true }
+        },
+        getStatus: async () => {
+            if (isElectron() && window.electron?.emailOAuth) {
+                return window.electron.emailOAuth.getStatus()
+            }
+            return { signedIn: false, email: null }
+        },
+        getAccessToken: async () => {
+            if (isElectron() && window.electron?.emailOAuth) {
+                return window.electron.emailOAuth.getAccessToken()
+            }
+            return { token: null }
+        }
+    },
 }
 
 export default electron

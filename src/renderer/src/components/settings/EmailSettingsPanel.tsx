@@ -25,6 +25,8 @@ import {
   Sparkles,
   ChevronRight,
   Wrench,
+  LogIn,
+  LogOut,
 } from 'lucide-react'
 
 type TestState =
@@ -118,9 +120,18 @@ export function EmailSettingsPanel() {
   const [isSaving, setIsSaving] = useState(false)
   const [saveStatus, setSaveStatus] = useState<'idle' | 'success' | 'error'>('idle')
   const [testState, setTestState] = useState<TestState>({ status: 'idle' })
+  const [oauthStatus, setOauthStatus] = useState<{ signedIn: boolean; email: string | null }>({ signedIn: false, email: null })
+  const [oauthClientId, setOauthClientId] = useState('')
+  const [oauthClientSecret, setOauthClientSecret] = useState('')
+  const [oauthBusy, setOauthBusy] = useState(false)
 
   const readyForAuth = useMemo(() => normalizeEmail(localEmail).includes('@'), [localEmail])
-  const readyForVerify = useMemo(() => localPassword.trim().length > 0, [localPassword])
+  const readyForVerify = useMemo(() => {
+    if (localProvider === 'gmail-api') {
+      return oauthStatus.signedIn || localPassword.trim().length > 0
+    }
+    return localPassword.trim().length > 0
+  }, [localPassword, localProvider, oauthStatus.signedIn])
   const canGoLive = readyForAuth && readyForVerify
   const isVerified = testState.status === 'success' || (config.enabled && connectionState.status === 'connected')
 
@@ -139,6 +150,13 @@ export function EmailSettingsPanel() {
   useEffect(() => {
     electron.secure.get('email_mcp_password').then((result) => {
       if (result.success && result.value) setLocalPassword(result.value)
+    }).catch(() => {})
+    electron.emailOAuth.initialize().then(setOauthStatus).catch(() => {})
+    electron.secure.get('gmail_oauth_client_id').then((r) => {
+      if (r.success && r.value) setOauthClientId(r.value)
+    }).catch(() => {})
+    electron.secure.get('gmail_oauth_client_secret').then((r) => {
+      if (r.success && r.value) setOauthClientSecret(r.value)
     }).catch(() => {})
   }, [])
 
@@ -170,6 +188,36 @@ export function EmailSettingsPanel() {
     if (localPassword.trim()) {
       await electron.secure.set('email_mcp_password', localPassword.trim())
     }
+    if (oauthClientId.trim()) {
+      await electron.secure.set('gmail_oauth_client_id', oauthClientId.trim())
+    }
+    if (oauthClientSecret.trim()) {
+      await electron.secure.set('gmail_oauth_client_secret', oauthClientSecret.trim())
+    }
+  }
+
+  const handleGoogleOAuthSignIn = async () => {
+    setOauthBusy(true)
+    try {
+      const status = await electron.emailOAuth.signInGoogle(oauthClientId.trim(), oauthClientSecret.trim())
+      setOauthStatus(status)
+      if (status.email) setLocalEmail(status.email)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setTestState({ status: 'error', message: `Google OAuth failed: ${message}` })
+    } finally {
+      setOauthBusy(false)
+    }
+  }
+
+  const handleGoogleOAuthSignOut = async () => {
+    setOauthBusy(true)
+    try {
+      await electron.emailOAuth.signOut()
+      setOauthStatus({ signedIn: false, email: null })
+    } finally {
+      setOauthBusy(false)
+    }
   }
 
   const buildRuntimeConfig = () => {
@@ -178,6 +226,7 @@ export function EmailSettingsPanel() {
     const accountName = localAccountName.trim() || 'default'
 
     return {
+      provider: localProvider,
       command: 'uvx',
       args: ['mcp-email-server==0.6.2', 'stdio'],
       pollingIntervalSeconds: Math.max(30, localPollingInterval),
@@ -358,6 +407,54 @@ export function EmailSettingsPanel() {
             <p className="text-xs text-[var(--color-text-dim)] mt-1 flex items-center gap-1"><Shield size={12} />Secure storage enabled</p>
           </div>
         </div>
+
+        {localProvider === 'gmail-api' && (
+          <div className="space-y-3 pt-2 border-t border-[var(--color-border)]">
+            <p className="text-xs text-[var(--color-text-dim)]">
+              Google OAuth (recommended): avoids manual IMAP app-password setup.
+            </p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <input
+                type="text"
+                value={oauthClientId}
+                onChange={(e) => setOauthClientId(e.target.value)}
+                className="w-full bg-[var(--color-bg-dark)] border border-[var(--color-border)] rounded-lg px-4 py-2 text-[var(--color-text-primary)]"
+                placeholder="Google OAuth Client ID"
+              />
+              <input
+                type="password"
+                value={oauthClientSecret}
+                onChange={(e) => setOauthClientSecret(e.target.value)}
+                className="w-full bg-[var(--color-bg-dark)] border border-[var(--color-border)] rounded-lg px-4 py-2 text-[var(--color-text-primary)]"
+                placeholder="Google OAuth Client Secret (optional)"
+              />
+            </div>
+            <div className="flex items-center gap-3">
+              {!oauthStatus.signedIn ? (
+                <button
+                  onClick={handleGoogleOAuthSignIn}
+                  disabled={oauthBusy || !oauthClientId.trim()}
+                  className="flex items-center gap-2 bg-[var(--color-brand-teal)]/20 hover:bg-[var(--color-brand-teal)]/30 text-[var(--color-brand-teal)] px-4 py-2 rounded-lg text-sm font-semibold disabled:opacity-50"
+                >
+                  <LogIn size={14} />
+                  Sign in with Google
+                </button>
+              ) : (
+                <button
+                  onClick={handleGoogleOAuthSignOut}
+                  disabled={oauthBusy}
+                  className="flex items-center gap-2 bg-red-500/15 hover:bg-red-500/25 text-red-300 px-4 py-2 rounded-lg text-sm font-semibold"
+                >
+                  <LogOut size={14} />
+                  Disconnect Google
+                </button>
+              )}
+              <span className="text-xs text-[var(--color-text-dim)]">
+                {oauthStatus.signedIn ? `Connected as ${oauthStatus.email || 'Google account'}` : 'Not connected'}
+              </span>
+            </div>
+          </div>
+        )}
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
