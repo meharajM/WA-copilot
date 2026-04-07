@@ -124,6 +124,7 @@ export function EmailSettingsPanel() {
 
   const readyForAuth = useMemo(() => normalizeEmail(localEmail).includes('@'), [localEmail])
   const readyForVerify = useMemo(() => localPassword.trim().length > 0, [localPassword])
+  const canGoLive = readyForAuth && readyForVerify
 
   useEffect(() => {
     setLocalProvider(config.provider)
@@ -242,6 +243,7 @@ export function EmailSettingsPanel() {
         status: 'success',
         message: 'Connection successful. You can now enable the email channel.'
       })
+      setStep(3)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       setTestState({
@@ -299,6 +301,11 @@ export function EmailSettingsPanel() {
           <ChevronRight size={12} />
           <span className={step >= 3 ? 'text-[var(--color-brand-teal)]' : ''}>3. Verify & Go Live</span>
         </div>
+        <p className="text-xs text-[var(--color-text-dim)]">
+          {step < 3
+            ? 'Run Test Connection to complete verification and unlock Go Live.'
+            : 'Verified. You can now safely go live.'}
+        </p>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           {([
@@ -530,9 +537,9 @@ export function EmailSettingsPanel() {
             <button
               onClick={() => {
                 if (step === 1 && readyForAuth) setStep(2)
-                else if (step === 2 && readyForVerify) setStep(3)
+                else if (step === 2 && canGoLive) setStep(3)
               }}
-              disabled={(step === 1 && !readyForAuth) || (step === 2 && !readyForVerify) || step === 3}
+              disabled={(step === 1 && !readyForAuth) || (step === 2 && !canGoLive) || step === 3}
               className="px-3 py-2 rounded-lg text-xs font-semibold bg-[var(--color-brand-teal)]/20 text-[var(--color-brand-teal)] disabled:opacity-40"
             >
               Next
