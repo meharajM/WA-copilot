@@ -94,7 +94,7 @@ export function useEmailBridge(): void {
         args: ['mcp-email-server==0.6.2', 'stdio'],
         pollingIntervalSeconds: config.pollingIntervalSeconds,
         accountName: config.accountName || 'default',
-        unreadOnly: true,
+        unreadOnly: false,
         maxEmailsPerPoll: 10,
         env: {
           MCP_EMAIL_SERVER_ACCOUNT_NAME: config.accountName || 'default',
@@ -142,4 +142,3 @@ export function useEmailBridge(): void {
     setConnectionState
   ])
 }
-

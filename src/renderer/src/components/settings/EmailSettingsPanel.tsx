@@ -182,7 +182,7 @@ export function EmailSettingsPanel() {
       args: ['mcp-email-server==0.6.2', 'stdio'],
       pollingIntervalSeconds: Math.max(30, localPollingInterval),
       accountName,
-      unreadOnly: true,
+      unreadOnly: false,
       maxEmailsPerPoll: 5,
       env: {
         MCP_EMAIL_SERVER_ACCOUNT_NAME: accountName,

@@ -42,6 +42,8 @@ export interface OutboundEmailPayload {
   accountName?: string
 }
 
+const RECENT_EMAIL_WINDOW_MS = 60 * 60 * 1000
+
 function extractStructured(result: unknown): Record<string, unknown> {
   if (!result || typeof result !== 'object') return {}
   const r = result as Record<string, unknown>
@@ -96,6 +98,20 @@ function readNumber(obj: Record<string, unknown>, keys: string[], fallback: numb
   return fallback
 }
 
+function readBoolean(obj: Record<string, unknown>, keys: string[], fallback = false): boolean {
+  for (const k of keys) {
+    const v = obj[k]
+    if (typeof v === 'boolean') return v
+    if (typeof v === 'number') return v !== 0
+    if (typeof v === 'string') {
+      const n = v.trim().toLowerCase()
+      if (['true', '1', 'yes', 'y'].includes(n)) return true
+      if (['false', '0', 'no', 'n'].includes(n)) return false
+    }
+  }
+  return fallback
+}
+
 export class EmailChannelService extends EventEmitter {
   private state: EmailConnectionState = {
     status: 'disconnected',
@@ -115,7 +131,7 @@ export class EmailChannelService extends EventEmitter {
       ...config,
       pollingIntervalSeconds: Math.max(30, config.pollingIntervalSeconds || 60),
       maxEmailsPerPoll: Math.max(1, Math.min(config.maxEmailsPerPoll || 10, 50)),
-      unreadOnly: config.unreadOnly !== false
+      unreadOnly: config.unreadOnly === true
     }
   }
 
@@ -248,6 +264,7 @@ export class EmailChannelService extends EventEmitter {
           const emails = asArray(structured.emails || structured.messages || structured.results)
           for (const emailObj of emails) {
             const email = this.toInboundEmail(emailObj)
+            if (!this.shouldProcessInbound(email, emailObj)) continue
             const dedupeId = email.messageId || email.id
             if (dedupeId && this.seenMessageIds.has(dedupeId)) continue
             if (dedupeId) this.seenMessageIds.add(dedupeId)
@@ -263,6 +280,7 @@ export class EmailChannelService extends EventEmitter {
         const directEmails = await this.fetchEmailsDirect(accountName, limit, unreadOnly)
         for (const emailObj of directEmails) {
           const email = this.toInboundEmail(emailObj)
+          if (!this.shouldProcessInbound(email, emailObj)) continue
           const dedupeId = email.messageId || email.id
           if (dedupeId && this.seenMessageIds.has(dedupeId)) continue
           if (dedupeId) this.seenMessageIds.add(dedupeId)
@@ -362,6 +380,27 @@ export class EmailChannelService extends EventEmitter {
       references: readString(item, ['references']),
       isFromMe: false
     }
+  }
+
+  private shouldProcessInbound(email: InboundEmailMessage, raw?: Record<string, unknown>): boolean {
+    if (!email.from || email.isFromMe) return false
+
+    const now = Date.now()
+    if (email.timestamp > 0 && now - email.timestamp > RECENT_EMAIL_WINDOW_MS) return false
+
+    if (raw) {
+      const alreadyHandled = readBoolean(raw, [
+        'answered',
+        'is_answered',
+        'isAnswered',
+        'replied',
+        'is_replied',
+        'isReplied'
+      ], false)
+      if (alreadyHandled) return false
+    }
+
+    return true
   }
 
   private setState(next: EmailConnectionState): void {
