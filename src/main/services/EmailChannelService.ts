@@ -407,6 +407,22 @@ export class EmailChannelService extends EventEmitter {
     const seenFilter = unreadOnly ? false : undefined
 
     const candidates = [
+      // Broadest first: avoid over-filtering due provider/tool differences.
+      {
+        name: 'list_emails_metadata',
+        args: {
+          account_name: accountName,
+          page: 1,
+          page_size: limit
+        }
+      },
+      {
+        name: 'list_emails_metadata',
+        args: {
+          page: 1,
+          page_size: limit
+        }
+      },
       {
         name: 'list_emails_metadata',
         args: {
@@ -449,6 +465,13 @@ export class EmailChannelService extends EventEmitter {
           mailbox: 'INBOX',
           since: sinceIso
         }
+      },
+      {
+        name: 'list_emails',
+        args: {
+          page: 1,
+          page_size: limit
+        }
       }
     ]
 
@@ -468,9 +491,17 @@ export class EmailChannelService extends EventEmitter {
           .filter((id) => id !== '')
         const ids = idsFromList.length > 0 ? idsFromList : idsFromArray
         const unreadCount = readNumber(structured, ['unread_count', 'unreadCount'], ids.length)
+        if (ids.length > 0) {
+          console.log('[EmailChannelService] metadata candidate matched', {
+            tool: candidate.name,
+            args: Object.keys(candidate.args),
+            ids: ids.length
+          })
+        }
         return { ids, unreadCount }
-      } catch {
-        // Try next variant.
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        console.log('[EmailChannelService] metadata candidate failed', { tool: candidate.name, error: message })
       }
     }
 
@@ -485,6 +516,19 @@ export class EmailChannelService extends EventEmitter {
     if (!this.client) return []
     const sinceIso = new Date(Date.now() - RECENT_EMAIL_WINDOW_MS).toISOString()
     const candidates = [
+      {
+        name: 'fetch_emails',
+        args: {
+          account_name: accountName,
+          max_count: limit
+        }
+      },
+      {
+        name: 'fetch_emails',
+        args: {
+          max_count: limit
+        }
+      },
       {
         name: 'fetch_emails',
         args: {
@@ -514,9 +558,17 @@ export class EmailChannelService extends EventEmitter {
         })
         const structured = extractStructured(result)
         const emails = asArray(structured.emails || structured.messages || structured.results || structured.items || structured.data)
-        if (emails.length > 0) return emails
-      } catch {
-        // Try next variant.
+        if (emails.length > 0) {
+          console.log('[EmailChannelService] direct candidate matched', {
+            tool: candidate.name,
+            args: Object.keys(candidate.args),
+            count: emails.length
+          })
+          return emails
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        console.log('[EmailChannelService] direct candidate failed', { tool: candidate.name, error: message })
       }
     }
     return []
@@ -547,11 +599,13 @@ export class EmailChannelService extends EventEmitter {
         return requested
       }
       if (names.length > 0) {
+        console.log('[EmailChannelService] account auto-resolved', { requested, resolved: names[0], available: names })
         this.effectiveAccountName = names[0]
         return names[0]
       }
-    } catch {
-      // If tool is unavailable, fall back to configured account.
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      console.log('[EmailChannelService] list_available_accounts unavailable', { error: message })
     }
 
     this.effectiveAccountName = requested
