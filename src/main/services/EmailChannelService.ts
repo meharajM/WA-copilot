@@ -603,6 +603,7 @@ export class EmailChannelService extends EventEmitter {
     if (this.effectiveAccountName) return this.effectiveAccountName
 
     const requested = this.config.accountName || 'default'
+    let names: string[] = []
     try {
       const result = await this.client.callTool({
         name: 'list_available_accounts',
@@ -614,9 +615,10 @@ export class EmailChannelService extends EventEmitter {
       const accounts = Array.isArray(structuredUnknown)
         ? structuredUnknown
         : (Array.isArray(structured.accounts) ? structured.accounts : [])
-      const names = accounts
+      names = accounts
         .map((a) => (a && typeof a === 'object' ? readString(a as Record<string, unknown>, ['account_name', 'accountName', 'name']) : ''))
         .filter((n) => n !== '')
+      console.log('[EmailChannelService] available accounts', names)
 
       if (names.includes(requested)) {
         this.effectiveAccountName = requested
@@ -632,8 +634,106 @@ export class EmailChannelService extends EventEmitter {
       console.log('[EmailChannelService] list_available_accounts unavailable', { error: message })
     }
 
+    // Attempt one-time bootstrap if account is missing.
+    if (!names.includes(requested)) {
+      const bootstrapped = await this.tryBootstrapAccount(requested)
+      if (bootstrapped) {
+        try {
+          const result = await this.client.callTool({
+            name: 'list_available_accounts',
+            arguments: {}
+          })
+          const raw = result as Record<string, unknown>
+          const structuredUnknown = raw?.structuredContent
+          const structured = extractStructured(result)
+          const accounts = Array.isArray(structuredUnknown)
+            ? structuredUnknown
+            : (Array.isArray(structured.accounts) ? structured.accounts : [])
+          const refreshed = accounts
+            .map((a) => (a && typeof a === 'object' ? readString(a as Record<string, unknown>, ['account_name', 'accountName', 'name']) : ''))
+            .filter((n) => n !== '')
+          console.log('[EmailChannelService] available accounts after bootstrap', refreshed)
+          if (refreshed.includes(requested)) {
+            this.effectiveAccountName = requested
+            return requested
+          }
+          if (refreshed.length > 0) {
+            this.effectiveAccountName = refreshed[0]
+            return refreshed[0]
+          }
+        } catch {
+          // Fall through to requested.
+        }
+      }
+    }
+
     this.effectiveAccountName = requested
     return requested
+  }
+
+  private async tryBootstrapAccount(accountName: string): Promise<boolean> {
+    if (!this.client || !this.config?.env) return false
+    const env = this.config.env
+    const email = env.MCP_EMAIL_SERVER_EMAIL_ADDRESS
+    const user = env.MCP_EMAIL_SERVER_USER_NAME
+    const password = env.MCP_EMAIL_SERVER_PASSWORD
+    const imapHost = env.MCP_EMAIL_SERVER_IMAP_HOST
+    const imapPort = Number(env.MCP_EMAIL_SERVER_IMAP_PORT || '993')
+    const smtpHost = env.MCP_EMAIL_SERVER_SMTP_HOST
+    const smtpPort = Number(env.MCP_EMAIL_SERVER_SMTP_PORT || '587')
+    const imapSsl = (env.MCP_EMAIL_SERVER_IMAP_SSL || 'true').toLowerCase() !== 'false'
+    const smtpStartTls = (env.MCP_EMAIL_SERVER_SMTP_START_SSL || 'true').toLowerCase() === 'true'
+    const smtpSsl = (env.MCP_EMAIL_SERVER_SMTP_SSL || 'false').toLowerCase() === 'true'
+
+    if (!email || !user || !password || !imapHost || !smtpHost) {
+      console.log('[EmailChannelService] account bootstrap skipped: missing env fields')
+      return false
+    }
+
+    const candidates = [
+      {
+        account_name: accountName,
+        email_address: email,
+        user_name: user,
+        password,
+        imap_host: imapHost,
+        imap_port: imapPort,
+        imap_ssl: imapSsl,
+        smtp_host: smtpHost,
+        smtp_port: smtpPort,
+        smtp_start_ssl: smtpStartTls,
+        smtp_ssl: smtpSsl
+      },
+      {
+        accountName,
+        emailAddress: email,
+        userName: user,
+        password,
+        imapHost,
+        imapPort,
+        imapSsl,
+        smtpHost,
+        smtpPort,
+        smtpStartTls,
+        smtpSsl
+      }
+    ]
+
+    for (const args of candidates) {
+      try {
+        await this.client.callTool({
+          name: 'add_email_account',
+          arguments: args
+        })
+        console.log('[EmailChannelService] account bootstrap success')
+        return true
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        console.log('[EmailChannelService] account bootstrap attempt failed', { error: message })
+      }
+    }
+
+    return false
   }
 
   private async getEmailsContent(accountName: string, emailId: string): Promise<Record<string, unknown>[]> {
