@@ -209,6 +209,7 @@ export class EmailChannelService extends EventEmitter {
   private effectiveAccountName: string | null = null
   private availableToolNames: string[] = []
   private lastAuthErrorAt = 0
+  private authFailureInCurrentPoll = false
 
   configure(config: EmailPollingConfig): void {
     this.config = {
@@ -354,6 +355,7 @@ export class EmailChannelService extends EventEmitter {
     if (!this.client || !this.config) return
 
     try {
+      this.authFailureInCurrentPoll = false
       const accountName = await this.resolveAccountName()
       const limit = this.config.maxEmailsPerPoll || 10
       const unreadOnly = this.config.unreadOnly ?? true
@@ -416,6 +418,11 @@ export class EmailChannelService extends EventEmitter {
           this.emit('message', email)
           processed += 1
         }
+      }
+
+      if (this.authFailureInCurrentPoll) {
+        console.log('[EmailChannelService] poll ended with auth failure; preserving error state')
+        return
       }
 
       console.log('[EmailChannelService] poll result', {
@@ -543,6 +550,7 @@ export class EmailChannelService extends EventEmitter {
             error: toolError
           })
           if (isAuthError(toolError)) {
+            this.authFailureInCurrentPoll = true
             const now = Date.now()
             if (now - this.lastAuthErrorAt > 10_000) {
               this.lastAuthErrorAt = now
@@ -646,6 +654,7 @@ export class EmailChannelService extends EventEmitter {
             error: toolError
           })
           if (isAuthError(toolError)) {
+            this.authFailureInCurrentPoll = true
             const now = Date.now()
             if (now - this.lastAuthErrorAt > 10_000) {
               this.lastAuthErrorAt = now
