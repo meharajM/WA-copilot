@@ -12,7 +12,6 @@ interface EmailConnectionState {
 
 export function useEmailBridge(): void {
   const config = useEmailStore((s) => s.config)
-  const connectionState = useEmailStore((s) => s.connectionState)
   const setConnectionState = useEmailStore((s) => s.setConnectionState)
 
   useEffect(() => {
@@ -175,21 +174,4 @@ export function useEmailBridge(): void {
     setConnectionState
   ])
 
-  // Self-healing watchdog: if channel is enabled but disconnected/error, retry start.
-  useEffect(() => {
-    if (!config.enabled) return
-    if (connectionState.status === 'connected' || connectionState.status === 'connecting') return
-
-    const timer = setTimeout(() => {
-      electron.email.getState()
-        .then((state) => {
-          if (state.status === 'connected' || state.status === 'connecting') return
-          console.log('[EmailBridge] watchdog restart attempt')
-          return electron.email.start()
-        })
-        .catch(() => {})
-    }, 5000)
-
-    return () => clearTimeout(timer)
-  }, [config.enabled, connectionState.status])
 }
