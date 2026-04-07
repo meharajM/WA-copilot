@@ -87,6 +87,16 @@ export function useEmailBridge(): void {
       const oauthStatus = await electron.emailOAuth.getStatus()
       const usingGmailOAuth = config.provider === 'gmail-api' && oauthStatus.signedIn
 
+      if (config.provider === 'gmail-api' && !oauthStatus.signedIn) {
+        setConnectionState({
+          status: 'error',
+          error: 'Gmail provider requires Google OAuth sign-in',
+          lastSyncAt: null,
+          unreadCount: 0
+        })
+        return
+      }
+
       if (!password && !usingGmailOAuth) {
         setConnectionState({
           status: 'error',

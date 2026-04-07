@@ -128,11 +128,11 @@ export function EmailSettingsPanel() {
   const readyForAuth = useMemo(() => normalizeEmail(localEmail).includes('@'), [localEmail])
   const readyForVerify = useMemo(() => {
     if (localProvider === 'gmail-api') {
-      return oauthStatus.signedIn || localPassword.trim().length > 0
+      return oauthStatus.signedIn
     }
     return localPassword.trim().length > 0
   }, [localPassword, localProvider, oauthStatus.signedIn])
-  const isGmailOAuthMode = localProvider === 'gmail-api' && oauthStatus.signedIn
+  const isGmailProvider = localProvider === 'gmail-api'
   const canGoLive = readyForAuth && readyForVerify
   const isVerified = testState.status === 'success' || (config.enabled && connectionState.status === 'connected')
 
@@ -255,7 +255,12 @@ export function EmailSettingsPanel() {
 
   const handleTestConnection = async () => {
     if (!readyForAuth || !readyForVerify) {
-      setTestState({ status: 'error', message: 'Please complete email and app password before testing.' })
+      setTestState({
+        status: 'error',
+        message: localProvider === 'gmail-api'
+          ? 'Please sign in with Google OAuth before testing.'
+          : 'Please complete email and app password before testing.'
+      })
       return
     }
 
@@ -396,7 +401,7 @@ export function EmailSettingsPanel() {
               placeholder="you@company.com"
             />
           </div>
-          {!isGmailOAuthMode && (
+          {!isGmailProvider && (
             <div>
               <label className="block text-[var(--color-text-primary)] text-sm font-bold mb-2">App Password / Token</label>
               <input
@@ -456,10 +461,15 @@ export function EmailSettingsPanel() {
                 {oauthStatus.signedIn ? `Connected as ${oauthStatus.email || 'Google account'}` : 'Not connected'}
               </span>
             </div>
+            {!oauthClientId.trim() && (
+              <p className="text-xs text-amber-300">
+                Enter Google OAuth Client ID to enable Sign in with Google.
+              </p>
+            )}
           </div>
         )}
 
-        {!isGmailOAuthMode && (
+        {!isGmailProvider && (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <label className="block text-[var(--color-text-primary)] text-sm font-bold mb-2">Account Name</label>
@@ -484,7 +494,7 @@ export function EmailSettingsPanel() {
           </div>
         )}
 
-        {!isGmailOAuthMode && (
+        {!isGmailProvider && (
           <div className="pt-2 border-t border-[var(--color-border)]">
             <button
               onClick={() => setShowAdvanced(!showAdvanced)}
