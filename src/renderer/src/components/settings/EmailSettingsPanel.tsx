@@ -132,6 +132,7 @@ export function EmailSettingsPanel() {
     }
     return localPassword.trim().length > 0
   }, [localPassword, localProvider, oauthStatus.signedIn])
+  const isGmailOAuthMode = localProvider === 'gmail-api' && oauthStatus.signedIn
   const canGoLive = readyForAuth && readyForVerify
   const isVerified = testState.status === 'success' || (config.enabled && connectionState.status === 'connected')
 
@@ -395,17 +396,19 @@ export function EmailSettingsPanel() {
               placeholder="you@company.com"
             />
           </div>
-          <div>
-            <label className="block text-[var(--color-text-primary)] text-sm font-bold mb-2">App Password / Token</label>
-            <input
-              type="password"
-              value={localPassword}
-              onChange={(e) => setLocalPassword(e.target.value)}
-              className="w-full bg-[var(--color-bg-dark)] border border-[var(--color-border)] rounded-lg px-4 py-2 text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-brand-teal)]"
-              placeholder="Securely stored in OS keychain"
-            />
-            <p className="text-xs text-[var(--color-text-dim)] mt-1 flex items-center gap-1"><Shield size={12} />Secure storage enabled</p>
-          </div>
+          {!isGmailOAuthMode && (
+            <div>
+              <label className="block text-[var(--color-text-primary)] text-sm font-bold mb-2">App Password / Token</label>
+              <input
+                type="password"
+                value={localPassword}
+                onChange={(e) => setLocalPassword(e.target.value)}
+                className="w-full bg-[var(--color-bg-dark)] border border-[var(--color-border)] rounded-lg px-4 py-2 text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-brand-teal)]"
+                placeholder="Securely stored in OS keychain"
+              />
+              <p className="text-xs text-[var(--color-text-dim)] mt-1 flex items-center gap-1"><Shield size={12} />Secure storage enabled</p>
+            </div>
+          )}
         </div>
 
         {localProvider === 'gmail-api' && (
@@ -456,84 +459,88 @@ export function EmailSettingsPanel() {
           </div>
         )}
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label className="block text-[var(--color-text-primary)] text-sm font-bold mb-2">Account Name</label>
-            <input
-              type="text"
-              value={localAccountName}
-              onChange={(e) => setLocalAccountName(e.target.value)}
-              className="w-full bg-[var(--color-bg-dark)] border border-[var(--color-border)] rounded-lg px-4 py-2 text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-brand-teal)]"
-              placeholder="default"
-            />
-          </div>
-          <div>
-            <label className="block text-[var(--color-text-primary)] text-sm font-bold mb-2">Login Username (Optional)</label>
-            <input
-              type="text"
-              value={localUserName}
-              onChange={(e) => setLocalUserName(e.target.value)}
-              className="w-full bg-[var(--color-bg-dark)] border border-[var(--color-border)] rounded-lg px-4 py-2 text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-brand-teal)]"
-              placeholder="Uses email by default"
-            />
-          </div>
-        </div>
-
-        <div className="pt-2 border-t border-[var(--color-border)]">
-          <button
-            onClick={() => setShowAdvanced(!showAdvanced)}
-            className="flex items-center gap-2 text-xs font-semibold text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]"
-          >
-            <Wrench size={13} />
-            {showAdvanced ? 'Hide advanced server settings' : 'Show advanced server settings'}
-          </button>
-
-          {showAdvanced && (
-            <div className="mt-3 space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-[var(--color-text-muted)] text-xs mb-1">IMAP Host</label>
-                  <input
-                    type="text"
-                    value={localImapHost}
-                    onChange={(e) => setLocalImapHost(e.target.value)}
-                    className="w-full bg-[var(--color-bg-dark)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-[var(--color-text-primary)] text-sm focus:outline-none focus:border-[var(--color-brand-teal)]"
-                    placeholder="imap.example.com"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[var(--color-text-muted)] text-xs mb-1">IMAP Port</label>
-                  <input
-                    type="number"
-                    value={localImapPort}
-                    onChange={(e) => setLocalImapPort(parseInt(e.target.value) || 993)}
-                    className="w-full bg-[var(--color-bg-dark)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-[var(--color-text-primary)] text-sm focus:outline-none focus:border-[var(--color-brand-teal)]"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[var(--color-text-muted)] text-xs mb-1">SMTP Host</label>
-                  <input
-                    type="text"
-                    value={localSmtpHost}
-                    onChange={(e) => setLocalSmtpHost(e.target.value)}
-                    className="w-full bg-[var(--color-bg-dark)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-[var(--color-text-primary)] text-sm focus:outline-none focus:border-[var(--color-brand-teal)]"
-                    placeholder="smtp.example.com"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[var(--color-text-muted)] text-xs mb-1">SMTP Port</label>
-                  <input
-                    type="number"
-                    value={localSmtpPort}
-                    onChange={(e) => setLocalSmtpPort(parseInt(e.target.value) || 587)}
-                    className="w-full bg-[var(--color-bg-dark)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-[var(--color-text-primary)] text-sm focus:outline-none focus:border-[var(--color-brand-teal)]"
-                  />
-                </div>
-              </div>
-              <p className="text-xs text-[var(--color-text-dim)] flex items-center gap-1"><Server size={12} />Use this only if your provider needs custom server values.</p>
+        {!isGmailOAuthMode && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-[var(--color-text-primary)] text-sm font-bold mb-2">Account Name</label>
+              <input
+                type="text"
+                value={localAccountName}
+                onChange={(e) => setLocalAccountName(e.target.value)}
+                className="w-full bg-[var(--color-bg-dark)] border border-[var(--color-border)] rounded-lg px-4 py-2 text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-brand-teal)]"
+                placeholder="default"
+              />
             </div>
-          )}
-        </div>
+            <div>
+              <label className="block text-[var(--color-text-primary)] text-sm font-bold mb-2">Login Username (Optional)</label>
+              <input
+                type="text"
+                value={localUserName}
+                onChange={(e) => setLocalUserName(e.target.value)}
+                className="w-full bg-[var(--color-bg-dark)] border border-[var(--color-border)] rounded-lg px-4 py-2 text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-brand-teal)]"
+                placeholder="Uses email by default"
+              />
+            </div>
+          </div>
+        )}
+
+        {!isGmailOAuthMode && (
+          <div className="pt-2 border-t border-[var(--color-border)]">
+            <button
+              onClick={() => setShowAdvanced(!showAdvanced)}
+              className="flex items-center gap-2 text-xs font-semibold text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]"
+            >
+              <Wrench size={13} />
+              {showAdvanced ? 'Hide advanced server settings' : 'Show advanced server settings'}
+            </button>
+
+            {showAdvanced && (
+              <div className="mt-3 space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-[var(--color-text-muted)] text-xs mb-1">IMAP Host</label>
+                    <input
+                      type="text"
+                      value={localImapHost}
+                      onChange={(e) => setLocalImapHost(e.target.value)}
+                      className="w-full bg-[var(--color-bg-dark)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-[var(--color-text-primary)] text-sm focus:outline-none focus:border-[var(--color-brand-teal)]"
+                      placeholder="imap.example.com"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[var(--color-text-muted)] text-xs mb-1">IMAP Port</label>
+                    <input
+                      type="number"
+                      value={localImapPort}
+                      onChange={(e) => setLocalImapPort(parseInt(e.target.value) || 993)}
+                      className="w-full bg-[var(--color-bg-dark)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-[var(--color-text-primary)] text-sm focus:outline-none focus:border-[var(--color-brand-teal)]"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[var(--color-text-muted)] text-xs mb-1">SMTP Host</label>
+                    <input
+                      type="text"
+                      value={localSmtpHost}
+                      onChange={(e) => setLocalSmtpHost(e.target.value)}
+                      className="w-full bg-[var(--color-bg-dark)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-[var(--color-text-primary)] text-sm focus:outline-none focus:border-[var(--color-brand-teal)]"
+                      placeholder="smtp.example.com"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[var(--color-text-muted)] text-xs mb-1">SMTP Port</label>
+                    <input
+                      type="number"
+                      value={localSmtpPort}
+                      onChange={(e) => setLocalSmtpPort(parseInt(e.target.value) || 587)}
+                      className="w-full bg-[var(--color-bg-dark)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-[var(--color-text-primary)] text-sm focus:outline-none focus:border-[var(--color-brand-teal)]"
+                    />
+                  </div>
+                </div>
+                <p className="text-xs text-[var(--color-text-dim)] flex items-center gap-1"><Server size={12} />Use this only if your provider needs custom server values.</p>
+              </div>
+            )}
+          </div>
+        )}
 
         <div className="pt-2 border-t border-[var(--color-border)]">
           <label className="block text-[var(--color-text-primary)] text-sm font-bold mb-2 flex items-center gap-2">
