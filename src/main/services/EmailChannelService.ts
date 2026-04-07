@@ -420,6 +420,7 @@ export class EmailChannelService extends EventEmitter {
     const sinceIso = new Date(Date.now() - RECENT_EMAIL_WINDOW_MS).toISOString()
     const seenFilter = unreadOnly ? false : undefined
 
+    const mailboxCandidates = ['INBOX', '[Gmail]/All Mail', 'All Mail']
     const candidates = [
       // Broadest first: avoid over-filtering due provider/tool differences.
       {
@@ -470,16 +471,25 @@ export class EmailChannelService extends EventEmitter {
           since: sinceIso
         }
       },
-      {
+      ...mailboxCandidates.map((mailbox) => ({
         name: 'list_emails',
         args: {
           account_name: accountName,
           page: 1,
           page_size: limit,
-          mailbox: 'INBOX',
+          mailbox,
           since: sinceIso
         }
-      },
+      })),
+      ...mailboxCandidates.map((mailbox) => ({
+        name: 'list_emails_metadata',
+        args: {
+          account_name: accountName,
+          page: 1,
+          page_size: limit,
+          mailbox
+        }
+      })),
       {
         name: 'list_emails',
         args: {
