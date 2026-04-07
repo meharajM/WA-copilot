@@ -73,6 +73,28 @@ function extractStructured(result: unknown): Record<string, unknown> {
   return {}
 }
 
+function extractToolError(result: unknown): string | null {
+  if (!result || typeof result !== 'object') return null
+  const r = result as Record<string, unknown>
+  if (r.isError !== true) return null
+
+  const content = r.content
+  if (Array.isArray(content)) {
+    const text = content
+      .map((part) => {
+        if (part && typeof part === 'object') {
+          const p = part as Record<string, unknown>
+          return typeof p.text === 'string' ? p.text : ''
+        }
+        return ''
+      })
+      .filter((t) => t !== '')
+      .join(' | ')
+    return text || 'MCP tool returned isError=true'
+  }
+  return 'MCP tool returned isError=true'
+}
+
 function asArray(input: unknown): Record<string, unknown>[] {
   if (!Array.isArray(input)) return []
   return input.filter((v) => typeof v === 'object' && v !== null) as Record<string, unknown>[]
@@ -505,6 +527,15 @@ export class EmailChannelService extends EventEmitter {
           name: candidate.name,
           arguments: candidate.args
         })
+        const toolError = extractToolError(result)
+        if (toolError) {
+          console.log('[EmailChannelService] metadata candidate MCP error', {
+            tool: candidate.name,
+            args: Object.keys(candidate.args),
+            error: toolError
+          })
+          continue
+        }
         const structured = extractStructured(result)
         const idsFromArray = Array.isArray(structured.ids)
           ? structured.ids.filter((v): v is string => typeof v === 'string' && v.trim() !== '')
@@ -585,6 +616,15 @@ export class EmailChannelService extends EventEmitter {
           name: candidate.name,
           arguments: candidate.args
         })
+        const toolError = extractToolError(result)
+        if (toolError) {
+          console.log('[EmailChannelService] direct candidate MCP error', {
+            tool: candidate.name,
+            args: Object.keys(candidate.args),
+            error: toolError
+          })
+          continue
+        }
         const structured = extractStructured(result)
         const emails = asArray(structured.emails || structured.messages || structured.results || structured.items || structured.data)
         console.log('[EmailChannelService] direct candidate result', {
@@ -762,6 +802,15 @@ export class EmailChannelService extends EventEmitter {
           name: candidate.name,
           arguments: candidate.args
         })
+        const toolError = extractToolError(payload)
+        if (toolError) {
+          console.log('[EmailChannelService] content candidate MCP error', {
+            tool: candidate.name,
+            args: Object.keys(candidate.args),
+            error: toolError
+          })
+          continue
+        }
         const structured = extractStructured(payload)
         const emails = asArray(structured.emails || structured.messages || structured.results || structured.items || structured.data)
         if (emails.length > 0) return emails
