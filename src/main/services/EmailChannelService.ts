@@ -95,6 +95,10 @@ function extractToolError(result: unknown): string | null {
   return 'MCP tool returned isError=true'
 }
 
+function isAuthError(message: string): boolean {
+  return /NONAUTH|AUTHENTICATION|LOGIN failed|invalid credentials/i.test(message)
+}
+
 function asArray(input: unknown): Record<string, unknown>[] {
   if (!Array.isArray(input)) return []
   return input.filter((v) => typeof v === 'object' && v !== null) as Record<string, unknown>[]
@@ -204,6 +208,7 @@ export class EmailChannelService extends EventEmitter {
   private running = false
   private effectiveAccountName: string | null = null
   private availableToolNames: string[] = []
+  private lastAuthErrorAt = 0
 
   configure(config: EmailPollingConfig): void {
     this.config = {
@@ -522,6 +527,9 @@ export class EmailChannelService extends EventEmitter {
     ]
 
     for (const candidate of candidates) {
+      if (this.availableToolNames.length > 0 && !this.availableToolNames.includes(candidate.name)) {
+        continue
+      }
       try {
         const result = await this.client.callTool({
           name: candidate.name,
@@ -534,6 +542,17 @@ export class EmailChannelService extends EventEmitter {
             args: Object.keys(candidate.args),
             error: toolError
           })
+          if (isAuthError(toolError)) {
+            const now = Date.now()
+            if (now - this.lastAuthErrorAt > 10_000) {
+              this.lastAuthErrorAt = now
+              this.setState({
+                ...this.state,
+                status: 'error',
+                error: 'Email authentication failed (IMAP NONAUTH). Recheck app password/token, username, and IMAP access.'
+              })
+            }
+          }
           continue
         }
         const structured = extractStructured(result)
@@ -611,6 +630,9 @@ export class EmailChannelService extends EventEmitter {
     ]
 
     for (const candidate of candidates) {
+      if (this.availableToolNames.length > 0 && !this.availableToolNames.includes(candidate.name)) {
+        continue
+      }
       try {
         const result = await this.client.callTool({
           name: candidate.name,
@@ -623,6 +645,17 @@ export class EmailChannelService extends EventEmitter {
             args: Object.keys(candidate.args),
             error: toolError
           })
+          if (isAuthError(toolError)) {
+            const now = Date.now()
+            if (now - this.lastAuthErrorAt > 10_000) {
+              this.lastAuthErrorAt = now
+              this.setState({
+                ...this.state,
+                status: 'error',
+                error: 'Email authentication failed (IMAP NONAUTH). Recheck app password/token, username, and IMAP access.'
+              })
+            }
+          }
           continue
         }
         const structured = extractStructured(result)
