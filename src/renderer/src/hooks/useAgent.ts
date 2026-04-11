@@ -589,13 +589,10 @@ export function useAgent(): UseAgentReturn {
             
             if (!content && !whatsappMessage && !emailMessage) return;
 
-            if (emailMessage && (
-                emailMessage.from.toLowerCase().includes('mailer-daemon') ||
-                emailMessage.from.toLowerCase().includes('postmaster') ||
-                emailMessage.subject.toLowerCase().includes('delivery status notification') ||
-                emailMessage.subject.toLowerCase().includes('undeliverable:')
-            )) {
-                console.log('[useAgent] Ignored system delivery-status email.')
+            if ((customEvent.detail as { system?: boolean })?.system) {
+                console.log('[useAgent] Ignored system event in submit handler.');
+                // Maybe we should still add it to the chat store as a system message? No, the PR reviewer just requested filtering.
+                // If it's a delivery failure, the DraftApprovalPanel handles UI update.
                 return;
             }
 
