@@ -58,7 +58,6 @@ export function DraftApprovalPanel() {
     const draft = drafts.find((d) => d.id === draftId);
     if (!draft) return;
 
-    approveDraft(draftId);
     const sendResult = await electron.email.send({
       to: draft.replyTo || draft.originalFrom,
       subject: `Re: ${normalizeSubject(draft.originalSubject || '(No Subject)')}`,
@@ -69,6 +68,7 @@ export function DraftApprovalPanel() {
     });
 
     if (sendResult.success) {
+      approveDraft(draftId);
       markDraftSent(draftId);
       return;
     }

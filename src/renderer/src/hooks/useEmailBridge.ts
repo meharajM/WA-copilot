@@ -31,6 +31,13 @@ export function useEmailBridge(): void {
 
     const unsubMessage = electron.email.onMessage((payload) => {
       const email = payload as EmailMessage
+      const { config } = useEmailStore.getState()
+
+      if (!config.autoReplyMode) {
+        console.log('[useEmailBridge] Ignoring inbound message (autoReplyMode is off)')
+        return;
+      }
+
       window.dispatchEvent(new CustomEvent('app:submit-message', {
         detail: {
           content: `📧 **Email** (${email.from}): ${email.subject}\n\n${email.body || ''}`,

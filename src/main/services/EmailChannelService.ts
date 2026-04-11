@@ -315,10 +315,22 @@ export class EmailChannelService extends EventEmitter {
       try {
         const accessToken = await gmailOAuthService.getAccessToken()
         if (!accessToken) return { success: false, error: 'Gmail OAuth token missing' }
-        const mime = [
+        const headers = [
           `To: ${payload.to}`,
           `Subject: ${payload.subject}`,
-          'Content-Type: text/plain; charset=UTF-8',
+          'Content-Type: text/plain; charset=UTF-8'
+        ]
+        
+        if (payload.inReplyTo) {
+          headers.push(`In-Reply-To: ${payload.inReplyTo}`)
+        }
+        
+        if (payload.references) {
+          headers.push(`References: ${payload.references}`)
+        }
+        
+        const mime = [
+          ...headers,
           '',
           payload.body
         ].join('\r\n')

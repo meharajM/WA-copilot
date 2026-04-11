@@ -589,6 +589,16 @@ export function useAgent(): UseAgentReturn {
             
             if (!content && !whatsappMessage && !emailMessage) return;
 
+            if (emailMessage && (
+                emailMessage.from.toLowerCase().includes('mailer-daemon') ||
+                emailMessage.from.toLowerCase().includes('postmaster') ||
+                emailMessage.subject.toLowerCase().includes('delivery status notification') ||
+                emailMessage.subject.toLowerCase().includes('undeliverable:')
+            )) {
+                console.log('[useAgent] Ignored system delivery-status email.')
+                return;
+            }
+
             const { activeSessionId, createSession, setActiveSession, sessions } = useChatStore.getState();
             let sessionId = activeSessionId;
             
@@ -621,9 +631,11 @@ export function useAgent(): UseAgentReturn {
                 }
             } else if (emailMessage?.from) {
                 const sender = emailMessage.from.toLowerCase()
+                const incomingThread = emailMessage.references?.split(' ')[0] || emailMessage.inReplyTo || emailMessage.messageId;
                 const existingSession = sessions.find(s =>
                     s.channel === 'email' &&
-                    (s.contact_id || '').toLowerCase() === sender
+                    (s.contact_id || '').toLowerCase() === sender &&
+                    (!s.thread_id || !incomingThread || s.thread_id === incomingThread || s.title === `📧 ${normalizeSubject(emailMessage.subject || sender).slice(0, 48)}`)
                 )
                 if (existingSession) {
                     sessionId = existingSession.id
@@ -637,6 +649,7 @@ export function useAgent(): UseAgentReturn {
                                     ...s,
                                     channel: 'email',
                                     contact_id: sender,
+                                    thread_id: incomingThread,
                                     title: `📧 ${normalizeSubject(emailMessage.subject || sender).slice(0, 48)}`,
                                 }
                                 : s
