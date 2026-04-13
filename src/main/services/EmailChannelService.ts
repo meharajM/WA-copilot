@@ -1,7 +1,21 @@
 import { EventEmitter } from 'events'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
+import Store from 'electron-store'
 import { gmailOAuthService } from './GmailOAuthService'
+
+interface EmailSyncState {
+  seenMessageIds: string[];
+  gmailLastSyncTimestamp: number;
+}
+
+const emailSyncStore = new Store<EmailSyncState>({
+  name: 'email-sync-state',
+  defaults: {
+    seenMessageIds: [],
+    gmailLastSyncTimestamp: 0
+  }
+})
 
 export interface EmailConnectionState {
   status: 'disconnected' | 'connecting' | 'connected' | 'error'
@@ -206,12 +220,17 @@ export class EmailChannelService extends EventEmitter {
   private config: EmailPollingConfig | null = null
   private client: Client | null = null
   private pollTimer: NodeJS.Timeout | null = null
-  private seenMessageIds = new Set<string>()
+  private seenMessageIds: Set<string>;
   private running = false
   private effectiveAccountName: string | null = null
   private availableToolNames: string[] = []
   private lastAuthErrorAt = 0
   private authFailureInCurrentPoll = false
+
+  constructor() {
+    super()
+    this.seenMessageIds = new Set<string>(emailSyncStore.get('seenMessageIds') || [])
+  }
 
   configure(config: EmailPollingConfig): void {
     this.config = {
@@ -273,7 +292,6 @@ export class EmailChannelService extends EventEmitter {
         }
       }
 
-      this.seenMessageIds.clear()
       this.effectiveAccountName = null
       this.setState({ status: 'connected', error: null, lastSyncAt: Date.now(), unreadCount: 0 })
 
@@ -490,6 +508,13 @@ export class EmailChannelService extends EventEmitter {
         seenSize: this.seenMessageIds.size
       })
       this.setState({ ...this.state, status: 'connected', error: null, lastSyncAt: Date.now(), unreadCount })
+      
+      const seenArray = Array.from(this.seenMessageIds);
+      if (seenArray.length > 2000) {
+        this.seenMessageIds = new Set(seenArray.slice(-1000));
+      }
+      emailSyncStore.set('seenMessageIds', Array.from(this.seenMessageIds));
+
       if (processed > 0) {
         console.log(`[EmailChannelService] Processed ${processed} inbound email message(s)`)
       }
@@ -509,8 +534,11 @@ export class EmailChannelService extends EventEmitter {
       return
     }
 
+    const lastSyncSecs = emailSyncStore.get('gmailLastSyncTimestamp') || 0
+    const queryParam = lastSyncSecs > 0 ? `after:${lastSyncSecs}` : `newer_than:1h`
+
     const response = await fetch(
-      `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=${this.config?.maxEmailsPerPoll || 10}&q=newer_than:1h`,
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=${this.config?.maxEmailsPerPoll || 10}&q=${queryParam}`,
       { headers: { Authorization: `Bearer ${accessToken}` } }
     )
     if (!response.ok) {
@@ -538,6 +566,16 @@ export class EmailChannelService extends EventEmitter {
     }
 
     this.setState({ ...this.state, status: 'connected', error: null, lastSyncAt: Date.now(), unreadCount: messages.length })
+    
+    // Save state overlap for 5 mins
+    emailSyncStore.set('gmailLastSyncTimestamp', Math.floor(Date.now() / 1000) - 300)
+    
+    const seenArray = Array.from(this.seenMessageIds);
+    if (seenArray.length > 2000) {
+      this.seenMessageIds = new Set(seenArray.slice(-1000));
+    }
+    emailSyncStore.set('seenMessageIds', Array.from(this.seenMessageIds));
+
     if (processed > 0) console.log(`[EmailChannelService] Gmail API processed ${processed} message(s)`)
   }
 
