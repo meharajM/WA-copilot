@@ -142,7 +142,31 @@ interface ElectronAPI {
         sendMediaMessage: (to: string, filePath: string, caption?: string, type?: string) => Promise<{ success: boolean; error?: string }>
         onConnectionChange: (callback: (state: unknown) => void) => () => void
         onMessage: (callback: (message: unknown) => void) => () => void
+        onEscalation: (callback: (data: unknown) => void) => () => void
         notifyAdmin: (customerJid: string, summary: string, mainQuestion: string) => Promise<{ success: boolean; error?: string }>
+    }
+
+    email?: {
+        getState: () => Promise<{
+            status: 'disconnected' | 'connecting' | 'connected' | 'error'
+            error: string | null
+            lastSyncAt: number | null
+            unreadCount: number
+        }>
+        configure: (config: unknown) => Promise<{ success: boolean; error?: string }>
+        start: () => Promise<{ success: boolean; error?: string }>
+        stop: () => Promise<{ success: boolean; error?: string }>
+        send: (payload: unknown) => Promise<{ success: boolean; error?: string }>
+        onConnectionChange: (callback: (state: unknown) => void) => () => void
+        onMessage: (callback: (message: unknown) => void) => () => void
+        onDeliveryStatus: (callback: (status: unknown) => void) => () => void
+    }
+    emailOAuth?: {
+        initialize: () => Promise<{ signedIn: boolean; email: string | null }>
+        signInGoogle: () => Promise<{ signedIn: boolean; email: string | null }>
+        signOut: () => Promise<{ success: boolean }>
+        getStatus: () => Promise<{ signedIn: boolean; email: string | null }>
+        getAccessToken: () => Promise<{ token: string | null }>
     }
 }
 

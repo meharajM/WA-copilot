@@ -8,6 +8,7 @@ import electron from '../../lib/electron'
 interface MessageAction {
   type: string
   label: string
+  payload?: Record<string, unknown>
 }
 
 interface MessageActionsProps {
@@ -56,31 +57,50 @@ export function MessageActions({ messageId, content, actions }: MessageActionsPr
   return (
     <>
       {/* Custom action buttons (continue, stop) */}
-      {actions && actions.length > 0 && (
-        <div className="mt-4 flex flex-wrap gap-2">
-          {actions.map((action, idx) => (
-            <button
-              key={`${action.type}-${idx}`}
-              onClick={() => {
-                const eventContent =
-                  action.type === 'continue' ? 'continue' : 'stop'
-                window.dispatchEvent(
-                  new CustomEvent('agent-action', {
-                    detail: { type: action.type, content: eventContent },
-                  })
-                )
-              }}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-                action.type === 'continue'
-                  ? 'bg-[var(--color-accent)] hover:bg-[var(--color-accent)]/80 text-[var(--color-text-inverse)]'
-                  : 'bg-[var(--color-surface-hover)] hover:bg-[var(--color-border)] border border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]'
-              }`}
-            >
-              {action.label}
-            </button>
-          ))}
-        </div>
-      )}
+       {actions && actions.length > 0 && (
+         <div className="mt-4 flex flex-wrap gap-2">
+           {actions.map((action, idx) => {
+             // Handle custom "open drafts" action
+             if (action.type === 'custom' && action.payload?.action === 'open_drafts') {
+               return (
+                 <button
+                   key={`${action.type}-${idx}`}
+                   onClick={() => {
+                     window.dispatchEvent(new CustomEvent('app:open-drafts'))
+                   }}
+                   className={`px-4 py-2 rounded-lg text-sm font-medium transition-all bg-[var(--color-success)] hover:bg-[var(--color-success)]/80 text-[var(--color-text-inverse)]`}
+                 >
+                   {action.label}
+                 </button>
+               );
+             }
+             
+             return (
+               <button
+                 key={`${action.type}-${idx}`}
+                 onClick={() => {
+                   const eventContent =
+                     action.type === 'continue' ? 'continue' : action.type === 'stop' ? 'stop' : 'approve';
+                   window.dispatchEvent(
+                     new CustomEvent('agent-action', {
+                       detail: { type: action.type, content: eventContent },
+                     })
+                   )
+                 }}
+                 className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                   action.type === 'continue'
+                     ? 'bg-[var(--color-accent)] hover:bg-[var(--color-accent)]/80 text-[var(--color-text-inverse)]'
+                     : action.type === 'stop'
+                       ? 'bg-[var(--color-surface-hover)] hover:bg-[var(--color-border)] border border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]'
+                       : 'bg-[var(--color-surface-hover)] hover:bg-[var(--color-border)] border border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]'
+                 }`}
+               >
+                 {action.label}
+               </button>
+             );
+           })}
+         </div>
+       )}
 
       {/* Hover action bar (copy + regenerate) */}
       <div className="flex items-center gap-2 mt-1 ml-1 opacity-0 group-hover:opacity-100 transition-opacity">

@@ -8,6 +8,8 @@ import { registerSecureHandlers } from './secure'
 import { registerFsHandlers } from './fs'
 import { registerMemoryHandlers } from './memory'
 import { registerAntigravityHandlers } from './antigravity'
+import { registerEmailHandlers } from './email'
+import { registerEmailOAuthHandlers } from './email-oauth'
 import { ipcMain } from 'electron'
 import { registerWhatsAppHandlers } from './whatsapp'
 import { RAGEngine } from '../packages/rag-engine/index'
@@ -29,6 +31,8 @@ export function setupIpcHandlers(): void {
     registerFsHandlers()
     registerAntigravityHandlers()
     registerWhatsAppHandlers()
+    registerEmailHandlers()
+    registerEmailOAuthHandlers()
     
     // Self-learning analytics
     ipcMain.handle('intelligence:get-knowledge', async () => {

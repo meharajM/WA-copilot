@@ -32,8 +32,10 @@ import { Card } from './primitives/Card'
 import { StatusBadge } from './primitives/StatusDot'
 import { SystemDependenciesSettings } from './SystemDependenciesSettings'
 import { BotIdentityPanel } from './settings/BotIdentityPanel'
+import { EmailSettingsPanel } from './settings/EmailSettingsPanel'
+import { Mail } from 'lucide-react'
 
-type SettingsSection = 'whatsapp' | 'tools' | 'identity' | 'llm' | 'memory' | 'browser' | 'appearance' | 'logs' | 'about'
+type SettingsSection = 'whatsapp' | 'email' | 'tools' | 'identity' | 'llm' | 'memory' | 'browser' | 'appearance' | 'logs' | 'about'
 
 interface SettingsPanelProps {
     onClose: () => void;
@@ -65,6 +67,7 @@ export function SettingsPanel({ onClose, initialSection = 'whatsapp' }: Settings
 
     const sections: { id: SettingsSection | 'whatsapp' | 'tools'; label: string; icon: React.ReactNode }[] = [
         { id: 'whatsapp', label: 'WhatsApp Business', icon: <MessageCircle size={20} /> },
+        { id: 'email', label: 'Email Channel', icon: <Mail size={20} /> },
         { id: 'tools', label: 'Business Tools (MCP)', icon: <Database size={20} /> },
         { id: 'identity', label: 'Bot Identity', icon: <UserCircle size={20} /> },
         { id: 'llm', label: 'AI Model Connection', icon: <Cpu size={20} /> },
@@ -197,6 +200,16 @@ export function SettingsPanel({ onClose, initialSection = 'whatsapp' }: Settings
                             </p>
                         </div>
                     </div>
+                )}
+
+                {/* Email Channel Section */}
+                {activeSection === 'email' && (
+                    <ErrorBoundary>
+                        <div>
+                            <h3 className="text-xl font-bold mb-6 text-[var(--color-text-primary)]">Email Channel Configuration</h3>
+                            <EmailSettingsPanel />
+                        </div>
+                    </ErrorBoundary>
                 )}
 
                 {/* Business Tools Section (MCP) */}

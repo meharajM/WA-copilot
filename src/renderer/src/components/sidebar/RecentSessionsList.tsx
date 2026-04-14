@@ -1,10 +1,26 @@
 import React, { useState } from 'react'
-import { MessageSquare, Edit2, Trash2 } from 'lucide-react'
+import { MessageSquare, Edit2, Trash2, Mail, Smartphone } from 'lucide-react'
 import { useChatStore, ChatSession } from '../../stores/chatStore'
 import { ViewMode } from '../Sidebar'
 
+/** Supported channel filters for the session list */
+export type ChannelFilter = 'all' | 'whatsapp' | 'email'
+
 interface RecentSessionsListProps {
   onViewChange?: (view: ViewMode) => void
+}
+
+/** Icon mapping for channel types */
+const CHANNEL_ICONS: Record<string, React.ElementType> = {
+  whatsapp: Smartphone,
+  email: Mail,
+}
+
+/** Human-readable labels for channel types */
+const CHANNEL_LABELS: Record<string, string> = {
+  all: 'All Channels',
+  whatsapp: 'WhatsApp',
+  email: 'Email',
 }
 
 export function RecentSessionsList({ onViewChange }: RecentSessionsListProps) {
@@ -19,6 +35,13 @@ export function RecentSessionsList({ onViewChange }: RecentSessionsListProps) {
   
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editTitle, setEditTitle] = useState('')
+  const [channelFilter, setChannelFilter] = useState<ChannelFilter>('all')
+
+  /** Filter sessions by selected channel */
+  const filteredSessions = sessions.filter((s) => {
+    if (channelFilter === 'all') return true
+    return s.channel === channelFilter
+  })
 
   const startEditing = (e: React.MouseEvent, session: ChatSession) => {
     e.stopPropagation()
@@ -50,10 +73,34 @@ export function RecentSessionsList({ onViewChange }: RecentSessionsListProps) {
         </h3>
       </div>
 
+      {/* Channel filter tabs */}
+      <div className="flex gap-1 mb-3">
+        {(['all', 'whatsapp', 'email'] as ChannelFilter[]).map((ch) => {
+          const Icon = ch === 'all' ? MessageSquare : CHANNEL_ICONS[ch]
+          const isActive = channelFilter === ch
+          return (
+            <button
+              key={ch}
+              onClick={() => setChannelFilter(ch)}
+              className={`flex items-center gap-1 px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider transition-all ${
+                isActive
+                  ? 'bg-[var(--color-brand-teal)]/20 text-[var(--color-brand-teal)]'
+                  : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-surface)]'
+              }`}
+              title={CHANNEL_LABELS[ch]}
+            >
+              <Icon size={10} />
+              <span className="hidden sm:inline">{CHANNEL_LABELS[ch]}</span>
+            </button>
+          )
+        })}
+      </div>
+
       <div className="flex flex-col gap-0.5">
-        {sessions.map((session) => {
+        {filteredSessions.map((session) => {
           const isActive = session.id === activeSessionId
           const isProcessing = _processingSessions.has(session.id)
+          const ChannelIcon = session.channel ? CHANNEL_ICONS[session.channel] : MessageSquare
           return (
             <div
               key={session.id}
@@ -68,7 +115,14 @@ export function RecentSessionsList({ onViewChange }: RecentSessionsListProps) {
                 }`}
             >
               <div className="flex items-center gap-3 overflow-hidden">
-                <MessageSquare size={14} className="flex-shrink-0 opacity-70" />
+                {/* Channel icon with subtle color coding */}
+                <div className={`flex-shrink-0 ${
+                  session.channel === 'email' ? 'text-blue-400' : 
+                  session.channel === 'whatsapp' ? 'text-green-400' : 
+                  'opacity-70'
+                }`}>
+                  <ChannelIcon size={14} />
+                </div>
                 
                 {editingId === session.id ? (
                   <input
@@ -111,9 +165,11 @@ export function RecentSessionsList({ onViewChange }: RecentSessionsListProps) {
           )
         })}
 
-        {sessions.length === 0 && (
+        {filteredSessions.length === 0 && (
           <div className="text-center py-6 text-xs text-[var(--color-text-dim)]">
-            No active sessions.
+            {channelFilter === 'all' 
+              ? 'No active sessions.' 
+              : `No ${CHANNEL_LABELS[channelFilter]} sessions.`}
           </div>
         )}
       </div>

@@ -48,6 +48,9 @@ export interface ChatSession {
     /** Generic remote identifier (e.g., Telegram Chat ID, Email Address, Twitter Handle) */
     contact_id?: string
     
+    /** Specific thread identifier to preventing merging different threads from the same contact */
+    thread_id?: string
+    
     /** Legacy WhatsApp identifier (alias for contact_id) */
     whatsapp_jid?: string 
     
