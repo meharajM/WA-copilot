@@ -18,6 +18,7 @@ import { useSettingsStore, LLMProviderType } from '../../../stores/settingsStore
 import { OllamaSettings } from './OllamaSettings'
 import { OpenAISettings } from './OpenAISettings'
 import { GeminiSettings } from './GeminiSettings'
+import { BrowserLLMSettings } from './BrowserLLMSettings'
 
 interface SingleProviderStatus {
     available: boolean
@@ -123,6 +124,7 @@ export function LLMProviderSettings() {
     const showOpenAI = p === 'openai' || p === 'auto'
     const showGemini = p === 'gemini' || p === 'auto'
     const showOpenRouter = p === 'openrouter' || p === 'auto'
+    const showBrowser = p === 'browser' || p === 'auto'
 
     return (
         <div>
@@ -182,6 +184,14 @@ export function LLMProviderSettings() {
                         available={providerStatus?.openrouter.available}
                         models={providerStatus?.openrouter.models}
                         error={providerStatus?.openrouter.error}
+                        checking={checking}
+                        onRefresh={checkProviders}
+                    />
+                )}
+                {showBrowser && (
+                    <BrowserLLMSettings
+                        available={providerStatus?.browser?.available}
+                        error={providerStatus?.browser?.error}
                         checking={checking}
                         onRefresh={checkProviders}
                     />
