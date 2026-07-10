@@ -2,6 +2,7 @@ import { EventEmitter } from 'events'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import Store from 'electron-store'
+import { buildGmailQuery, toInboundGmailMessage } from './email-gmail'
 import { gmailOAuthService } from './GmailOAuthService'
 
 interface EmailSyncState {
@@ -15,7 +16,10 @@ const emailSyncStore = new Store<EmailSyncState>({
     seenMessageIds: [],
     gmailLastSyncTimestamp: 0
   }
-})
+}) as Store<EmailSyncState> & {
+  get: <K extends keyof EmailSyncState>(key: K) => EmailSyncState[K] | undefined
+  set: <K extends keyof EmailSyncState>(key: K, value: EmailSyncState[K]) => void
+}
 
 export interface EmailConnectionState {
   status: 'disconnected' | 'connecting' | 'connected' | 'error'
@@ -229,7 +233,7 @@ export class EmailChannelService extends EventEmitter {
 
   constructor() {
     super()
-    this.seenMessageIds = new Set<string>(emailSyncStore.get('seenMessageIds') || [])
+    this.seenMessageIds = new Set<string>(emailSyncStore.get('seenMessageIds') ?? [])
   }
 
   configure(config: EmailPollingConfig): void {
@@ -534,11 +538,16 @@ export class EmailChannelService extends EventEmitter {
       return
     }
 
-    const lastSyncSecs = emailSyncStore.get('gmailLastSyncTimestamp') || 0
-    const queryParam = lastSyncSecs > 0 ? `after:${lastSyncSecs}` : `newer_than:1h`
+    const lastSyncSecs = emailSyncStore.get('gmailLastSyncTimestamp') ?? 0
+    const queryParam = buildGmailQuery(lastSyncSecs, this.config?.unreadOnly === true)
+    const listUrl = new URL('https://gmail.googleapis.com/gmail/v1/users/me/messages')
+    listUrl.searchParams.set('maxResults', String(this.config?.maxEmailsPerPoll || 10))
+    listUrl.searchParams.set('q', queryParam)
+    listUrl.searchParams.append('labelIds', 'INBOX')
+    const ownerEmail = parseEmailAddress(gmailOAuthService.getStatus().email || '')
 
     const response = await fetch(
-      `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=${this.config?.maxEmailsPerPoll || 10}&q=${queryParam}`,
+      listUrl.toString(),
       { headers: { Authorization: `Bearer ${accessToken}` } }
     )
     if (!response.ok) {
@@ -556,8 +565,8 @@ export class EmailChannelService extends EventEmitter {
       })
       if (!detailResp.ok) continue
       const detail = await detailResp.json() as Record<string, unknown>
-      const email = this.fromGmailMessage(detail)
-      if (!email) continue
+      const email = toInboundGmailMessage(detail, ownerEmail)
+      if (!email || !this.shouldProcessInbound(email, detail)) continue
       const dedupeId = email.messageId || email.id
       if (dedupeId && this.seenMessageIds.has(dedupeId)) continue
       if (dedupeId) this.seenMessageIds.add(dedupeId)
@@ -577,51 +586,6 @@ export class EmailChannelService extends EventEmitter {
     emailSyncStore.set('seenMessageIds', Array.from(this.seenMessageIds));
 
     if (processed > 0) console.log(`[EmailChannelService] Gmail API processed ${processed} message(s)`)
-  }
-
-  private fromGmailMessage(item: Record<string, unknown>): InboundEmailMessage | null {
-    const payload = (item.payload && typeof item.payload === 'object') ? item.payload as Record<string, unknown> : null
-    const headers = Array.isArray(payload?.headers) ? payload!.headers as Array<Record<string, unknown>> : []
-    const getHeader = (name: string): string => {
-      const found = headers.find((h) => String(h.name || '').toLowerCase() === name.toLowerCase())
-      return typeof found?.value === 'string' ? found.value : ''
-    }
-    const bodyData = this.extractGmailBody(payload)
-    return {
-      id: String(item.id || `gmail_${Date.now()}`),
-      from: parseEmailAddress(getHeader('From')) || 'unknown-sender',
-      to: parseEmailAddress(getHeader('To')) || '',
-      subject: getHeader('Subject') || '(No Subject)',
-      body: bodyData || '',
-      bodyType: 'text',
-      timestamp: Date.now(),
-      messageId: getHeader('Message-Id') || getHeader('Message-ID'),
-      inReplyTo: getHeader('In-Reply-To'),
-      references: getHeader('References'),
-      isFromMe: false
-    }
-  }
-
-  private extractGmailBody(payload: Record<string, unknown> | null): string {
-    if (!payload) return ''
-    const body = payload.body as Record<string, unknown> | undefined
-    if (body?.data && typeof body.data === 'string') {
-      return Buffer.from(body.data, 'base64').toString('utf8')
-    }
-    const parts = Array.isArray(payload.parts) ? payload.parts as Array<Record<string, unknown>> : []
-    for (const part of parts) {
-      if (String(part.mimeType || '').toLowerCase() === 'text/plain') {
-        const partBody = part.body as Record<string, unknown> | undefined
-        if (partBody?.data && typeof partBody.data === 'string') {
-          try {
-            return Buffer.from(partBody.data.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8')
-          } catch {
-            return ''
-          }
-        }
-      }
-    }
-    return ''
   }
 
   private async fetchMetadata(

@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import electron from '../lib/electron'
 import { useEmailStore } from '../stores/emailStore'
+import { buildEmailRuntimeConfig } from '../lib/email-runtime'
 import { normalizeEmailAddress, type EmailMessage } from '../lib/email-integration'
 
 interface EmailConnectionState {
@@ -80,15 +81,16 @@ export function useEmailBridge(): void {
       }
 
       const oauthStatus = await electron.emailOAuth.getStatus()
-      const usingGmailOAuth = config.provider === 'gmail-api' && oauthStatus.signedIn
+      const wantsGmailOAuth = config.provider === 'gmail-api' && config.gmailAuthMode === 'google-oauth'
+      const usingGmailOAuth = wantsGmailOAuth && oauthStatus.signedIn
       const configuredAddress = normalizeEmailAddress(config.emailAddress || '')
       const oauthAddress = normalizeEmailAddress(oauthStatus.email || '')
       const effectiveAddress = usingGmailOAuth ? (oauthAddress || configuredAddress) : configuredAddress
 
-      if (config.provider === 'gmail-api' && !oauthStatus.signedIn) {
+      if (wantsGmailOAuth && !oauthStatus.signedIn) {
         setConnectionState({
           status: 'error',
-          error: 'Gmail provider requires Google OAuth sign-in',
+          error: 'Gmail is set to Google sign-in, but the Google account is not connected.',
           lastSyncAt: null,
           unreadCount: 0
         })
@@ -128,31 +130,24 @@ export function useEmailBridge(): void {
       }
 
       const address = effectiveAddress
-      const runtimeConfig = {
+      const runtimeConfig = buildEmailRuntimeConfig({
         provider: config.provider,
-        command: 'uvx',
-        args: ['mcp-email-server==0.6.2', 'stdio'],
-        pollingIntervalSeconds: config.pollingIntervalSeconds,
+        gmailAuthMode: config.gmailAuthMode,
+        oauthSignedIn: oauthStatus.signedIn,
+        emailAddress: address,
+        userName: config.userName || address,
         accountName: config.accountName || 'default',
+        imapHost: config.imapHost,
+        imapPort: config.imapPort,
+        smtpHost: config.smtpHost,
+        smtpPort: config.smtpPort,
+        imapTls: config.imapTls,
+        smtpTls: config.smtpTls,
+        pollingIntervalSeconds: config.pollingIntervalSeconds,
+        password,
         unreadOnly: false,
         maxEmailsPerPoll: 10,
-        env: {
-          MCP_EMAIL_SERVER_ACCOUNT_NAME: config.accountName || 'default',
-          MCP_EMAIL_SERVER_FULL_NAME: address.split('@')[0] || 'support',
-          MCP_EMAIL_SERVER_EMAIL_ADDRESS: address,
-          MCP_EMAIL_SERVER_USER_NAME: config.userName || address,
-          MCP_EMAIL_SERVER_PASSWORD: password,
-          MCP_EMAIL_SERVER_IMAP_HOST: config.imapHost,
-          MCP_EMAIL_SERVER_IMAP_PORT: String(config.imapPort),
-          MCP_EMAIL_SERVER_IMAP_SSL: String(config.imapTls),
-          MCP_EMAIL_SERVER_SMTP_HOST: config.smtpHost,
-          MCP_EMAIL_SERVER_SMTP_PORT: String(config.smtpPort),
-          MCP_EMAIL_SERVER_SMTP_START_SSL: config.smtpTls ? 'true' : 'false',
-          MCP_EMAIL_SERVER_SMTP_SSL: config.smtpPort === 465 ? 'true' : 'false',
-          MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD: 'false',
-          MCP_EMAIL_SERVER_SAVE_TO_SENT: 'true',
-        }
-      }
+      })
 
       const configured = await electron.email.configure(runtimeConfig) as { success?: boolean; error?: string }
       if (configured && configured.success === false) {
@@ -183,6 +178,7 @@ export function useEmailBridge(): void {
   }, [
     config.enabled,
     config.provider,
+    config.gmailAuthMode,
     config.emailAddress,
     config.userName,
     config.accountName,

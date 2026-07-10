@@ -3,7 +3,7 @@ import { useChatStore } from '../stores/chatStore'
 import electron from '../lib/electron'
 import type { ChatSession } from '../stores/chatStore'
 
-const INACTIVITY_TIMEOUT_MS = 15 * 60 * 1000 // 15 minutes
+const INACTIVITY_TIMEOUT_MS = 10 * 60 * 1000 // 10 minutes
 const RESOLUTION_PROMPT = "It's been a while! Just checking in—did that resolve your inquiry? (Reply 'Yes' or 'No', or feel free to ask more questions!)"
 
 export type ResolutionAuditAction =

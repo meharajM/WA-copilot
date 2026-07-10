@@ -2,6 +2,7 @@
 
 ## Goals
 
+- Use `docs/app-behavior.md` as the manual QA and product-behavior contract.
 - Catch parser/logic regressions quickly with deterministic unit tests.
 - Catch real provider/API regressions with live OpenRouter contract tests (no mocked LLM responses).
 
