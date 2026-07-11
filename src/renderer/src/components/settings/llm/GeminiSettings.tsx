@@ -26,6 +26,19 @@ export function GeminiSettings({ available, models, checking, onRefresh }: Gemin
     const [testResult, setTestResult] = useState<string | undefined>()
 
     const canTest = !!(settings.geminiApiKey || antigravitySignedIn)
+    const settingsForLLM = {
+        preferredProvider: settings.preferredProvider,
+        ollamaModel: settings.ollamaModel,
+        ollamaBaseUrl: settings.ollamaBaseUrl,
+        openaiApiKey: settings.openaiApiKey,
+        openaiBaseUrl: settings.openaiBaseUrl,
+        openaiModel: settings.openaiModel,
+        geminiApiKey: settings.geminiApiKey,
+        geminiModel: settings.geminiModel,
+        openrouterApiKey: settings.openrouterApiKey,
+        openrouterModel: settings.openrouterModel,
+        browserModel: settings.browserModel,
+    }
 
     async function handleTest() {
         if (!canTest) {
@@ -38,7 +51,7 @@ export function GeminiSettings({ available, models, checking, onRefresh }: Gemin
             const result = await testGeminiConnection(
                 settings.geminiApiKey,
                 settings.geminiModel || 'gemini-2.0-flash-lite',
-                settings
+                settingsForLLM
             )
             if (result.success) {
                 const msg = result.modelsEndpointAvailable !== false

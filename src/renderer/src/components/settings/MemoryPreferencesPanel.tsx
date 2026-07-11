@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react'
-import { HardDrive, Server, RefreshCw, AlertCircle, Check, ArrowRight } from 'lucide-react'
+import { Database, HardDrive, Server, RefreshCw } from 'lucide-react'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { MemoryInspector } from './memory/MemoryInspector'
 
@@ -16,7 +16,6 @@ export function MemoryPreferencesPanel() {
     const settings = useSettingsStore()
     const [stats, setStats] = useState<MemoryStats | null>(null)
     const [loading, setLoading] = useState(false)
-    const [migrationStatus, setMigrationStatus] = useState<'idle' | 'migrating' | 'success' | 'error'>('idle')
 
     const loadStats = async () => {
         if (!window.electron?.memory) return
@@ -40,10 +39,8 @@ export function MemoryPreferencesPanel() {
         loadStats()
     }, [])
 
-    const handleBackendChange = async (backend: 'server-memory' | 'memento-mcp') => {
+    const handleBackendChange = async (backend: 'sqlite' | 'server-memory') => {
         await settings.setMemoryBackend(backend)
-        // Refresh stats to see new backend state
-        setTimeout(loadStats, 500)
     }
 
     const formatBytes = (bytes: number) => {
@@ -71,6 +68,23 @@ export function MemoryPreferencesPanel() {
                 <label className="block text-sm font-medium mb-4 text-[var(--color-text-primary)]">Storage Backend</label>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <button
+                        onClick={() => handleBackendChange('sqlite')}
+                        className={`flex flex-col items-start p-4 rounded-xl border transition-all ${
+                            settings.memoryBackend === 'sqlite'
+                                ? 'bg-purple-500/10 border-purple-500/50'
+                                : 'bg-[var(--color-surface)] border-transparent hover:bg-[var(--color-border)]'
+                        }`}
+                    >
+                        <div className="flex items-center gap-2 mb-2">
+                            <Database className={`w-5 h-5 ${settings.memoryBackend === 'sqlite' ? 'text-purple-400' : 'text-[var(--color-text-muted)]'}`} />
+                            <span className="font-bold text-[var(--color-text-primary)]">Local SQLite</span>
+                        </div>
+                        <p className="text-xs text-left text-[var(--color-text-dim)]">
+                            Recommended local backend with durable, indexed storage.
+                        </p>
+                    </button>
+
+                    <button
                         onClick={() => handleBackendChange('server-memory')}
                         className={`flex flex-col items-start p-4 rounded-xl border transition-all ${
                             settings.memoryBackend === 'server-memory'
@@ -83,27 +97,13 @@ export function MemoryPreferencesPanel() {
                             <span className="font-bold text-[var(--color-text-primary)]">Server Memory</span>
                         </div>
                         <p className="text-xs text-left text-[var(--color-text-dim)]">
-                            Local JSON-based storage. Fast and simple. Best for personal use and standard workloads.
-                        </p>
-                    </button>
-
-                    <button
-                        onClick={() => handleBackendChange('memento-mcp')}
-                        className={`flex flex-col items-start p-4 rounded-xl border transition-all ${
-                            settings.memoryBackend === 'memento-mcp'
-                                ? 'bg-purple-500/10 border-purple-500/50'
-                                : 'bg-[var(--color-surface)] border-transparent hover:bg-[var(--color-border)]'
-                        }`}
-                    >
-                        <div className="flex items-center gap-2 mb-2">
-                            <HardDrive className={`w-5 h-5 ${settings.memoryBackend === 'memento-mcp' ? 'text-purple-400' : 'text-[var(--color-text-muted)]'}`} />
-                            <span className="font-bold text-[var(--color-text-primary)]">Memento MCP (Neo4j)</span>
-                        </div>
-                        <p className="text-xs text-left text-[var(--color-text-dim)]">
-                            Graph database storage. Scalable and relational. Best for massive context and complex queries.
+                            Compatibility backend for existing JSON-based memory stores.
                         </p>
                     </button>
                 </div>
+                <p className="mt-3 text-xs text-[var(--color-text-dim)]">
+                    Backend changes take effect after restarting the app. Memento MCP is hidden until its adapter is implemented.
+                </p>
             </div>
 
             {/* Current Stats */}
@@ -147,74 +147,6 @@ export function MemoryPreferencesPanel() {
                     </div>
                 )}
             </div>
-
-            {/* Migration Suggestion (Conditional) */}
-            {(migrationStatus === 'success' || (stats && stats.entityCount > 10000 && settings.memoryBackend === 'server-memory')) && (
-                <div className={`border rounded-xl p-4 flex items-start gap-4 ${
-                    migrationStatus === 'success' 
-                        ? 'bg-[var(--color-success)]/10 border-[var(--color-success)]/20' 
-                        : 'bg-[var(--color-warning)]/10 border-[var(--color-warning)]/20'
-                }`}>
-                    <div className={`p-2 rounded-lg ${
-                        migrationStatus === 'success' ? 'bg-[var(--color-success)]/20' : 'bg-[var(--color-warning)]/20'
-                    }`}>
-                        {migrationStatus === 'success' ? (
-                            <Check className="w-6 h-6 text-[var(--color-success)]" />
-                        ) : (
-                            <AlertCircle className="w-6 h-6 text-[var(--color-warning)]" />
-                        )}
-                    </div>
-                    <div className="flex-1">
-                        <h4 className={`font-bold mb-1 ${
-                            migrationStatus === 'success' ? 'text-[var(--color-success)]' : 'text-[var(--color-warning)]'
-                        }`}>
-                            {migrationStatus === 'success' ? 'Migration Complete' : 'Scalability Warning'}
-                        </h4>
-                        <p className={`text-sm mb-3 ${
-                            migrationStatus === 'success' ? 'text-[var(--color-success)] opacity-80' : 'text-[var(--color-warning)] opacity-80'
-                        }`}>
-                            {migrationStatus === 'success' 
-                                ? 'Your memory has been successfully migrated to Memento MCP.' 
-                                : 'You have over 10,000 entities. Server Memory may start to slow down. We recommend migrating to Memento MCP (Neo4j) for better performance.'}
-                        </p>
-                        
-                        {migrationStatus !== 'success' && (
-                            <button 
-                                onClick={async () => {
-                                    if (!window.electron?.memory) return
-                                    setMigrationStatus('migrating')
-                                    try {
-                                        const result = await window.electron.memory.migrate()
-                                        if (result.success) {
-                                            setMigrationStatus('success')
-                                            loadStats() // Refresh stats
-                                        } else {
-                                            setMigrationStatus('error')
-                                            console.error(result.error)
-                                        }
-                                    } catch (e) {
-                                        setMigrationStatus('error')
-                                        console.error(e)
-                                    }
-                                }}
-                                disabled={migrationStatus === 'migrating'}
-                                className="px-4 py-2 bg-yellow-500/20 hover:bg-yellow-500/30 text-yellow-400 rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
-                            >
-                                {migrationStatus === 'migrating' ? (
-                                    <>
-                                        <RefreshCw className="animate-spin w-4 h-4" /> 
-                                        Migrating...
-                                    </>
-                                ) : (
-                                    <>
-                                        Start Migration <ArrowRight size={16} />
-                                    </>
-                                )}
-                            </button>
-                        )}
-                    </div>
-                </div>
-            )}
 
             {/* Memory Inspector */}
             {/* Debug Test Button */}

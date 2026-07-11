@@ -29,6 +29,12 @@
   - native tool-calling paths for workflow-like scenarios (optional strictness),
   - per-run artifacts saved to `test-results/live/` for regression tracking.
 
+4. Electron UI smoke tests (`tests/e2e`)
+- Launch the built Electron application with isolated user data.
+- Block external email and WhatsApp side effects.
+- Verify startup, navigation, the settings shell, Email Channel controls, safe defaults, Gmail presets, and the Drafts view.
+- Fail on renderer page errors or unexpected external channel calls.
+
 ## Environment Setup
 
 Copy `.env.example` to `.env` or `.env.test`, then set:
@@ -47,9 +53,15 @@ Optional:
 - `npm run test:integration` - integration contract tests only.
 - `npm run test` - full suite with live tests auto-skipped unless enabled.
 - `npm run test:live` - live suite only (requires valid OpenRouter env vars).
-- `npm run test:robust` - unit + live.
+- `npm run test:robust` - unit + integration + live.
+- `npm run test:e2e` - deterministic Electron UI smoke test.
+- `npm run test:playwright` - same Electron UI smoke test, driven by Playwright.
+- `npm run test:e2e:packaged:mac` - run the smoke suite against the packaged macOS app.
+- `npm run test:mock` - intentionally fails because no separate mocked E2E suite exists.
+- `npm run test:speech` - intentionally fails because no speech E2E suite exists.
+- `npm run release:gate` - clean-tree, version, lint, typecheck, unit, integration, Electron E2E, and build gate.
 
 ## Notes
 
-- These contracts are focused on LLM/runtime behavior and real-world prompt/tool scenarios.
-- They do not replace UI/browser E2E tests (Playwright) or WhatsApp socket integration tests.
+- The Electron smoke suite is deterministic and side-effect free; it does not replace a real mailbox round trip or WhatsApp socket integration test.
+- Live OpenRouter tests remain an explicit external-provider gate and are not part of the deterministic release gate.

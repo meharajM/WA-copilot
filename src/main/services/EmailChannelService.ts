@@ -389,10 +389,12 @@ export class EmailChannelService extends EventEmitter {
         references: payload.references
       }
 
-      await this.client.callTool({
+      const result = await this.client.callTool({
         name: 'send_email',
         arguments: args
       })
+      const toolError = extractToolError(result)
+      if (toolError) throw new Error(toolError)
 
       this.emit('deliveryStatus', {
         to: payload.to,

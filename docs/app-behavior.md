@@ -242,16 +242,13 @@ Pass evidence:
 - Sensitive-topic emails are not auto-sent.
 - Direct-send failure produces a reviewable draft instead of silent loss.
 
-### Product target for low-confidence email handling
+### Low-confidence email handling
 
 - If knowledge-grounded confidence is high, the app may reply automatically when policy and settings allow it.
-- If confidence is low or the app cannot answer safely from knowledge, the customer should receive a short standard fallback reply that explains the team will follow up.
-- That same low-confidence case should also create an in-app reminder or notification so the business owner can review and send a proper reply.
-
-Current QA note:
-
-- The current implementation does not fully match that target yet.
-- Today, low-confidence or policy-blocked email outcomes are handled as drafts or escalations, not as a guaranteed standard fallback reply plus explicit owner reminder flow.
+- If confidence is low and the topic is not sensitive, the customer receives one standard acknowledgement explaining that the team will follow up.
+- The generated response is retained as an escalated draft, which is the durable owner review item in the Drafts panel.
+- Sensitive topics and do-not-contact style requests are never automatically acknowledged; they remain escalated for human review.
+- Failed acknowledgement delivery leaves the escalated draft available and does not silently discard the response.
 
 ### Draft panel
 
@@ -288,10 +285,10 @@ Pass evidence:
 
 - Knowledge Base settings expose long-term memory configuration, not just RAG files.
 - Supported memory backends are:
-  - `server-memory`
-  - `memento-mcp`
+  - `sqlite` (recommended default)
+  - `server-memory` (compatibility backend)
 - The panel shows entity count, relation count, storage size, and average search latency.
-- Migration to `memento-mcp` is suggested when the entity count exceeds 10,000.
+- `memento-mcp` is not selectable until its adapter is implemented. Persisted legacy selections fall back to SQLite.
 - A memory inspector is available.
 
 Pass evidence:
@@ -432,7 +429,6 @@ Pass evidence:
 ## Known Current Limitations
 
 - Email inbound automation currently depends on `Auto-Reply` being on. This is stricter than a passive "monitor-only" email mode.
-- Email low-confidence handling does not yet fully implement the target fallback flow of sending a standard acknowledgement plus creating an explicit owner reminder/notification.
 - Lead Directory supports non-WhatsApp sessions in the data model, but some copy still describes it as WhatsApp-only.
 - The LLM provider selector includes `browser`, but there is no dedicated browser-provider configuration card in the panel yet.
 - Resolution-audit helper text in some logs/comments still references older timing language, but the actual timeout is 10 minutes.

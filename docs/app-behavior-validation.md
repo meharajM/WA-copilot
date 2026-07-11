@@ -1,6 +1,6 @@
 # App Behavior Validation
 
-Last updated: 2026-07-10
+Last updated: 2026-07-11
 
 ## Purpose
 
@@ -186,7 +186,7 @@ Until the older docs are cleaned up, use this order:
 The product/documentation direction is now:
 
 1. The canonical behavior doc is for both testers and developers.
-2. Email documentation should distinguish current implementation from the intended low-confidence fallback behavior.
+2. Low-confidence non-sensitive email handling now implements the documented acknowledgement plus owner-review flow.
 3. Older support docs should be updated to the new behavior rather than preserved as-is.
 
 ## Follow-through Applied
