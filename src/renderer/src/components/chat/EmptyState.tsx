@@ -3,7 +3,9 @@ import { useWhatsAppStore } from '../../stores/whatsappStore'
 import { useChatStore } from '../../stores/chatStore'
 import { executeToolCall } from '../../lib/mcp'
 import electron from '../../lib/electron'
-import { MessageSquare, ShieldCheck, CheckCircle2, FileUp, Bot, MessageCircle, Loader2, UploadCloud, PieChart, FileText, RefreshCw } from 'lucide-react'
+import { usePersonaStore } from '../../stores/personaStore'
+import { useSettingsStore } from '../../stores/settingsStore'
+import { MessageSquare, ShieldCheck, CheckCircle2, FileUp, Bot, MessageCircle, Loader2, UploadCloud, PieChart, FileText, RefreshCw, Zap } from 'lucide-react'
 import { StatusBadge } from '../primitives/StatusDot'
 import { clsx } from 'clsx'
 import { KnowledgeTest } from './KnowledgeTest'
@@ -14,8 +16,14 @@ import { ViewMode } from '../Sidebar'
  * Co-Worker Hub Welcome Screen -> Business Bot Dashboard
  */
 export function EmptyState({ onNavigate }: { onNavigate?: (view: ViewMode) => void }) {
-  const { connectionState, openDialog, whatsappEnabled, setWhatsAppEnabled } = useWhatsAppStore()
+  const { connectionState, openDialog, whatsappEnabled, setWhatsAppEnabled, businessBotMode } = useWhatsAppStore()
+  const { profile } = usePersonaStore()
+  const { openaiApiKey, geminiApiKey, openrouterApiKey, preferredProvider } = useSettingsStore()
   const { sessions, updateSessionTopic } = useChatStore()
+  
+  const isPersonaConfigured = profile?.name !== 'AIConsumerAgent' || profile?.industry !== 'Tech Support'
+  const isLlmConnected = !!openaiApiKey || !!geminiApiKey || !!openrouterApiKey || preferredProvider === 'ollama' || preferredProvider === 'browser'
+
   const isConnected = connectionState.status === 'connected'
   const isConnecting = connectionState.status === 'connecting'
 
@@ -110,14 +118,9 @@ export function EmptyState({ onNavigate }: { onNavigate?: (view: ViewMode) => vo
   const insights = useMemo(() => {
     const topicsLog = sessions.map(s => s.topic).filter(Boolean) as string[]
     
-    // If no sessions have been analyzed yet, show the mock/default
+    // If no sessions have been analyzed yet, return empty array instead of faking data
     if (topicsLog.length === 0) {
-      const total = Math.max(metrics.messagesToday, 10) // default to 10 for visual mock if empty
-      return [
-        { name: 'Product Queries', percent: Math.round((total * 0.45) / total * 100) },
-        { name: 'Order Status', percent: Math.round((total * 0.35) / total * 100) },
-        { name: 'Returns/Refunds', percent: Math.round((total * 0.20) / total * 100) },
-      ]
+      return []
     }
 
     const counts: Record<string, number> = {}
@@ -315,7 +318,7 @@ export function EmptyState({ onNavigate }: { onNavigate?: (view: ViewMode) => vo
             </div>
             
             <div className="flex flex-col gap-4">
-              {insights.map((item, i) => (
+              {insights.length > 0 ? insights.map((item, i) => (
                 <div key={i} className="flex flex-col gap-2">
                   <div className="flex justify-between text-sm">
                     <span className="text-[var(--color-text-secondary)] font-medium">{item.name}</span>
@@ -328,7 +331,12 @@ export function EmptyState({ onNavigate }: { onNavigate?: (view: ViewMode) => vo
                     ></div>
                   </div>
                 </div>
-              ))}
+              )) : (
+                <div className="py-6 flex flex-col items-center justify-center text-center opacity-70">
+                    <PieChart size={24} className="text-[var(--color-text-muted)] mb-2" />
+                    <p className="text-xs text-[var(--color-text-muted)]">Awaiting incoming conversations to categorize topics.</p>
+                </div>
+              )}
             </div>
           </div>
 
@@ -390,24 +398,35 @@ export function EmptyState({ onNavigate }: { onNavigate?: (view: ViewMode) => vo
 
              <div className="flex flex-col gap-3">
                 {evolutionLogs.length > 0 ? (
-                  evolutionLogs.map((log) => (
-                    <div key={log.id} className="flex gap-4 p-3 rounded-lg bg-white/5 border border-[var(--color-border)] hover:bg-white/10 transition-colors">
-                      <div className={`mt-1 h-2 w-2 rounded-full shrink-0 ${
-                        log.type === 'training' ? 'bg-blue-400' : 
-                        log.type === 'learning' ? 'bg-purple-400' : 
-                        log.event === 'resolved' ? 'bg-green-400' : 'bg-red-400'
-                      }`} />
-                      <div className="flex flex-col gap-0.5 overflow-hidden">
-                        <div className="flex items-center gap-2">
-                          <span className="text-[10px] uppercase font-bold tracking-tight text-[var(--color-text-muted)]">{log.type}</span>
-                          <span className="text-[10px] text-[var(--color-text-muted)]">•</span>
-                          <span className="text-[10px] opacity-50 block mt-1">{new Date(log.timestamp || Date.now()).toLocaleTimeString()}</span>
+                  evolutionLogs.map((log) => {
+                    const getColor = () => {
+                      if (log.type === 'training') return 'bg-blue-400';
+                      if (log.type === 'learning') return 'bg-purple-400';
+                      if (log.type === 'accuracy') {
+                        if (log.event === 'resolved') return 'bg-green-400';
+                        if (log.event === 'escalated') return 'bg-orange-400';
+                        if (log.event === 'rejected') return 'bg-red-400';
+                      }
+                      return 'bg-gray-400';
+                    };
+                    
+                    return (
+                      <div key={log.id} className="flex gap-4 p-3 rounded-lg bg-white/5 border border-[var(--color-border)] hover:bg-white/10 transition-all group">
+                        <div className={`mt-1 h-2 w-2 rounded-full shrink-0 shadow-[0_0_8px_rgba(0,0,0,0.3)] ${getColor()}`} />
+                        <div className="flex flex-col gap-0.5 overflow-hidden">
+                          <div className="flex items-center gap-2">
+                            <span className="text-[9px] uppercase font-bold tracking-wider text-[var(--color-text-muted)] opacity-80">{log.type}</span>
+                            <span className="text-[10px] text-[var(--color-text-muted)] opacity-30">•</span>
+                            <span className="text-[10px] text-[var(--color-text-muted)] opacity-60">{new Date(log.timestamp || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                          </div>
+                          <p className="text-xs font-bold text-[var(--color-text-primary)] leading-tight group-hover:text-[var(--color-brand-teal)] transition-colors">
+                            {log.event.split('_').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ')}
+                          </p>
+                          <p className="text-[11px] text-[var(--color-text-secondary)] truncate opacity-80">{log.details}</p>
                         </div>
-                        <p className="text-xs font-semibold text-[var(--color-text-primary)] leading-tight">{log.event.replace('_', ' ')}</p>
-                        <p className="text-[11px] text-[var(--color-text-secondary)] truncate">{log.details}</p>
                       </div>
-                    </div>
-                  ))
+                    );
+                  })
                 ) : (
                   <div className="py-8 flex flex-col items-center justify-center text-center opacity-50">
                     <Loader2 size={24} className="animate-spin mb-2" />
@@ -469,9 +488,10 @@ export function EmptyState({ onNavigate }: { onNavigate?: (view: ViewMode) => vo
               <div className="grid grid-cols-1 gap-2 mb-6">
                 {[
                     { id: 'wa', label: 'Connect WhatsApp', completed: isConnected, icon: <MessageSquare className="w-3 h-3" /> },
+                    { id: 'llm', label: 'Connect AI Model', completed: isLlmConnected, icon: <Zap className="w-3 h-3" />, action: () => onNavigate?.('settings') },
                     { id: 'train', label: 'Upload Training Data', completed: ragStats.count > 0, icon: <FileUp className="w-3 h-3" /> },
-                    { id: 'persona', label: 'Configure Bot Identity', completed: true, icon: <ShieldCheck className="w-3 h-3" />, action: () => onNavigate?.('settings') },
-                    { id: 'locked', label: 'Lock Agent Role', completed: true, icon: <Bot className="w-3 h-3" /> }
+                    { id: 'persona', label: 'Configure Bot Identity', completed: isPersonaConfigured, icon: <ShieldCheck className="w-3 h-3" />, action: () => onNavigate?.('settings') },
+                    { id: 'locked', label: 'Lock Agent Role', completed: businessBotMode, icon: <Bot className="w-3 h-3" />, action: () => onNavigate?.('settings') }
                 ].map((step) => (
                     <div 
                       key={step.id} 

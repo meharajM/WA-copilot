@@ -1,4 +1,4 @@
-import { IntelligenceService } from './IntelligenceService';
+
 
 /**
  * Supported communication channels
@@ -55,14 +55,9 @@ export class CommunicationService {
         try {
             const result = await provider.sendMessage(to, content);
             
-            // Log to intelligence if successful
-            if (result.success) {
-                IntelligenceService.getInstance().logEvent(
-                    'accuracy', 
-                    'resolved', 
-                    `Message sent to ${to} via ${channel}`
-                );
-            }
+            // Sending a message is not necessarily a "resolution" in terms of agent autonomy.
+            // Autonomy is now tracked specifically in useAgent.ts when the AI decides
+            // to reply autonomously vs escalating to a human.
 
             return result;
         } catch (err) {
