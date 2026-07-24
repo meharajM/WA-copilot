@@ -1,6 +1,14 @@
 import Database from 'better-sqlite3'
 import { app, ipcMain } from 'electron'
 import * as path from 'path'
+import * as fs from 'fs'
+
+export interface AnalyticsRow {
+    sessionId: string;
+    topic: string;
+    messageCount: number;
+    timestamp: string;
+}
 
 export interface EvolutionEvent {
     id?: number
@@ -80,6 +88,55 @@ export class IntelligenceService {
         }
     }
 
+    saveToAnalyticsCsv(sessionId: string, topic: string, messageCount: number) {
+        try {
+            const csvPath = path.join(app.getPath('userData'), 'analytics.csv')
+            const fileExists = fs.existsSync(csvPath)
+            
+            const timestamp = new Date().toISOString()
+            // simple safe escape
+            const safeTopic = topic ? topic.replace(/"/g, '""') : 'Unknown'
+            const row = `"${sessionId}","${safeTopic}",${messageCount},"${timestamp}"\n`
+            
+            if (!fileExists) {
+                fs.writeFileSync(csvPath, 'sessionId,topic,messageCount,timestamp\n', 'utf8')
+            }
+            fs.appendFileSync(csvPath, row, 'utf8')
+            console.log(`[Intelligence] Saved to CSV: ${sessionId} -> ${topic}`)
+        } catch (err) {
+            console.error('[Intelligence] Failed to write to analytics CSV:', err)
+        }
+    }
+
+    getAnalyticsCsv(): AnalyticsRow[] {
+        try {
+            const csvPath = path.join(app.getPath('userData'), 'analytics.csv')
+            if (!fs.existsSync(csvPath)) return []
+            
+            const content = fs.readFileSync(csvPath, 'utf8')
+            const lines = content.trim().split('\n')
+            if (lines.length <= 1) return [] // Only headers
+            
+            return lines.slice(1).map(line => {
+                const match = line.match(/(?:^|,)("(?:[^"]|"")*"|[^,]*)/g)
+                if (!match) return null
+                
+                const cols = match.map(m => m.replace(/^,/, '').replace(/(^"|"$)/g, '').replace(/""/g, '"'))
+                
+                return {
+                    sessionId: cols[0],
+                    topic: cols[1],
+                    messageCount: parseInt(cols[2], 10) || 0,
+                    timestamp: cols[3]
+                }
+            }).filter(Boolean) as AnalyticsRow[]
+            
+        } catch (err) {
+            console.error('[Intelligence] Failed to read analytics CSV:', err)
+            return []
+        }
+    }
+
     registerIpc() {
         ipcMain.handle('intelligence:get-logs', async (_event, limit: number) => {
             return { success: true, logs: this.getRecentLogs(limit) }
@@ -92,6 +149,15 @@ export class IntelligenceService {
         ipcMain.handle('intelligence:log-accuracy', async (_event, { event, details }) => {
             this.logEvent('accuracy', event, details)
             return { success: true }
+        })
+
+        ipcMain.handle('intelligence:save-analytics-csv', async (_event, { sessionId, topic, messageCount }) => {
+            this.saveToAnalyticsCsv(sessionId, topic, messageCount)
+            return { success: true }
+        })
+
+        ipcMain.handle('intelligence:get-analytics-csv', async () => {
+            return { success: true, data: this.getAnalyticsCsv() }
         })
     }
 }
