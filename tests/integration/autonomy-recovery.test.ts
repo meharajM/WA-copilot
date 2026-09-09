@@ -51,7 +51,7 @@ describe('autonomy recovery', () => {
 
   it('returns derived quality, delivery, editing, and cost metrics', () => {
     const metrics = supervisor.getMetrics(14) as Record<string, number>
-    expect(metrics).toMatchObject({ groundedDecisionRate: 0, deliveryUnknown: 0, draftApprovalRate: 0, averageDraftEditingTimeMs: 0, estimatedCostPerResolvedConversation: 0, reviewedDecisions: 0, reviewAccuracy: 0, escalationPrecision: 0 })
+    expect(metrics).toMatchObject({ groundedDecisionRate: 0, deliveryUnknown: 0, draftApprovalRate: 0, averageDraftEditingTimeMs: 0, estimatedCostPerResolvedConversation: 0, reviewedDecisions: 0, reviewAccuracy: 0, escalationPrecision: 0, recoveryDrills: 0, averageRecoveryTimeMs: 0 })
   })
 
   it('persists owner quality reviews and derives review metrics', () => {
@@ -65,6 +65,15 @@ describe('autonomy recovery', () => {
     expect(readDb.prepare('SELECT label, notes FROM quality_reviews WHERE inbound_id = ?').get(inboundId)).toEqual({ label: 'correct', notes: 'Verified against support policy' })
     readDb.close()
     expect(supervisor.getMetrics(14) as Record<string, number>).toMatchObject({ reviewedDecisions: 1, correctDecisions: 1, reviewAccuracy: 1 })
+  })
+
+  it('derives recovery duration from audited recovery actions', () => {
+    const now = Date.now()
+    const db = new Database(path.join(dataDir, 'autonomy.db'))
+    db.prepare("INSERT INTO operator_actions (action, details, created_at) VALUES ('enter_recovery_mode', NULL, ?)").run(now - 5000)
+    db.prepare("INSERT INTO operator_actions (action, details, created_at) VALUES ('clear_recovery_mode', NULL, ?)").run(now - 3000)
+    db.close()
+    expect(supervisor.getMetrics(14) as Record<string, number>).toMatchObject({ recoveryDrills: 1, averageRecoveryTimeMs: 2000 })
   })
 
   it('stages a valid backup and enters recovery hold', () => {
