@@ -17,9 +17,9 @@ Implements the architecture plan. Complete phases in order. Keep observe-only as
 - [ ] Verify X DM access, pricing and spending controls.
 - [ ] Audit Gmail OAuth scopes and restricted-scope obligations.
 - [ ] Choose approved LLM providers, data regions and local/cloud data handling.
-- [ ] List every inbound path and every outbound sender.
-- [ ] Find every caller of WhatsAppService.sendMessage and every renderer app:submit-message caller.
-- [ ] List every session persistence writer and bot/permission state writer.
+- [x] List every inbound path and every outbound sender. (Repository-derived inventory is documented in `docs/omnichannel-inventory.md`; Baileys, WhatsApp Web, Cloud, email, Meta, X and lead ingress plus autonomous and explicit human senders are enumerated.)
+- [x] Find every caller of WhatsAppService.sendMessage and every renderer app:submit-message caller. (The inventory separates the supervisor’s authoritative autonomous path from explicit renderer, IPC, MCP and legacy UI actions.)
+- [x] List every session persistence writer and bot/permission state writer. (The inventory covers autonomy SQLite/state, chat-history SQLite, channel stores, secure stores, MCP audit and renderer UI persistence.)
 - [x] Record baseline test, typecheck, renderer typecheck and build results. (Build passes; existing unrelated typecheck/test failures recorded below.)
 - [x] Disable autonomous auto-send during migration. (Default mode is observe; auto-send still requires explicit permission.)
 - [x] Verify observe-only never calls a send method. (Host supervisor gate.)
@@ -218,6 +218,7 @@ Known limitations and failed baseline checks:
 - Iteration: expanded policy integration coverage for observe-only, opt-out, sensitivity, grounding, permission and auto-send gates; corrected the expected observe-only escalation behavior. Result: 27 focused tests pass; build and diff checks pass.
 - Iteration: enabled SQLite WAL and added indexes for pending work, revisions, provider IDs and unresolved outbox records; added direct storage-invariant coverage. Result: 28 focused tests pass; build and diff checks pass.
 - Iteration: added supervisor integration coverage proving repeated provider events create one durable inbound record. Result: 29 focused tests pass; diff check passes.
+- Iteration: audited repository call sites and added `docs/omnichannel-inventory.md` covering inbound sources, autonomous and explicit human outbound senders, session persistence, channel stores, permission state and known limits. Result: checklist inventory gates complete; live provider and packaged-app verification remain external gates.
 - Iteration: added supervisor integration coverage for Pause All queue holding and opt-out persistence before response processing. Result: 31 focused tests pass; diff check passes.
 - Iteration: added supervisor reload coverage proving queued work is reconstructed from persistent state without automatic resume. Result: 32 focused tests pass; build and diff checks pass.
 - Iteration: persisted active human-takeover state, restored takeover pauses on supervisor startup, and added owner-event integration coverage. Result: 33 focused tests pass; build and diff checks pass.
