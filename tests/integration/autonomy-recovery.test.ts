@@ -51,7 +51,20 @@ describe('autonomy recovery', () => {
 
   it('returns derived quality, delivery, editing, and cost metrics', () => {
     const metrics = supervisor.getMetrics(14) as Record<string, number>
-    expect(metrics).toMatchObject({ groundedDecisionRate: 0, deliveryUnknown: 0, draftApprovalRate: 0, averageDraftEditingTimeMs: 0, estimatedCostPerResolvedConversation: 0 })
+    expect(metrics).toMatchObject({ groundedDecisionRate: 0, deliveryUnknown: 0, draftApprovalRate: 0, averageDraftEditingTimeMs: 0, estimatedCostPerResolvedConversation: 0, reviewedDecisions: 0, reviewAccuracy: 0, escalationPrecision: 0 })
+  })
+
+  it('persists owner quality reviews and derives review metrics', () => {
+    const db = new Database(path.join(dataDir, 'autonomy.db'))
+    const inboundId = 'quality-review-1'
+    db.prepare('INSERT OR REPLACE INTO inbound_events (id,jid,content,received_at,status) VALUES (?,?,?,?,?)').run(inboundId, 'quality-customer', 'What are your hours?', Date.now(), 'sent')
+    db.prepare('INSERT OR REPLACE INTO decisions (inbound_id,jid,decision,created_at,conversation_revision,graph_version,prompt_version,policy_version) VALUES (?,?,?,?,?,?,?,?)').run(inboundId, 'quality-customer', JSON.stringify({ text: 'We are open.', confidence: 0.9, grounding: 'grounded', escalated: false, sensitiveTopic: false, reason: 'grounded' }), Date.now(), 1, 'test', 'test', 'test')
+    db.close()
+    supervisor.reviewDecision(inboundId, 'correct', 'Verified against support policy')
+    const readDb = new Database(path.join(dataDir, 'autonomy.db'), { readonly: true })
+    expect(readDb.prepare('SELECT label, notes FROM quality_reviews WHERE inbound_id = ?').get(inboundId)).toEqual({ label: 'correct', notes: 'Verified against support policy' })
+    readDb.close()
+    expect(supervisor.getMetrics(14) as Record<string, number>).toMatchObject({ reviewedDecisions: 1, correctDecisions: 1, reviewAccuracy: 1 })
   })
 
   it('stages a valid backup and enters recovery hold', () => {

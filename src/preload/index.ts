@@ -233,6 +233,7 @@ const electronAPI = {
         listUnresolvedOutbound: () => ipcRenderer.invoke('autonomy:list-unresolved-outbound'),
         listDeliveryHistory: (limit?: number) => ipcRenderer.invoke('autonomy:list-delivery-history', limit ?? 50),
         listDecisionEvidence: (limit?: number) => ipcRenderer.invoke('autonomy:list-decision-evidence', limit ?? 50),
+        reviewDecision: (inboundId: string, label: string, notes?: string) => ipcRenderer.invoke('autonomy:review-decision', inboundId, label, notes ?? ''),
         usageHistory: (days?: number) => ipcRenderer.invoke('autonomy:usage-history', days ?? 30),
         approveDraft: (inboundId: string) => ipcRenderer.invoke('autonomy:approve-draft', inboundId),
         sendApprovedTemplate: (inboundId: string, name: string, languageCode: string, parameters?: string[]) => ipcRenderer.invoke('autonomy:send-approved-template', inboundId, name, languageCode, parameters ?? []),

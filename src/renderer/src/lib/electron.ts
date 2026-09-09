@@ -475,6 +475,7 @@ export const electron = {
         listUnresolvedOutbound: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listUnresolvedOutbound() : [],
         listDeliveryHistory: async (limit = 50) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listDeliveryHistory(limit) : [],
         listDecisionEvidence: async (limit = 50) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listDecisionEvidence(limit) : [],
+        reviewDecision: async (inboundId: string, label: string, notes = '') => isElectron() && window.electron?.autonomy ? window.electron.autonomy.reviewDecision(inboundId, label, notes) : null,
         listDrafts: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listDrafts() : [],
         usageHistory: async (days = 30) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.usageHistory(days) : [],
         approveDraft: async (inboundId: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.approveDraft(inboundId) : null,

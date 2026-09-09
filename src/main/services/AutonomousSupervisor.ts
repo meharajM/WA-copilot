@@ -50,6 +50,8 @@ export interface ResponseDecision {
   memoryEvidence?: Array<{ id: string; name: string; type: string }>
 }
 
+export type QualityReviewLabel = 'correct' | 'incorrect' | 'unnecessary_escalation' | 'missed_escalation'
+
 const GRAPH_VERSION = 'autonomy-decision-v1'
 const PROMPT_VERSION = 'support-grounded-json-v1'
 const POLICY_VERSION = 'host-gates-v1'
@@ -132,6 +134,7 @@ export class AutonomousSupervisor extends EventEmitter {
       CREATE TABLE IF NOT EXISTS drafts (inbound_id TEXT PRIMARY KEY, jid TEXT NOT NULL, content TEXT NOT NULL, content_hash TEXT NOT NULL, conversation_revision INTEGER NOT NULL, status TEXT NOT NULL, expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS supervisor_lease (id INTEGER PRIMARY KEY CHECK (id = 1), owner TEXT NOT NULL, generation INTEGER NOT NULL DEFAULT 0, heartbeat_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS meta_leads (id TEXT PRIMARY KEY, lead_id TEXT NOT NULL, page_id TEXT NOT NULL, form_id TEXT, ad_id TEXT, campaign_id TEXT, messaging_consent INTEGER NOT NULL DEFAULT 0, raw_payload TEXT NOT NULL, received_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS quality_reviews (inbound_id TEXT PRIMARY KEY, label TEXT NOT NULL, notes TEXT, reviewed_at INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS idx_inbound_pending ON inbound_events(status, received_at);
       CREATE INDEX IF NOT EXISTS idx_jobs_pending ON jobs(status, updated_at);
       CREATE INDEX IF NOT EXISTS idx_conversation_revision ON conversations(jid, revision);
@@ -139,6 +142,7 @@ export class AutonomousSupervisor extends EventEmitter {
       CREATE INDEX IF NOT EXISTS idx_outbound_provider_id ON outbound_sends(provider_message_id);
       CREATE INDEX IF NOT EXISTS idx_delivery_provider_id ON delivery_events(provider_message_id);
       CREATE INDEX IF NOT EXISTS idx_outbound_unresolved ON outbound_sends(status) WHERE status IN ('pending', 'authorized', 'sending', 'delivery-unknown');
+      CREATE INDEX IF NOT EXISTS idx_quality_reviews_reviewed ON quality_reviews(reviewed_at);
       CREATE TRIGGER IF NOT EXISTS inbound_events_to_jobs_insert AFTER INSERT ON inbound_events BEGIN INSERT OR IGNORE INTO jobs (id,inbound_id,queue_key,status,created_at,updated_at) VALUES (NEW.id,NEW.id,NEW.jid,NEW.status,NEW.received_at,NEW.received_at); END;
       CREATE TRIGGER IF NOT EXISTS inbound_events_to_jobs_update AFTER UPDATE OF status ON inbound_events BEGIN UPDATE jobs SET status = NEW.status, attempts = attempts + CASE WHEN NEW.status = 'retrying' AND OLD.status <> 'retrying' THEN 1 ELSE 0 END, updated_at = NEW.received_at WHERE inbound_id = NEW.id; END;
       CREATE TRIGGER IF NOT EXISTS inbound_events_to_jobs_delete AFTER DELETE ON inbound_events BEGIN DELETE FROM jobs WHERE inbound_id = OLD.id; END;
@@ -190,7 +194,13 @@ export class AutonomousSupervisor extends EventEmitter {
     const estimatedCost = (this.db.prepare('SELECT COALESCE(SUM(estimated_cost), 0) AS total FROM usage_events WHERE created_at >= ?').get(since) as { total: number }).total
     const deliveryUnknown = (this.db.prepare("SELECT COUNT(*) AS count FROM outbound_sends WHERE status = 'delivery-unknown' AND sent_at >= ?").get(since) as { count: number }).count
     const resolvedConversations = Number(base.sent || 0) + Number(base.escalated || 0)
-    return { ...base, groundedDecisions: grounding.grounded, notGroundedDecisions: grounding.notGrounded, unavailableDecisions: grounding.unavailable, groundedDecisionRate: decisions.length ? grounding.grounded / decisions.length : 0, deliveryUnknown, approvedDrafts, draftApprovalRate: draftRows.length ? approvedDrafts / draftRows.length : 0, averageDraftEditingTimeMs: editingTimes.length ? editingTimes.reduce((sum, value) => sum + value, 0) / editingTimes.length : 0, estimatedCost, resolvedConversations, estimatedCostPerResolvedConversation: resolvedConversations ? estimatedCost / resolvedConversations : 0 }
+    const quality = this.db.prepare('SELECT label, COUNT(*) AS count FROM quality_reviews WHERE reviewed_at >= ? GROUP BY label').all(since) as Array<{ label: QualityReviewLabel; count: number }>
+    const qualityCounts = Object.fromEntries(quality.map(row => [row.label, Number(row.count)])) as Partial<Record<QualityReviewLabel, number>>
+    const reviewedDecisions = quality.reduce((sum, row) => sum + Number(row.count), 0)
+    const correctDecisions = qualityCounts.correct || 0
+    const escalationReviews = (qualityCounts.correct || 0) + (qualityCounts.incorrect || 0) + (qualityCounts.unnecessary_escalation || 0) + (qualityCounts.missed_escalation || 0)
+    const escalationPrecision = escalationReviews ? ((qualityCounts.correct || 0) + (qualityCounts.unnecessary_escalation || 0)) / escalationReviews : 0
+    return { ...base, groundedDecisions: grounding.grounded, notGroundedDecisions: grounding.notGrounded, unavailableDecisions: grounding.unavailable, groundedDecisionRate: decisions.length ? grounding.grounded / decisions.length : 0, deliveryUnknown, approvedDrafts, draftApprovalRate: draftRows.length ? approvedDrafts / draftRows.length : 0, averageDraftEditingTimeMs: editingTimes.length ? editingTimes.reduce((sum, value) => sum + value, 0) / editingTimes.length : 0, estimatedCost, resolvedConversations, estimatedCostPerResolvedConversation: resolvedConversations ? estimatedCost / resolvedConversations : 0, reviewedDecisions, correctDecisions, incorrectDecisions: qualityCounts.incorrect || 0, unnecessaryEscalations: qualityCounts.unnecessary_escalation || 0, missedEscalations: qualityCounts.missed_escalation || 0, reviewAccuracy: reviewedDecisions ? correctDecisions / reviewedDecisions : 0, escalationPrecision }
   }
   getChannelUsage(days = 1): Array<{ channel: string; amount: number }> {
     const safeDays = Number.isInteger(days) && days > 0 && days <= 90 ? days : 1
@@ -437,6 +447,15 @@ export class AutonomousSupervisor extends EventEmitter {
     const safeLimit = Number.isInteger(limit) && limit > 0 && limit <= 100 ? limit : 50
     const rows = this.db.prepare('SELECT inbound_id AS inboundId, jid, created_at AS createdAt, decision FROM decisions ORDER BY created_at DESC LIMIT ?').all(safeLimit) as Array<{ inboundId: string; jid: string; createdAt: number; decision: string }>
     return rows.flatMap(row => { try { return [{ inboundId: row.inboundId, jid: row.jid, createdAt: row.createdAt, decision: JSON.parse(row.decision) as ResponseDecision }] } catch { return [] } })
+  }
+
+  reviewDecision(inboundId: string, label: QualityReviewLabel, notes = ''): SupervisorState {
+    if (!['correct', 'incorrect', 'unnecessary_escalation', 'missed_escalation'].includes(label)) throw new Error('Invalid quality review label')
+    if (!this.db.prepare('SELECT 1 FROM decisions WHERE inbound_id = ?').get(inboundId)) throw new Error('Decision not found')
+    const boundedNotes = notes.slice(0, 2000)
+    this.db.prepare('INSERT INTO quality_reviews (inbound_id,label,notes,reviewed_at) VALUES (?,?,?,?) ON CONFLICT(inbound_id) DO UPDATE SET label = excluded.label, notes = excluded.notes, reviewed_at = excluded.reviewed_at').run(inboundId, label, boundedNotes || null, Date.now())
+    this.audit('review_decision', { inboundId, label })
+    return this.getState()
   }
 
   listDeliveryHistory(limit = 50): Array<{ providerMessageId: string; channel: string; status: string; eventAt: number; inboundId: string | null }> {
@@ -872,6 +891,7 @@ export class AutonomousSupervisor extends EventEmitter {
     ipcMain.handle('autonomy:list-unresolved-outbound', () => this.listUnresolvedOutbound())
     ipcMain.handle('autonomy:list-delivery-history', (_e: unknown, limit: unknown) => this.listDeliveryHistory(Number(limit)))
     ipcMain.handle('autonomy:list-decision-evidence', (_e: unknown, limit: unknown) => this.listDecisionEvidence(Number(limit)))
+    ipcMain.handle('autonomy:review-decision', (_e: unknown, inboundId: unknown, label: unknown, notes: unknown) => this.reviewDecision(String(inboundId), String(label) as QualityReviewLabel, typeof notes === 'string' ? notes : ''))
     ipcMain.handle('autonomy:usage-history', (_e: unknown, days: unknown) => this.usageHistory(Number(days)))
     ipcMain.handle('autonomy:approve-draft', (_e: unknown, inboundId: unknown) => this.approveDraft(String(inboundId)))
     ipcMain.handle('autonomy:send-approved-template', (_e: unknown, inboundId: unknown, name: unknown, languageCode: unknown, parameters: unknown) => this.sendApprovedTemplate(String(inboundId), String(name), String(languageCode), Array.isArray(parameters) ? parameters.map(String) : []))
@@ -921,6 +941,7 @@ export class AutonomousSupervisor extends EventEmitter {
         this.db.prepare("DELETE FROM notifications WHERE created_at < ? AND status = 'read'").run(cutoff).changes,
         this.db.prepare('DELETE FROM usage_events WHERE created_at < ?').run(cutoff).changes,
         this.db.prepare('DELETE FROM operator_actions WHERE created_at < ?').run(cutoff).changes,
+        this.db.prepare('DELETE FROM quality_reviews WHERE reviewed_at < ?').run(cutoff).changes,
         this.db.prepare('DELETE FROM takeovers WHERE active = 0 AND ended_at IS NOT NULL AND ended_at < ?').run(cutoff).changes
       ]
       return counts.reduce((total, count) => total + count, 0)

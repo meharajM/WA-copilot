@@ -181,6 +181,7 @@ interface ElectronAPI {
         listUnresolvedOutbound: () => Promise<any>
         listDeliveryHistory: (limit?: number) => Promise<any>
         listDecisionEvidence: (limit?: number) => Promise<any>
+        reviewDecision: (inboundId: string, label: string, notes?: string) => Promise<any>
         usageHistory: (days?: number) => Promise<any>
         approveDraft: (inboundId: string) => Promise<any>
         listNotifications: () => Promise<any>
