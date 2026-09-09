@@ -10,7 +10,7 @@ Implements the architecture plan. Complete phases in order. Keep observe-only as
 - [x] Decide whether an HTTPS webhook relay is required. (Keep the desktop pilot localhost-only; production Cloud/Meta/X webhooks require an external authenticated HTTPS relay, which is outside this Electron process.)
 - [x] Record whether this is our account, a desktop product for customer-owned accounts, or a hosted service. (Current boundary: desktop product for one customer-owned business account; not a hosted or multi-tenant service.)
 - [x] Set pilot message, model and channel budgets and maximum conversations. (Host defaults are 100 LLM calls/day, 1,000 outbound messages/day and 100 conversations; all are configurable through bounded environment settings.)
-- [ ] Define human escalation contact and SLA; document retention and deletion periods. (Retention defaults to 90 days with explicit preservation of active/recovery records; owner contact and response SLA remain deployment-specific gates.)
+- [ ] Define human escalation contact and SLA; document retention and deletion periods. (Retention defaults to 90 days with explicit preservation of active/recovery records; `AICA_ESCALATION_CONTACT` and bounded `AICA_ESCALATION_SLA_MINUTES` now surface the configured contact/SLA in health and the owner panel, but deployment values and drills remain open.)
 - [ ] Verify WhatsApp Business account, number ownership, Cloud API access and Coexistence eligibility.
 - [ ] Verify Meta Business, Page and Instagram Professional account access.
 - [ ] Verify Instagram, Messenger and Lead Ads permissions and review requirements.
@@ -226,6 +226,7 @@ Known limitations and failed baseline checks:
 - Iteration: audited the Gmail OAuth scope set and documented its least-privilege rationale plus current Google verification and restricted-scope obligations. Result: code-level scope inventory is explicit; Cloud-project verification remains an external release gate.
 - Iteration: added startup restore integration coverage that boots from a staged autonomy database, preserves the pre-restore database, removes the staging file and enters a paused recovery hold. Result: backup import integration is verified; hosted/desktop-off drills remain open.
 - Iteration: reconciled the duplicate, stale-decision and ambiguous-send exit gate against passing recovery/decision integration tests, while retaining the separate live-provider pilot gate.
+- Iteration: added bounded escalation contact/SLA configuration, health/panel visibility and default-value regression coverage; deployment-specific contact, procedure and drill evidence remain open.
 - Iteration: added supervisor integration coverage for Pause All queue holding and opt-out persistence before response processing. Result: 31 focused tests pass; diff check passes.
 - Iteration: added supervisor reload coverage proving queued work is reconstructed from persistent state without automatic resume. Result: 32 focused tests pass; build and diff checks pass.
 - Iteration: persisted active human-takeover state, restored takeover pauses on supervisor startup, and added owner-event integration coverage. Result: 33 focused tests pass; build and diff checks pass.

@@ -54,6 +54,10 @@ describe('autonomy recovery', () => {
     expect(metrics).toMatchObject({ groundedDecisionRate: 0, deliveryUnknown: 0, draftApprovalRate: 0, averageDraftEditingTimeMs: 0, estimatedCostPerResolvedConversation: 0, reviewedDecisions: 0, reviewAccuracy: 0, escalationPrecision: 0, recoveryDrills: 0, averageRecoveryTimeMs: 0 })
   })
 
+  it('surfaces bounded escalation contact and SLA configuration', () => {
+    expect(supervisor.getHealth().escalation).toMatchObject({ contactConfigured: false, contact: null, slaMinutes: 60 })
+  })
+
   it('persists owner quality reviews and derives review metrics', () => {
     const db = new Database(path.join(dataDir, 'autonomy.db'))
     const inboundId = 'quality-review-1'
