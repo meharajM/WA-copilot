@@ -638,7 +638,10 @@ export class AutonomousSupervisor extends EventEmitter {
       this.db.prepare('UPDATE inbound_events SET status = ? WHERE id = ?').run('observed', message.id); return
     }
     const capabilities = getChannelCapabilities(message.channel)
-    let decision = await this.runDecision(message)
+    const requiresHumanReview = message.type !== 'text' || Boolean(message.mediaUrl || message.mediaId || message.attachments?.length)
+    let decision: ResponseDecision = requiresHumanReview
+      ? { text: null, confidence: 0, grounding: 'unavailable', escalated: true, sensitiveTopic: false, reason: 'media_requires_human_review' }
+      : await this.runDecision(message)
     if (decision.text && decision.text.length > capabilities.maxTextLength) decision = { ...decision, text: null, escalated: true, reason: 'channel_text_limit' }
     const revision = this.messageRevisions.get(message.id) ?? 0
     const currentRevision = (this.db.prepare('SELECT revision FROM conversations WHERE jid = ?').get(jid) as { revision: number } | undefined)?.revision ?? revision

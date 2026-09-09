@@ -143,6 +143,19 @@ describe('autonomy recovery', () => {
     supervisor.stop()
   })
 
+  it('escalates email attachments before autonomous generation', async () => {
+    supervisor.setMode('draft', false)
+    supervisor.start()
+    supervisor.onEmailMessage({ schemaVersion: 1, id: 'email-attachment-review-1', channel: 'email', from: 'attachment@example.com', to: 'support@example.com', content: 'Please review the invoice', timestamp: Date.now(), type: 'text', isFromMe: false, conversationId: 'attachment-thread', actor: 'customer', attachments: [{ id: 'att-1', name: 'invoice.pdf', mimeType: 'application/pdf', size: 42 }] })
+    await new Promise(resolve => setTimeout(resolve, 10))
+    const db = new Database(path.join(dataDir, 'autonomy.db'), { readonly: true })
+    expect(db.prepare('SELECT status FROM inbound_events WHERE id = ?').get('email-attachment-review-1')).toEqual({ status: 'escalated' })
+    expect((db.prepare('SELECT decision FROM decisions WHERE inbound_id = ?').get('email-attachment-review-1') as { decision: string }).decision).toContain('media_requires_human_review')
+    db.close()
+    supervisor.stop()
+    supervisor.setMode('observe', false)
+  })
+
   it('blocks opted-out email events before queueing', () => {
     const jid = 'email:opted-out@example.com'
     const queueDepth = supervisor.getState().queueDepth
