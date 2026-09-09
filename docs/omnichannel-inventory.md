@@ -63,6 +63,17 @@ WhatsApp bridges route them to the main supervisor when it is authoritative;
 legacy renderer handling remains only as a human/UI fallback when supervisor
 state cannot be read.
 
+## Customer-graph capability boundary
+
+The autonomous graph in `src/main/services/AutonomyWorkflow.ts` accepts a
+normalized message and a host-owned decision callback. It is not given the
+renderer tool registry, MCP clients, Meta marketing APIs, or any generic
+provider mutation interface. The repository contains no ad creation, budget,
+audience, campaign, or boost adapter. Meta lead ingestion is read-only and
+does not create messaging consent. Owner MCP controls are registered through
+separate IPC authorization and are not reachable from customer content or the
+autonomous graph.
+
 ## Persistence writers
 
 ### Autonomous state and audit
