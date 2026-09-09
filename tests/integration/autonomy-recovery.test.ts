@@ -49,6 +49,11 @@ describe('autonomy recovery', () => {
     db.close()
   })
 
+  it('returns derived quality, delivery, editing, and cost metrics', () => {
+    const metrics = supervisor.getMetrics(14) as Record<string, number>
+    expect(metrics).toMatchObject({ groundedDecisionRate: 0, deliveryUnknown: 0, draftApprovalRate: 0, averageDraftEditingTimeMs: 0, estimatedCostPerResolvedConversation: 0 })
+  })
+
   it('stages a valid backup and enters recovery hold', () => {
     const backup = path.join(dataDir, 'valid.db')
     const db = new Database(backup)
