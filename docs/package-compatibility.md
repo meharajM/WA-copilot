@@ -16,17 +16,22 @@ lockfile/install actually used.
 Current evidence on the development host:
 
 - The application declares Node `>=22.12.0`.
-- The host currently runs Node `20.20.2`; this is below the supported engine.
-- Electron resolves to `40.0.0`, but its platform executable is absent from
-  `node_modules/electron/dist`, so packaged-Electron execution has not been
-  verified in this checkout.
+- Node `22.22.2` passes the declared engine check when the supported Node
+  runtime is selected.
+- Electron resolves to `40.0.0`, and its platform executable is present after
+  the Electron postinstall payload is restored.
 - Native modules include `better-sqlite3` and libsignal. Their Electron ABI
-  rebuild and packaged launch must be verified on a supported Node/Electron
-  build host.
+  rebuild completed during an unsigned macOS arm64 Electron 40 directory
+  build. The packaged executable launched far enough to initialize the main
+  process and registered its Memory, Store and Secure storage handlers.
+- The development host's normal Apple signing identity stalled during the
+  first package attempt; the verification build therefore used ad-hoc signing.
+  Production signing/notarization remains a release-host gate.
 - `@whiskeysockets/libsignal-node` reports `GPL-3.0`; distribution licensing
   review is required before shipping a production bundle. This is an explicit
   legal gate, not an automated approval.
 
-The checklist item remains open until a clean install on Node 22.12+ passes the
-runtime check, the required native modules are rebuilt for Electron 40, a
-packaged app launches, and dependency-license review is recorded.
+The checklist item remains open until dependency-license review, production
+signing/notarization and a clean release-host package run are recorded. The
+Node 22 runtime check, Electron 40 native rebuild and local packaged launch
+have now been verified.

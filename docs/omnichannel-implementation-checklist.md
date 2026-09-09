@@ -48,7 +48,7 @@ Implements the architecture plan. Complete phases in order. Keep observe-only as
 ## Phase 2 — LangChain/LangGraph workflow
 
 - [x] Add only required LangChain/LangGraph packages and pin versions. (The three required packages are exact-pinned in package and lock files.)
-- [ ] Verify package licenses, Node compatibility and packaged Electron compatibility. (`npm run check:runtime` now provides a fail-closed local check and license inventory; current host is Node 20.20.2 with a missing Electron executable, and libsignal reports GPL-3.0. See `docs/package-compatibility.md`.)
+- [ ] Verify package licenses, Node compatibility and packaged Electron compatibility. (`npm run check:runtime` passes under Node 22; an unsigned macOS arm64 Electron 40 directory build rebuilt `better-sqlite3` and launched the packaged main process. Production signing/notarization and the `@whiskeysockets/libsignal-node` GPL-3.0 distribution review remain open. See `docs/package-compatibility.md`.)
 - [x] Use a persistent SQLite checkpointer locally; use Postgres only for hosted operation. (SQLite adapter is connected to autonomy.db.)
 - [x] Keep graph execution independent of renderer Zustand state.
 - [x] Stamp every run with graph, prompt, policy and conversation-revision versions. (Decision records now carry all four version fields.)
@@ -351,3 +351,5 @@ Known limitations and failed baseline checks:
 - Iteration: added release-readiness documentation covering actual channels, operating modes, guarantees, limits and production prerequisites. Result: documentation verified against current transport/policy implementation; full checks pending.
 - Iteration: reconciled the final-gate checklist with shipped human-path escalation and retention/escalation procedures. Result: sensitive, prompt-injection and account-specific requests, plus documented retention/escalation operations, are closed; live pilot, deployment and provider gates remain open.
 - Iteration: documented the actual Meta pilot login boundary as operator-provisioned tokens plus signed localhost webhooks; deliberately retained the exact permission, review and account-eligibility gate until verified in Meta Business tools.
+- Iteration: reran the runtime gate under the declared Node 22 runtime and restored the Electron 40 postinstall payload; updated evidence, while retaining native rebuild, packaged launch and GPL-3.0 distribution review as open gates.
+- Iteration: built an unsigned macOS arm64 Electron 40 directory artifact, rebuilt `better-sqlite3` for Electron, and verified packaged main-process startup; restored the Node 22 test ABI afterward. Production signing/notarization and license review remain open.
