@@ -8,7 +8,7 @@ const CALLBACK_PORT = 51123
 const TOKEN_BUFFER_MS = 60_000
 const TOKEN_URL = 'https://oauth2.googleapis.com/token'
 
-const GMAIL_SCOPES = [
+export const GMAIL_OAUTH_SCOPES = [
   'openid',
   'email',
   'https://www.googleapis.com/auth/gmail.readonly',
@@ -128,7 +128,7 @@ export class GmailOAuthService {
     authUrl.searchParams.set('client_id', this.clientId)
     authUrl.searchParams.set('redirect_uri', REDIRECT_URI)
     authUrl.searchParams.set('response_type', 'code')
-    authUrl.searchParams.set('scope', GMAIL_SCOPES.join(' '))
+    authUrl.searchParams.set('scope', GMAIL_OAUTH_SCOPES.join(' '))
     authUrl.searchParams.set('access_type', 'offline')
     authUrl.searchParams.set('prompt', 'consent')
     authUrl.searchParams.set('code_challenge', challenge)
