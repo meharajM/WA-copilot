@@ -114,7 +114,7 @@ Implements the architecture plan. Complete phases in order. Keep observe-only as
 
 ## Phase 6 — Instagram, Messenger, ads and X
 
-- [ ] Choose one documented Meta login flow per adapter and minimum permissions.
+- [ ] Choose one documented Meta login flow per adapter and minimum permissions. (`docs/meta-login-permissions.md` recommends the operator-provisioned Facebook Login/Page-token route for the current Graph transport and explicitly excludes unused comment, publishing, ads, lead-retrieval and marketing permissions; live Meta Dashboard scope confirmation and review remain open.)
 - [x] Implement independent Instagram and Messenger adapters. (Official Graph signature verification, opt-in localhost startup, inbound normalization and host-side text-send transport are separated by channel; account-specific permissions and live delivery tests remain external gates.)
 - [x] Implement owner/takeover signals independently per channel. (Meta account echoes and configured X-account DM echoes normalize as owner messages and pause the customer conversation; live account identity verification remains external.)
 - [x] Apply channel-specific windows, limits and error handling. (Meta messages use a bounded 24-hour auto-response window, 2,000-character send bound and fail-closed outside-window policy; 429/5xx propagation is covered. Live provider matrices remain external.)
@@ -355,3 +355,4 @@ Known limitations and failed baseline checks:
 - Iteration: built an unsigned macOS arm64 Electron 40 directory artifact, rebuilt `better-sqlite3` for Electron, and verified packaged main-process startup; restored the Node 22 test ABI afterward. Production signing/notarization and license review remain open.
 - Iteration: documented that unattended decisions currently use only the main-process Gemini path, while renderer WebLLM/Ollama/OpenAI/OpenRouter options are interactive-only; provider, region, residency, retention and spend approval remain an explicit production gate.
 - Iteration: closed the email attachment safety gap by escalating external messages with attachment/media metadata before model generation, with integration coverage; binary retrieval/scanning remains intentionally disabled.
+- Iteration: selected and documented the recommended Meta pilot login boundary (operator-provisioned Facebook Login/Page token for Page-backed Messenger and Instagram), with least-privilege exclusions and official verification links; live scope/review confirmation remains open.
