@@ -143,12 +143,12 @@ Implements the architecture plan. Complete phases in order. Keep observe-only as
 - [ ] Phases 0–4 exit gates pass.
 - [x] Supported auto-reply intents are explicitly allowlisted. (Hours/location/shipping/order-status/availability/price/features/return-policy FAQ patterns are the only intents eligible to reach model generation; sensitive and all other intents escalate.)
 - [ ] Answer-quality and cost thresholds are met.
-- [ ] Sensitive/account-specific intents use the intended human path.
+- [x] Sensitive/account-specific intents use the intended human path. (`AutonomyDecision` detects sensitive topics, prompt injection and account-specific requests; the supervisor creates escalated decisions with no response text, and policy tests cover the human path. Live pilot confirmation remains separate.)
 - [ ] Response-window and template behavior is verified live.
 - [x] Duplicate, stale-decision and ambiguous-send tests pass. (`tests/integration/autonomy-recovery.test.ts` covers repeated inbound dedupe and delivery-unknown requeue/quarantine; `tests/integration/autonomy-decision.test.ts` covers stale revisions and ambiguous provider classification.) Live-provider validation remains separately tracked in the pilot matrix.
 - [x] Opt-out, takeover and Pause All are immediate. (Ingress opt-out/takeover handling and abortable global/conversation pause controls are covered by recovery tests; live pilot confirmation remains an operational gate.)
 - [ ] Cost caps and provider limits are active.
-- [ ] Retention/deletion and escalation procedures are documented.
+- [x] Retention/deletion and escalation procedures are documented. (`docs/release-readiness.md` and `docs/escalation-operations.md` document retention, deletion, escalation contact/SLA configuration and operator responsibilities; deployment-specific values and drills remain item 13/152.)
 - [ ] Owner has completed pause and recovery drills.
 - [x] Release documentation states actual channels and guarantees. (See `docs/release-readiness.md`; live-provider approval, production relay and pilot gates remain explicitly open.)
 
@@ -349,3 +349,4 @@ Known limitations and failed baseline checks:
 - Iteration: added a fixture-driven autonomy evaluation matrix covering common, missing, contradictory, multilingual, follow-up, sensitive, injection and account-specific cases. Result: focused evaluation suite passes; typecheck passes.
 - Iteration: expanded derived pilot metrics with grounding rate, delivery-unknown count, draft approval/editing time and estimated cost per resolved conversation, plus panel display and regression coverage. Result: focused recovery suite passes; typecheck passes.
 - Iteration: added release-readiness documentation covering actual channels, operating modes, guarantees, limits and production prerequisites. Result: documentation verified against current transport/policy implementation; full checks pending.
+- Iteration: reconciled the final-gate checklist with shipped human-path escalation and retention/escalation procedures. Result: sensitive, prompt-injection and account-specific requests, plus documented retention/escalation operations, are closed; live pilot, deployment and provider gates remain open.
