@@ -21,6 +21,9 @@ const ALLOWED_SECRET_KEYS = [
   "email_imap_password",
   "email_smtp_password",
   "gmail_oauth_client_id",
+  "whatsapp_cloud_access_token",
+  "whatsapp_cloud_app_secret",
+  "whatsapp_cloud_verify_token",
 ] as const;
 
 type SecretKey = (typeof ALLOWED_SECRET_KEYS)[number];
@@ -33,6 +36,14 @@ function getUserSecretKey(key: string, userId?: string): string {
   return userId ? `user_${userId}_${key}` : key;
 }
 
+export function readSecureSecret(key: string, userId?: string): string | null {
+  if (!isAllowedSecretKey(key)) return null;
+  const stored = secretStore.get(getUserSecretKey(key, userId));
+  if (!stored) return null;
+  if (!safeStorage.isEncryptionAvailable()) return stored;
+  try { return safeStorage.decryptString(Buffer.from(stored, "base64")); } catch { return stored; }
+}
+
 export function registerSecureHandlers(): void {
   // Check if encryption is available
   ipcMain.handle("secure:is-available", () => {
@@ -40,9 +51,7 @@ export function registerSecureHandlers(): void {
   });
 
   // Encrypt and store a secret
-  ipcMain.handle(
-    "secure:set",
-    async (_event, key: string, value: string, userId?: string) => {
+  ipcMain.handle("secure:set", async (_event, key: string, value: string, userId?: string) => {
       // Validate key is in allowlist
       if (!isAllowedSecretKey(key)) {
         console.warn(
@@ -110,9 +119,7 @@ export function registerSecureHandlers(): void {
   });
 
   // Delete a secret
-  ipcMain.handle(
-    "secure:delete",
-    async (_event, key: string, userId?: string) => {
+  ipcMain.handle("secure:delete", async (_event, key: string, userId?: string) => {
       if (!isAllowedSecretKey(key)) {
         return { success: false, error: `Key '${key}' is not allowed` };
       }

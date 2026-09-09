@@ -31,7 +31,7 @@ export function useWhatsAppBridge(): void {
             setConnectionState(state)
 
             // Auto-disable WhatsApp mode when disconnected/error
-            if (state.status === 'disconnected' || state.status === 'error') {
+            if (state.status !== 'connected') {
                 useWhatsAppStore.getState().setWhatsAppEnabled(false)
             }
         })
@@ -39,7 +39,7 @@ export function useWhatsAppBridge(): void {
     }, [setConnectionState])
 
     // Subscribe to incoming WhatsApp messages — add them to active chat session
-    const handleMessage = useCallback((message: {
+    const handleMessage = useCallback(async (message: {
         id: string
         from: string
         content: string
@@ -49,10 +49,19 @@ export function useWhatsAppBridge(): void {
         timestamp: number
         isFromMe: boolean
     }) => {
-        const { whatsappEnabled, businessBotMode } = useWhatsAppStore.getState()
-        
         // Skip messages from self to avoid loops
         if (message.isFromMe) return
+
+        // The main-process supervisor owns autonomous conversations. Do not
+        // also submit the same event to the legacy renderer agent.
+        try {
+            const autonomy = await electron.autonomy.getState()
+            if (autonomy?.status === 'running' || autonomy?.status === 'degraded') return
+        } catch (error) {
+            console.warn('[WhatsAppBridge] Could not read autonomy state; keeping manual path available', error)
+        }
+
+        const { whatsappEnabled, businessBotMode } = useWhatsAppStore.getState()
 
         // Process if either manual chat mode or global business bot mode is on
         if (!whatsappEnabled && !businessBotMode) return

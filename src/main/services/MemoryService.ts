@@ -2,6 +2,7 @@ import Database from 'better-sqlite3'
 import { app } from 'electron'
 import * as path from 'path'
 import { MemoryServiceFactory } from './memory/MemoryServiceFactory'
+import type { SearchOptions } from './memory/UnifiedMemoryBackend'
 import { PIIDetector } from './memory/privacy/PIIDetector'
 import { SecretRedactor } from './memory/privacy/SecretRedactor'
 import { MetricsCollector } from './memory/MetricsCollector'
@@ -229,6 +230,10 @@ export class MemoryService {
         return MemoryService.instance
     }
 
+    getHealth(): { status: 'ready' | 'uninitialized'; backend: string | null } {
+        return { status: this.backend ? 'ready' : 'uninitialized', backend: this.backend?.constructor.name || null }
+    }
+
     /**
      * Initialize the memory system
      * - Loads backend from config (server-memory or memento-mcp)
@@ -437,12 +442,12 @@ export class MemoryService {
     /**
      * Search entities with metrics tracking
      */
-    async search(query: string, limit: number = 10): Promise<Entity[]> {
+    async search(query: string, limit: number = 10, context?: SearchOptions['context']): Promise<Entity[]> {
         if (!this.backend) await this.initialize()
 
         const startTime = Date.now()
 
-        const results = await this.backend!.search(query, { limit })
+        const results = await this.backend!.search(query, { limit, context })
 
         const latency = Date.now() - startTime
         this.metricsCollector.recordLatency(latency)

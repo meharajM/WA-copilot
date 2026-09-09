@@ -45,6 +45,7 @@ const MODERN_CHROME_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleW
  * it tries the next best option for the current platform before giving up.
  */
 export class BrowserManager {
+    private readonly profileDirName: string;
     private context: BrowserContext | null = null;
     private page: Page | null = null;
     private pagesMap = new Map<number, Page>();
@@ -63,7 +64,8 @@ export class BrowserManager {
     private idleTimer: NodeJS.Timeout | null = null;
     private readonly IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
-    constructor() {
+    constructor(profileDirName = 'playwright_data') {
+        this.profileDirName = profileDirName;
         this.store = new Store<Record<string, unknown>>();
     }
 
@@ -150,7 +152,7 @@ export class BrowserManager {
         this.initializationPromise = (async () => {
             try {
                 console.log('[BrowserManager] Launching browser...');
-                const dataDirName = (this as any)._useHeadlessDirForHeaded ? 'playwright_data_headless' : 'playwright_data';
+                const dataDirName = (this as any)._useHeadlessDirForHeaded ? `${this.profileDirName}_headless` : this.profileDirName;
                 const userDataDir = path.join(app.getPath('userData'), dataDirName);
 
                 if (!fs.existsSync(userDataDir)) {
@@ -334,7 +336,7 @@ export class BrowserManager {
             try {
                 if (!this.headlessContext) {
                     console.log('[BrowserManager] Launching persistent headless context with stealth...');
-                    const userDataDirHeadless = path.join(app.getPath('userData'), 'playwright_data_headless');
+                    const userDataDirHeadless = path.join(app.getPath('userData'), `${this.profileDirName}_headless`);
 
                     if (!fs.existsSync(userDataDirHeadless)) {
                         fs.mkdirSync(userDataDirHeadless, { recursive: true });

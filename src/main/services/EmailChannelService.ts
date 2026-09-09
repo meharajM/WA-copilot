@@ -3,6 +3,11 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import Store from 'electron-store'
 import { gmailOAuthService } from './GmailOAuthService'
+import { ChannelAttachment, normalizeEmailMessage } from '../packages/omnichannel'
+import { shouldProcessEmailInbound } from './EmailInboundPolicy'
+import { isGmailAuthFailure } from './EmailInboundPolicy'
+import { createHash } from 'node:crypto'
+import { claimEmailSend, markEmailFailed, markEmailSent } from './EmailOutbox'
 
 interface EmailSyncState {
   seenMessageIds: string[];
@@ -15,7 +20,7 @@ const emailSyncStore = new Store<EmailSyncState>({
     seenMessageIds: [],
     gmailLastSyncTimestamp: 0
   }
-})
+}) as Store<EmailSyncState> & { get: <K extends keyof EmailSyncState>(key: K) => EmailSyncState[K] | undefined; set: <K extends keyof EmailSyncState>(key: K, value: EmailSyncState[K]) => void }
 
 export interface EmailConnectionState {
   status: 'disconnected' | 'connecting' | 'connected' | 'error'
@@ -47,6 +52,7 @@ export interface InboundEmailMessage {
   inReplyTo?: string
   references?: string
   isFromMe: boolean
+  attachments?: ChannelAttachment[]
 }
 
 export interface OutboundEmailPayload {
@@ -226,6 +232,7 @@ export class EmailChannelService extends EventEmitter {
   private availableToolNames: string[] = []
   private lastAuthErrorAt = 0
   private authFailureInCurrentPoll = false
+  private watchTimer: NodeJS.Timeout | null = null
 
   constructor() {
     super()
@@ -297,6 +304,7 @@ export class EmailChannelService extends EventEmitter {
 
       // Run an immediate poll so first sync is fast.
       await this.pollOnce()
+      if (this.config.provider === 'gmail-api' && process.env.GMAIL_PUBSUB_TOPIC) void this.renewGmailWatch()
       this.schedulePoll()
       console.log('[EmailChannelService] polling scheduled')
     } catch (error) {
@@ -314,6 +322,10 @@ export class EmailChannelService extends EventEmitter {
       clearTimeout(this.pollTimer)
       this.pollTimer = null
     }
+    if (this.watchTimer) {
+      clearTimeout(this.watchTimer)
+      this.watchTimer = null
+    }
     if (this.client) {
       try {
         await this.client.close()
@@ -328,11 +340,15 @@ export class EmailChannelService extends EventEmitter {
     this.setState({ status: 'disconnected', error: null, lastSyncAt: null, unreadCount: 0 })
   }
 
-  async send(payload: OutboundEmailPayload): Promise<{ success: boolean; error?: string }> {
+  async send(payload: OutboundEmailPayload): Promise<{ success: boolean; error?: string; providerMessageId?: string }> {
+    const dedupeKey = createHash('sha256').update(JSON.stringify(payload)).digest('hex')
+    const claim = claimEmailSend(dedupeKey, payload)
+    if (claim === 'sent') return { success: true }
+    if (claim === 'inflight') return { success: false, error: 'Email send is already pending reconciliation' }
     if (this.config?.provider === 'gmail-api') {
       try {
         const accessToken = await gmailOAuthService.getAccessToken()
-        if (!accessToken) return { success: false, error: 'Gmail OAuth token missing' }
+        if (!accessToken) { markEmailFailed(dedupeKey, 'Gmail OAuth token missing'); return { success: false, error: 'Gmail OAuth token missing' } }
         const headers = [
           `To: ${payload.to}`,
           `Subject: ${payload.subject}`,
@@ -363,15 +379,19 @@ export class EmailChannelService extends EventEmitter {
         })
         if (!response.ok) {
           const text = await response.text()
-          return { success: false, error: `Gmail send failed: ${text}` }
+          const error = isGmailAuthFailure(response.status) ? 'Gmail OAuth authorization expired or was revoked; sign in again' : `Gmail send failed: ${text}`
+          markEmailFailed(dedupeKey, error); return { success: false, error }
         }
-        return { success: true }
+        const sent = await response.json().catch(() => ({})) as { id?: string }
+        markEmailSent(dedupeKey, sent.id)
+        return { success: true, providerMessageId: sent.id }
       } catch (error) {
-        return { success: false, error: error instanceof Error ? error.message : String(error) }
+        const message = error instanceof Error ? error.message : String(error); markEmailFailed(dedupeKey, message); return { success: false, error: message }
       }
     }
 
     if (!this.client || !this.config) {
+      markEmailFailed(dedupeKey, 'Email channel is not connected')
       return { success: false, error: 'Email channel is not connected' }
     }
 
@@ -385,10 +405,12 @@ export class EmailChannelService extends EventEmitter {
         references: payload.references
       }
 
-      await this.client.callTool({
+      const sendResult = await this.client.callTool({
         name: 'send_email',
         arguments: args
       })
+      const structured = extractStructured(sendResult)
+      const providerMessageId = typeof structured.id === 'string' ? structured.id : typeof structured.message_id === 'string' ? structured.message_id : undefined
 
       this.emit('deliveryStatus', {
         to: payload.to,
@@ -396,7 +418,8 @@ export class EmailChannelService extends EventEmitter {
         status: 'sent',
         at: Date.now()
       })
-      return { success: true }
+      markEmailSent(dedupeKey)
+      return { success: true, providerMessageId }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       this.emit('deliveryStatus', {
@@ -406,6 +429,7 @@ export class EmailChannelService extends EventEmitter {
         error: message,
         at: Date.now()
       })
+      markEmailFailed(dedupeKey, message)
       return { success: false, error: message }
     }
   }
@@ -420,6 +444,21 @@ export class EmailChannelService extends EventEmitter {
       await this.pollOnce()
       this.schedulePoll()
     }, this.config.pollingIntervalSeconds * 1000)
+  }
+
+  private async renewGmailWatch(): Promise<void> {
+    const topic = process.env.GMAIL_PUBSUB_TOPIC
+    if (!topic || this.config?.provider !== 'gmail-api' || !this.running) return
+    try {
+      const watch = await gmailOAuthService.renewWatch(topic)
+      const delay = Math.max(60 * 60 * 1000, Math.min((watch.expiration || Date.now() + 6 * 24 * 60 * 60 * 1000) - Date.now() - 60 * 60 * 1000, 7 * 24 * 60 * 60 * 1000))
+      this.watchTimer = setTimeout(() => void this.renewGmailWatch(), delay)
+      console.log('[EmailChannelService] Gmail watch renewed', { expiration: watch.expiration, historyId: watch.historyId })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      this.setState({ ...this.state, status: 'error', error: message })
+      console.error('[EmailChannelService] Gmail watch renewal failed; polling remains active:', message)
+    }
   }
 
   private async pollOnce(): Promise<void> {
@@ -468,7 +507,7 @@ export class EmailChannelService extends EventEmitter {
               continue
             }
             if (dedupeId) this.seenMessageIds.add(dedupeId)
-            this.emit('message', email)
+            this.emit('message', { ...email, ...normalizeEmailMessage(email) })
             processed += 1
           }
         }
@@ -491,7 +530,7 @@ export class EmailChannelService extends EventEmitter {
             continue
           }
           if (dedupeId) this.seenMessageIds.add(dedupeId)
-          this.emit('message', email)
+          this.emit('message', { ...email, ...normalizeEmailMessage(email) })
           processed += 1
         }
       }
@@ -521,9 +560,7 @@ export class EmailChannelService extends EventEmitter {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       console.error('[EmailChannelService] Poll failure:', message)
-      if (/disconnect|ECONN|closed/i.test(message)) {
-        this.setState({ ...this.state, status: 'error', error: message })
-      }
+      this.setState({ ...this.state, status: 'error', error: message })
     }
   }
 
@@ -543,32 +580,39 @@ export class EmailChannelService extends EventEmitter {
     )
     if (!response.ok) {
       const text = await response.text()
-      this.setState({ ...this.state, status: 'error', error: `Gmail list failed: ${text}` })
+      this.setState({ ...this.state, status: 'error', error: isGmailAuthFailure(response.status) ? 'Gmail OAuth authorization expired or was revoked; sign in again' : `Gmail list failed: ${text}` })
       return
     }
 
     const listData = await response.json() as { messages?: Array<{ id: string }> }
     const messages = listData.messages || []
     let processed = 0
+    let complete = true
     for (const m of messages) {
       const detailResp = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${m.id}?format=full`, {
         headers: { Authorization: `Bearer ${accessToken}` }
       })
-      if (!detailResp.ok) continue
+      if (!detailResp.ok) {
+        if (isGmailAuthFailure(detailResp.status)) this.setState({ ...this.state, status: 'error', error: 'Gmail OAuth authorization expired or was revoked; sign in again' })
+        complete = false
+        continue
+      }
       const detail = await detailResp.json() as Record<string, unknown>
       const email = this.fromGmailMessage(detail)
       if (!email) continue
+      if (!shouldProcessEmailInbound(email, detail, Date.now())) continue
       const dedupeId = email.messageId || email.id
       if (dedupeId && this.seenMessageIds.has(dedupeId)) continue
       if (dedupeId) this.seenMessageIds.add(dedupeId)
-      this.emit('message', email)
+      this.emit('message', { ...email, ...normalizeEmailMessage(email) })
       processed += 1
     }
 
     this.setState({ ...this.state, status: 'connected', error: null, lastSyncAt: Date.now(), unreadCount: messages.length })
     
     // Save state overlap for 5 mins
-    emailSyncStore.set('gmailLastSyncTimestamp', Math.floor(Date.now() / 1000) - 300)
+    // Keep the overlap cursor when any detail fetch failed, so a transient failure is retried.
+    if (complete) emailSyncStore.set('gmailLastSyncTimestamp', Math.floor(Date.now() / 1000) - 300)
     
     const seenArray = Array.from(this.seenMessageIds);
     if (seenArray.length > 2000) {
@@ -598,8 +642,23 @@ export class EmailChannelService extends EventEmitter {
       messageId: getHeader('Message-Id') || getHeader('Message-ID'),
       inReplyTo: getHeader('In-Reply-To'),
       references: getHeader('References'),
-      isFromMe: false
+      isFromMe: false,
+      attachments: this.extractGmailAttachments(payload)
     }
+  }
+
+  private extractGmailAttachments(payload: Record<string, unknown> | null): ChannelAttachment[] {
+    const attachments: ChannelAttachment[] = []
+    const visit = (part: Record<string, unknown>): void => {
+      const body = part.body as Record<string, unknown> | undefined
+      const filename = typeof part.filename === 'string' ? part.filename : ''
+      const attachmentId = typeof body?.attachmentId === 'string' ? body.attachmentId : undefined
+      const size = typeof body?.size === 'number' ? body.size : undefined
+      if (filename || attachmentId) attachments.push({ id: attachmentId, name: filename || undefined, mimeType: typeof part.mimeType === 'string' ? part.mimeType : undefined, size })
+      if (Array.isArray(part.parts)) for (const child of part.parts) if (child && typeof child === 'object') visit(child as Record<string, unknown>)
+    }
+    if (payload) visit(payload)
+    return attachments
   }
 
   private extractGmailBody(payload: Record<string, unknown> | null): string {
@@ -1079,24 +1138,7 @@ export class EmailChannelService extends EventEmitter {
   }
 
   private shouldProcessInbound(email: InboundEmailMessage, raw?: Record<string, unknown>): boolean {
-    if (email.isFromMe) return false
-
-    const now = Date.now()
-    if (email.timestamp > 0 && now - email.timestamp > RECENT_EMAIL_WINDOW_MS) return false
-
-    if (raw) {
-      const alreadyHandled = readBoolean(raw, [
-        'answered',
-        'is_answered',
-        'isAnswered',
-        'replied',
-        'is_replied',
-        'isReplied'
-      ], false)
-      if (alreadyHandled) return false
-    }
-
-    return true
+    return shouldProcessEmailInbound(email, raw, Date.now())
   }
 
   private setState(next: EmailConnectionState): void {

@@ -1,34 +1,6 @@
 import { Page } from 'playwright-core';
 import { PlaywrightTool, ToolResult } from '../PlaywrightTool';
 
-export class EvaluateTool extends PlaywrightTool {
-    name = 'evaluate';
-    aliases = ['browser_run_code'];
-
-    getSchema() {
-        return {
-            name: 'evaluate',
-            description: 'ADVANCED: Execute raw JavaScript code on the page. Use as a last resort when no other tool can accomplish the task. Can access DOM, modify page, or extract complex data. NOTE: document.querySelectorAll returns a NodeList, not Array. Use Array.from() before .map(), .filter(), or .slice(). if any issues occurs while executing the script, try to google the error and fix it.',
-            inputSchema: {
-                type: 'object',
-                properties: {
-                    script: { type: 'string', description: 'JavaScript code to execute. Return value will be included in result.' }
-                },
-                required: ['script']
-            }
-        };
-    }
-
-    async execute(page: Page, args: any): Promise<ToolResult> {
-        try {
-            const result = await page.evaluate(args.script);
-            return { result };
-        } catch (error) {
-            return { result: null, error: `Script execution failed: ${String(error)}` };
-        }
-    }
-}
-
 export class HandleDialogTool extends PlaywrightTool {
     name = 'handle_dialog';
 

@@ -90,12 +90,16 @@ export const electron = {
             return { tools: [] }
         },
 
-        callTool: async (serverId: string, toolName: string, args: unknown) => {
+        callTool: async (serverId: string, toolName: string, args: unknown, requestId?: string) => {
             if (isElectron() && window.electron?.mcp) {
-                return await window.electron.mcp.callTool(serverId, toolName, args)
+                return await window.electron.mcp.callTool(serverId, toolName, args, requestId)
             }
             console.log('[Browser] MCP call tool mock:', { serverId, toolName, args })
             return { result: null }
+        },
+        cancelTool: async (requestId: string) => {
+            if (isElectron() && window.electron?.mcp) return await window.electron.mcp.cancelTool(requestId)
+            return { success: false, error: 'Not supported in browser mode' }
         },
     },
 
@@ -170,6 +174,13 @@ export const electron = {
             }
             localStorage.removeItem(`secure_${userId ? `${userId}_` : ''}${key}`)
             return { success: true }
+        },
+
+        listKeys: async (userId?: string): Promise<{ success: boolean; keys?: string[]; error?: string }> => {
+            if (isElectron() && window.electron?.secure?.listKeys) {
+                return await window.electron.secure.listKeys(userId)
+            }
+            return { success: true, keys: [] }
         },
 
     },
@@ -431,6 +442,52 @@ export const electron = {
             console.warn('[Browser] WhatsApp notifyAdmin not supported')
             return { success: false, error: 'Not supported in browser mode' }
         },
+        web: {
+            getState: async () => isElectron() && window.electron?.whatsapp?.web ? window.electron.whatsapp.web.getState() : { status: 'disconnected' },
+            start: async () => isElectron() && window.electron?.whatsapp?.web ? window.electron.whatsapp.web.start() : { status: 'disconnected' },
+            stop: async () => isElectron() && window.electron?.whatsapp?.web ? window.electron.whatsapp.web.stop() : { status: 'disconnected' },
+            humanTakeover: async () => isElectron() && window.electron?.whatsapp?.web ? window.electron.whatsapp.web.humanTakeover() : { status: 'disconnected' },
+            captureFailure: async (name?: string) => isElectron() && window.electron?.whatsapp?.web ? window.electron.whatsapp.web.captureFailure(name) : null,
+            startMonitoring: async (chatId: string) => isElectron() && window.electron?.whatsapp?.web ? window.electron.whatsapp.web.startMonitoring(chatId) : { status: 'disconnected' },
+            stopMonitoring: async () => { if (isElectron() && window.electron?.whatsapp?.web) await window.electron.whatsapp.web.stopMonitoring() }
+        },
+    },
+    autonomy: {
+        getState: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.getState() : { mode: 'observe', responsePermission: false, paused: true, status: 'stopped', queueDepth: 0 },
+        getHealth: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.getHealth() : null,
+        getMetrics: async (days = 14) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.getMetrics(days) : null,
+        reconnectChannel: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.reconnectChannel() : null,
+        start: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.start() : null,
+        stop: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.stop() : null,
+        pause: async (emergency = false) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.pause(emergency) : null,
+        resume: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.resume() : null,
+        enterRecoveryMode: async (reason?: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.enterRecoveryMode(reason) : null,
+        clearRecoveryMode: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.clearRecoveryMode() : null,
+        stageBackup: async (backupPath: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.stageBackup(backupPath) : null,
+        pruneRetention: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.pruneRetention() : null,
+        pauseConversation: async (jid: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.pauseConversation(jid) : null,
+        resumeConversation: async (jid: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.resumeConversation(jid) : null,
+        retryDelivery: async (inboundId: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.retryDelivery(inboundId) : null,
+        quarantineDelivery: async (inboundId: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.quarantineDelivery(inboundId) : null,
+        cancelOutbound: async (inboundId: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.cancelOutbound(inboundId) : null,
+        listApprovedTemplates: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listApprovedTemplates() : [],
+        listTakeovers: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listTakeovers() : [],
+        listUnresolvedOutbound: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listUnresolvedOutbound() : [],
+        listDeliveryHistory: async (limit = 50) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listDeliveryHistory(limit) : [],
+        listDecisionEvidence: async (limit = 50) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listDecisionEvidence(limit) : [],
+        listDrafts: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listDrafts() : [],
+        usageHistory: async (days = 30) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.usageHistory(days) : [],
+        approveDraft: async (inboundId: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.approveDraft(inboundId) : null,
+        sendApprovedTemplate: async (inboundId: string, name: string, languageCode: string, parameters: string[] = []) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.sendApprovedTemplate(inboundId, name, languageCode, parameters) : null,
+        listNotifications: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listNotifications() : [],
+        ackNotification: async (id: number) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.ackNotification(id) : null,
+        onNotification: (callback: (data: unknown) => void) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.onNotification(callback) : () => {},
+        registerApprovedTemplate: async (name: string, languageCode: string, category: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.registerApprovedTemplate(name, languageCode, category) : null,
+        revokeApprovedTemplate: async (name: string, languageCode: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.revokeApprovedTemplate(name, languageCode) : null,
+        setMode: async (mode: string, permission: boolean) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.setMode(mode, permission) : null,
+        onState: (callback: (state: unknown) => void) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.onState(callback) : () => {},
+        onDecision: (callback: (data: unknown) => void) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.onDecision(callback) : () => {},
+        onFailure: (callback: (data: unknown) => void) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.onFailure(callback) : () => {},
     },
     email: {
         getState: async () => {

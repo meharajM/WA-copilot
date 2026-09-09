@@ -18,6 +18,16 @@ export interface RAGChunk {
     rank?: number
 }
 
+export function buildFtsQuery(query: string): string {
+    return query.normalize('NFKC')
+        .replace(/[^\p{L}\p{M}\p{N}_]+/gu, ' ')
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean)
+        .map(term => `"${term.replaceAll('"', '""')}"`)
+        .join(' ')
+}
+
 /**
  * @copilot/rag-engine
  * 
@@ -47,6 +57,15 @@ export class RAGEngine {
             RAGEngine.instance = new RAGEngine()
         }
         return RAGEngine.instance
+    }
+
+    health(): { status: 'ready' | 'error'; documents: number; error?: string } {
+        try {
+            const documents = (this.db.prepare('SELECT COUNT(*) AS count FROM documents').get() as { count: number }).count
+            return { status: 'ready', documents }
+        } catch (error) {
+            return { status: 'error', documents: 0, error: error instanceof Error ? error.message : String(error) }
+        }
     }
 
     private initSchema() {
@@ -134,7 +153,7 @@ export class RAGEngine {
     }
 
     async search(query: string, limit: number = 5): Promise<RAGChunk[]> {
-        const cleanQuery = query.replace(/[^\w\s]/g, ' ').trim()
+        const cleanQuery = buildFtsQuery(query)
         if (!cleanQuery) return []
 
         const rows = this.db.prepare(`

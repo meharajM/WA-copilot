@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ChatSession } from '../../src/renderer/src/stores/chatStore'
-import { computeResolutionAuditActions } from '../../src/renderer/src/hooks/useResolutionAudit'
+import { computeResolutionAuditActions, shouldUseLegacyResolutionAudit } from '../../src/renderer/src/hooks/useResolutionAudit'
 
 function makeSession(partial: Partial<ChatSession>): ChatSession {
   const now = Date.now()
@@ -23,6 +23,12 @@ function makeSession(partial: Partial<ChatSession>): ChatSession {
 }
 
 describe('resolution audit decision logic', () => {
+  it('defers to the main supervisor while it is active', () => {
+    expect(shouldUseLegacyResolutionAudit({ status: 'running' })).toBe(false)
+    expect(shouldUseLegacyResolutionAudit({ status: 'degraded' })).toBe(false)
+    expect(shouldUseLegacyResolutionAudit({ status: 'stopped' })).toBe(true)
+  })
+
   it('emits follow-up action for inactive active WhatsApp session with last assistant message', () => {
     const now = Date.now()
     const sessions: ChatSession[] = [

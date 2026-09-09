@@ -52,7 +52,7 @@ const msgRetryCounterCache = new SimpleRetryCache()
 
 // Types we expose over IPC — mirrored in the renderer's whatsappStore.ts
 export interface WhatsAppConnectionState {
-    status: 'disconnected' | 'connecting' | 'connected' | 'error'
+    status: 'disconnected' | 'connecting' | 'qr_required' | 'connected' | 'logged_out' | 'blocked' | 'error'
     qrCode: string | null
     error: string | null
     phoneNumber: string | null // Target number
@@ -61,6 +61,7 @@ export interface WhatsAppConnectionState {
 }
 
 export interface WhatsAppMessage {
+    schemaVersion?: 1
     id: string
     from: string
     to: string
@@ -68,6 +69,12 @@ export interface WhatsAppMessage {
     timestamp: number
     type: 'text' | 'image' | 'video' | 'document' | 'audio' | 'spreadsheet'
     isFromMe: boolean
+    providerEventId?: string
+    actor?: 'customer' | 'owner' | 'system'
+    businessId?: string
+    channelAccountId?: string
+    conversationId?: string
+    rawPayload?: unknown
     mediaUrl?: string
     caption?: string
 }
@@ -287,7 +294,7 @@ export class WhatsAppService extends EventEmitter {
                 console.log('[WhatsAppService] Connection update:', { connection, qr: !!qr, lastDisconnect })
 
                 if (qr) {
-                    this._setState({ ...this.connectionState, status: 'connecting', qrCode: qr })
+                    this._setState({ ...this.connectionState, status: 'qr_required', qrCode: qr })
                 }
 
                 if (connection === 'open') {
@@ -348,7 +355,7 @@ export class WhatsAppService extends EventEmitter {
                         this._clearAuth()
                         this._setState({
                             ...this.connectionState,
-                            status: 'disconnected',
+                            status: 'logged_out',
                             qrCode: null,
                             error: 'Logged out from mobile device. Please scan QR again.',
                             phoneNumber: null,
@@ -373,8 +380,13 @@ export class WhatsAppService extends EventEmitter {
                         })
                         return // Don't clear auth
                     }
+
+                    if (statusCode === 403) {
+                        this._setState({ ...this.connectionState, status: 'blocked', qrCode: null, error: 'WhatsApp rejected this connection.' })
+                        return
+                    }
                     
-                    const isNetworkError = statusCode === undefined || 
+                    const isNetworkError = statusCode === undefined ||
                         statusCode === 428 || // Server unreachable
                         statusCode === 503 || // Service unavailable  
                         statusCode === 504  // Gateway timeout
@@ -663,7 +675,7 @@ export class WhatsAppService extends EventEmitter {
         }
     }
 
-    async sendMessage(to: string, content: string, options?: { skipDelay?: boolean }): Promise<{ success: boolean; error?: string }> {
+    async sendMessage(to: string, content: string, options?: { skipDelay?: boolean }): Promise<{ success: boolean; providerMessageId?: string; error?: string }> {
         if (!this.socket || this.connectionState.status !== 'connected') {
             return { success: false, error: 'WhatsApp not connected' }
         }
@@ -717,7 +729,7 @@ export class WhatsAppService extends EventEmitter {
                  })
             }
             console.log(`[WhatsAppService] Message sent successfully to: ${jid}. Content: "${content.substring(0, 100)}${content.length > 100 ? '...' : ''}"`)
-            return { success: true }
+            return { success: true, providerMessageId: result?.key?.id || undefined }
         } catch (error) {
             return { success: false, error: error instanceof Error ? error.message : String(error) }
         }
@@ -879,8 +891,8 @@ export class WhatsAppService extends EventEmitter {
                 status: 'error',
                 error: 'Could not reconnect after multiple attempts. Please reconnect manually.',
             })
-            return
-        }
+                        return
+                    }
         const base = Math.min(5000 * Math.pow(2, this.reconnectAttempts), 300_000)
         const jitter = Math.random() * 5000
         const delay = Math.round(base + jitter)
@@ -1261,8 +1273,11 @@ export class WhatsAppService extends EventEmitter {
             // senderPn usually contains the actual phone number JID
             const fromJid = raw.key.senderPn || raw.key.remoteJid || ''
 
+            const id = raw.key.id ?? `wa_${Date.now()}`
+            const isFromMe = raw.key.fromMe ?? false
             return {
-                id: raw.key.id ?? `wa_${Date.now()}`,
+                schemaVersion: 1,
+                id,
                 from: fromJid,
                 to: raw.key.fromMe ? (raw.key.senderPn || raw.key.remoteJid || '') : 'me',
                 content: textContent || '[Media Message]',
@@ -1270,7 +1285,13 @@ export class WhatsAppService extends EventEmitter {
                 type,
                 mediaUrl,
                 caption: textContent ?? undefined,
-                isFromMe: raw.key.fromMe ?? false,
+                isFromMe,
+                providerEventId: id,
+                actor: isFromMe ? 'owner' : 'customer',
+                businessId: process.env.AICA_BUSINESS_ID || 'local-business',
+                channelAccountId: this.connectionState.workerNumber || this.connectionState.phoneNumber || 'whatsapp-local-account',
+                conversationId: `whatsapp:${fromJid}`,
+                rawPayload: raw,
             }
         } catch (err) {
             console.error('[WhatsAppService] Unhandled parsing error:', err);

@@ -3,7 +3,7 @@ import { useChatStore } from '../stores/chatStore'
 import electron from '../lib/electron'
 import type { ChatSession } from '../stores/chatStore'
 
-const INACTIVITY_TIMEOUT_MS = 15 * 60 * 1000 // 15 minutes
+const INACTIVITY_TIMEOUT_MS = 10 * 60 * 1000 // 10 minutes
 const RESOLUTION_PROMPT = "It's been a while! Just checking in—did that resolve your inquiry? (Reply 'Yes' or 'No', or feel free to ask more questions!)"
 
 export type ResolutionAuditAction =
@@ -55,8 +55,11 @@ export function computeResolutionAuditActions(
       })
     }
   }
-
   return actions
+}
+
+export function shouldUseLegacyResolutionAudit(autonomyState: { status?: string } | null | undefined): boolean {
+    return autonomyState?.status !== 'running' && autonomyState?.status !== 'degraded'
 }
 
 /**
@@ -74,7 +77,9 @@ export function useResolutionAudit() {
         if (timerRef.current) clearInterval(timerRef.current)
 
         // Run audit every minute
-        timerRef.current = setInterval(() => {
+        timerRef.current = setInterval(async () => {
+            const autonomyState = await electron.autonomy.getState().catch(() => null)
+            if (!shouldUseLegacyResolutionAudit(autonomyState)) return
             const actions = computeResolutionAuditActions(sessions)
 
             actions.forEach((action) => {

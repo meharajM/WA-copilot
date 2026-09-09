@@ -11,6 +11,7 @@ import { testGeminiConnection } from '../../../lib/llm'
 import { ModelSelect } from '../../ModelSelect'
 import { ProviderCard } from './ProviderCard'
 import { AntigravityLinkButton } from './AntigravityLinkButton'
+import type { LLMSettings } from '../../../lib/types'
 
 interface GeminiSettingsProps {
     available?: boolean
@@ -38,7 +39,7 @@ export function GeminiSettings({ available, models, checking, onRefresh }: Gemin
             const result = await testGeminiConnection(
                 settings.geminiApiKey,
                 settings.geminiModel || 'gemini-2.0-flash-lite',
-                settings
+                settings as unknown as LLMSettings
             )
             if (result.success) {
                 const msg = result.modelsEndpointAvailable !== false

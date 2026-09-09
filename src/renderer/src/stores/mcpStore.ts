@@ -12,6 +12,7 @@ export interface MCPServer {
     args?: string[]
     url?: string
     env?: Record<string, string> // Local-only secrets
+    allowedTools?: string[]
     connected: boolean
     tools: MCPTool[]
     error?: string
@@ -100,6 +101,7 @@ const DEFAULT_MCP_SERVERS = [
         type: 'stdio',
         command: 'uvx',
         args: ['markitdown-mcp[all]'], // [all] ensures pdf, docx, xlsx, pptx, audio extras are included
+        allowedTools: ['convert_to_markdown'],
         autoConnect: true // Enable auto-connect (requires uv/python)
     }
 ]
@@ -310,7 +312,8 @@ export const useMcpStore = create<McpState>()((set, get) => ({
                 command: server.command,
                 args: server.args,
                 url: server.url,
-                env: server.env
+                env: server.env,
+                allowedTools: server.allowedTools
             })
 
             if (result.success) {

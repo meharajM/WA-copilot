@@ -13,7 +13,7 @@
  * Consumed by: useAgent.ts (fire-and-forget after each chat submission)
  */
 import type { IAgentClient } from "./agent/IAgentClient";
-import { LLMMessage } from "./types";
+import { LLMMessage, type LLMSettings } from "./types";
 
 
 /**
@@ -60,7 +60,7 @@ export class MemoryReflector {
             // The IAgentClient interface ensures the swap is type-safe.
             const { AgentRuntime } = await import("./agent-runtime");
             const reflectorAgent: IAgentClient = new AgentRuntime({
-                settings,
+                settings: settings as LLMSettings,
                 isSubAgent: true,
                 // We don't listen to messages, just results
                 onMessage: (_msg: LLMMessage) => {
@@ -146,7 +146,7 @@ GOAL: Extract Facts & State. No Narratives. No Meta-Commentary.
         try {
             const { AgentRuntime } = await import("./agent-runtime");
             const reflectorAgent: IAgentClient = new AgentRuntime({
-                settings,
+                settings: settings as LLMSettings,
                 isSubAgent: true
             });
 

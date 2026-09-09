@@ -13,7 +13,7 @@ import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 
 export interface WhatsAppConnectionState {
-    status: 'disconnected' | 'connecting' | 'connected' | 'error'
+    status: 'disconnected' | 'connecting' | 'qr_required' | 'connected' | 'logged_out' | 'blocked' | 'error'
     qrCode: string | null
     error: string | null
     phoneNumber: string | null
