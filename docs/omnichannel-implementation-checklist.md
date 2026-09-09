@@ -145,7 +145,7 @@ Implements the architecture plan. Complete phases in order. Keep observe-only as
 - [ ] Answer-quality and cost thresholds are met.
 - [ ] Sensitive/account-specific intents use the intended human path.
 - [ ] Response-window and template behavior is verified live.
-- [ ] Duplicate, stale-decision and ambiguous-send tests pass.
+- [x] Duplicate, stale-decision and ambiguous-send tests pass. (`tests/integration/autonomy-recovery.test.ts` covers repeated inbound dedupe and delivery-unknown requeue/quarantine; `tests/integration/autonomy-decision.test.ts` covers stale revisions and ambiguous provider classification.) Live-provider validation remains separately tracked in the pilot matrix.
 - [x] Opt-out, takeover and Pause All are immediate. (Ingress opt-out/takeover handling and abortable global/conversation pause controls are covered by recovery tests; live pilot confirmation remains an operational gate.)
 - [ ] Cost caps and provider limits are active.
 - [ ] Retention/deletion and escalation procedures are documented.
@@ -225,6 +225,7 @@ Known limitations and failed baseline checks:
 - Iteration: derived recovery-drill count and average recovery duration from audited recovery enter/clear actions and surfaced them beside existing pilot metrics. Result: focused recovery suite 28 passed; owner drill completion and provider-authoritative metrics remain open.
 - Iteration: audited the Gmail OAuth scope set and documented its least-privilege rationale plus current Google verification and restricted-scope obligations. Result: code-level scope inventory is explicit; Cloud-project verification remains an external release gate.
 - Iteration: added startup restore integration coverage that boots from a staged autonomy database, preserves the pre-restore database, removes the staging file and enters a paused recovery hold. Result: backup import integration is verified; hosted/desktop-off drills remain open.
+- Iteration: reconciled the duplicate, stale-decision and ambiguous-send exit gate against passing recovery/decision integration tests, while retaining the separate live-provider pilot gate.
 - Iteration: added supervisor integration coverage for Pause All queue holding and opt-out persistence before response processing. Result: 31 focused tests pass; diff check passes.
 - Iteration: added supervisor reload coverage proving queued work is reconstructed from persistent state without automatic resume. Result: 32 focused tests pass; build and diff checks pass.
 - Iteration: persisted active human-takeover state, restored takeover pauses on supervisor startup, and added owner-event integration coverage. Result: 33 focused tests pass; build and diff checks pass.
