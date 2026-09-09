@@ -48,7 +48,7 @@ Implements the architecture plan. Complete phases in order. Keep observe-only as
 ## Phase 2 — LangChain/LangGraph workflow
 
 - [x] Add only required LangChain/LangGraph packages and pin versions. (The three required packages are exact-pinned in package and lock files.)
-- [ ] Verify package licenses, Node compatibility and packaged Electron compatibility.
+- [ ] Verify package licenses, Node compatibility and packaged Electron compatibility. (`npm run check:runtime` now provides a fail-closed local check and license inventory; current host is Node 20.20.2 with a missing Electron executable, and libsignal reports GPL-3.0. See `docs/package-compatibility.md`.)
 - [x] Use a persistent SQLite checkpointer locally; use Postgres only for hosted operation. (SQLite adapter is connected to autonomy.db.)
 - [x] Keep graph execution independent of renderer Zustand state.
 - [x] Stamp every run with graph, prompt, policy and conversation-revision versions. (Decision records now carry all four version fields.)
@@ -219,6 +219,7 @@ Known limitations and failed baseline checks:
 - Iteration: enabled SQLite WAL and added indexes for pending work, revisions, provider IDs and unresolved outbox records; added direct storage-invariant coverage. Result: 28 focused tests pass; build and diff checks pass.
 - Iteration: added supervisor integration coverage proving repeated provider events create one durable inbound record. Result: 29 focused tests pass; diff check passes.
 - Iteration: audited repository call sites and added `docs/omnichannel-inventory.md` covering inbound sources, autonomous and explicit human outbound senders, session persistence, channel stores, permission state and known limits. Result: checklist inventory gates complete; live provider and packaged-app verification remain external gates.
+- Iteration: added `npm run check:runtime` and `docs/package-compatibility.md` for Node/Electron/native-module/license evidence. Result: the check correctly fails on the current Node 20.20.2 host and missing Electron binary; compatibility remains an explicit release gate.
 - Iteration: added supervisor integration coverage for Pause All queue holding and opt-out persistence before response processing. Result: 31 focused tests pass; diff check passes.
 - Iteration: added supervisor reload coverage proving queued work is reconstructed from persistent state without automatic resume. Result: 32 focused tests pass; build and diff checks pass.
 - Iteration: persisted active human-takeover state, restored takeover pauses on supervisor startup, and added owner-event integration coverage. Result: 33 focused tests pass; build and diff checks pass.
