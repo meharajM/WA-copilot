@@ -123,7 +123,7 @@ Implements the architecture plan. Complete phases in order. Keep observe-only as
 - [x] Keep ad creation, budget and audience changes unreachable from the customer graph. (The autonomous graph receives only a normalized message and host decision callback; no Meta marketing adapter, customer-facing MCP client, or ad/budget/audience mutation tool exists. See `docs/omnichannel-inventory.md`.)
 - [ ] Verify X DM access, endpoint pricing and spending limits. (Adapter targets the documented OAuth1 user-context DM endpoint, implements CRC/signature verification and opt-in localhost wiring; account access and current commercial limits remain an external gate.)
 - [x] Keep public X replies in draft/approval mode. (No public-post transport is exposed; only explicit DM transport exists.)
-- [ ] Meter X usage separately and block on budget exhaustion. (Outbound usage now records channel and X enforces five active/delivered/ambiguous sends per conversation per 24 hours before provider access; X-specific budget UI/provider limits remain.)
+- [ ] Meter X usage separately and block on budget exhaustion. (Outbound usage now records channel, host caps X at five active/delivered/ambiguous sends per conversation per 24 hours before provider access, and the owner panel now shows today’s outbound counts by channel; X-specific commercial/provider limits remain.)
 
 ## Phase 7 — UI, MCP and hosted operation
 
@@ -228,6 +228,7 @@ Known limitations and failed baseline checks:
 - Iteration: reconciled the duplicate, stale-decision and ambiguous-send exit gate against passing recovery/decision integration tests, while retaining the separate live-provider pilot gate.
 - Iteration: added bounded escalation contact/SLA configuration, health/panel visibility and default-value regression coverage; deployment-specific contact, procedure and drill evidence remain open.
 - Iteration: made the escalation contact a host-side prerequisite for Auto-reply with response permission; missing contact now fails closed and is covered by recovery integration tests.
+- Iteration: exposed the existing per-channel outbound usage aggregation through owner IPC/preload and the autonomy panel, with X-channel regression coverage; provider-commercial limits remain external.
 - Iteration: added supervisor integration coverage for Pause All queue holding and opt-out persistence before response processing. Result: 31 focused tests pass; diff check passes.
 - Iteration: added supervisor reload coverage proving queued work is reconstructed from persistent state without automatic resume. Result: 32 focused tests pass; build and diff checks pass.
 - Iteration: persisted active human-takeover state, restored takeover pauses on supervisor startup, and added owner-event integration coverage. Result: 33 focused tests pass; build and diff checks pass.

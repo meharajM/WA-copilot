@@ -903,6 +903,7 @@ export class AutonomousSupervisor extends EventEmitter {
     ipcMain.handle('autonomy:list-decision-evidence', (_e: unknown, limit: unknown) => this.listDecisionEvidence(Number(limit)))
     ipcMain.handle('autonomy:review-decision', (_e: unknown, inboundId: unknown, label: unknown, notes: unknown) => this.reviewDecision(String(inboundId), String(label) as QualityReviewLabel, typeof notes === 'string' ? notes : ''))
     ipcMain.handle('autonomy:usage-history', (_e: unknown, days: unknown) => this.usageHistory(Number(days)))
+    ipcMain.handle('autonomy:channel-usage', (_e: unknown, days: unknown) => this.getChannelUsage(Number(days)))
     ipcMain.handle('autonomy:approve-draft', (_e: unknown, inboundId: unknown) => this.approveDraft(String(inboundId)))
     ipcMain.handle('autonomy:send-approved-template', (_e: unknown, inboundId: unknown, name: unknown, languageCode: unknown, parameters: unknown) => this.sendApprovedTemplate(String(inboundId), String(name), String(languageCode), Array.isArray(parameters) ? parameters.map(String) : []))
     ipcMain.handle('autonomy:register-approved-template', (_e: unknown, name: unknown, languageCode: unknown, category: unknown) => this.registerApprovedTemplate(String(name), String(languageCode), String(category)))

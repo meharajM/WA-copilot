@@ -54,6 +54,14 @@ describe('autonomy recovery', () => {
     expect(metrics).toMatchObject({ groundedDecisionRate: 0, deliveryUnknown: 0, draftApprovalRate: 0, averageDraftEditingTimeMs: 0, estimatedCostPerResolvedConversation: 0, reviewedDecisions: 0, reviewAccuracy: 0, escalationPrecision: 0, recoveryDrills: 0, averageRecoveryTimeMs: 0 })
   })
 
+  it('aggregates outbound usage by channel for owner visibility', () => {
+    const db = new Database(path.join(dataDir, 'autonomy.db'))
+    db.prepare('INSERT INTO usage_events (kind,amount,estimated_tokens,estimated_cost,channel,created_at) VALUES (?,?,?,?,?,?)').run('outbound', 1, 0, 0, 'twitter', Date.now())
+    db.prepare('INSERT INTO usage_events (kind,amount,estimated_tokens,estimated_cost,channel,created_at) VALUES (?,?,?,?,?,?)').run('outbound', 1, 0, 0, 'twitter', Date.now())
+    db.close()
+    expect(supervisor.getChannelUsage(1)).toEqual(expect.arrayContaining([{ channel: 'twitter', amount: 2 }]))
+  })
+
   it('surfaces bounded escalation contact and SLA configuration', () => {
     expect(supervisor.getHealth().escalation).toMatchObject({ contactConfigured: false, contact: null, slaMinutes: 60 })
     supervisor.setMode('draft', false)

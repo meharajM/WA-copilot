@@ -478,6 +478,7 @@ export const electron = {
         reviewDecision: async (inboundId: string, label: string, notes = '') => isElectron() && window.electron?.autonomy ? window.electron.autonomy.reviewDecision(inboundId, label, notes) : null,
         listDrafts: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listDrafts() : [],
         usageHistory: async (days = 30) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.usageHistory(days) : [],
+        channelUsage: async (days = 1) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.channelUsage(days) : [],
         approveDraft: async (inboundId: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.approveDraft(inboundId) : null,
         sendApprovedTemplate: async (inboundId: string, name: string, languageCode: string, parameters: string[] = []) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.sendApprovedTemplate(inboundId, name, languageCode, parameters) : null,
         listNotifications: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listNotifications() : [],
