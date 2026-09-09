@@ -56,6 +56,9 @@ describe('autonomy recovery', () => {
 
   it('surfaces bounded escalation contact and SLA configuration', () => {
     expect(supervisor.getHealth().escalation).toMatchObject({ contactConfigured: false, contact: null, slaMinutes: 60 })
+    supervisor.setMode('draft', false)
+    expect(() => supervisor.setMode('auto', true)).toThrow('AICA_ESCALATION_CONTACT')
+    supervisor.setMode('observe', false)
   })
 
   it('persists owner quality reviews and derives review metrics', () => {

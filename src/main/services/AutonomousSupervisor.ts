@@ -259,6 +259,7 @@ export class AutonomousSupervisor extends EventEmitter {
   resumeConversation(jid: string): SupervisorState { this.pausedConversations.delete(jid); this.db.prepare("UPDATE takeovers SET active = 0, ended_at = ? WHERE jid = ?").run(Date.now(), jid); this.audit('resume_conversation', { jid }); if (jid.startsWith('email:')) void this.drainEmail(jid); else if (jid.startsWith('instagram:') || jid.startsWith('messenger:') || jid.startsWith('twitter:')) void this.drainMeta(jid); else void this.drain(jid); return this.getState() }
   setMode(mode: AutonomyMode, responsePermission: boolean): SupervisorState {
     if (!canEnableAutoMode(this.state.mode, mode)) throw new Error('Enable Draft mode before Auto-reply')
+    if (mode === 'auto' && responsePermission && !ESCALATION_CONTACT) throw new Error('Configure AICA_ESCALATION_CONTACT before enabling Auto-reply')
     this.state.mode = mode; this.state.responsePermission = mode === 'auto' && responsePermission
     this.audit('set_mode', { mode, responsePermission: this.state.responsePermission }); this.publish(); return this.getState()
   }

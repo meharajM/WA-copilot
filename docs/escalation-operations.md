@@ -12,6 +12,8 @@ AICA_ESCALATION_SLA_MINUTES=60
 `AICA_ESCALATION_SLA_MINUTES` accepts a positive bounded value; the default is
 60 minutes. An unset contact is intentionally reported as “contact not
 configured” and does not silently claim that a human escalation path exists.
+The host also rejects Auto-reply with response permission until the contact is
+configured.
 
 The operator must define who owns the contact, acknowledge escalations within
 the SLA, review `delivery-unknown` and failure notifications, and complete
