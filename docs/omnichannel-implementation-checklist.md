@@ -150,7 +150,7 @@ Implements the architecture plan. Complete phases in order. Keep observe-only as
 - [ ] Cost caps and provider limits are active.
 - [ ] Retention/deletion and escalation procedures are documented.
 - [ ] Owner has completed pause and recovery drills.
-- [ ] Release documentation states actual channels and guarantees.
+- [x] Release documentation states actual channels and guarantees. (See `docs/release-readiness.md`; live-provider approval, production relay and pilot gates remain explicitly open.)
 
 ## Verified status — September 9, 2026
 
@@ -336,3 +336,4 @@ Known limitations and failed baseline checks:
 - Iteration: aligned renderer autonomy declarations/wrappers and LLM settings casts so the partial PR passes both main-process and renderer typechecks. Result: full suite 245 passed/7 skipped; both typechecks, build and diff checks pass.
 - Iteration: added a fixture-driven autonomy evaluation matrix covering common, missing, contradictory, multilingual, follow-up, sensitive, injection and account-specific cases. Result: focused evaluation suite passes; typecheck passes.
 - Iteration: expanded derived pilot metrics with grounding rate, delivery-unknown count, draft approval/editing time and estimated cost per resolved conversation, plus panel display and regression coverage. Result: focused recovery suite passes; typecheck passes.
+- Iteration: added release-readiness documentation covering actual channels, operating modes, guarantees, limits and production prerequisites. Result: documentation verified against current transport/policy implementation; full checks pending.
