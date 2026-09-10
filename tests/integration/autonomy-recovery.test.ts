@@ -65,6 +65,13 @@ describe('autonomy recovery', () => {
     expect(metrics).toMatchObject({ groundedDecisionRate: 0, deliveryUnknown: 0, draftApprovalRate: 0, averageDraftEditingTimeMs: 0, estimatedCostPerResolvedConversation: 0, reviewedDecisions: 0, reviewAccuracy: 0, escalationPrecision: 0, recoveryDrills: 0, averageRecoveryTimeMs: 0 })
   })
 
+  it('reports bounded provider configuration and per-channel queue health', () => {
+    expect(supervisor.getHealth()).toMatchObject({
+      providers: { meta: { configured: false }, x: { configured: false } },
+      queues: { whatsapp: 0, email: 0, meta: 0 }
+    })
+  })
+
   it('exposes bounded autonomy controls through the internal MCP service', async () => {
     const { autonomyMcpService } = await import('../../src/main/services/AutonomyMcpService')
     expect(autonomyMcpService.listTools().tools.map(tool => tool.name)).toEqual(expect.arrayContaining(['get_machine_health', 'get_agent_status', 'get_queue_status', 'get_channel_status', 'get_recent_failures', 'capture_diagnostics', 'surface_browser', 'pause_agent', 'resume_agent', 'retry_job', 'reconnect_channel']))
