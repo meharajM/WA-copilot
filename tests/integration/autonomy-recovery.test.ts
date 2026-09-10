@@ -646,6 +646,10 @@ describe('autonomy recovery', () => {
     activeSupervisor.onDeliveryUpdate({ providerMessageId: 'wamid.unknown-1', status: 'failed', timestamp: Date.now() })
     expect(db.prepare("SELECT action FROM operator_actions WHERE action = 'delivery_update_unmatched'").get()).toBeTruthy()
     expect(db.prepare('SELECT inbound_id FROM delivery_events WHERE provider_message_id = ?').get('wamid.unknown-1')).toMatchObject({ inbound_id: null })
+    const deliveryCountBeforeUnsupported = (db.prepare('SELECT COUNT(*) AS count FROM delivery_events').get() as { count: number }).count
+    activeSupervisor.onDeliveryUpdate({ providerMessageId: 'email-no-receipt-1', status: 'delivered', timestamp: Date.now(), channel: 'email' })
+    activeSupervisor.onDeliveryUpdate({ providerMessageId: 'x-no-receipt-1', status: 'delivered', timestamp: Date.now(), channel: 'twitter' })
+    expect((db.prepare('SELECT COUNT(*) AS count FROM delivery_events').get() as { count: number }).count).toBe(deliveryCountBeforeUnsupported)
     expect(activeSupervisor.listDeliveryHistory(100)).toEqual(expect.arrayContaining([expect.objectContaining({ providerMessageId: 'wamid.failed-1', channel: 'whatsapp', status: 'failed', inboundId })]))
     activeSupervisor.onDeliveryUpdate({ providerMessageId: 'wamid.failed-1', status: 'unknown', timestamp: Date.now() })
     expect(db.prepare('SELECT status FROM outbound_sends WHERE inbound_id = ?').get(inboundId)).toMatchObject({ status: 'failed' })

@@ -19,8 +19,8 @@ export interface ChannelCapabilities {
 const CHANNEL_CAPABILITIES: Record<ChannelType, ChannelCapabilities> = {
     whatsapp: { responseWindowMs: 24 * 60 * 60 * 1000, maxTextLength: 4096, supportsTemplates: true, supportsDeliveryReceipts: true, supportsIdempotency: true },
     email: { responseWindowMs: null, maxTextLength: 100_000, supportsTemplates: false, supportsDeliveryReceipts: false, supportsIdempotency: true },
-    instagram: { responseWindowMs: 24 * 60 * 60 * 1000, maxTextLength: 2000, supportsTemplates: false, supportsDeliveryReceipts: false, supportsIdempotency: true },
-    messenger: { responseWindowMs: 24 * 60 * 60 * 1000, maxTextLength: 2000, supportsTemplates: false, supportsDeliveryReceipts: false, supportsIdempotency: true },
+    instagram: { responseWindowMs: 24 * 60 * 60 * 1000, maxTextLength: 2000, supportsTemplates: false, supportsDeliveryReceipts: true, supportsIdempotency: true },
+    messenger: { responseWindowMs: 24 * 60 * 60 * 1000, maxTextLength: 2000, supportsTemplates: false, supportsDeliveryReceipts: true, supportsIdempotency: true },
     twitter: { responseWindowMs: 24 * 60 * 60 * 1000, maxTextLength: 2000, supportsTemplates: false, supportsDeliveryReceipts: false, supportsIdempotency: true },
     telegram: { responseWindowMs: null, maxTextLength: 4096, supportsTemplates: false, supportsDeliveryReceipts: false, supportsIdempotency: true },
     web: { responseWindowMs: null, maxTextLength: 4096, supportsTemplates: false, supportsDeliveryReceipts: false, supportsIdempotency: false }
