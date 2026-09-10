@@ -562,6 +562,7 @@ describe('autonomy recovery', () => {
     const deliveryCount = (db.prepare('SELECT COUNT(*) AS count FROM delivery_events').get() as { count: number }).count
     activeSupervisor.onDeliveryUpdate({ providerMessageId: '   ', status: 'sent', timestamp: Date.now() })
     activeSupervisor.onDeliveryUpdate({ providerMessageId: 'wamid.invalid-time', status: 'failed', timestamp: -1, channel: 'whatsapp' })
+    activeSupervisor.onDeliveryUpdate({ providerMessageId: undefined as unknown as string, status: 'failed', timestamp: Date.now() })
     expect((db.prepare('SELECT COUNT(*) AS count FROM delivery_events').get() as { count: number }).count).toBe(deliveryCount)
     ;(activeSupervisor as unknown as { db: Database.Database }).db.close()
   })
