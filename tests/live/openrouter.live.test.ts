@@ -19,8 +19,8 @@ type ScenarioResult = {
 }
 
 const enabled = isLiveLLMEnabled()
-const runSuite = enabled ? describe.sequential : describe.skip
-const config = enabled ? getOpenRouterLiveConfig(true) : null
+const config = enabled ? getOpenRouterLiveConfig() : null
+const runSuite = enabled && config ? describe.sequential : describe.skip
 const settings = config
   ? {
       openrouterApiKey: config.apiKey,
