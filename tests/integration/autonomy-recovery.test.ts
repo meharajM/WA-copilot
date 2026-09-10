@@ -145,6 +145,26 @@ describe('autonomy recovery', () => {
     supervisor.stop()
   }, 6000)
 
+  it('records drain-boundary processing failures instead of wedging work', async () => {
+    vi.resetModules()
+    const activeSupervisor = (await import('../../src/main/services/AutonomousSupervisor')).autonomousSupervisor
+    const db = (activeSupervisor as unknown as { db: Database.Database }).db
+    const inboundId = 'processing-failure-1'
+    const jid = 'email:processing-failure'
+    const message = { schemaVersion: 1, id: inboundId, channel: 'email', from: 'customer@example.com', to: 'support@example.com', content: 'What are your hours?', timestamp: Date.now(), type: 'text', isFromMe: false, conversationId: 'processing-failure' }
+    db.prepare('INSERT INTO inbound_events (id,jid,content,received_at,status,channel,payload) VALUES (?,?,?,?,?,?,?)').run(inboundId, jid, message.content, message.timestamp, 'queued', 'email', JSON.stringify(message))
+    const internal = activeSupervisor as unknown as { emailQueues: Map<string, unknown[]>; state: { paused: boolean; status: string }; processEmail: () => Promise<void>; drainEmail: (jid: string) => Promise<void> }
+    internal.emailQueues.set(jid, [message])
+    internal.state.paused = false; internal.state.status = 'running'
+    internal.processEmail = vi.fn().mockRejectedValue(new Error('model timeout'))
+    await internal.drainEmail(jid)
+    expect(db.prepare('SELECT status FROM inbound_events WHERE id = ?').get(inboundId)).toEqual({ status: 'failed' })
+    expect(activeSupervisor.getState()).toMatchObject({ activeJob: null, lastError: 'model timeout', status: 'degraded' })
+    internal.emailQueues.delete(jid)
+    db.prepare('DELETE FROM inbound_events WHERE id = ?').run(inboundId)
+    db.close()
+  })
+
   it('aggregates outbound usage by channel for owner visibility', () => {
     const db = new Database(path.join(dataDir, 'autonomy.db'))
     db.prepare('INSERT INTO usage_events (kind,amount,estimated_tokens,estimated_cost,channel,created_at) VALUES (?,?,?,?,?,?)').run('outbound', 1, 0, 0, 'twitter', Date.now())

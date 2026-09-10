@@ -621,7 +621,8 @@ export class AutonomousSupervisor extends EventEmitter {
       while (!this.state.paused && this.queues.get(jid)?.length) {
         const message = this.queues.get(jid)!.shift()!
         this.state.activeJob = message.id; this.publish()
-        await this.process(message)
+        try { await this.process(message) }
+        catch (error) { this.recordProcessingFailure(message.id, jid, error); this.state.activeJob = null }
         this.state.lastProcessedMessage = message.id; this.state.activeJob = null; this.publish()
       }
     } finally { this.active.delete(jid); this.publish() }
@@ -634,7 +635,8 @@ export class AutonomousSupervisor extends EventEmitter {
       while (!this.state.paused && this.emailQueues.get(jid)?.length) {
         const message = this.emailQueues.get(jid)!.shift()!
         this.state.activeJob = message.id; this.publish()
-        await this.processEmail(message, jid)
+        try { await this.processEmail(message, jid) }
+        catch (error) { this.recordProcessingFailure(message.id, jid, error); this.state.activeJob = null }
         this.state.lastProcessedMessage = message.id; this.state.activeJob = null; this.publish()
       }
     } finally { this.active.delete(jid); this.publish() }
@@ -647,7 +649,8 @@ export class AutonomousSupervisor extends EventEmitter {
       while (!this.state.paused && this.metaQueues.get(jid)?.length) {
         const message = this.metaQueues.get(jid)!.shift()!
         this.state.activeJob = message.id; this.publish()
-        await this.processExternal(message, jid, async body => message.channel === 'twitter' ? (this.xTransport ? this.xTransport.sendText(message.from, body) : { success: false, error: 'X transport is not configured' }) : (this.metaTransport ? this.metaTransport.sendText(message.from, body) : { success: false, error: 'Meta transport is not configured' }))
+        try { await this.processExternal(message, jid, async body => message.channel === 'twitter' ? (this.xTransport ? this.xTransport.sendText(message.from, body) : { success: false, error: 'X transport is not configured' }) : (this.metaTransport ? this.metaTransport.sendText(message.from, body) : { success: false, error: 'Meta transport is not configured' })) }
+        catch (error) { this.recordProcessingFailure(message.id, jid, error); this.state.activeJob = null }
         this.state.lastProcessedMessage = message.id; this.state.activeJob = null; this.publish()
       }
     } finally { this.active.delete(jid); this.publish() }
@@ -655,6 +658,12 @@ export class AutonomousSupervisor extends EventEmitter {
 
   private async processEmail(message: ChannelMessage, jid: string): Promise<void> {
     await this.processExternal(message, jid, async body => emailChannelService.send({ to: message.to, subject: message.subject ? `Re: ${message.subject}` : 'Customer support response', body, inReplyTo: message.messageId, references: message.references }))
+  }
+
+  private recordProcessingFailure(messageId: string, jid: string, error: unknown): void {
+    const failure = error instanceof Error ? error.message : String(error)
+    this.db.prepare('UPDATE inbound_events SET status = ? WHERE id = ?').run('failed', messageId)
+    this.state.status = 'degraded'; this.state.lastError = failure; this.audit('processing_failure', { messageId, jid, error: failure }); this.notifyOwner('failure', { messageId, jid, error: failure }); this.emit('failure', { messageId, jid, error: failure })
   }
 
   private async runDecision(message: WorkflowMessage): Promise<ResponseDecision> {

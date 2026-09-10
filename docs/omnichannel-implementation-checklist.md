@@ -380,3 +380,4 @@ Known limitations and failed baseline checks:
 - Iteration: added bounded exponential retry handling for confirmed pre-send rate-limit responses on email, Meta and X; ambiguous/network/provider-acceptance uncertainty remains delivery-unknown and is never auto-retried.
 - Iteration: made external retry backoff honor Pause All, conversation takeover and lease loss by deleting the unaccepted send claim and requeueing the inbound event before another provider call; regression coverage verifies the pause race.
 - Iteration: scoped provider delivery reconciliation by provider ID and inbound channel, preventing a cross-channel ID collision from mutating the wrong outbound record; added regression coverage.
+- Iteration: added a shared drain-boundary failure handler for WhatsApp, email, Meta and X so thrown model/provider errors durably fail the inbound event, clear the active job, audit and notify the owner instead of leaving work wedged; recovery coverage added.
