@@ -396,6 +396,7 @@ Known limitations and failed baseline checks:
 - Iteration: aligned internal MCP calls with external calls by auditing successful, rejected and timed-out internal operations, including autonomy controls; failures now return bounded errors instead of escaping IPC unrecorded.
 - Iteration: expanded MCP recent-failure and diagnostics results to include durable failure, budget and recovery notifications in addition to unresolved outbound work; bounded listing and regression coverage added.
 - Iteration: extended supervisor health with non-secret Meta/X configuration signals and per-channel WhatsApp/email/Meta queue depths; regression coverage added.
+- Iteration: surfaced Meta/X configuration and per-channel queue depths in the owner autonomy panel; renderer type coverage remains green.
 - Iteration: changed maximum-conversation admission to count only conversations updated within the configured retention window, so historical inactive rows cannot exhaust the active-cap budget; added regression coverage.
 - Iteration: extended retention pruning to remove stale inactive conversation metadata while preserving queued work, unresolved sends, pending drafts and active takeovers; added regression coverage.
 - Verification iteration: full repository checks passed after the recovery and retention slices: 39 test files passed, 1 skipped; 273 tests passed, 7 skipped; main/renderer typechecks and build passed; lint reported 0 errors with existing warnings.
