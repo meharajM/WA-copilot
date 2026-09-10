@@ -654,6 +654,12 @@ describe('autonomy recovery', () => {
     expect(calls).toBe(1)
     expect(db.prepare('SELECT status, provider_message_id, payload_hash FROM outbound_sends WHERE inbound_id = ?').get(inboundId)).toMatchObject({ status: 'sent', provider_message_id: 'wamid.template-host' })
     expect(db.prepare('SELECT channel, status, inbound_id FROM delivery_events WHERE provider_message_id = ?').get('wamid.template-host')).toMatchObject({ channel: 'whatsapp', status: 'sent', inbound_id: inboundId })
+    const missingId = 'template-missing-provider-id-1'
+    db.prepare('INSERT INTO inbound_events (id,jid,content,received_at,status) VALUES (?,?,?,?,?)').run(missingId, 'customer-template-missing-id', 'Follow up', Date.now() - 25 * 60 * 60 * 1000, 'escalated')
+    db.prepare('INSERT INTO conversations (jid,revision,updated_at) VALUES (?,?,?)').run('customer-template-missing-id', 1, Date.now())
+    ;(activeSupervisor as unknown as { outboundTransport: unknown }).outboundTransport = { kind: 'cloud', sendText: vi.fn(), sendTemplate: async () => ({ success: true }) }
+    await expect(activeSupervisor.sendApprovedTemplate(missingId, 'support_followup', 'en_US')).rejects.toThrow('without returning a message ID')
+    expect(db.prepare('SELECT status FROM outbound_sends WHERE inbound_id = ?').get(missingId)).toEqual({ status: 'delivery-unknown' })
     activeSupervisor.stop()
     db.close()
   })

@@ -578,6 +578,13 @@ export class AutonomousSupervisor extends EventEmitter {
       throw new Error(result.error || 'Template send failed')
     }
     this.recordUsage('outbound', 0, 'whatsapp')
+    if (!result.providerMessageId) {
+      const error = 'Provider accepted the template without returning a message ID'
+      this.db.prepare('UPDATE outbound_sends SET status = ?, error = ?, sent_at = ? WHERE inbound_id = ?').run('delivery-unknown', error, Date.now(), inboundId)
+      this.db.prepare('UPDATE inbound_events SET status = ? WHERE id = ?').run('delivery_unknown', inboundId)
+      this.notifyOwner('failure', { messageId: inboundId, channel: 'whatsapp', error })
+      throw new Error(error)
+    }
     this.db.prepare('UPDATE outbound_sends SET provider_message_id = ?, status = ?, sent_at = ? WHERE inbound_id = ?').run(result.providerMessageId ?? null, 'sent', Date.now(), inboundId)
     this.recordInitialDelivery(result.providerMessageId, 'whatsapp', inboundId)
     this.db.prepare('UPDATE inbound_events SET status = ? WHERE id = ?').run('sent', inboundId)
