@@ -99,7 +99,7 @@ Implements the architecture plan. Complete phases in order. Keep observe-only as
 - [x] Keep Baileys behind an experimental adapter boundary. (Baileys and Cloud share the outbound transport boundary; Cloud selection skips Baileys initialization to prevent mixed operation.)
 - [ ] Test response window, templates, duplicate webhooks, owner takeover, opt-out, media, token expiry, 429 and 5xx. (Response-window/template, duplicate webhook, owner-echo/media normalization, takeover/opt-out, token-expiry, and 429/5xx coverage now exists; a complete live pilot matrix remains.)
 - [ ] Start observe-only, then draft mode, then narrowly allowlisted auto-reply. (Host blocks direct observe→auto transitions; explicit staged live pilot evidence remains an operator gate.)
-- [x] Set small message and model-spend caps. (Host-enforced defaults are 100 LLM calls and 1,000 outbound messages per day; `AICA_DAILY_LLM_CAP` and `AICA_DAILY_OUTBOUND_CAP` can lower/raise them within a validated 1–100,000 range.)
+- [x] Set small message and model-spend caps. (Host-enforced defaults are 100 LLM calls and 1,000 outbound messages per day across WhatsApp, email, Meta and X; `AICA_DAILY_LLM_CAP` and `AICA_DAILY_OUTBOUND_CAP` can lower/raise them within a validated 1–100,000 range.)
 - [ ] Review pilot logs and provider charges daily.
 
 ## Phase 5 — email parity
@@ -376,3 +376,4 @@ Known limitations and failed baseline checks:
 - Iteration: resolved stale merge-conflict markers in `.env.example` and documented safe defaults for Gemini, LLM data approval, escalation contact/SLA and business scope.
 - Iteration: refreshed the verification snapshot from the latest full run: 39 files, 264 tests passed, 7 skipped (271 total); no implementation status changed.
 - Iteration: corrected shared delivery-failure audit messages to identify the actual channel instead of always saying WhatsApp; recovery regression coverage remains green with 33 focused tests.
+- Iteration: applied the daily outbound cap to email, Meta and X dispatch as well as WhatsApp; over-cap external work is durably failed, audited and owner-notified before provider calls.

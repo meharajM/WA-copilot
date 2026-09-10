@@ -696,6 +696,10 @@ export class AutonomousSupervisor extends EventEmitter {
       this.emit('decision', { message, decision }); this.publish(); return
     }
     if (!this.hasLease() || this.state.paused) { this.db.prepare('UPDATE inbound_events SET status = ? WHERE id = ?').run('queued', message.id); return }
+    if (this.usageCount('outbound') >= DAILY_OUTBOUND_CAP) {
+      this.db.prepare('UPDATE inbound_events SET status = ? WHERE id = ?').run('failed', message.id)
+      this.state.lastError = 'Daily outbound message budget cap reached'; this.state.status = 'degraded'; this.audit('outbound_budget_blocked', { messageId: message.id, channel: message.channel, cap: DAILY_OUTBOUND_CAP }); this.notifyOwner('budget', { messageId: message.id, channel: message.channel, cap: DAILY_OUTBOUND_CAP }); this.publish(); return
+    }
     const body = `Hi — I’m the AI support assistant for ${BusinessPersona.getInstance().getProfile().name}.\n\n${decision.text!}`
     if (message.channel === 'twitter') {
       const cutoff = Date.now() - 24 * 60 * 60 * 1000
