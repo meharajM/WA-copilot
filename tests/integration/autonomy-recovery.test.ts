@@ -559,6 +559,10 @@ describe('autonomy recovery', () => {
     activeSupervisor.onDeliveryUpdate({ providerMessageId: 'wamid.failed-1', status: 'unknown', timestamp: Date.now() })
     expect(db.prepare('SELECT status FROM outbound_sends WHERE inbound_id = ?').get(inboundId)).toMatchObject({ status: 'failed' })
     expect(db.prepare("SELECT 1 FROM operator_actions WHERE action = 'delivery_update_invalid'").get()).toBeTruthy()
+    const deliveryCount = (db.prepare('SELECT COUNT(*) AS count FROM delivery_events').get() as { count: number }).count
+    activeSupervisor.onDeliveryUpdate({ providerMessageId: '   ', status: 'sent', timestamp: Date.now() })
+    activeSupervisor.onDeliveryUpdate({ providerMessageId: 'wamid.invalid-time', status: 'failed', timestamp: -1, channel: 'whatsapp' })
+    expect((db.prepare('SELECT COUNT(*) AS count FROM delivery_events').get() as { count: number }).count).toBe(deliveryCount)
     ;(activeSupervisor as unknown as { db: Database.Database }).db.close()
   })
 

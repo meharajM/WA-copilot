@@ -399,7 +399,7 @@ export class AutonomousSupervisor extends EventEmitter {
 
   onDeliveryUpdate(update: { providerMessageId: string; status: string; timestamp: number; channel?: string }): void {
     const channels = new Set(['whatsapp', 'email', 'instagram', 'messenger', 'twitter'])
-    if (!update.providerMessageId || !Number.isFinite(update.timestamp) || !['sent', 'delivered', 'read', 'failed'].includes(update.status) || (update.channel !== undefined && !channels.has(update.channel))) {
+    if (!update.providerMessageId.trim() || !Number.isFinite(update.timestamp) || update.timestamp <= 0 || !['sent', 'delivered', 'read', 'failed'].includes(update.status) || (update.channel !== undefined && !channels.has(update.channel))) {
       this.audit('delivery_update_invalid', { providerMessageId: update.providerMessageId, status: update.status, channel: update.channel })
       return
     }
