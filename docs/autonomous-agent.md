@@ -23,6 +23,7 @@ Supported transport and channel status:
   review; observe and draft modes do not require this approval. Cloud API is
   the recommended production Auto-reply transport.
 - WhatsApp Cloud API is opt-in through the transport selector and secure credentials. Signed webhook input, provider IDs, templates, delivery updates, and fail-closed legacy IPC guards are implemented.
+- Outside the 24-hour WhatsApp service window, autonomous template dispatch is disabled by default. Enable it only with `AICA_WHATSAPP_OUTSIDE_WINDOW_TEMPLATE` (and optional `AICA_WHATSAPP_OUTSIDE_WINDOW_TEMPLATE_LANGUAGE`, default `en_US`) pointing to an active utility template, plus the normal Auto-reply policy gates.
 - WhatsApp Web uses a dedicated persistent Playwright profile, manual QR/session restoration, bounded incoming DOM monitoring, screenshots, and human takeover. Autonomous outbound Web sends remain disabled until live delivery semantics are validated.
 - Gmail/email, Instagram, Messenger, and X DM adapters use normalized host queues and channel-specific policy gates. X public posting is not exposed; Meta lead events never imply messaging consent.
 - A browser-extension bridge and hosted HTTPS relay are not included in the current desktop build. Official webhooks require an explicitly configured, authenticated reachable relay for production deployment; localhost listeners are for controlled development/pilot use.

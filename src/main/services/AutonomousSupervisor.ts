@@ -664,6 +664,27 @@ export class AutonomousSupervisor extends EventEmitter {
     return this.getState()
   }
 
+  private outsideWindowTemplateConfig(): { name: string; languageCode: string } | null {
+    const name = (process.env.AICA_WHATSAPP_OUTSIDE_WINDOW_TEMPLATE || '').trim()
+    const languageCode = (process.env.AICA_WHATSAPP_OUTSIDE_WINDOW_TEMPLATE_LANGUAGE || 'en_US').trim()
+    if (!/^[a-zA-Z0-9_.-]{1,100}$/.test(name) || !/^[a-zA-Z0-9_-]{2,20}$/.test(languageCode)) return null
+    return { name, languageCode }
+  }
+
+  private async tryAutoOutsideWindowTemplate(inboundId: string, jid: string): Promise<'sent' | 'failed' | 'not_configured'> {
+    const template = this.outsideWindowTemplateConfig()
+    if (!template || this.outboundTransport.kind !== 'cloud' || this.state.mode !== 'auto' || !this.state.responsePermission) return 'not_configured'
+    try {
+      await this.sendApprovedTemplate(inboundId, template.name, template.languageCode)
+      return 'sent'
+    } catch (error) {
+      const outbound = this.db.prepare('SELECT status FROM outbound_sends WHERE inbound_id = ?').get(inboundId) as { status: string } | undefined
+      if (outbound && (outbound.status === 'failed' || outbound.status === 'delivery-unknown')) return 'failed'
+      this.audit('auto_template_blocked', { inboundId, jid, error: error instanceof Error ? error.message : String(error) })
+      return 'not_configured'
+    }
+  }
+
   private startHealthMonitor(): void {
     if (this.healthTimer) return
     this.healthTimer = setInterval(() => this.checkHealth(), 30_000)
@@ -876,6 +897,14 @@ export class AutonomousSupervisor extends EventEmitter {
         (inbound_id,jid,decision,created_at,conversation_revision,graph_version,prompt_version,policy_version)
       VALUES (?,?,?,?,?,?,?,?)
     `).run(message.id, message.from, JSON.stringify(decision), Date.now(), revision, GRAPH_VERSION, PROMPT_VERSION, POLICY_VERSION)
+    if (policy.disposition === 'escalate' && policy.reason === 'response_window_expired') {
+      const templateResult = await this.tryAutoOutsideWindowTemplate(message.id, message.from)
+      if (templateResult !== 'not_configured') {
+        const templateDecision: ResponseDecision = { ...decision, escalated: templateResult === 'failed', reason: templateResult === 'sent' ? 'approved_outside_window_template' : 'outside_window_template_failed' }
+        this.db.prepare('UPDATE decisions SET decision = ? WHERE inbound_id = ?').run(JSON.stringify(templateDecision), message.id)
+        this.emit('decision', { message, decision: templateDecision }); this.publish(); return
+      }
+    }
     if (policy.disposition !== 'send') {
       this.db.prepare('UPDATE inbound_events SET status = ? WHERE id = ?').run(decision.escalated ? 'escalated' : 'draft', message.id)
       if (policy.disposition === 'draft' && decision.text) {

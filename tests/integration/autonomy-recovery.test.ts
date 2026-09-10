@@ -903,6 +903,34 @@ describe('autonomy recovery', () => {
     db.close()
   })
 
+  it('autonomously dispatches an explicitly configured utility template outside the window', async () => {
+    vi.resetModules()
+    const previousTemplate = process.env.AICA_WHATSAPP_OUTSIDE_WINDOW_TEMPLATE
+    process.env.AICA_WHATSAPP_OUTSIDE_WINDOW_TEMPLATE = 'support_followup'
+    const activeSupervisor = (await import('../../src/main/services/AutonomousSupervisor')).autonomousSupervisor
+    const db = (activeSupervisor as unknown as { db: Database.Database }).db
+    db.prepare('DELETE FROM supervisor_lease').run()
+    activeSupervisor.start()
+    db.prepare('INSERT OR IGNORE INTO approved_templates(name,language_code,category,active,updated_at) VALUES (?,?,?,?,?)').run('support_followup', 'en_US', 'utility', 1, Date.now())
+    db.prepare('INSERT INTO inbound_events(id,jid,content,received_at,status,channel) VALUES (?,?,?,?,?,?)').run('template-auto', 'customer-template-auto', 'What are your hours?', Date.now() - 25 * 60 * 60 * 1000, 'queued', 'whatsapp')
+    db.prepare('INSERT INTO conversations(jid,revision,updated_at) VALUES (?,?,?)').run('customer-template-auto', 0, Date.now())
+    let calls = 0
+    ;(activeSupervisor as unknown as { outboundTransport: unknown }).outboundTransport = { kind: 'cloud', sendText: vi.fn(), sendTemplate: async () => { calls++; return { success: true, providerMessageId: 'wamid.template-auto' } } }
+    const state = (activeSupervisor as unknown as { state: { mode: string; responsePermission: boolean; paused: boolean; status: string } }).state
+    state.mode = 'auto'; state.responsePermission = true; state.paused = false; state.status = 'running'
+    ;(activeSupervisor as unknown as { runDecision: () => Promise<unknown> }).runDecision = async () => ({ text: 'Our hours are 9 to 5.', confidence: 0.99, grounding: 'grounded', escalated: false, sensitiveTopic: false, reason: 'rag_grounded_answer' })
+    await (activeSupervisor as unknown as { process: (message: unknown) => Promise<void> }).process({ id: 'template-auto', from: 'customer-template-auto', to: 'business', content: 'What are your hours?', timestamp: Date.now() - 25 * 60 * 60 * 1000, type: 'text', isFromMe: false })
+    expect(calls).toBe(1)
+    expect(db.prepare('SELECT status, provider_message_id FROM outbound_sends WHERE inbound_id = ?').get('template-auto')).toMatchObject({ status: 'sent', provider_message_id: 'wamid.template-auto' })
+    expect(db.prepare('SELECT status FROM inbound_events WHERE id = ?').get('template-auto')).toEqual({ status: 'sent' })
+    expect((db.prepare('SELECT decision FROM decisions WHERE inbound_id = ?').get('template-auto') as { decision: string }).decision).toContain('approved_outside_window_template')
+    state.mode = 'observe'; state.responsePermission = false
+    activeSupervisor.stop()
+    db.close()
+    if (previousTemplate === undefined) delete process.env.AICA_WHATSAPP_OUTSIDE_WINDOW_TEMPLATE
+    else process.env.AICA_WHATSAPP_OUTSIDE_WINDOW_TEMPLATE = previousTemplate
+  })
+
   it('refuses to start while another supervisor lease is fresh', async () => {
     vi.resetModules()
     const activeSupervisor = (await import('../../src/main/services/AutonomousSupervisor')).autonomousSupervisor

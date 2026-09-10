@@ -94,7 +94,7 @@ Implements the architecture plan. Complete phases in order. Keep observe-only as
 - [x] Persist events before acknowledging webhooks. (Normalized events enter the host supervisor before HTTP 200.)
 - [x] Normalize inbound, media, reply, delivery and owner-echo events. (Cloud text/captions, media IDs, reply context, provider IDs and business-number owner echoes are normalized; uncategorized media is escalated.)
 - [x] Implement Cloud API sending and provider-ID storage. (Cloud adapter returns provider IDs and supervisor refreshes the selected transport when starting; signed webhook input is the Cloud inbound path.)
-- [x] Implement templates as an allowlisted policy operation. (Owner-triggered Cloud template sends require an active registry entry, bounded parameters, opt-in, an outside-window inbound, durable outbox/provider-ID tracking, and Cloud transport; automatic outside-window dispatch remains pending.)
+- [x] Implement templates as an allowlisted policy operation. (Owner-triggered Cloud template sends require an active utility registry entry, bounded parameters, opt-in, an outside-window inbound, durable outbox/provider-ID tracking, and Cloud transport; optional autonomous outside-window dispatch requires explicit `AICA_WHATSAPP_OUTSIDE_WINDOW_TEMPLATE` configuration and Auto-reply permission, otherwise escalation remains the default.)
 - [x] Classify token, permission, rate-limit, transient and permanent errors. (Host classification stops auth, permission and permanent errors; rate limits/transient failures remain bounded; ambiguous failures become delivery-unknown.)
 - [x] Keep Baileys behind an experimental adapter boundary. (Baileys and Cloud share the outbound transport boundary; Cloud selection skips Baileys initialization to prevent mixed operation.)
 - [ ] Test response window, templates, duplicate webhooks, owner takeover, opt-out, media, token expiry, 429 and 5xx. (Response-window/template, duplicate webhook, owner-echo/media normalization, takeover/opt-out, token-expiry, and 429/5xx coverage now exists; a complete live pilot matrix remains.)
@@ -167,10 +167,10 @@ Implemented in the current branch:
 
 Verification snapshot:
 
-- Autonomy, workflow, policy, Cloud API, webhook and recovery tests remain covered by the focused suites; the latest full suite is 39 test files passed, 1 skipped, 289 tests passed, 7 skipped.
+- Autonomy, workflow, policy, Cloud API, webhook and recovery tests remain covered by the focused suites; the latest full suite is 39 test files passed, 1 skipped, 290 tests passed, 7 skipped.
 - Production build and unsigned Electron 44.3.0 macOS arm64 directory package: passing; packaged main-process launch smoke test: passing.
 - Full typecheck: passing (`npx tsc --noEmit`).
-- Full test suite: 39 files passed, 1 skipped; 289 tests passed, 7 skipped (296 total).
+- Full test suite: 39 files passed, 1 skipped; 290 tests passed, 7 skipped (297 total).
 
 Known limitations and failed baseline checks:
 
@@ -194,6 +194,7 @@ Known limitations and failed baseline checks:
 
 ## Iteration log
 
+- Iteration: added guarded autonomous outside-window WhatsApp template dispatch behind explicit utility-template and language configuration, Cloud transport, Auto-reply permission, opt-in, stale checks and the durable outbox; unconfigured deployments still escalate. Result: focused recovery suite 57 passed; full suite 39 files passed, 1 skipped, 290 passed, 7 skipped; main/renderer typechecks passed; lint passed with 0 errors and 330 existing warnings.
 - Iteration: preserved bounded MCP email attachment metadata (`id`, filename, MIME type and size) so the existing host attachment-escalation gate applies consistently without retaining bytes or paths. Result: focused email policy suite 6 passed; full suite 39 files passed, 1 skipped, 289 passed, 7 skipped; main/renderer typechecks passed; lint passed with 0 errors and 330 existing warnings.
 - Iteration: audited stale approved-template blocks as durable `operator_actions`, so rejected outdated sends remain visible in recovery/audit history. Result: full suite 39 files passed, 1 skipped, 288 passed, 7 skipped; main/renderer typechecks passed; lint passed with 0 errors and 330 existing warnings.
 - Iteration: restricted customer-support template dispatch to active `utility` templates, preventing marketing/authentication categories from using the outside-window support path. Result: focused recovery suite 56 passed; full suite 39 files passed, 1 skipped, 288 passed, 7 skipped; main/renderer typechecks passed; lint passed with 0 errors and 330 existing warnings.
