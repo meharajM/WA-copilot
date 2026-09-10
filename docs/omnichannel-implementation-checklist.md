@@ -167,17 +167,17 @@ Implemented in the current branch:
 
 Verification snapshot:
 
-- Autonomy, workflow, policy, Cloud API, webhook and recovery tests remain covered by the focused suites; the current full suite is 39 test files passed, 264 tests passed, 7 skipped.
+- Autonomy, workflow, policy, Cloud API, webhook and recovery tests remain covered by the focused suites; the latest full suite is 39 test files passed, 1 skipped, 277 tests passed, 7 skipped.
 - Production build: passing.
 - Full typecheck: passing (`npx tsc --noEmit`).
-- Full test suite: 39 files passed, 264 tests passed, 7 skipped (271 total).
+- Full test suite: 39 files passed, 1 skipped; 277 tests passed, 7 skipped (284 total).
 
 Known limitations and failed baseline checks:
 
 - The earlier baseline TypeScript, secure-IPC contract and resolution-audit failures are resolved; the current full suite and typecheck pass.
 - Cloud runtime selection is explicitly opt-in (`WHATSAPP_TRANSPORT=cloud` or stored Cloud selection); secure credential allowlisting/UI and common outbound transport selection are implemented, but common inbound switching and HTTPS relay deployment are not complete.
 - Supervisor startup now crash-resumes only a previously running, unpaused, non-recovery-held state; first launch and clean shutdown remain stopped until explicitly started.
-- Renderer session persistence is still a competing writer; host-owned incremental persistence is not complete.
+- Autonomy state and autonomous processing are main-process authoritative; renderer persistence remains only for human UI/chat state, with stale snapshot protection in the chat persistence service.
 - Complete outbox approval/reconciliation is not complete; core states, draft evidence, approved-template registry/payload generation, payload hashes and explicit retry/quarantine handling for `delivery-unknown` are now recorded.
 - Full media download/attachment scanning, full health telemetry, multi-worker leases and hosted operation are not complete; Cloud media metadata/replies/owner echoes are now normalized and media without text is human-escalated. WhatsApp Web now has an isolated persistent-profile connector with manual takeover, but live QR/session selectors and provider delivery validation remain.
 - WhatsApp Web selection is explicit and fail-closed: it does not fall through to Baileys, and its outbound path is manual-only pending live send validation. The connector can poll incoming DOM message containers with dedupe under an operator-supplied conversation ID and route them through IPC into the supervisor; live selector/session validation remains.
@@ -374,7 +374,7 @@ Known limitations and failed baseline checks:
 - Iteration: added `docs/omnichannel-live-pilot-matrix.md` with provider prerequisites, operator actions, expected safety outcomes and evidence fields for the remaining live-account, staging, recovery and charge-review gates.
 - Iteration: added an explicit `AICA_LLM_DATA_POLICY_APPROVED` fail-closed prerequisite for Auto-reply and surfaced its state in health/UI; provider, region, residency and retention approval remain deployment evidence gates.
 - Iteration: resolved stale merge-conflict markers in `.env.example` and documented safe defaults for Gemini, LLM data approval, escalation contact/SLA and business scope.
-- Iteration: refreshed the verification snapshot from the latest full run: 39 files, 264 tests passed, 7 skipped (271 total); no implementation status changed.
+- Iteration: refreshed the verification snapshot from the latest full run: 39 files passed, 1 skipped; 277 tests passed, 7 skipped (284 total); no implementation status changed.
 - Iteration: corrected shared delivery-failure audit messages to identify the actual channel instead of always saying WhatsApp; recovery regression coverage remains green with 33 focused tests.
 - Iteration: applied the daily outbound cap to email, Meta and X dispatch as well as WhatsApp; over-cap external work is durably failed, audited and owner-notified before provider calls.
 - Iteration: added bounded exponential retry handling for confirmed pre-send rate-limit responses on email, Meta and X; ambiguous/network/provider-acceptance uncertainty remains delivery-unknown and is never auto-retried.
