@@ -94,16 +94,22 @@ describe('autonomy recovery', () => {
 
   it('pauses dispatch when WhatsApp disconnects and retains the queue', async () => {
     const { whatsappService } = await import('../../src/main/whatsapp/WhatsAppService')
-    const internal = supervisor as unknown as { state: { status: string; paused: boolean; lastError: string | null }; checkHealth: () => void }
+    const internal = supervisor as unknown as { state: { status: string; paused: boolean; lastError: string | null }; checkHealth: () => void; baileysDispatchBlocked: boolean; baileysWasConnected: boolean }
     const previous = { ...internal.state }
     const getState = whatsappStateSpy
     const connectedState = whatsappService.getConnectionState()
     getState.mockReturnValue({ ...connectedState, status: 'disconnected', error: 'offline' })
+    internal.baileysWasConnected = true
     internal.state.status = 'running'
     internal.state.paused = false
     internal.checkHealth()
     expect(internal.state).toMatchObject({ status: 'degraded', paused: false, lastError: 'WhatsApp channel is disconnected' })
+    expect(internal.baileysDispatchBlocked).toBe(true)
     getState.mockReturnValue(connectedState)
+    internal.checkHealth()
+    expect(internal.baileysDispatchBlocked).toBe(true)
+    internal.baileysDispatchBlocked = false
+    internal.baileysWasConnected = false
     Object.assign(internal.state, previous)
     ;(internal as unknown as { publish: () => void }).publish()
   })
@@ -157,6 +163,9 @@ describe('autonomy recovery', () => {
     const db = new Database(path.join(dataDir, 'autonomy.db'), { readonly: true })
     expect((db.prepare('SELECT COUNT(*) AS count FROM inbound_events WHERE id = ?').get(message.id) as { count: number }).count).toBe(1)
     db.close()
+    const cleanupDb = new Database(path.join(dataDir, 'autonomy.db'))
+    cleanupDb.prepare('DELETE FROM inbound_events WHERE id = ?').run(message.id)
+    cleanupDb.close()
   })
 
   it('durably rejects a new conversation after the admission cap', () => {
@@ -225,6 +234,10 @@ describe('autonomy recovery', () => {
     expect((new Database(path.join(dataDir, 'autonomy.db'), { readonly: true }).prepare('SELECT status FROM inbound_events WHERE id = ?').get(message.id) as { status: string }).status).toBe('queued')
     supervisor.resume()
     supervisor.stop()
+    ;(supervisor as unknown as { queues: Map<string, unknown[]> }).queues.clear()
+    const cleanupDb = new Database(path.join(dataDir, 'autonomy.db'))
+    cleanupDb.prepare('DELETE FROM inbound_events WHERE id = ?').run(message.id)
+    cleanupDb.close()
   })
 
   it('aborts in-flight generation on global and conversation pause', () => {

@@ -97,6 +97,8 @@ export class AutonomousSupervisor extends EventEmitter {
   private readonly metaTransport: MetaMessagingTransport | null
   private readonly xTransport: XDirectMessageTransport | null
   private healthTimer: NodeJS.Timeout | null = null
+  private baileysDispatchBlocked = false
+  private baileysWasConnected = false
   private lastRetentionAt = 0
   private readonly leaseOwner = randomUUID()
   private leaseGeneration = 0
@@ -250,6 +252,8 @@ export class AutonomousSupervisor extends EventEmitter {
     if (this.state.recoveryMode) throw new Error('Recovery mode must be cleared before resume')
     const block = this.autoReplyBlockReason()
     if (block) { this.state.status = 'degraded'; this.state.paused = true; this.state.lastError = block; this.audit('resume_blocked_auto_policy'); this.publish(); return this.getState() }
+    if (this.outboundTransport.kind === 'baileys' && whatsappService.getConnectionState().status !== 'connected') { this.state.status = 'degraded'; this.state.lastError = `WhatsApp channel is ${whatsappService.getConnectionState().status}`; this.audit('resume_blocked_channel'); this.publish(); return this.getState() }
+    this.baileysDispatchBlocked = false
     this.state.paused = false; this.state.emergencyPaused = false; this.audit('resume'); this.publish()
     for (const jid of this.queues.keys()) void this.drain(jid)
     for (const jid of this.emailQueues.keys()) void this.drainEmail(jid)
@@ -586,7 +590,9 @@ export class AutonomousSupervisor extends EventEmitter {
     const channel = whatsappService.getConnectionState()
     this.state.lastHealthCheck = Date.now()
     this.expireDrafts()
-    if (this.outboundTransport.kind === 'baileys' && this.state.status === 'running' && channel.status !== 'connected') {
+    if (this.outboundTransport.kind === 'baileys' && channel.status === 'connected') this.baileysWasConnected = true
+    if (this.outboundTransport.kind === 'baileys' && this.baileysWasConnected && this.state.status === 'running' && channel.status !== 'connected') {
+      this.baileysDispatchBlocked = true
       this.state.status = 'degraded'
       // WhatsApp degradation must not pause unrelated email/Meta work.
       this.state.lastError = `WhatsApp channel is ${channel.status}`
@@ -607,7 +613,7 @@ export class AutonomousSupervisor extends EventEmitter {
   }
 
   private async drain(jid: string): Promise<void> {
-    if (this.active.has(jid) || this.pausedConversations.has(jid)) return
+    if (this.active.has(jid) || this.pausedConversations.has(jid) || this.baileysDispatchBlocked) return
     this.active.add(jid)
     try {
       while (!this.state.paused && this.queues.get(jid)?.length) {
