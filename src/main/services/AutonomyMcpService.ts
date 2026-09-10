@@ -31,8 +31,8 @@ export class AutonomyMcpService {
         case 'get_agent_status': return { result: autonomousSupervisor.getState() }
         case 'get_queue_status': { const state = autonomousSupervisor.getState(); return { result: { queueDepth: state.queueDepth, activeJob: state.activeJob, status: state.status, paused: state.paused } } }
         case 'get_channel_status': return { result: autonomousSupervisor.getHealth() }
-        case 'get_recent_failures': return { result: { lastError: autonomousSupervisor.getState().lastError, unresolvedOutbound: autonomousSupervisor.listUnresolvedOutbound() } }
-        case 'capture_diagnostics': return { result: { health: autonomousSupervisor.getHealth(), state: autonomousSupervisor.getState(), unresolvedOutbound: autonomousSupervisor.listUnresolvedOutbound(), deliveryHistory: autonomousSupervisor.listDeliveryHistory(50) } }
+        case 'get_recent_failures': return { result: { lastError: autonomousSupervisor.getState().lastError, notifications: autonomousSupervisor.listRecentFailures(), unresolvedOutbound: autonomousSupervisor.listUnresolvedOutbound() } }
+        case 'capture_diagnostics': return { result: { health: autonomousSupervisor.getHealth(), state: autonomousSupervisor.getState(), failures: autonomousSupervisor.listRecentFailures(), unresolvedOutbound: autonomousSupervisor.listUnresolvedOutbound(), deliveryHistory: autonomousSupervisor.listDeliveryHistory(50) } }
         case 'surface_browser': return await PlaywrightService.getInstance().callTool('request_human_intervention', { reason: 'Autonomy MCP operator requested browser surface' })
         case 'pause_agent': return { result: autonomousSupervisor.pause(Boolean(args && typeof args === 'object' && (args as Record<string, unknown>).emergency)) }
         case 'resume_agent': return { result: autonomousSupervisor.resume() }

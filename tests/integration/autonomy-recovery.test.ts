@@ -72,6 +72,14 @@ describe('autonomy recovery', () => {
     expect((await autonomyMcpService.callTool('retry_job', {})).error).toBe('Invalid inboundId')
   })
 
+  it('lists bounded recent failure notifications for diagnostics', () => {
+    const db = new Database(path.join(dataDir, 'autonomy.db'))
+    db.prepare('INSERT INTO notifications (kind,details,created_at) VALUES (?,?,?)').run('failure', '{"error":"test"}', Date.now())
+    db.close()
+    expect(supervisor.listRecentFailures(1)).toMatchObject([{ kind: 'failure', details: '{"error":"test"}' }])
+    expect(supervisor.listRecentFailures(0).length).toBeGreaterThanOrEqual(1)
+  })
+
   it('blocks external dispatch at the shared outbound cap', async () => {
     const db = new Database(path.join(dataDir, 'autonomy.db'))
     const inboundId = 'external-cap-1'

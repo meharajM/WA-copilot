@@ -517,6 +517,11 @@ export class AutonomousSupervisor extends EventEmitter {
     return this.db.prepare("SELECT inbound_id AS inboundId, jid, content, provider_message_id AS providerMessageId, sent_at AS sentAt, status, error FROM outbound_sends WHERE status IN ('sending', 'delivery-unknown', 'failed') ORDER BY sent_at DESC LIMIT 50").all() as Array<{ inboundId: string; jid: string; content: string; providerMessageId: string | null; sentAt: number; status: string; error: string | null }>
   }
 
+  listRecentFailures(limit = 50): Array<{ id: number; kind: string; details: string; createdAt: number }> {
+    const safeLimit = Number.isInteger(limit) && limit > 0 && limit <= 100 ? limit : 50
+    return this.db.prepare("SELECT id, kind, details, created_at AS createdAt FROM notifications WHERE kind IN ('failure','budget','recovery') ORDER BY created_at DESC LIMIT ?").all(safeLimit) as Array<{ id: number; kind: string; details: string; createdAt: number }>
+  }
+
   listDecisionEvidence(limit = 50): Array<{ inboundId: string; jid: string; createdAt: number; decision: ResponseDecision }> {
     const safeLimit = Number.isInteger(limit) && limit > 0 && limit <= 100 ? limit : 50
     const rows = this.db.prepare('SELECT inbound_id AS inboundId, jid, created_at AS createdAt, decision FROM decisions ORDER BY created_at DESC LIMIT ?').all(safeLimit) as Array<{ inboundId: string; jid: string; createdAt: number; decision: string }>
