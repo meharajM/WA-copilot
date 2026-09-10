@@ -34,9 +34,16 @@ export function normalizeEmailAttachmentMetadata(item: Record<string, unknown>):
   })
 }
 
+export function isEmailDeliveryBounce(email: { from?: string; subject?: string }, raw?: Record<string, unknown>): boolean {
+  if (/^(mailer-daemon|postmaster)(@|$)/i.test(email.from || '') || /delivery status notification|mail delivery failed|undeliverable|returned mail/i.test(email.subject || '')) return true
+  if (!raw) return false
+  const headers = raw.headers && typeof raw.headers === 'object' ? raw.headers as Record<string, unknown> : raw
+  return /multipart\/report/i.test(value(headers, 'content-type'))
+}
+
 export function shouldProcessEmailInbound(email: { isFromMe: boolean; timestamp: number; from?: string; subject?: string }, raw: Record<string, unknown> | undefined, now = Date.now()): boolean {
   if (email.isFromMe || (email.timestamp > 0 && now - email.timestamp > 60 * 60 * 1000)) return false
-  if (/^(mailer-daemon|postmaster)(@|$)/i.test(email.from || '') || /delivery status notification|mail delivery failed|undeliverable|returned mail/i.test(email.subject || '')) return false
+  if (isEmailDeliveryBounce(email, raw)) return false
   if (!raw) return true
   if (['answered', 'is_answered', 'isAnswered', 'replied', 'is_replied', 'isReplied'].some(key => raw[key] === true)) return false
   const headers = raw.headers && typeof raw.headers === 'object' ? raw.headers as Record<string, unknown> : raw

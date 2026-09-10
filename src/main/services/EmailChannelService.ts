@@ -4,7 +4,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import Store from 'electron-store'
 import { gmailOAuthService } from './GmailOAuthService'
 import { ChannelAttachment, normalizeEmailMessage } from '../packages/omnichannel'
-import { isGmailAuthFailure, normalizeEmailAttachmentMetadata, shouldProcessEmailInbound } from './EmailInboundPolicy'
+import { isEmailDeliveryBounce, isGmailAuthFailure, normalizeEmailAttachmentMetadata, shouldProcessEmailInbound } from './EmailInboundPolicy'
 import { createHash } from 'node:crypto'
 import { claimEmailSend, markEmailFailed, markEmailSent } from './EmailOutbox'
 
@@ -1138,6 +1138,13 @@ export class EmailChannelService extends EventEmitter {
   }
 
   private shouldProcessInbound(email: InboundEmailMessage, raw?: Record<string, unknown>): boolean {
+    if (isEmailDeliveryBounce(email, raw)) {
+      const providerMessageId = email.messageId || email.id
+      if (providerMessageId && !this.seenMessageIds.has(providerMessageId)) {
+        this.seenMessageIds.add(providerMessageId)
+        this.emit('deliveryStatus', { providerMessageId, status: 'failed', at: Date.now(), inReplyTo: email.inReplyTo })
+      }
+    }
     return shouldProcessEmailInbound(email, raw, Date.now())
   }
 

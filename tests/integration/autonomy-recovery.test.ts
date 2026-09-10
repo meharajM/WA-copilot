@@ -688,6 +688,19 @@ describe('autonomy recovery', () => {
     ;(activeSupervisor as unknown as { db: Database.Database }).db.close()
   })
 
+  it('persists unmatched email bounces without claiming an outbound match', async () => {
+    vi.resetModules()
+    const activeSupervisor = (await import('../../src/main/services/AutonomousSupervisor')).autonomousSupervisor
+    const db = (activeSupervisor as unknown as { db: Database.Database }).db
+    const timestamp = Date.now()
+    activeSupervisor.recordEmailBounce({ providerMessageId: 'bounce-email-1', at: timestamp, inReplyTo: '<original-message-id>' })
+    activeSupervisor.recordEmailBounce({ providerMessageId: 'bounce-email-1', at: timestamp, inReplyTo: '<original-message-id>' })
+    expect(db.prepare('SELECT channel, status, inbound_id FROM delivery_events WHERE provider_message_id = ?').get('bounce-email-1')).toEqual({ channel: 'email', status: 'failed', inbound_id: null })
+    expect(db.prepare("SELECT 1 FROM operator_actions WHERE action = 'email_delivery_bounce'").get()).toBeTruthy()
+    expect((db.prepare('SELECT COUNT(*) AS count FROM delivery_events WHERE provider_message_id = ?').get('bounce-email-1') as { count: number }).count).toBe(1)
+    ;(activeSupervisor as unknown as { db: Database.Database }).db.close()
+  })
+
   it('durably expires pending drafts after their deadline', async () => {
     vi.resetModules()
     const activeSupervisor = (await import('../../src/main/services/AutonomousSupervisor')).autonomousSupervisor

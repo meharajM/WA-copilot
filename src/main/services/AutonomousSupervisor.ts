@@ -405,6 +405,26 @@ export class AutonomousSupervisor extends EventEmitter {
     this.publish()
   }
 
+  recordEmailBounce(update: { providerMessageId: string; at: number; inReplyTo?: string }): void {
+    if (typeof update?.providerMessageId !== 'string' || !update.providerMessageId.trim() || !Number.isFinite(update.at) || update.at <= 0) {
+      this.audit('email_bounce_invalid', { providerMessageId: update?.providerMessageId, at: update?.at }); return
+    }
+    const match = this.db.prepare(`SELECT o.inbound_id AS inboundId, o.provider_message_id AS providerMessageId, o.status
+      FROM outbound_sends o JOIN inbound_events e ON e.id = o.inbound_id
+      WHERE e.channel = 'email' AND (o.provider_message_id = ? OR o.provider_message_id = ?) LIMIT 1`).get(update.providerMessageId, update.inReplyTo || '') as { inboundId: string; providerMessageId: string; status: string } | undefined
+    const duplicate = this.db.prepare("SELECT 1 FROM delivery_events WHERE provider_message_id = ? AND channel = 'email' AND status = 'failed' LIMIT 1").get(update.providerMessageId)
+    if (duplicate) { this.audit('email_bounce_duplicate', { providerMessageId: update.providerMessageId }); return }
+    this.db.prepare("INSERT INTO delivery_events (provider_message_id,channel,status,event_at,inbound_id,created_at) VALUES (?,'email','failed',?,?,?)").run(update.providerMessageId, update.at, match?.inboundId ?? null, Date.now())
+    const advanced = match && ['sending', 'sent', 'delivery-unknown'].includes(match.status)
+      ? this.db.prepare("UPDATE outbound_sends SET status = 'failed', error = ?, sent_at = ? WHERE inbound_id = ? AND status IN ('sending','sent','delivery-unknown')").run('Email provider reported a delivery bounce', update.at, match.inboundId).changes > 0
+      : false
+    if (advanced) this.db.prepare("UPDATE inbound_events SET status = 'delivery_failed' WHERE id = ?").run(match!.inboundId)
+    this.audit('email_delivery_bounce', { providerMessageId: update.providerMessageId, inReplyTo: update.inReplyTo, inboundId: match?.inboundId ?? null, advanced })
+    this.state.lastDeliveryStatus = 'failed'; this.state.lastProviderMessageId = update.providerMessageId; this.state.lastDeliveryInboundId = match?.inboundId ?? null
+    this.notifyOwner('failure', { channel: 'email', providerMessageId: update.providerMessageId, inboundId: match?.inboundId, error: 'Email provider reported a delivery bounce' })
+    this.publish()
+  }
+
   onDeliveryUpdate(update: { providerMessageId: string; status: string; timestamp: number; channel?: string }): void {
     const channels = new Set(['whatsapp', 'email', 'instagram', 'messenger', 'twitter'])
     if (typeof update?.providerMessageId !== 'string' || !update.providerMessageId.trim() || !Number.isFinite(update.timestamp) || update.timestamp <= 0 || !['sent', 'delivered', 'read', 'failed'].includes(update.status) || (update.channel !== undefined && (!channels.has(update.channel) || !getChannelCapabilities(update.channel as ChannelMessage['channel']).supportsDeliveryReceipts))) {

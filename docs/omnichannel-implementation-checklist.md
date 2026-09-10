@@ -167,10 +167,10 @@ Implemented in the current branch:
 
 Verification snapshot:
 
-- Autonomy, workflow, policy, Cloud API, webhook and recovery tests remain covered by the focused suites; the latest full suite is 39 test files passed, 1 skipped, 290 tests passed, 7 skipped.
+- Autonomy, workflow, policy, Cloud API, webhook and recovery tests remain covered by the focused suites; the latest full suite is 39 test files passed, 1 skipped, 291 tests passed, 7 skipped.
 - Production build and unsigned Electron 44.3.0 macOS arm64 directory package: passing; packaged main-process launch smoke test: passing.
 - Full typecheck: passing (`npx tsc --noEmit`).
-- Full test suite: 39 files passed, 1 skipped; 290 tests passed, 7 skipped (297 total).
+- Full test suite: 39 files passed, 1 skipped; 291 tests passed, 7 skipped (298 total).
 
 Known limitations and failed baseline checks:
 
@@ -184,7 +184,7 @@ Known limitations and failed baseline checks:
 - Legacy direct WhatsApp text/media IPC sends are now blocked whenever Cloud or Web is selected, preventing a hidden Baileys bypass.
 - WhatsApp Web operator controls are exposed through IPC for state, start/stop, human takeover, and bounded failure capture.
 - Current LangGraph graph has one decision node; it is a durable workflow seam, not the final multi-node policy/RAG/approval graph.
-- Delivery reconciliation boundary: WhatsApp Cloud and Meta signed webhook callbacks are wired to durable delivery history; Gmail/MCP email currently exposes send acknowledgment and bounce filtering, while X currently has no provider delivery callback path. Live provider-authoritative reconciliation remains open and is not inferred from a successful send response.
+- Delivery reconciliation boundary: WhatsApp Cloud and Meta signed webhook callbacks are wired to durable delivery history; Gmail/MCP email now persists bounded unmatched bounce evidence and only advances an outbound record on an exact provider-ID match, while X currently has no provider delivery callback path. Live provider-authoritative reconciliation remains open and is not inferred from a successful send response.
 
 ## Current next three tasks
 
@@ -194,6 +194,7 @@ Known limitations and failed baseline checks:
 
 ## Iteration log
 
+- Iteration: persisted filtered email bounce evidence as append-only email delivery history, deduplicated repeated bounce events, notified the owner, and avoided false outbound matching unless the provider ID matches. Result: focused recovery/email suites 64 passed; full suite 39 files passed, 1 skipped, 291 passed, 7 skipped; main/renderer typechecks passed; lint passed with 0 errors and 330 existing warnings.
 - Iteration: added guarded autonomous outside-window WhatsApp template dispatch behind explicit utility-template and language configuration, Cloud transport, Auto-reply permission, opt-in, stale checks and the durable outbox; unconfigured deployments still escalate. Result: focused recovery suite 57 passed; full suite 39 files passed, 1 skipped, 290 passed, 7 skipped; main/renderer typechecks passed; lint passed with 0 errors and 330 existing warnings.
 - Iteration: preserved bounded MCP email attachment metadata (`id`, filename, MIME type and size) so the existing host attachment-escalation gate applies consistently without retaining bytes or paths. Result: focused email policy suite 6 passed; full suite 39 files passed, 1 skipped, 289 passed, 7 skipped; main/renderer typechecks passed; lint passed with 0 errors and 330 existing warnings.
 - Iteration: audited stale approved-template blocks as durable `operator_actions`, so rejected outdated sends remain visible in recovery/audit history. Result: full suite 39 files passed, 1 skipped, 288 passed, 7 skipped; main/renderer typechecks passed; lint passed with 0 errors and 330 existing warnings.
