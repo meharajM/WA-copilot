@@ -6,7 +6,7 @@ import { gmailOAuthService } from './GmailOAuthService'
 import { ChannelAttachment, normalizeEmailMessage } from '../packages/omnichannel'
 import { isEmailDeliveryBounce, isGmailAuthFailure, normalizeEmailAttachmentMetadata, shouldProcessEmailInbound } from './EmailInboundPolicy'
 import { createHash } from 'node:crypto'
-import { claimEmailSend, markEmailFailed, markEmailSent } from './EmailOutbox'
+import { claimEmailSend, getEmailProviderMessageId, markEmailFailed, markEmailSent } from './EmailOutbox'
 
 interface EmailSyncState {
   seenMessageIds: string[];
@@ -342,7 +342,7 @@ export class EmailChannelService extends EventEmitter {
   async send(payload: OutboundEmailPayload): Promise<{ success: boolean; error?: string; providerMessageId?: string }> {
     const dedupeKey = createHash('sha256').update(JSON.stringify(payload)).digest('hex')
     const claim = claimEmailSend(dedupeKey, payload)
-    if (claim === 'sent') return { success: true }
+    if (claim === 'sent') return { success: true, providerMessageId: getEmailProviderMessageId(dedupeKey) }
     if (claim === 'inflight') return { success: false, error: 'Email send is already pending reconciliation' }
     if (this.config?.provider === 'gmail-api') {
       try {
