@@ -451,13 +451,14 @@ describe('autonomy recovery', () => {
 
   it('pauses a WhatsApp conversation on a self-echo from the owner identity', () => {
     const ownerJid = '15550001111@s.whatsapp.net'
-    supervisor.onMessage({ id: 'whatsapp-owner-takeover-1', from: ownerJid, to: 'customer@s.whatsapp.net', content: 'I will take over.', timestamp: Date.now(), type: 'text', isFromMe: true })
+    const customerJid = 'customer@s.whatsapp.net'
+    supervisor.onMessage({ id: 'whatsapp-owner-takeover-1', from: ownerJid, to: customerJid, content: 'I will take over.', timestamp: Date.now(), type: 'text', isFromMe: true })
     const db = new Database(path.join(dataDir, 'autonomy.db'), { readonly: true })
-    expect(db.prepare('SELECT source, active FROM takeovers WHERE jid = ?').get(ownerJid)).toEqual({ source: 'owner_message', active: 1 })
+    expect(db.prepare('SELECT source, active FROM takeovers WHERE jid = ?').get(customerJid)).toEqual({ source: 'owner_message', active: 1 })
     db.close()
-    supervisor.resumeConversation(ownerJid)
+    supervisor.resumeConversation(customerJid)
     const cleanupDb = new Database(path.join(dataDir, 'autonomy.db'))
-    cleanupDb.prepare('DELETE FROM takeovers WHERE jid = ?').run(ownerJid)
+    cleanupDb.prepare('DELETE FROM takeovers WHERE jid = ?').run(customerJid)
     cleanupDb.close()
   })
 

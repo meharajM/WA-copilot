@@ -400,6 +400,7 @@ Known limitations and failed baseline checks:
 - Iteration: added `.nvmrc` for the declared Node 22.12.0 minimum; the runtime check now has an explicit project-selected runtime instead of relying on the host default.
 - Iteration: extended owner-message takeover handling to normalized email ingress; owner replies now durably pause the email conversation and are covered by recovery tests.
 - Iteration: fixed WhatsApp self-echo handling so owner identity detection runs before the `isFromMe` filter; real owner echoes now pause the conversation and are regression-tested.
+- Iteration: keyed WhatsApp owner takeovers to the customer recipient rather than the owner sender JID; regression coverage now verifies the correct conversation is paused.
 - Iteration: changed maximum-conversation admission to count only conversations updated within the configured retention window, so historical inactive rows cannot exhaust the active-cap budget; added regression coverage.
 - Iteration: extended retention pruning to remove stale inactive conversation metadata while preserving queued work, unresolved sends, pending drafts and active takeovers; added regression coverage.
 - Verification iteration: full repository checks passed after the recovery and retention slices: 39 test files passed, 1 skipped; 273 tests passed, 7 skipped; main/renderer typechecks and build passed; lint reported 0 errors with existing warnings.
