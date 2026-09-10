@@ -516,7 +516,7 @@ export class AutonomousSupervisor extends EventEmitter {
 
   private admitConversation(id: string, jid: string, content: string, timestamp: number, channel: string, payload: unknown): boolean {
     if (this.db.prepare('SELECT 1 FROM conversations WHERE jid = ?').get(jid)) return true
-    const count = (this.db.prepare('SELECT COUNT(*) AS count FROM conversations').get() as { count: number }).count
+    const count = (this.db.prepare('SELECT COUNT(*) AS count FROM conversations WHERE updated_at >= ?').get(Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000) as { count: number }).count
     if (count < MAX_ACTIVE_CONVERSATIONS) return true
     this.db.prepare('INSERT INTO inbound_events (id,jid,content,received_at,status,channel,payload) VALUES (?,?,?,?,?,?,?)').run(id, jid, content, timestamp, 'capacity_limited', channel, JSON.stringify(payload))
     this.audit('conversation_capacity_reached', { id, jid, cap: MAX_ACTIVE_CONVERSATIONS })

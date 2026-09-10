@@ -165,6 +165,22 @@ describe('autonomy recovery', () => {
     db.close()
   })
 
+  it('does not let stale conversations consume the active-cap budget', () => {
+    const db = new Database(path.join(dataDir, 'autonomy.db'))
+    const stale = Date.now() - 91 * 24 * 60 * 60 * 1000
+    for (let index = 0; index < 100; index++) db.prepare('INSERT OR REPLACE INTO conversations (jid,revision,updated_at) VALUES (?,?,?)').run(`stale-cap-${index}`, 1, stale)
+    db.close()
+    supervisor.onMessage({ id: 'stale-cap-new-1', from: 'new-after-stale-cap', to: 'owner', content: 'What are your hours?', timestamp: Date.now(), type: 'text', isFromMe: false })
+    const resultDb = new Database(path.join(dataDir, 'autonomy.db'), { readonly: true })
+    expect(resultDb.prepare('SELECT status FROM inbound_events WHERE id = ?').get('stale-cap-new-1')).not.toEqual({ status: 'capacity_limited' })
+    resultDb.close()
+    const cleanupDb = new Database(path.join(dataDir, 'autonomy.db'))
+    cleanupDb.prepare("DELETE FROM inbound_events WHERE id = 'stale-cap-new-1'").run()
+    cleanupDb.prepare("DELETE FROM conversations WHERE jid LIKE 'stale-cap-%'").run()
+    cleanupDb.close()
+    ;(supervisor as unknown as { queues: Map<string, unknown[]> }).queues.delete('new-after-stale-cap')
+  })
+
   it('quarantines interrupted outbound claims before queue restoration', () => {
     const db = new Database(path.join(dataDir, 'autonomy.db'))
     const inboundId = 'interrupted-send-1'
