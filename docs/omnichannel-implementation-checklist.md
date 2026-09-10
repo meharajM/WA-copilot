@@ -204,6 +204,7 @@ Known limitations and failed baseline checks:
 
 ## Iteration log
 
+- Iteration: reran the maintained robust suite (`npm run test:robust`) after live-test gating cleanup. Result: unit 9 files/117 passed, integration 31 files/177 passed, live 1 file/7 skipped; no live provider credentials were present, so no live scenario was falsely treated as passed.
 - Iteration: audited the workspace for live provider configuration using variable names only; no WhatsApp, Meta, X, Gmail, LLM or live-test credentials/flags are configured. Result: no live gate was attempted or closed; provider/account, pilot, receipt, charge and owner-drill items remain deployment work.
 - Iteration: re-ran the production dependency audit with `npm audit --omit=dev --json`; it matches the documented five upstream findings with severity 2 moderate, 2 high and 1 critical. Result: release/advisory review remains open; no forced dependency upgrades were applied.
 - Iteration: verified the supported X DM send endpoint against current official documentation; it provides a created-event response and rate-limit rules but no documented delivery/read callback for this path. Result: X remains send-acknowledged only; no synthetic receipt or false reconciliation was added.
