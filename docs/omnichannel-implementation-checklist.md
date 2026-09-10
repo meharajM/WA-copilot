@@ -167,10 +167,10 @@ Implemented in the current branch:
 
 Verification snapshot:
 
-- Autonomy, workflow, policy, Cloud API, webhook and recovery tests remain covered by the focused suites; the latest full suite is 39 test files passed, 1 skipped, 286 tests passed, 7 skipped.
+- Autonomy, workflow, policy, Cloud API, webhook and recovery tests remain covered by the focused suites; the latest full suite is 39 test files passed, 1 skipped, 287 tests passed, 7 skipped.
 - Production build and unsigned Electron 44.3.0 macOS arm64 directory package: passing; packaged main-process launch smoke test: passing.
 - Full typecheck: passing (`npx tsc --noEmit`).
-- Full test suite: 39 files passed, 1 skipped; 286 tests passed, 7 skipped (293 total).
+- Full test suite: 39 files passed, 1 skipped; 287 tests passed, 7 skipped (294 total).
 
 Known limitations and failed baseline checks:
 
@@ -194,6 +194,7 @@ Known limitations and failed baseline checks:
 
 ## Iteration log
 
+- Iteration: moved the outbound-cap gate before failed-template outbox mutation, preventing cap rejection from stranding a retryable record. Result: focused recovery suite 55 passed; full suite 39 files passed, 1 skipped, 287 passed, 7 skipped; main/renderer typechecks passed; lint passed with 0 errors and 330 existing warnings.
 - Iteration: normalized thrown approved-template transport failures into the existing failed/delivery-unknown state machine and added regression coverage for ambiguous exceptions. Result: focused recovery suite 54 passed; full suite 39 files passed, 1 skipped, 286 passed, 7 skipped; main/renderer typechecks passed; lint passed with 0 errors and 330 existing warnings.
 - Iteration: made approved Cloud-template sends retryable after permanent failures while preserving the outbox record; confirmed pre-send rate limits use the existing bounded retry classifier. Result: focused recovery suite 53 passed; full suite 39 files passed, 1 skipped, 285 passed, 7 skipped; main/renderer typechecks passed.
 - Iteration: re-ran the full verification set after the delivery-boundary audit. Result: 39 test files passed, 1 skipped; 284 tests passed, 7 skipped; main/renderer typechecks passed; lint passed with 0 errors and 330 existing warnings. No synthetic email/X delivery receipts were added because provider-authoritative callbacks are unavailable.

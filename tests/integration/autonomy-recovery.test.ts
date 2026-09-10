@@ -855,6 +855,25 @@ describe('autonomy recovery', () => {
     db.close()
   })
 
+  it('does not strand a failed template when the outbound cap is reached', async () => {
+    vi.resetModules()
+    const activeSupervisor = (await import('../../src/main/services/AutonomousSupervisor')).autonomousSupervisor
+    const db = (activeSupervisor as unknown as { db: Database.Database }).db
+    db.prepare('DELETE FROM supervisor_lease').run()
+    activeSupervisor.start()
+    db.prepare('INSERT OR IGNORE INTO approved_templates(name,language_code,category,active,updated_at) VALUES (?,?,?,?,?)').run('support_followup', 'en_US', 'utility', 1, Date.now())
+    db.prepare('INSERT INTO inbound_events(id,jid,content,received_at,status) VALUES (?,?,?,?,?)').run('template-cap', 'customer-template-cap', 'Follow up', Date.now() - 25 * 60 * 60 * 1000, 'escalated')
+    db.prepare('INSERT INTO conversations(jid,revision,updated_at) VALUES (?,?,?)').run('customer-template-cap', 1, Date.now())
+    db.prepare('INSERT INTO outbound_sends(inbound_id,jid,content,sent_at,status,error,payload_hash) VALUES (?,?,?,?,?,?,?)').run('template-cap', 'customer-template-cap', '[template:old]', Date.now(), 'failed', 'previous failure', 'old-hash')
+    db.prepare('INSERT INTO usage_events(kind,amount,created_at) VALUES (?,?,?)').run('outbound', 1000, Date.now())
+    ;(activeSupervisor as unknown as { outboundTransport: unknown }).outboundTransport = { kind: 'cloud', sendText: vi.fn(), sendTemplate: vi.fn() }
+    await expect(activeSupervisor.sendApprovedTemplate('template-cap', 'support_followup', 'en_US')).rejects.toThrow('Daily outbound message budget cap reached')
+    expect(db.prepare('SELECT status, error FROM outbound_sends WHERE inbound_id = ?').get('template-cap')).toEqual({ status: 'failed', error: 'previous failure' })
+    expect((activeSupervisor as unknown as { outboundTransport: { sendTemplate: ReturnType<typeof vi.fn> } }).outboundTransport.sendTemplate).not.toHaveBeenCalled()
+    activeSupervisor.stop()
+    db.close()
+  })
+
   it('refuses to start while another supervisor lease is fresh', async () => {
     vi.resetModules()
     const activeSupervisor = (await import('../../src/main/services/AutonomousSupervisor')).autonomousSupervisor

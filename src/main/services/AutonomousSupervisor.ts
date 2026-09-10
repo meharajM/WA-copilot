@@ -614,8 +614,8 @@ export class AutonomousSupervisor extends EventEmitter {
     if (this.db.prepare('SELECT 1 FROM consents WHERE jid = ? AND opted_out = 1').get(inbound.jid)) throw new Error('Customer has opted out')
     const existing = this.db.prepare('SELECT status FROM outbound_sends WHERE inbound_id = ?').get(inboundId) as { status: string } | undefined
     if (existing && existing.status !== 'failed') return this.getState()
-    if (existing) this.db.prepare("UPDATE outbound_sends SET provider_message_id = NULL, status = 'sending', error = NULL, sent_at = ? WHERE inbound_id = ?").run(Date.now(), inboundId)
     if (this.usageCount('outbound') >= DAILY_OUTBOUND_CAP) throw new Error('Daily outbound message budget cap reached')
+    if (existing) this.db.prepare("UPDATE outbound_sends SET provider_message_id = NULL, status = 'sending', error = NULL, sent_at = ? WHERE inbound_id = ?").run(Date.now(), inboundId)
     const content = `[template:${name}:${languageCode}]`
     const payloadHash = createHash('sha256').update(JSON.stringify({ name, languageCode, parameters })).digest('hex')
     if (!existing) this.db.prepare('INSERT INTO outbound_sends (inbound_id,provider_message_id,jid,content,sent_at,status,error,payload_hash) VALUES (?,?,?,?,?,?,?,?)').run(inboundId, null, inbound.jid, content, Date.now(), 'sending', null, payloadHash)
