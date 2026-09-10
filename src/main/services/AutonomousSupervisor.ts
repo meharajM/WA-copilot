@@ -378,6 +378,11 @@ export class AutonomousSupervisor extends EventEmitter {
   }
 
   onDeliveryUpdate(update: { providerMessageId: string; status: string; timestamp: number; channel?: string }): void {
+    const channels = new Set(['whatsapp', 'email', 'instagram', 'messenger', 'twitter'])
+    if (!update.providerMessageId || !Number.isFinite(update.timestamp) || !['sent', 'delivered', 'read', 'failed'].includes(update.status) || (update.channel !== undefined && !channels.has(update.channel))) {
+      this.audit('delivery_update_invalid', { providerMessageId: update.providerMessageId, status: update.status, channel: update.channel })
+      return
+    }
     const status = update.status === 'failed' ? 'failed' : update.status === 'delivered' || update.status === 'read' ? 'delivered' : 'sent'
     const record = this.db.prepare('SELECT inbound_id FROM outbound_sends WHERE provider_message_id = ?').get(update.providerMessageId) as { inbound_id: string } | undefined
     this.db.prepare('INSERT INTO delivery_events (provider_message_id,channel,status,event_at,inbound_id,created_at) VALUES (?,?,?,?,?,?)').run(update.providerMessageId, update.channel || 'whatsapp', status, update.timestamp, record?.inbound_id ?? null, Date.now())

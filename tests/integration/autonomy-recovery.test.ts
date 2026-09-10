@@ -279,6 +279,9 @@ describe('autonomy recovery', () => {
     expect(db.prepare("SELECT action FROM operator_actions WHERE action = 'delivery_update_unmatched'").get()).toBeTruthy()
     expect(db.prepare('SELECT inbound_id FROM delivery_events WHERE provider_message_id = ?').get('wamid.unknown-1')).toMatchObject({ inbound_id: null })
     expect(activeSupervisor.listDeliveryHistory(100)).toEqual(expect.arrayContaining([expect.objectContaining({ providerMessageId: 'wamid.failed-1', channel: 'whatsapp', status: 'failed', inboundId })]))
+    activeSupervisor.onDeliveryUpdate({ providerMessageId: 'wamid.failed-1', status: 'unknown', timestamp: Date.now() })
+    expect(db.prepare('SELECT status FROM outbound_sends WHERE inbound_id = ?').get(inboundId)).toMatchObject({ status: 'failed' })
+    expect(db.prepare("SELECT 1 FROM operator_actions WHERE action = 'delivery_update_invalid'").get()).toBeTruthy()
     ;(activeSupervisor as unknown as { db: Database.Database }).db.close()
   })
 
