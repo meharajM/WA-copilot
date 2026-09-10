@@ -610,6 +610,7 @@ export class AutonomousSupervisor extends EventEmitter {
     if (inbound.channel !== 'whatsapp') throw new Error('Approved templates require a WhatsApp inbound conversation')
     if (!this.hasLease()) throw new Error('Supervisor lease is not held')
     if (isWithinWhatsAppServiceWindow(inbound.receivedAt)) throw new Error('Use free-form response inside the WhatsApp service window')
+    if (this.db.prepare('SELECT 1 FROM inbound_events WHERE jid = ? AND received_at > ? AND id <> ? LIMIT 1').get(inbound.jid, inbound.receivedAt, inboundId)) throw new Error('Template inbound is stale; review the latest customer message')
     if (this.state.paused || this.state.status === 'stopped' || this.pausedConversations.has(inbound.jid)) throw new Error('Supervisor is paused')
     if (this.db.prepare('SELECT 1 FROM consents WHERE jid = ? AND opted_out = 1').get(inbound.jid)) throw new Error('Customer has opted out')
     const existing = this.db.prepare('SELECT status FROM outbound_sends WHERE inbound_id = ?').get(inboundId) as { status: string } | undefined

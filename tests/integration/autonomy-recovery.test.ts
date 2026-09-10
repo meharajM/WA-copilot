@@ -813,6 +813,11 @@ describe('autonomy recovery', () => {
     insert.run('template-email', 'email:template', 'Follow up', Date.now() - 25 * 60 * 60 * 1000, 'escalated')
     db.prepare('UPDATE inbound_events SET channel = ? WHERE id = ?').run('email', 'template-email')
     await expect(activeSupervisor.sendApprovedTemplate('template-email', 'support_followup', 'en_US')).rejects.toThrow('WhatsApp inbound')
+    const staleAt = Date.now() - 25 * 60 * 60 * 1000
+    insert.run('template-stale', 'customer-template-stale', 'Follow up', staleAt, 'escalated')
+    insert.run('template-stale-newer', 'customer-template-stale', 'New question', Date.now(), 'queued')
+    conversation.run('customer-template-stale', 2, Date.now())
+    await expect(activeSupervisor.sendApprovedTemplate('template-stale', 'support_followup', 'en_US')).rejects.toThrow('inbound is stale')
     expect((activeSupervisor as unknown as { outboundTransport: { sendTemplate: ReturnType<typeof vi.fn> } }).outboundTransport.sendTemplate).not.toHaveBeenCalled()
     activeSupervisor.stop()
     db.close()
