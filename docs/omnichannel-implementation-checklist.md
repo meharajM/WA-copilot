@@ -108,7 +108,7 @@ Implements the architecture plan. Complete phases in order. Keep observe-only as
 - [x] Preserve Message-ID, In-Reply-To and References. (Shared normalization preserves all three and derives a stable conversation ID from References, In-Reply-To, Message-ID or the provider ID.)
 - [x] Suppress self-reply loops, auto-replies and mailing-list noise. (Email ingestion rejects self/stale/already-handled messages, auto-submitted replies, bulk/list precedence and mailing-list/autoresponder headers.)
 - [ ] Reuse narrow OAuth scopes and document restricted-scope obligations. (Gmail requests only `openid`, `email`, `gmail.readonly` and `gmail.send`; the code-level scope set and Google verification/security-assessment obligations are documented in `docs/gmail-oauth-scopes.md`, while Cloud-project verification remains open.)
-- [x] Use the shared send/draft policy and outbox. (Normalized email events enter the supervisor queue and share observe/draft/auto policy, RAG decisioning and durable `outbound_sends` records; successful Gmail/MCP provider IDs are retained. Provider reconciliation remains separately tracked.)
+- [x] Use the shared send/draft policy and outbox. (Normalized email events enter the supervisor queue and share observe/draft/auto policy, RAG decisioning and durable `outbound_sends` records; successful Gmail/MCP provider IDs are retained in both send results and delivery acknowledgments. Provider reconciliation remains separately tracked.)
 - [x] Handle token expiry, revocation, polling reconciliation and push-watch renewal. (Gmail token refresh and 401/403 failures surface explicit error state, the incremental cursor does not advance after a failed detail fetch, and optional `GMAIL_PUBSUB_TOPIC` watches renew at startup and before expiry. Provider delivery reconciliation remains separately tracked.)
 - [ ] Test threading, bounces, attachments and restart recovery. (Bounce events are excluded from agent processing but persisted in bounded delivery history on MCP and Gmail API ingress; attachment metadata is normalized without downloading file bytes; the host now escalates any external message with attachment/media metadata before model generation; queued normalized email payloads reconstruct across restart; binary scanning/retrieval and complete end-to-end coverage remain.)
 
@@ -167,10 +167,10 @@ Implemented in the current branch:
 
 Verification snapshot:
 
-- Autonomy, workflow, policy, Cloud API, webhook and recovery tests remain covered by the focused suites; the latest full suite is 39 test files passed, 1 skipped, 291 tests passed, 7 skipped.
+- Autonomy, workflow, policy, Cloud API, webhook and recovery tests remain covered by the focused suites; the latest full suite is 39 test files passed, 1 skipped, 292 tests passed, 7 skipped.
 - Production build and unsigned Electron 44.3.0 macOS arm64 directory package: passing; packaged main-process launch smoke test: passing.
 - Full typecheck: passing (`npx tsc --noEmit`).
-- Full test suite: 39 files passed, 1 skipped; 291 tests passed, 7 skipped (298 total).
+- Full test suite: 39 files passed, 1 skipped; 292 tests passed, 7 skipped (299 total).
 
 Known limitations and failed baseline checks:
 
@@ -194,6 +194,7 @@ Known limitations and failed baseline checks:
 
 ## Iteration log
 
+- Iteration: included Gmail/MCP provider IDs in email delivery acknowledgments and added a repeatable MCP send-path regression without weakening outbox idempotency. Result: focused email-channel suite 4 passed; full suite 39 files passed, 1 skipped, 292 passed, 7 skipped; main/renderer typechecks passed; lint passed with 0 errors and 330 existing warnings.
 - Iteration: extended bounce coverage with an exact `inReplyTo`/provider-ID match, proving the intended email outbound becomes failed while unmatched and duplicate bounce events remain isolated. Result: focused recovery/email suites 64 passed; full suite 39 files passed, 1 skipped, 291 passed, 7 skipped; main/renderer typechecks passed; lint passed with 0 errors and 330 existing warnings.
 - Iteration: extended email-bounce regression coverage to prove exact provider-ID/in-reply-to matching advances only the intended outbound record, while unmatched and duplicate bounces remain non-mutating. Result: focused recovery/email suites 64 passed; full suite 39 files passed, 1 skipped, 291 passed, 7 skipped; main/renderer typechecks passed; lint passed with 0 errors and 330 existing warnings.
 - Iteration: persisted filtered email bounce evidence as append-only email delivery history, deduplicated repeated bounce events, notified the owner, and avoided false outbound matching unless the provider ID matches. Result: focused recovery/email suites 64 passed; full suite 39 files passed, 1 skipped, 291 passed, 7 skipped; main/renderer typechecks passed; lint passed with 0 errors and 330 existing warnings.

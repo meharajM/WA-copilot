@@ -383,6 +383,7 @@ export class EmailChannelService extends EventEmitter {
         }
         const sent = await response.json().catch(() => ({})) as { id?: string }
         markEmailSent(dedupeKey, sent.id)
+        if (sent.id) this.emit('deliveryStatus', { providerMessageId: sent.id, to: payload.to, subject: payload.subject, status: 'sent', at: Date.now() })
         return { success: true, providerMessageId: sent.id }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error); markEmailFailed(dedupeKey, message); return { success: false, error: message }
@@ -412,6 +413,7 @@ export class EmailChannelService extends EventEmitter {
       const providerMessageId = typeof structured.id === 'string' ? structured.id : typeof structured.message_id === 'string' ? structured.message_id : undefined
 
       this.emit('deliveryStatus', {
+        providerMessageId,
         to: payload.to,
         subject: payload.subject,
         status: 'sent',

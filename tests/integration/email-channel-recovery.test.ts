@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const mocks = vi.hoisted(() => ({ stores: [] as Array<{ data: Record<string, string>; get: (key: string) => string | undefined }> }))
 
 vi.mock('electron', () => ({
+  app: { getPath: () => '/tmp' },
   shell: { openExternal: vi.fn() },
   safeStorage: { isEncryptionAvailable: () => false }
 }))
@@ -54,5 +55,17 @@ describe('email channel recovery', () => {
     await expect(gmailOAuthService.renewWatch('projects/example/topics/gmail')).resolves.toEqual({ historyId: 'history-1', expiration: 2000000000000 })
     expect(fetchMock).toHaveBeenCalledWith('https://gmail.googleapis.com/gmail/v1/users/me/watch', expect.objectContaining({ method: 'POST', body: JSON.stringify({ labelIds: ['INBOX'], topicName: 'projects/example/topics/gmail' }) }))
     await expect(gmailOAuthService.renewWatch('not-a-topic')).rejects.toThrow('Invalid Gmail Pub/Sub topic')
+  })
+
+  it('includes the MCP provider ID in delivery acknowledgments', async () => {
+    const { EmailChannelService } = await import('../../src/main/services/EmailChannelService')
+    const service = new EmailChannelService()
+    service.configure({ command: 'unused', args: [], provider: 'mcp', pollingIntervalSeconds: 60 })
+    ;(service as unknown as { client: { callTool: ReturnType<typeof vi.fn> } }).client = { callTool: vi.fn().mockResolvedValue({ structuredContent: { id: 'mcp-email-1' } }) }
+    const delivery = vi.fn()
+    service.on('deliveryStatus', delivery)
+    const result = await service.send({ to: 'customer@example.com', subject: 'Re: Hours', body: `We are open (${Date.now()}).` })
+    expect(result).toMatchObject({ success: true, providerMessageId: 'mcp-email-1' })
+    expect(delivery).toHaveBeenCalledWith(expect.objectContaining({ providerMessageId: 'mcp-email-1', status: 'sent' }))
   })
 })
