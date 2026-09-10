@@ -152,7 +152,7 @@ Implements the architecture plan. Complete phases in order. Keep observe-only as
 - [ ] Owner has completed pause and recovery drills.
 - [x] Release documentation states actual channels and guarantees. (See `docs/release-readiness.md`; live-provider approval, production relay and pilot gates remain explicitly open.)
 
-## Verified status — September 9, 2026
+## Verified status — September 10, 2026
 
 Implemented in the current branch:
 
@@ -167,10 +167,10 @@ Implemented in the current branch:
 
 Verification snapshot:
 
-- Autonomy, workflow, policy, Cloud API, webhook and recovery tests: 53 passing in the latest targeted run.
+- Autonomy, workflow, policy, Cloud API, webhook and recovery tests remain covered by the focused suites; the current full suite is 39 test files passed, 261 tests passed, 7 skipped.
 - Production build: passing.
 - Full typecheck: passing (`npx tsc --noEmit`).
-- Full test suite: 34 files passed, 231 tests passed, 7 skipped (238 total).
+- Full test suite: 39 files passed, 261 tests passed, 7 skipped (268 total).
 
 Known limitations and failed baseline checks:
 
@@ -184,6 +184,7 @@ Known limitations and failed baseline checks:
 - Legacy direct WhatsApp text/media IPC sends are now blocked whenever Cloud or Web is selected, preventing a hidden Baileys bypass.
 - WhatsApp Web operator controls are exposed through IPC for state, start/stop, human takeover, and bounded failure capture.
 - Current LangGraph graph has one decision node; it is a durable workflow seam, not the final multi-node policy/RAG/approval graph.
+- Delivery reconciliation boundary: WhatsApp Cloud and Meta signed webhook callbacks are wired to durable delivery history; Gmail/MCP email currently exposes send acknowledgment and bounce filtering, while X currently has no provider delivery callback path. Live provider-authoritative reconciliation remains open and is not inferred from a successful send response.
 
 ## Current next three tasks
 
@@ -355,6 +356,7 @@ Known limitations and failed baseline checks:
 - Iteration: built an unsigned macOS arm64 Electron 40 directory artifact, rebuilt `better-sqlite3` for Electron, and verified packaged main-process startup; restored the Node 22 test ABI afterward. Production signing/notarization and license review remain open.
 - Iteration: documented that unattended decisions currently use only the main-process Gemini path, while renderer WebLLM/Ollama/OpenAI/OpenRouter options are interactive-only; provider, region, residency, retention and spend approval remain an explicit production gate.
 - Iteration: applied available non-breaking production dependency security updates and reran the audit. Result: findings reduced from 27 to 6; Electron upgrade, unfixed libsignal/protobuf, unfixed `vosk-browser`/`uuid`, licensing and release signing remain explicit gates.
+- Iteration: re-audited the checklist against current source and full-suite evidence. Result: corrected stale test counts/date and recorded the exact delivery-reconciliation boundary; live email/X provider evidence remains open.
 - Iteration: closed the email attachment safety gap by escalating external messages with attachment/media metadata before model generation, with integration coverage; binary retrieval/scanning remains intentionally disabled.
 - Iteration: selected and documented the recommended Meta pilot login boundary (operator-provisioned Facebook Login/Page token for Page-backed Messenger and Instagram), with least-privilege exclusions and official verification links; live scope/review confirmation remains open.
 - Iteration: added `docs/omnichannel-live-pilot-matrix.md` with provider prerequisites, operator actions, expected safety outcomes and evidence fields for the remaining live-account, staging, recovery and charge-review gates.
