@@ -29,7 +29,7 @@ describe('autonomy recovery', () => {
     fs.rmSync(dataDir, { recursive: true, force: true })
     fs.mkdirSync(dataDir, { recursive: true })
     const { whatsappService } = await import('../../src/main/whatsapp/WhatsAppService')
-    const connectedState = { ...whatsappService.getConnectionState(), status: 'connected' as const, error: null }
+    const connectedState = { ...whatsappService.getConnectionState(), status: 'connected' as const, error: null, phoneNumber: '+15550001111' }
     whatsappStateSpy = vi.spyOn(whatsappService, 'getConnectionState').mockReturnValue(connectedState)
     ;({ autonomousSupervisor: supervisor } = await import('../../src/main/services/AutonomousSupervisor'))
   })
@@ -446,6 +446,18 @@ describe('autonomy recovery', () => {
     supervisor.resumeConversation(jid)
     const cleanupDb = new Database(path.join(dataDir, 'autonomy.db'))
     cleanupDb.prepare('DELETE FROM takeovers WHERE jid = ?').run(jid)
+    cleanupDb.close()
+  })
+
+  it('pauses a WhatsApp conversation on a self-echo from the owner identity', () => {
+    const ownerJid = '15550001111@s.whatsapp.net'
+    supervisor.onMessage({ id: 'whatsapp-owner-takeover-1', from: ownerJid, to: 'customer@s.whatsapp.net', content: 'I will take over.', timestamp: Date.now(), type: 'text', isFromMe: true })
+    const db = new Database(path.join(dataDir, 'autonomy.db'), { readonly: true })
+    expect(db.prepare('SELECT source, active FROM takeovers WHERE jid = ?').get(ownerJid)).toEqual({ source: 'owner_message', active: 1 })
+    db.close()
+    supervisor.resumeConversation(ownerJid)
+    const cleanupDb = new Database(path.join(dataDir, 'autonomy.db'))
+    cleanupDb.prepare('DELETE FROM takeovers WHERE jid = ?').run(ownerJid)
     cleanupDb.close()
   })
 
