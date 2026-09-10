@@ -688,7 +688,7 @@ describe('autonomy recovery', () => {
     ;(activeSupervisor as unknown as { db: Database.Database }).db.close()
   })
 
-  it('persists unmatched email bounces without claiming an outbound match', async () => {
+  it('persists email bounces and only advances exact outbound matches', async () => {
     vi.resetModules()
     const activeSupervisor = (await import('../../src/main/services/AutonomousSupervisor')).autonomousSupervisor
     const db = (activeSupervisor as unknown as { db: Database.Database }).db
@@ -698,6 +698,11 @@ describe('autonomy recovery', () => {
     expect(db.prepare('SELECT channel, status, inbound_id FROM delivery_events WHERE provider_message_id = ?').get('bounce-email-1')).toEqual({ channel: 'email', status: 'failed', inbound_id: null })
     expect(db.prepare("SELECT 1 FROM operator_actions WHERE action = 'email_delivery_bounce'").get()).toBeTruthy()
     expect((db.prepare('SELECT COUNT(*) AS count FROM delivery_events WHERE provider_message_id = ?').get('bounce-email-1') as { count: number }).count).toBe(1)
+    db.prepare('INSERT INTO inbound_events (id,jid,content,received_at,status,channel) VALUES (?,?,?,?,?,?)').run('email-bounce-match', 'email:customer@example.com', 'Hello', timestamp, 'sent', 'email')
+    db.prepare('INSERT INTO outbound_sends (inbound_id,provider_message_id,jid,content,sent_at,status,error) VALUES (?,?,?,?,?,?,?)').run('email-bounce-match', '<original-message-id>', 'email:customer@example.com', 'Response', timestamp, 'sent', null)
+    activeSupervisor.recordEmailBounce({ providerMessageId: 'bounce-email-2', at: timestamp + 1, inReplyTo: '<original-message-id>' })
+    expect(db.prepare('SELECT status FROM outbound_sends WHERE inbound_id = ?').get('email-bounce-match')).toEqual({ status: 'failed' })
+    expect(db.prepare('SELECT inbound_id FROM delivery_events WHERE provider_message_id = ?').get('bounce-email-2')).toEqual({ inbound_id: 'email-bounce-match' })
     ;(activeSupervisor as unknown as { db: Database.Database }).db.close()
   })
 
