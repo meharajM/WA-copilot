@@ -437,6 +437,18 @@ describe('autonomy recovery', () => {
     supervisor.stop()
   })
 
+  it('pauses an email conversation when the owner replies', () => {
+    const jid = 'email:owner-takeover-thread'
+    supervisor.onEmailMessage({ schemaVersion: 1, id: 'email-owner-takeover-1', channel: 'email', from: 'support@example.com', to: 'customer@example.com', content: 'I will handle this personally.', timestamp: Date.now(), type: 'text', isFromMe: true, conversationId: 'owner-takeover-thread', actor: 'owner' })
+    const db = new Database(path.join(dataDir, 'autonomy.db'), { readonly: true })
+    expect(db.prepare('SELECT source, active FROM takeovers WHERE jid = ?').get(jid)).toEqual({ source: 'owner_message', active: 1 })
+    db.close()
+    supervisor.resumeConversation(jid)
+    const cleanupDb = new Database(path.join(dataDir, 'autonomy.db'))
+    cleanupDb.prepare('DELETE FROM takeovers WHERE jid = ?').run(jid)
+    cleanupDb.close()
+  })
+
   it('escalates email attachments before autonomous generation', async () => {
     supervisor.setMode('draft', false)
     supervisor.start()

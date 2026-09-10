@@ -324,9 +324,14 @@ export class AutonomousSupervisor extends EventEmitter {
 
   onEmailMessage(message: ChannelMessage): void {
     message = withChannelScope(message)
-    if (!isValidNormalizedChannelMessage(message) || message.channel !== 'email' || message.isFromMe) return
+    if (!isValidNormalizedChannelMessage(message) || message.channel !== 'email') return
     this.ensureChannelAccount(message)
     const jid = `email:${message.conversationId || message.from}`
+    if (message.isFromMe) {
+      this.db.prepare("INSERT INTO takeovers (jid,source,active,started_at,ended_at) VALUES (?, 'owner_message', 1, ?, NULL) ON CONFLICT(jid) DO UPDATE SET active = 1, source = 'owner_message', started_at = excluded.started_at, ended_at = NULL").run(jid, Date.now())
+      this.pauseConversation(jid)
+      return
+    }
     if (this.db.prepare('SELECT id FROM inbound_events WHERE id = ?').get(message.id)) return
     if (!this.admitConversation(message.id, jid, message.content, message.timestamp, 'email', message)) return
     const revision = this.db.transaction(() => {
