@@ -12,7 +12,7 @@ Modes:
 - Draft: create an auditable decision for review; never send.
 - Auto-reply: send only when the owner enables response permission and the message passes grounding and sensitivity checks.
 
-Safety defaults are observe-only, no configured LLM means escalation, sensitive topics escalate, human messages pause that conversation, opt-outs are enforced at ingress and dispatch, outbound sends are idempotent per inbound message, and retries are limited to three attempts. `Pause All` stops new processing without deleting queued or audited data. A clean shutdown stays stopped; an interrupted running instance may auto-resume unless a recovery hold is active.
+Safety defaults are observe-only, no configured LLM means escalation, sensitive topics escalate, human messages pause that conversation, opt-outs are enforced at ingress and dispatch, outbound sends are idempotent per inbound message, and retries are limited to three attempts. A Baileys disconnect degrades the supervisor and blocks only Baileys dispatch while preserving queued work; Cloud API, email and Meta queues remain independent, and reconnection does not silently resume Baileys sending. `Pause All` stops new processing without deleting queued or audited data. A clean shutdown stays stopped; an interrupted running instance may auto-resume unless a recovery hold is active.
 
 Supported transport and channel status:
 

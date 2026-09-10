@@ -13,13 +13,24 @@ vi.mock('electron', () => ({
 vi.mock('electron-store', () => ({
   default: class TestStore { store: Record<string, string> = {}; get(key: string) { return this.store[key] } set(key: string, value: string) { this.store[key] = value } delete(key: string) { delete this.store[key] } }
 }))
+vi.mock('../../src/main/whatsapp/WhatsAppService', async () => {
+  const actual = await vi.importActual<typeof import('../../src/main/whatsapp/WhatsAppService')>('../../src/main/whatsapp/WhatsAppService')
+  const service = actual.whatsappService
+  const original = service.getConnectionState.bind(service)
+  vi.spyOn(service, 'getConnectionState').mockImplementation(() => ({ ...original(), status: 'connected', error: null }))
+  return actual
+})
 
 describe('autonomy recovery', () => {
   let supervisor: typeof import('../../src/main/services/AutonomousSupervisor').autonomousSupervisor
+  let whatsappStateSpy: ReturnType<typeof vi.spyOn>
 
   beforeAll(async () => {
     fs.rmSync(dataDir, { recursive: true, force: true })
     fs.mkdirSync(dataDir, { recursive: true })
+    const { whatsappService } = await import('../../src/main/whatsapp/WhatsAppService')
+    const connectedState = { ...whatsappService.getConnectionState(), status: 'connected' as const, error: null }
+    whatsappStateSpy = vi.spyOn(whatsappService, 'getConnectionState').mockReturnValue(connectedState)
     ;({ autonomousSupervisor: supervisor } = await import('../../src/main/services/AutonomousSupervisor'))
   })
 
@@ -79,6 +90,22 @@ describe('autonomy recovery', () => {
     expect(supervisor.resume()).toMatchObject({ status: 'degraded', paused: true, lastError: expect.stringContaining('AICA_ESCALATION_CONTACT') })
     expect(supervisor.resumeConversation('unsafe-conversation')).toMatchObject({ status: 'degraded', lastError: expect.stringContaining('AICA_ESCALATION_CONTACT') })
     Object.assign(internal.state, previous)
+  })
+
+  it('pauses dispatch when WhatsApp disconnects and retains the queue', async () => {
+    const { whatsappService } = await import('../../src/main/whatsapp/WhatsAppService')
+    const internal = supervisor as unknown as { state: { status: string; paused: boolean; lastError: string | null }; checkHealth: () => void }
+    const previous = { ...internal.state }
+    const getState = whatsappStateSpy
+    const connectedState = whatsappService.getConnectionState()
+    getState.mockReturnValue({ ...connectedState, status: 'disconnected', error: 'offline' })
+    internal.state.status = 'running'
+    internal.state.paused = false
+    internal.checkHealth()
+    expect(internal.state).toMatchObject({ status: 'degraded', paused: false, lastError: 'WhatsApp channel is disconnected' })
+    getState.mockReturnValue(connectedState)
+    Object.assign(internal.state, previous)
+    ;(internal as unknown as { publish: () => void }).publish()
   })
 
   it('persists owner quality reviews and derives review metrics', () => {

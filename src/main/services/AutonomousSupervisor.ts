@@ -586,12 +586,15 @@ export class AutonomousSupervisor extends EventEmitter {
     const channel = whatsappService.getConnectionState()
     this.state.lastHealthCheck = Date.now()
     this.expireDrafts()
+    if (this.outboundTransport.kind === 'baileys' && this.state.status === 'running' && channel.status !== 'connected') {
+      this.state.status = 'degraded'
+      // WhatsApp degradation must not pause unrelated email/Meta work.
+      this.state.lastError = `WhatsApp channel is ${channel.status}`
+      this.audit('channel_degraded', { status: channel.status })
+    }
     if (this.state.status === 'running' && !this.renewLease()) { this.state.status = 'degraded'; this.state.paused = true; this.state.lastError = 'Supervisor lease lost' }
     if (Date.now() - this.lastRetentionAt >= 24 * 60 * 60 * 1000) { this.pruneRetention(); this.lastRetentionAt = Date.now() }
-    if (this.state.status === 'running' && channel.status !== 'connected') {
-      this.state.status = 'degraded'
-      this.state.lastError = `WhatsApp channel is ${channel.status}`
-    } else if (this.state.status === 'degraded' && channel.status === 'connected' && this.state.lastError?.startsWith('WhatsApp channel is')) {
+    if (this.outboundTransport.kind === 'baileys' && this.state.status === 'degraded' && channel.status === 'connected' && this.state.lastError?.startsWith('WhatsApp channel is')) {
       this.state.status = 'running'
       this.state.lastError = null
     }
@@ -817,6 +820,14 @@ export class AutonomousSupervisor extends EventEmitter {
 
   private async sendWithRetry(message: WhatsAppMessage, text: string, expectedRevision: number): Promise<void> {
     if (!this.hasLease()) { this.db.prepare('UPDATE inbound_events SET status = ? WHERE id = ?').run('queued', message.id); return }
+    const channelStatus = whatsappService.getConnectionState().status
+    if (this.outboundTransport.kind === 'baileys' && channelStatus !== 'connected') {
+      this.db.prepare('UPDATE inbound_events SET status = ? WHERE id = ?').run('queued', message.id)
+      const queue = this.queues.get(message.from) ?? []
+      queue.unshift(message); this.queues.set(message.from, queue)
+      this.state.status = 'degraded'; this.state.lastError = `WhatsApp channel is ${channelStatus}`; this.audit('whatsapp_send_blocked_channel', { inboundId: message.id }); this.publish()
+      return
+    }
     const already = this.db.prepare('SELECT status FROM outbound_sends WHERE inbound_id = ?').get(message.id) as { status: string } | undefined
     if (already) return
     if (this.usageCount('outbound') >= DAILY_OUTBOUND_CAP) {
