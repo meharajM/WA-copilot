@@ -234,6 +234,7 @@ export class AutonomousSupervisor extends EventEmitter {
     const block = this.autoReplyBlockReason()
     if (block) { this.state.status = 'degraded'; this.state.paused = true; this.state.lastError = block; this.audit('start_blocked_auto_policy'); this.publish(); return this.getState() }
     if (!this.acquireLease()) { this.publish(); return this.getState() }
+    if (this.state.emergencyPaused) { this.state.status = 'degraded'; this.state.paused = true; this.state.lastError = 'Emergency pause active; use Resume'; this.startHealthMonitor(); this.audit('start_blocked_emergency_pause'); this.publish(); return this.getState() }
     this.state.status = 'running'; this.state.paused = false; this.startHealthMonitor(); this.audit('start'); this.publish(); return this.getState()
   }
   stop(): SupervisorState {

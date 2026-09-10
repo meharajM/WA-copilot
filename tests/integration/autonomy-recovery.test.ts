@@ -363,7 +363,7 @@ describe('autonomy recovery', () => {
     internal.checkHealth()
     expect(internal.state).toMatchObject({ status: 'degraded', paused: false, lastError: 'WhatsApp channel is disconnected' })
     expect(internal.baileysDispatchBlocked).toBe(true)
-    getState.mockReturnValue(connectedState)
+    getState.mockReturnValue({ ...connectedState, status: 'connected', error: null })
     internal.checkHealth()
     expect(internal.baileysDispatchBlocked).toBe(true)
     internal.baileysDispatchBlocked = false
@@ -534,6 +534,10 @@ describe('autonomy recovery', () => {
     supervisor.pauseConversation('conversation-pause-customer')
     expect(conversationController.signal.aborted).toBe(true)
     generations.clear()
+    supervisor.resume()
+    supervisor.stop()
+    ;(supervisor as unknown as { state: { emergencyPaused: boolean; paused: boolean } }).state.emergencyPaused = false
+    ;(supervisor as unknown as { state: { paused: boolean } }).state.paused = true
   })
 
   it('records opt-out before any autonomous response path', async () => {
@@ -805,5 +809,24 @@ describe('autonomy recovery', () => {
     expect(db.prepare('SELECT owner, generation FROM supervisor_lease WHERE id = 1').get()).toMatchObject({ generation: 5 })
     activeSupervisor.stop()
     db.close()
+  })
+
+  it('does not let Start bypass an emergency pause', async () => {
+    vi.resetModules()
+    const activeSupervisor = (await import('../../src/main/services/AutonomousSupervisor')).autonomousSupervisor
+    const internal = activeSupervisor as unknown as { state: { mode: string; responsePermission: boolean; emergencyPaused: boolean; paused: boolean; status: string }; db: Database.Database }
+    internal.state.mode = 'observe'
+    internal.state.responsePermission = false
+    internal.state.emergencyPaused = false
+    internal.state.paused = true
+    internal.state.status = 'stopped'
+    const state = activeSupervisor.start()
+    expect(state.paused).toBe(false)
+    activeSupervisor.pause(true)
+    const started = activeSupervisor.start()
+    expect(started).toMatchObject({ paused: true, emergencyPaused: true, status: 'degraded', lastError: 'Emergency pause active; use Resume' })
+    activeSupervisor.resume()
+    activeSupervisor.stop()
+    internal.db.close()
   })
 })
