@@ -290,7 +290,7 @@ export class AutonomousSupervisor extends EventEmitter {
   onMessage(message: WhatsAppMessage): void {
     this.ensureChannelAccount({ channel: 'whatsapp', businessId: message.businessId, channelAccountId: message.channelAccountId, to: message.to })
     if (message.isFromMe || isSameWhatsAppIdentity(message.from, whatsappService.getConnectionState().phoneNumber)) {
-      const customerJid = message.isFromMe ? message.to : message.from
+      const customerJid = message.to || message.from
       this.db.prepare("INSERT INTO takeovers (jid,source,active,started_at,ended_at) VALUES (?, 'owner_message', 1, ?, NULL) ON CONFLICT(jid) DO UPDATE SET active = 1, source = 'owner_message', started_at = excluded.started_at, ended_at = NULL").run(customerJid, Date.now())
       this.pauseConversation(customerJid)
       this.emit('decision', { message, decision: { text: null, confidence: 1, grounding: 'unavailable', escalated: false, sensitiveTopic: false, reason: 'human_takeover_detected' } })

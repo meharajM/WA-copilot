@@ -722,7 +722,7 @@ describe('autonomy recovery', () => {
     const ownerMessage = { id: 'owner-takeover-1', from: 'owner-1', to: 'customer-1', content: 'I will take this', timestamp: Date.now(), type: 'text' as const, isFromMe: false }
     activeSupervisor.onMessage(ownerMessage)
     const db = new Database(path.join(dataDir, 'autonomy.db'), { readonly: true })
-    expect((db.prepare('SELECT active FROM takeovers WHERE jid = ?').get(ownerMessage.from) as { active: number }).active).toBe(1)
+    expect((db.prepare('SELECT active FROM takeovers WHERE jid = ?').get(ownerMessage.to) as { active: number }).active).toBe(1)
     db.close()
     ;(whatsappService as unknown as { connectionState: { phoneNumber: string | null } }).connectionState.phoneNumber = null
     ;(activeSupervisor as unknown as { db: Database.Database }).db.close()

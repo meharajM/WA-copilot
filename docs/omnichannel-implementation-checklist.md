@@ -404,6 +404,7 @@ Known limitations and failed baseline checks:
 - Iteration: made the reconnect control honor the selected WhatsApp transport; Cloud/Web selections no longer invoke Baileys, with regression coverage for the fail-closed boundary.
 - Iteration: surfaced the persisted last-processed message ID in the owner autonomy panel alongside active job and queue state.
 - Iteration: kept Auto-reply mode selection separate from response permission; selecting Auto-reply no longer grants send authority without the explicit permission control.
+- Iteration: aligned identity-matched WhatsApp owner messages with self-echo handling so both pause the recipient’s customer thread; legacy takeover coverage now asserts the correct JID.
 - Iteration: changed maximum-conversation admission to count only conversations updated within the configured retention window, so historical inactive rows cannot exhaust the active-cap budget; added regression coverage.
 - Iteration: extended retention pruning to remove stale inactive conversation metadata while preserving queued work, unresolved sends, pending drafts and active takeovers; added regression coverage.
 - Verification iteration: full repository checks passed after the recovery and retention slices: 39 test files passed, 1 skipped; 273 tests passed, 7 skipped; main/renderer typechecks and build passed; lint reported 0 errors with existing warnings.
