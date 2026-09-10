@@ -194,6 +194,7 @@ Known limitations and failed baseline checks:
 
 ## Iteration log
 
+- Iteration: restricted customer-support template dispatch to active `utility` templates, preventing marketing/authentication categories from using the outside-window support path. Result: focused recovery suite 56 passed; full suite 39 files passed, 1 skipped, 288 passed, 7 skipped; main/renderer typechecks passed; lint passed with 0 errors and 330 existing warnings.
 - Iteration: blocked approved-template dispatch when a newer inbound message makes the selected inbound stale, with regression coverage alongside existing draft staleness checks. Result: focused recovery suite 56 passed; full suite 39 files passed, 1 skipped, 288 passed, 7 skipped; main/renderer typechecks passed; lint passed with 0 errors and 330 existing warnings.
 - Iteration: made template retry backoff honor Pause All, conversation pause and lease loss before another provider call. Result: focused recovery suite 56 passed; full suite 39 files passed, 1 skipped, 288 passed, 7 skipped; main/renderer typechecks passed; lint passed with 0 errors and 330 existing warnings.
 - Iteration: moved the outbound-cap gate before failed-template outbox mutation, preventing cap rejection from stranding a retryable record. Result: focused recovery suite 55 passed; full suite 39 files passed, 1 skipped, 287 passed, 7 skipped; main/renderer typechecks passed; lint passed with 0 errors and 330 existing warnings.

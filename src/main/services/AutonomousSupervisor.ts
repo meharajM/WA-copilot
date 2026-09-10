@@ -602,7 +602,9 @@ export class AutonomousSupervisor extends EventEmitter {
   }
 
   async sendApprovedTemplate(inboundId: string, name: string, languageCode: string, parameters: string[] = []): Promise<SupervisorState> {
-    if (!this.db.prepare('SELECT 1 FROM approved_templates WHERE name = ? AND language_code = ? AND active = 1').get(name, languageCode)) throw new Error('Template is not active in the approved registry')
+    const template = this.db.prepare('SELECT category FROM approved_templates WHERE name = ? AND language_code = ? AND active = 1').get(name, languageCode) as { category: string } | undefined
+    if (!template) throw new Error('Template is not active in the approved registry')
+    if (template.category !== 'utility') throw new Error('Only utility templates are allowed for customer support')
     if (this.outboundTransport.kind !== 'cloud') throw new Error('Approved templates require WhatsApp Cloud transport')
     if (parameters.length > 10 || parameters.some(value => value.length > 500)) throw new Error('Invalid template parameters')
     const inbound = this.db.prepare('SELECT e.jid, e.channel, e.received_at AS receivedAt FROM inbound_events e WHERE e.id = ?').get(inboundId) as { jid: string; channel: string; receivedAt: number } | undefined
