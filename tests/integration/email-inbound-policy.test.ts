@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isGmailAuthFailure, shouldProcessEmailInbound } from '../../src/main/services/EmailInboundPolicy'
+import { isGmailAuthFailure, normalizeEmailAttachmentMetadata, shouldProcessEmailInbound } from '../../src/main/services/EmailInboundPolicy'
 
 describe('email inbound policy', () => {
   const now = 2_000_000_000
@@ -28,5 +28,9 @@ describe('email inbound policy', () => {
     expect(isGmailAuthFailure(401)).toBe(true)
     expect(isGmailAuthFailure(403)).toBe(true)
     expect(isGmailAuthFailure(500)).toBe(false)
+  })
+
+  it('normalizes MCP attachment metadata without retaining bytes or paths', () => {
+    expect(normalizeEmailAttachmentMetadata({ attachments: [{ attachment_id: 'att-1', filename: 'invoice.pdf', mime_type: 'application/pdf', size: '42', path: '/secret/path', data: 'base64-bytes' }] })).toEqual([{ id: 'att-1', name: 'invoice.pdf', mimeType: 'application/pdf', size: 42 }])
   })
 })

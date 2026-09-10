@@ -4,8 +4,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import Store from 'electron-store'
 import { gmailOAuthService } from './GmailOAuthService'
 import { ChannelAttachment, normalizeEmailMessage } from '../packages/omnichannel'
-import { shouldProcessEmailInbound } from './EmailInboundPolicy'
-import { isGmailAuthFailure } from './EmailInboundPolicy'
+import { isGmailAuthFailure, normalizeEmailAttachmentMetadata, shouldProcessEmailInbound } from './EmailInboundPolicy'
 import { createHash } from 'node:crypto'
 import { claimEmailSend, markEmailFailed, markEmailSent } from './EmailOutbox'
 
@@ -1133,7 +1132,8 @@ export class EmailChannelService extends EventEmitter {
       messageId: readString(item, ['message_id', 'messageId']),
       inReplyTo: readString(item, ['in_reply_to', 'inReplyTo']),
       references: readString(item, ['references']),
-      isFromMe: fromMe
+      isFromMe: fromMe,
+      attachments: normalizeEmailAttachmentMetadata(item)
     }
   }
 

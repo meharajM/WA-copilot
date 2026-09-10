@@ -167,10 +167,10 @@ Implemented in the current branch:
 
 Verification snapshot:
 
-- Autonomy, workflow, policy, Cloud API, webhook and recovery tests remain covered by the focused suites; the latest full suite is 39 test files passed, 1 skipped, 287 tests passed, 7 skipped.
+- Autonomy, workflow, policy, Cloud API, webhook and recovery tests remain covered by the focused suites; the latest full suite is 39 test files passed, 1 skipped, 289 tests passed, 7 skipped.
 - Production build and unsigned Electron 44.3.0 macOS arm64 directory package: passing; packaged main-process launch smoke test: passing.
 - Full typecheck: passing (`npx tsc --noEmit`).
-- Full test suite: 39 files passed, 1 skipped; 287 tests passed, 7 skipped (294 total).
+- Full test suite: 39 files passed, 1 skipped; 289 tests passed, 7 skipped (296 total).
 
 Known limitations and failed baseline checks:
 
@@ -194,6 +194,7 @@ Known limitations and failed baseline checks:
 
 ## Iteration log
 
+- Iteration: preserved bounded MCP email attachment metadata (`id`, filename, MIME type and size) so the existing host attachment-escalation gate applies consistently without retaining bytes or paths. Result: focused email policy suite 6 passed; full suite 39 files passed, 1 skipped, 289 passed, 7 skipped; main/renderer typechecks passed; lint passed with 0 errors and 330 existing warnings.
 - Iteration: audited stale approved-template blocks as durable `operator_actions`, so rejected outdated sends remain visible in recovery/audit history. Result: full suite 39 files passed, 1 skipped, 288 passed, 7 skipped; main/renderer typechecks passed; lint passed with 0 errors and 330 existing warnings.
 - Iteration: restricted customer-support template dispatch to active `utility` templates, preventing marketing/authentication categories from using the outside-window support path. Result: focused recovery suite 56 passed; full suite 39 files passed, 1 skipped, 288 passed, 7 skipped; main/renderer typechecks passed; lint passed with 0 errors and 330 existing warnings.
 - Iteration: blocked approved-template dispatch when a newer inbound message makes the selected inbound stale, with regression coverage alongside existing draft staleness checks. Result: focused recovery suite 56 passed; full suite 39 files passed, 1 skipped, 288 passed, 7 skipped; main/renderer typechecks passed; lint passed with 0 errors and 330 existing warnings.

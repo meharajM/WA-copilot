@@ -1,6 +1,37 @@
+import type { ChannelAttachment } from '../packages/omnichannel'
+
 function value(raw: Record<string, unknown>, key: string): string {
   const direct = raw[key] ?? raw[key.toLowerCase()] ?? raw[key.replace(/-/g, '_')]
   return typeof direct === 'string' ? direct.trim() : ''
+}
+
+function readString(raw: Record<string, unknown>, keys: string[]): string {
+  for (const key of keys) if (typeof raw[key] === 'string' && (raw[key] as string).trim()) return (raw[key] as string).trim()
+  return ''
+}
+
+function readNumber(raw: Record<string, unknown>, keys: string[]): number | undefined {
+  for (const key of keys) {
+    const value = typeof raw[key] === 'number' ? raw[key] : typeof raw[key] === 'string' ? Number(raw[key]) : NaN
+    if (Number.isFinite(value) && value >= 0) return value
+  }
+  return undefined
+}
+
+export function normalizeEmailAttachmentMetadata(item: Record<string, unknown>): ChannelAttachment[] {
+  const raw = item.attachments ?? item.files
+  if (!Array.isArray(raw)) return []
+  return raw.flatMap(value => {
+    if (!value || typeof value !== 'object') return []
+    const attachment = value as Record<string, unknown>
+    const normalized = {
+      id: readString(attachment, ['id', 'attachment_id', 'attachmentId']) || undefined,
+      name: readString(attachment, ['name', 'filename', 'file_name']) || undefined,
+      mimeType: readString(attachment, ['mime_type', 'mimeType', 'content_type']) || undefined,
+      size: readNumber(attachment, ['size', 'bytes', 'length'])
+    }
+    return normalized.id || normalized.name || normalized.mimeType || normalized.size !== undefined ? [normalized] : []
+  })
 }
 
 export function shouldProcessEmailInbound(email: { isFromMe: boolean; timestamp: number; from?: string; subject?: string }, raw: Record<string, unknown> | undefined, now = Date.now()): boolean {
