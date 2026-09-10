@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react'
-import { HardDrive, Server, RefreshCw, AlertCircle, Check, ArrowRight } from 'lucide-react'
+import { HardDrive, Server, RefreshCw } from 'lucide-react'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { MemoryInspector } from './memory/MemoryInspector'
 
@@ -16,7 +16,6 @@ export function MemoryPreferencesPanel() {
     const settings = useSettingsStore()
     const [stats, setStats] = useState<MemoryStats | null>(null)
     const [loading, setLoading] = useState(false)
-    const [migrationStatus, setMigrationStatus] = useState<'idle' | 'migrating' | 'success' | 'error'>('idle')
 
     const loadStats = async () => {
         if (!window.electron?.memory) return
@@ -140,74 +139,6 @@ export function MemoryPreferencesPanel() {
                     </div>
                 )}
             </div>
-
-            {/* Migration Suggestion (Conditional) */}
-            {(migrationStatus === 'success' || (stats && stats.entityCount > 10000 && settings.memoryBackend === 'server-memory')) && (
-                <div className={`border rounded-xl p-4 flex items-start gap-4 ${
-                    migrationStatus === 'success' 
-                        ? 'bg-[var(--color-success)]/10 border-[var(--color-success)]/20' 
-                        : 'bg-[var(--color-warning)]/10 border-[var(--color-warning)]/20'
-                }`}>
-                    <div className={`p-2 rounded-lg ${
-                        migrationStatus === 'success' ? 'bg-[var(--color-success)]/20' : 'bg-[var(--color-warning)]/20'
-                    }`}>
-                        {migrationStatus === 'success' ? (
-                            <Check className="w-6 h-6 text-[var(--color-success)]" />
-                        ) : (
-                            <AlertCircle className="w-6 h-6 text-[var(--color-warning)]" />
-                        )}
-                    </div>
-                    <div className="flex-1">
-                        <h4 className={`font-bold mb-1 ${
-                            migrationStatus === 'success' ? 'text-[var(--color-success)]' : 'text-[var(--color-warning)]'
-                        }`}>
-                            {migrationStatus === 'success' ? 'Migration Complete' : 'Scalability Warning'}
-                        </h4>
-                        <p className={`text-sm mb-3 ${
-                            migrationStatus === 'success' ? 'text-[var(--color-success)] opacity-80' : 'text-[var(--color-warning)] opacity-80'
-                        }`}>
-                            {migrationStatus === 'success' 
-                                ? 'Your memory has been successfully migrated to Memento MCP.' 
-                                : 'You have over 10,000 entities. Server Memory may start to slow down. We recommend migrating to Memento MCP (Neo4j) for better performance.'}
-                        </p>
-                        
-                        {migrationStatus !== 'success' && (
-                            <button 
-                                onClick={async () => {
-                                    if (!window.electron?.memory) return
-                                    setMigrationStatus('migrating')
-                                    try {
-                                        const result = await window.electron.memory.migrate()
-                                        if (result.success) {
-                                            setMigrationStatus('success')
-                                            loadStats() // Refresh stats
-                                        } else {
-                                            setMigrationStatus('error')
-                                            console.error(result.error)
-                                        }
-                                    } catch (e) {
-                                        setMigrationStatus('error')
-                                        console.error(e)
-                                    }
-                                }}
-                                disabled={migrationStatus === 'migrating'}
-                                className="px-4 py-2 bg-yellow-500/20 hover:bg-yellow-500/30 text-yellow-400 rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
-                            >
-                                {migrationStatus === 'migrating' ? (
-                                    <>
-                                        <RefreshCw className="animate-spin w-4 h-4" /> 
-                                        Migrating...
-                                    </>
-                                ) : (
-                                    <>
-                                        Start Migration <ArrowRight size={16} />
-                                    </>
-                                )}
-                            </button>
-                        )}
-                    </div>
-                </div>
-            )}
 
             {/* Memory Inspector */}
             {/* Debug Test Button */}
