@@ -43,6 +43,10 @@ Current evidence on the development host:
   Findings dropped from 6 to 5: Baileys, libsignal, `protobufjs`, `uuid` and
   `vosk-browser`. The remaining findings are upstream/unfixed in the current
   dependency graph; `npm audit fix --force` was not used.
+- Latest `npm audit --omit=dev --json` baseline: 5 findings total (2 moderate,
+  2 high, 1 critical), affecting the same five packages listed above. The
+  machine-readable audit was run on September 10, 2026; release review must
+  decide whether to remediate, isolate, or explicitly accept each finding.
 
 Latest local verification (`npm run check:runtime`, September 10, 2026):
 Node `22.12.0`, Electron `44.3.0`, Electron executable present, and every
