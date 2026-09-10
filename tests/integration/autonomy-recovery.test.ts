@@ -101,6 +101,18 @@ describe('autonomy recovery', () => {
     expect(supervisor.listRecentFailures(0).length).toBeGreaterThanOrEqual(1)
   })
 
+  it('audits notification acknowledgment', () => {
+    const db = new Database(path.join(dataDir, 'autonomy.db'))
+    const result = db.prepare('INSERT INTO notifications (kind,details,created_at) VALUES (?,?,?)').run('failure', '{"error":"ack"}', Date.now())
+    db.close()
+    expect(supervisor.ackNotification(Number(result.lastInsertRowid))).toBe(1)
+    const readDb = new Database(path.join(dataDir, 'autonomy.db'), { readonly: true })
+    expect(readDb.prepare('SELECT status FROM notifications WHERE id = ?').get(Number(result.lastInsertRowid))).toEqual({ status: 'read' })
+    expect(readDb.prepare("SELECT details FROM operator_actions WHERE action = 'ack_notification' ORDER BY id DESC LIMIT 1").get()).toEqual({ details: JSON.stringify({ id: Number(result.lastInsertRowid) }) })
+    readDb.close()
+    expect(() => supervisor.ackNotification(0)).toThrow('Invalid notification ID')
+  })
+
   it('blocks external dispatch at the shared outbound cap', async () => {
     const db = new Database(path.join(dataDir, 'autonomy.db'))
     const inboundId = 'external-cap-1'

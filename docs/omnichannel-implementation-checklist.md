@@ -167,10 +167,10 @@ Implemented in the current branch:
 
 Verification snapshot:
 
-- Autonomy, workflow, policy, Cloud API, webhook and recovery tests remain covered by the focused suites; the latest full suite is 39 test files passed, 1 skipped, 283 tests passed, 7 skipped.
+- Autonomy, workflow, policy, Cloud API, webhook and recovery tests remain covered by the focused suites; the latest full suite is 39 test files passed, 1 skipped, 284 tests passed, 7 skipped.
 - Production build and unsigned Electron 44.3.0 macOS arm64 directory package: passing; packaged main-process launch smoke test: passing.
 - Full typecheck: passing (`npx tsc --noEmit`).
-- Full test suite: 39 files passed, 1 skipped; 283 tests passed, 7 skipped (290 total).
+- Full test suite: 39 files passed, 1 skipped; 284 tests passed, 7 skipped (291 total).
 
 Known limitations and failed baseline checks:
 
@@ -414,6 +414,7 @@ Known limitations and failed baseline checks:
 - Iteration: made WhatsApp Web await its initial page classification and run an unref'd 30-second health monitor while connected/monitored; stop clears the monitor and connector coverage verifies the initial connected state.
 - Iteration: shared the singleton WhatsApp Web connector with supervisor health, MCP diagnostics and the autonomy panel; browser status is now reported from one authoritative instance instead of separate UI-only state.
 - Iteration: included `escalation_sla_overdue` in bounded MCP recent-failure/diagnostics results, with regression coverage, so overdue human work is visible through the same operator channel as other failures.
+- Iteration: routed notification acknowledgment through the supervisor with ID validation and `ack_notification` operator auditing; direct IPC database mutation is removed and recovery coverage added.
 - Iteration: changed maximum-conversation admission to count only conversations updated within the configured retention window, so historical inactive rows cannot exhaust the active-cap budget; added regression coverage.
 - Iteration: extended retention pruning to remove stale inactive conversation metadata while preserving queued work, unresolved sends, pending drafts and active takeovers; added regression coverage.
 - Verification iteration: full repository checks passed after the recovery and retention slices: 39 test files passed, 1 skipped; 273 tests passed, 7 skipped; main/renderer typechecks and build passed; lint reported 0 errors with existing warnings.

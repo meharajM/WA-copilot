@@ -529,6 +529,12 @@ export class AutonomousSupervisor extends EventEmitter {
     const safeLimit = Number.isInteger(limit) && limit > 0 && limit <= 100 ? limit : 50
     return this.db.prepare("SELECT id, kind, details, created_at AS createdAt FROM notifications WHERE kind IN ('failure','budget','recovery','escalation_sla_overdue') ORDER BY created_at DESC LIMIT ?").all(safeLimit) as Array<{ id: number; kind: string; details: string; createdAt: number }>
   }
+  ackNotification(id: number): number {
+    if (!Number.isSafeInteger(id) || id <= 0) throw new Error('Invalid notification ID')
+    const result = this.db.prepare("UPDATE notifications SET status = 'read' WHERE id = ? AND status = 'unread'").run(id)
+    if (result.changes > 0) this.audit('ack_notification', { id })
+    return result.changes
+  }
 
   listDecisionEvidence(limit = 50): Array<{ inboundId: string; jid: string; createdAt: number; decision: ResponseDecision }> {
     const safeLimit = Number.isInteger(limit) && limit > 0 && limit <= 100 ? limit : 50
@@ -1081,7 +1087,7 @@ export class AutonomousSupervisor extends EventEmitter {
     this.on('decision', data => this.broadcast('autonomy:decision', data))
     this.on('failure', data => this.broadcast('autonomy:failure', data))
     ipcMain.handle('autonomy:list-notifications', () => this.db.prepare("SELECT id, kind, details, status, created_at AS createdAt FROM notifications WHERE status = 'unread' ORDER BY created_at DESC LIMIT 50").all())
-    ipcMain.handle('autonomy:ack-notification', (_e: unknown, id: unknown) => this.db.prepare("UPDATE notifications SET status = 'read' WHERE id = ?").run(Number(id)))
+    ipcMain.handle('autonomy:ack-notification', (_e: unknown, id: unknown) => this.ackNotification(Number(id)))
   }
 
   private audit(action: string, details?: unknown): void {
