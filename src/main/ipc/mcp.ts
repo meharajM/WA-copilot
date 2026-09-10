@@ -343,9 +343,14 @@ export function registerMcpHandlers(): void {
             if (typeof requestId === 'string') requestControllers.set(requestKey, { controller, senderId: event.sender.id })
             try {
                 const res = await withMcpTimeout(internalCall(), controller)
-                if (res.error) return { result: null, error: res.error }
+                if (res.error) { recordMcpAudit('call-tool', id, toolName, 'failure', { error: res.error, durationMs: Date.now() - startTime }); return { result: null, error: res.error } }
                 const text = typeof res.result === 'string' ? res.result : JSON.stringify(res.result, null, 2)
+                recordMcpAudit('call-tool', id, toolName, 'success', { durationMs: Date.now() - startTime })
                 return { result: { content: [{ type: 'text', text }] } }
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error)
+                recordMcpAudit('call-tool', id, toolName, 'failure', { error: message, durationMs: Date.now() - startTime })
+                return { result: null, error: message }
             } finally { requestControllers.delete(requestKey) }
         }
 
