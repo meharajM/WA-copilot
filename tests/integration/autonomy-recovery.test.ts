@@ -838,6 +838,23 @@ describe('autonomy recovery', () => {
     db.close()
   })
 
+  it('quarantines thrown ambiguous template failures', async () => {
+    vi.resetModules()
+    const activeSupervisor = (await import('../../src/main/services/AutonomousSupervisor')).autonomousSupervisor
+    const db = (activeSupervisor as unknown as { db: Database.Database }).db
+    db.prepare('DELETE FROM supervisor_lease').run()
+    activeSupervisor.start()
+    db.prepare('INSERT OR IGNORE INTO approved_templates(name,language_code,category,active,updated_at) VALUES (?,?,?,?,?)').run('support_followup', 'en_US', 'utility', 1, Date.now())
+    db.prepare('INSERT INTO inbound_events(id,jid,content,received_at,status) VALUES (?,?,?,?,?)').run('template-throw', 'customer-template-throw', 'Follow up', Date.now() - 25 * 60 * 60 * 1000, 'escalated')
+    db.prepare('INSERT INTO conversations(jid,revision,updated_at) VALUES (?,?,?)').run('customer-template-throw', 1, Date.now())
+    ;(activeSupervisor as unknown as { outboundTransport: unknown }).outboundTransport = { kind: 'cloud', sendText: vi.fn(), sendTemplate: async () => { throw new Error('request timeout') } }
+    await expect(activeSupervisor.sendApprovedTemplate('template-throw', 'support_followup', 'en_US')).rejects.toThrow('request timeout')
+    expect(db.prepare('SELECT status FROM outbound_sends WHERE inbound_id = ?').get('template-throw')).toEqual({ status: 'delivery-unknown' })
+    expect(db.prepare('SELECT status FROM inbound_events WHERE id = ?').get('template-throw')).toEqual({ status: 'delivery_unknown' })
+    activeSupervisor.stop()
+    db.close()
+  })
+
   it('refuses to start while another supervisor lease is fresh', async () => {
     vi.resetModules()
     const activeSupervisor = (await import('../../src/main/services/AutonomousSupervisor')).autonomousSupervisor

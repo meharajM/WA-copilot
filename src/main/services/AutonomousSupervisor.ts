@@ -623,7 +623,11 @@ export class AutonomousSupervisor extends EventEmitter {
     this.audit('send_approved_template', { inboundId, name, languageCode })
     let result: { success: boolean; providerMessageId?: string; error?: string } = { success: false, error: 'template send failed' }
     for (let attempt = 0; attempt < 3; attempt++) {
-      result = await this.outboundTransport.sendTemplate(inbound.jid, name, languageCode, parameters)
+      try {
+        result = await this.outboundTransport.sendTemplate(inbound.jid, name, languageCode, parameters)
+      } catch (error) {
+        result = { success: false, error: error instanceof Error ? error.message : String(error) }
+      }
       if (result.success || !isConfirmedPreSendTransientError(result.error || '') || attempt === 2) break
       this.db.prepare('INSERT INTO retries (inbound_id,attempt,error,next_at) VALUES (?,?,?,?)').run(inboundId, attempt + 1, result.error, Date.now() + (2 ** attempt) * 1000)
       await new Promise(resolve => setTimeout(resolve, (2 ** attempt) * 1000))
