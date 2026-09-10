@@ -449,6 +449,29 @@ export class AutonomousSupervisor extends EventEmitter {
     return this.getState()
   }
 
+  retryJob(inboundId: string): SupervisorState {
+    const inbound = this.db.prepare('SELECT jid, channel, payload, status FROM inbound_events WHERE id = ?').get(inboundId) as { jid: string; channel: string; payload: string | null; status: string } | undefined
+    if (!inbound || inbound.status !== 'failed') throw new Error('Only failed jobs can be retried')
+    if (!inbound.payload) throw new Error('Cannot retry failed job without the original message payload')
+    let message: ChannelMessage | WhatsAppMessage
+    try { message = JSON.parse(inbound.payload) as ChannelMessage | WhatsAppMessage } catch { throw new Error('Cannot retry failed job with an invalid message payload') }
+    if (message.id !== inboundId || (inbound.channel !== 'whatsapp' && (message as ChannelMessage).channel !== inbound.channel)) throw new Error('Failed job payload does not match its channel')
+    const outbound = this.db.prepare('SELECT status FROM outbound_sends WHERE inbound_id = ?').get(inboundId) as { status: string } | undefined
+    if (outbound && outbound.status !== 'failed') throw new Error('Cannot retry a job with an unresolved outbound state')
+    if (outbound) this.db.prepare('DELETE FROM outbound_sends WHERE inbound_id = ?').run(inboundId)
+    this.db.prepare('UPDATE inbound_events SET status = ? WHERE id = ?').run('queued', inboundId)
+    if (inbound.channel === 'email') { const queue = this.emailQueues.get(inbound.jid) ?? []; queue.unshift(message as ChannelMessage); this.emailQueues.set(inbound.jid, queue) }
+    else if (inbound.channel === 'instagram' || inbound.channel === 'messenger' || inbound.channel === 'twitter') { const queue = this.metaQueues.get(inbound.jid) ?? []; queue.unshift(message as ChannelMessage); this.metaQueues.set(inbound.jid, queue) }
+    else { const queue = this.queues.get(inbound.jid) ?? []; queue.unshift(message as WhatsAppMessage); this.queues.set(inbound.jid, queue) }
+    this.audit('retry_job', { inboundId, channel: inbound.channel }); this.publish()
+    if (!this.state.paused) {
+      if (inbound.channel === 'email') void this.drainEmail(inbound.jid)
+      else if (inbound.channel === 'instagram' || inbound.channel === 'messenger' || inbound.channel === 'twitter') void this.drainMeta(inbound.jid)
+      else void this.drain(inbound.jid)
+    }
+    return this.getState()
+  }
+
   quarantineDelivery(inboundId: string): SupervisorState {
     const result = this.db.prepare('UPDATE outbound_sends SET status = ? WHERE inbound_id = ? AND status = ?').run('quarantined', inboundId, 'delivery-unknown')
     if (result.changes === 0) throw new Error('Only delivery-unknown messages can be quarantined')
@@ -1012,6 +1035,7 @@ export class AutonomousSupervisor extends EventEmitter {
     ipcMain.handle('autonomy:pause-conversation', (_e: unknown, jid: unknown) => this.pauseConversation(String(jid)))
     ipcMain.handle('autonomy:resume-conversation', (_e: unknown, jid: unknown) => this.resumeConversation(String(jid)))
     ipcMain.handle('autonomy:retry-delivery', (_e: unknown, inboundId: unknown) => this.retryDelivery(String(inboundId)))
+    ipcMain.handle('autonomy:retry-job', (_e: unknown, inboundId: unknown) => this.retryJob(String(inboundId)))
     ipcMain.handle('autonomy:quarantine-delivery', (_e: unknown, inboundId: unknown) => this.quarantineDelivery(String(inboundId)))
     ipcMain.handle('autonomy:cancel-outbound', (_e: unknown, inboundId: unknown) => this.cancelOutbound(String(inboundId)))
     ipcMain.handle('autonomy:list-approved-templates', () => this.listApprovedTemplates())

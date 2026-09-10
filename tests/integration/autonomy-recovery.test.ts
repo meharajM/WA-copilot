@@ -215,6 +215,29 @@ describe('autonomy recovery', () => {
     db.close()
   })
 
+  it('requeues failed jobs through the owner retry control', () => {
+    const db = new Database(path.join(dataDir, 'autonomy.db'))
+    const inboundId = 'retry-job-1'
+    const jid = 'email:retry-job'
+    const message = { schemaVersion: 1, id: inboundId, channel: 'email', from: 'customer@example.com', to: 'support@example.com', content: 'What are your hours?', timestamp: Date.now(), type: 'text', isFromMe: false, conversationId: 'retry-job' }
+    db.prepare('INSERT INTO inbound_events (id,jid,content,received_at,status,channel,payload) VALUES (?,?,?,?,?,?,?)').run(inboundId, jid, message.content, message.timestamp, 'failed', 'email', JSON.stringify(message))
+    db.prepare('INSERT INTO outbound_sends (inbound_id,provider_message_id,jid,content,sent_at,status,error) VALUES (?,?,?,?,?,?,?)').run(inboundId, null, jid, 'previous response', Date.now(), 'failed', 'model timeout')
+    db.close()
+    const internal = supervisor as unknown as { emailQueues: Map<string, unknown[]>; state: { paused: boolean } }
+    internal.state.paused = true
+    supervisor.retryJob(inboundId)
+    const resultDb = new Database(path.join(dataDir, 'autonomy.db'), { readonly: true })
+    expect(resultDb.prepare('SELECT status FROM inbound_events WHERE id = ?').get(inboundId)).toEqual({ status: 'queued' })
+    expect(resultDb.prepare('SELECT 1 FROM outbound_sends WHERE inbound_id = ?').get(inboundId)).toBeUndefined()
+    expect(resultDb.prepare("SELECT 1 FROM operator_actions WHERE action = 'retry_job'").get()).toBeTruthy()
+    resultDb.close()
+    expect(internal.emailQueues.get(jid)).toHaveLength(1)
+    internal.emailQueues.delete(jid)
+    const cleanupDb = new Database(path.join(dataDir, 'autonomy.db'))
+    cleanupDb.prepare('DELETE FROM inbound_events WHERE id = ?').run(inboundId)
+    cleanupDb.close()
+  })
+
   it('does not let stale conversations consume the active-cap budget', () => {
     const db = new Database(path.join(dataDir, 'autonomy.db'))
     const stale = Date.now() - 91 * 24 * 60 * 60 * 1000

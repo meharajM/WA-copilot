@@ -468,6 +468,7 @@ export const electron = {
         pauseConversation: async (jid: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.pauseConversation(jid) : null,
         resumeConversation: async (jid: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.resumeConversation(jid) : null,
         retryDelivery: async (inboundId: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.retryDelivery(inboundId) : null,
+        retryJob: async (inboundId: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.retryJob(inboundId) : null,
         quarantineDelivery: async (inboundId: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.quarantineDelivery(inboundId) : null,
         cancelOutbound: async (inboundId: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.cancelOutbound(inboundId) : null,
         listApprovedTemplates: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listApprovedTemplates() : [],

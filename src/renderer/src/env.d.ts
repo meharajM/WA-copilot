@@ -173,6 +173,7 @@ interface ElectronAPI {
         pauseConversation: (jid: string) => Promise<any>
         resumeConversation: (jid: string) => Promise<any>
         retryDelivery: (inboundId: string) => Promise<any>
+        retryJob: (inboundId: string) => Promise<any>
         quarantineDelivery: (inboundId: string) => Promise<any>
         cancelOutbound: (inboundId: string) => Promise<any>
         listApprovedTemplates: () => Promise<any>

@@ -225,6 +225,7 @@ const electronAPI = {
         pauseConversation: (jid: string) => ipcRenderer.invoke('autonomy:pause-conversation', jid),
         resumeConversation: (jid: string) => ipcRenderer.invoke('autonomy:resume-conversation', jid),
         retryDelivery: (inboundId: string) => ipcRenderer.invoke('autonomy:retry-delivery', inboundId),
+        retryJob: (inboundId: string) => ipcRenderer.invoke('autonomy:retry-job', inboundId),
         quarantineDelivery: (inboundId: string) => ipcRenderer.invoke('autonomy:quarantine-delivery', inboundId),
         cancelOutbound: (inboundId: string) => ipcRenderer.invoke('autonomy:cancel-outbound', inboundId),
         listApprovedTemplates: () => ipcRenderer.invoke('autonomy:list-approved-templates'),
