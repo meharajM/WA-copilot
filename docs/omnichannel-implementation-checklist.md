@@ -358,3 +358,4 @@ Known limitations and failed baseline checks:
 - Iteration: selected and documented the recommended Meta pilot login boundary (operator-provisioned Facebook Login/Page token for Page-backed Messenger and Instagram), with least-privilege exclusions and official verification links; live scope/review confirmation remains open.
 - Iteration: added `docs/omnichannel-live-pilot-matrix.md` with provider prerequisites, operator actions, expected safety outcomes and evidence fields for the remaining live-account, staging, recovery and charge-review gates.
 - Iteration: added an explicit `AICA_LLM_DATA_POLICY_APPROVED` fail-closed prerequisite for Auto-reply and surfaced its state in health/UI; provider, region, residency and retention approval remain deployment evidence gates.
+- Iteration: resolved stale merge-conflict markers in `.env.example` and documented safe defaults for Gemini, LLM data approval, escalation contact/SLA and business scope.
