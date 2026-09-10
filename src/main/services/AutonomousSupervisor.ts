@@ -430,6 +430,7 @@ export class AutonomousSupervisor extends EventEmitter {
     const inbound = this.db.prepare('SELECT channel, payload FROM inbound_events WHERE id = ?').get(inboundId) as { channel: string; payload: string | null } | undefined
     let message: ChannelMessage | WhatsAppMessage | null = null
     try { if (inbound?.payload) message = JSON.parse(inbound.payload) as ChannelMessage | WhatsAppMessage } catch { /* fall back to the durable outbound record */ }
+    if (!message && inbound?.channel && inbound.channel !== 'whatsapp') throw new Error('Cannot retry external delivery without the original message payload')
     if (!message) message = { id: inboundId, from: record.jid, to: whatsappService.getConnectionState().phoneNumber || '', content: record.content, timestamp: record.sent_at, type: 'text', isFromMe: false }
     this.db.prepare('DELETE FROM outbound_sends WHERE inbound_id = ?').run(inboundId)
     this.db.prepare('UPDATE inbound_events SET status = ? WHERE id = ?').run('queued', inboundId)

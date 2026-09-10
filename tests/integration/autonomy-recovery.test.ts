@@ -430,6 +430,11 @@ describe('autonomy recovery', () => {
     expect(emailDrain).toHaveBeenCalledWith(jid)
     expect((db.prepare('SELECT status FROM inbound_events WHERE id = ?').get(inboundId) as { status: string }).status).toBe('queued')
     expect(db.prepare('SELECT 1 FROM outbound_sends WHERE inbound_id = ?').get(inboundId)).toBeUndefined()
+    const missingPayloadId = 'retry-email-missing-payload-1'
+    db.prepare('INSERT INTO inbound_events (id,jid,content,received_at,status,channel,payload) VALUES (?,?,?,?,?,?,NULL)').run(missingPayloadId, jid, 'Where are your hours?', Date.now(), 'delivery_unknown', 'email')
+    db.prepare('INSERT INTO outbound_sends (inbound_id,provider_message_id,jid,content,sent_at,status,error) VALUES (?,?,?,?,?,?,?)').run(missingPayloadId, null, jid, 'previous response', Date.now(), 'delivery-unknown', 'timeout')
+    expect(() => activeSupervisor.retryDelivery(missingPayloadId)).toThrow('original message payload')
+    expect(db.prepare('SELECT status FROM outbound_sends WHERE inbound_id = ?').get(missingPayloadId)).toMatchObject({ status: 'delivery-unknown' })
     ;(activeSupervisor as unknown as { db: Database.Database }).db.close()
   })
 
