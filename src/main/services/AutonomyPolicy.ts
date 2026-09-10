@@ -19,6 +19,10 @@ export function canEnableAutoMode(currentMode: AutonomyMode, nextMode: AutonomyM
   return nextMode !== 'auto' || currentMode === 'draft' || currentMode === 'auto'
 }
 
+export function canRunBaileysAutoReply(transport: 'baileys' | 'cloud' | 'web', approved: boolean): boolean {
+  return transport !== 'baileys' || approved
+}
+
 export function shouldAutoResume(state: { status: string; paused: boolean; recoveryMode?: boolean }): boolean {
   return state.status === 'running' && !state.paused && state.recoveryMode !== true
 }

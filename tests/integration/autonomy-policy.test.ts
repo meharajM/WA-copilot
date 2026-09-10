@@ -1,9 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import { canEnableAutoMode, evaluateAutonomyPolicy, isDispatchAllowed, shouldAutoResume } from '../../src/main/services/AutonomyPolicy'
+import { canEnableAutoMode, canRunBaileysAutoReply, evaluateAutonomyPolicy, isDispatchAllowed, shouldAutoResume } from '../../src/main/services/AutonomyPolicy'
 
 const decision = { text: 'Answer', confidence: 0.9, grounding: 'grounded' as const, escalated: false, sensitiveTopic: false, reason: 'grounded' }
 
 describe('autonomy policy', () => {
+  it('requires explicit approval for Baileys Auto-reply but not other modes/transports', () => {
+    expect(canRunBaileysAutoReply('baileys', false)).toBe(false)
+    expect(canRunBaileysAutoReply('baileys', true)).toBe(true)
+    expect(canRunBaileysAutoReply('cloud', false)).toBe(true)
+  })
   it('requires explicit permission for sending', () => {
     expect(evaluateAutonomyPolicy({ mode: 'draft', responsePermission: false, optedOut: false, withinResponseWindow: true, staleRevision: false, decision }))
       .toEqual({ disposition: 'draft', reason: 'approval_required' })

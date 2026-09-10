@@ -17,6 +17,11 @@ Safety defaults are observe-only, no configured LLM means escalation, sensitive 
 Supported transport and channel status:
 
 - Baileys is the default WhatsApp transport.
+- Baileys Auto-reply is experimental and fail-closed by default because the
+  installed libsignal dependency has an unresolved protobuf advisory. Set
+  `AICA_BAILEYS_EXPERIMENTAL_APPROVED=true` only after security and licensing
+  review; observe and draft modes do not require this approval. Cloud API is
+  the recommended production Auto-reply transport.
 - WhatsApp Cloud API is opt-in through the transport selector and secure credentials. Signed webhook input, provider IDs, templates, delivery updates, and fail-closed legacy IPC guards are implemented.
 - WhatsApp Web uses a dedicated persistent Playwright profile, manual QR/session restoration, bounded incoming DOM monitoring, screenshots, and human takeover. Autonomous outbound Web sends remain disabled until live delivery semantics are validated.
 - Gmail/email, Instagram, Messenger, and X DM adapters use normalized host queues and channel-specific policy gates. X public posting is not exposed; Meta lead events never imply messaging consent.

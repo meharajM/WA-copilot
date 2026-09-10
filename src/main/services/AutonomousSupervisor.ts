@@ -11,7 +11,7 @@ import { whatsappService, WhatsAppMessage } from '../whatsapp/WhatsAppService'
 import { isSameWhatsAppIdentity } from '../utils/whatsapp'
 import { classifyProviderError, draftContentHash, isAccountSpecificRequest, isAllowlistedSupportIntent, isAmbiguousSendError, isConfirmedPreSendTransientError, isOptInMessage, isOptOutMessage, isPromptInjection, isSensitiveSupportTopic, isStaleRevision, isWithinWhatsAppServiceWindow, parseAutonomyDecision } from './AutonomyDecision'
 import { createAutonomyWorkflow, runAutonomyWorkflow, workflowThreadId, type WorkflowMessage } from './AutonomyWorkflow'
-import { canEnableAutoMode, evaluateAutonomyPolicy, isDispatchAllowed } from './AutonomyPolicy'
+import { canEnableAutoMode, canRunBaileysAutoReply, evaluateAutonomyPolicy, isDispatchAllowed } from './AutonomyPolicy'
 import { createWhatsAppOutboundTransport, type WhatsAppOutboundTransport } from './WhatsAppTransport'
 import { SqliteSaver } from '@langchain/langgraph-checkpoint-sqlite'
 import { getChannelCapabilities, isValidNormalizedChannelMessage, withChannelScope, type ChannelMessage } from '../packages/omnichannel'
@@ -76,6 +76,7 @@ const RETENTION_DAYS = configuredCap('AICA_RETENTION_DAYS', 90)
 const ESCALATION_CONTACT = (process.env.AICA_ESCALATION_CONTACT || '').trim()
 const ESCALATION_SLA_MINUTES = configuredCap('AICA_ESCALATION_SLA_MINUTES', 60)
 const LLM_DATA_POLICY_APPROVED = /^(1|true|yes)$/i.test((process.env.AICA_LLM_DATA_POLICY_APPROVED || '').trim())
+const BAILEYS_EXPERIMENTAL_APPROVED = /^(1|true|yes)$/i.test((process.env.AICA_BAILEYS_EXPERIMENTAL_APPROVED || '').trim())
 const LEASE_TTL_MS = 60_000
 
 export class AutonomousSupervisor extends EventEmitter {
@@ -181,7 +182,7 @@ export class AutonomousSupervisor extends EventEmitter {
 
   static getInstance(): AutonomousSupervisor { return this.instance ??= new AutonomousSupervisor() }
   getState(): SupervisorState { return { ...this.state, queueDepth: [...this.queues.values(), ...this.emailQueues.values(), ...this.metaQueues.values()].reduce((n, q) => n + q.length, 0), usageToday: { llmCalls: this.usageCount('llm'), outboundMessages: this.usageCount('outbound'), estimatedCost: this.usageCost() } } }
-  getHealth() { return { executionLocation: 'electron-main', transport: this.outboundTransport.kind, llmConfigured: this.gemini !== null, llmDataPolicyApproved: LLM_DATA_POLICY_APPROVED, channel: whatsappService.getConnectionState(), email: emailChannelService.getConnectionState(), rag: RAGEngine.getInstance().health(), memory: MemoryService.getInstance().getHealth(), supervisor: this.getState(), escalation: { contact: ESCALATION_CONTACT || null, contactConfigured: Boolean(ESCALATION_CONTACT), slaMinutes: ESCALATION_SLA_MINUTES }, memoryRss: process.memoryUsage().rss, uptime: process.uptime(), leaseHeld: this.hasLease(), checkedAt: Date.now() } }
+  getHealth() { return { executionLocation: 'electron-main', transport: this.outboundTransport.kind, baileysExperimentalApproval: BAILEYS_EXPERIMENTAL_APPROVED, llmConfigured: this.gemini !== null, llmDataPolicyApproved: LLM_DATA_POLICY_APPROVED, channel: whatsappService.getConnectionState(), email: emailChannelService.getConnectionState(), rag: RAGEngine.getInstance().health(), memory: MemoryService.getInstance().getHealth(), supervisor: this.getState(), escalation: { contact: ESCALATION_CONTACT || null, contactConfigured: Boolean(ESCALATION_CONTACT), slaMinutes: ESCALATION_SLA_MINUTES }, memoryRss: process.memoryUsage().rss, uptime: process.uptime(), leaseHeld: this.hasLease(), checkedAt: Date.now() } }
   getMetrics(days = 14) {
     const safeDays = Number.isInteger(days) && days > 0 && days <= 90 ? days : 14
     const since = Date.now() - safeDays * 24 * 60 * 60 * 1000
@@ -225,6 +226,7 @@ export class AutonomousSupervisor extends EventEmitter {
 
   start(): SupervisorState {
     try { this.outboundTransport = createWhatsAppOutboundTransport() } catch (error) { this.state.status = 'degraded'; this.state.paused = true; this.state.lastError = error instanceof Error ? error.message : String(error); this.audit('start_failed_transport'); this.publish(); return this.getState() }
+    if (this.state.mode === 'auto' && this.state.responsePermission && !canRunBaileysAutoReply(this.outboundTransport.kind, BAILEYS_EXPERIMENTAL_APPROVED)) { this.state.status = 'degraded'; this.state.paused = true; this.state.lastError = 'Baileys Auto-reply requires explicit experimental transport approval'; this.audit('start_blocked_baileys_auto'); this.publish(); return this.getState() }
     if (!this.acquireLease()) { this.publish(); return this.getState() }
     this.state.status = 'running'; this.state.paused = false; this.startHealthMonitor(); this.audit('start'); this.publish(); return this.getState()
   }
@@ -262,6 +264,7 @@ export class AutonomousSupervisor extends EventEmitter {
     if (!canEnableAutoMode(this.state.mode, mode)) throw new Error('Enable Draft mode before Auto-reply')
     if (mode === 'auto' && responsePermission && !ESCALATION_CONTACT) throw new Error('Configure AICA_ESCALATION_CONTACT before enabling Auto-reply')
     if (mode === 'auto' && responsePermission && !LLM_DATA_POLICY_APPROVED) throw new Error('Set AICA_LLM_DATA_POLICY_APPROVED=true after reviewing the approved provider and data handling')
+    if (mode === 'auto' && responsePermission && !canRunBaileysAutoReply(this.outboundTransport.kind, BAILEYS_EXPERIMENTAL_APPROVED)) throw new Error('Set AICA_BAILEYS_EXPERIMENTAL_APPROVED=true only after reviewing the Baileys/libsignal security and licensing risk')
     this.state.mode = mode; this.state.responsePermission = mode === 'auto' && responsePermission
     this.audit('set_mode', { mode, responsePermission: this.state.responsePermission }); this.publish(); return this.getState()
   }
