@@ -391,8 +391,11 @@ export class AutonomousSupervisor extends EventEmitter {
     }
     const eventStatus = update.status
     const status = update.status === 'failed' ? 'failed' : update.status === 'delivered' || update.status === 'read' ? 'delivered' : 'sent'
+    const channel = update.channel || 'whatsapp'
     const record = this.db.prepare('SELECT inbound_id FROM outbound_sends WHERE provider_message_id = ?').get(update.providerMessageId) as { inbound_id: string } | undefined
-    this.db.prepare('INSERT INTO delivery_events (provider_message_id,channel,status,event_at,inbound_id,created_at) VALUES (?,?,?,?,?,?)').run(update.providerMessageId, update.channel || 'whatsapp', eventStatus, update.timestamp, record?.inbound_id ?? null, Date.now())
+    const duplicate = this.db.prepare('SELECT 1 FROM delivery_events WHERE provider_message_id = ? AND channel = ? AND status = ? AND event_at = ? LIMIT 1').get(update.providerMessageId, channel, eventStatus, update.timestamp)
+    if (!duplicate) this.db.prepare('INSERT INTO delivery_events (provider_message_id,channel,status,event_at,inbound_id,created_at) VALUES (?,?,?,?,?,?)').run(update.providerMessageId, channel, eventStatus, update.timestamp, record?.inbound_id ?? null, Date.now())
+    else this.audit('delivery_update_duplicate', { providerMessageId: update.providerMessageId, channel, status: eventStatus, timestamp: update.timestamp })
     const result = this.db.prepare('UPDATE outbound_sends SET status = ?, sent_at = ? WHERE provider_message_id = ?').run(status, update.timestamp, update.providerMessageId)
     if (!record || result.changes === 0) { this.audit('delivery_update_unmatched', { providerMessageId: update.providerMessageId, status }); return }
     this.db.prepare('UPDATE inbound_events SET status = ? WHERE id = ?').run(status === 'failed' ? 'delivery_failed' : status, record.inbound_id)
