@@ -389,9 +389,10 @@ export class AutonomousSupervisor extends EventEmitter {
       this.audit('delivery_update_invalid', { providerMessageId: update.providerMessageId, status: update.status, channel: update.channel })
       return
     }
+    const eventStatus = update.status
     const status = update.status === 'failed' ? 'failed' : update.status === 'delivered' || update.status === 'read' ? 'delivered' : 'sent'
     const record = this.db.prepare('SELECT inbound_id FROM outbound_sends WHERE provider_message_id = ?').get(update.providerMessageId) as { inbound_id: string } | undefined
-    this.db.prepare('INSERT INTO delivery_events (provider_message_id,channel,status,event_at,inbound_id,created_at) VALUES (?,?,?,?,?,?)').run(update.providerMessageId, update.channel || 'whatsapp', status, update.timestamp, record?.inbound_id ?? null, Date.now())
+    this.db.prepare('INSERT INTO delivery_events (provider_message_id,channel,status,event_at,inbound_id,created_at) VALUES (?,?,?,?,?,?)').run(update.providerMessageId, update.channel || 'whatsapp', eventStatus, update.timestamp, record?.inbound_id ?? null, Date.now())
     const result = this.db.prepare('UPDATE outbound_sends SET status = ?, sent_at = ? WHERE provider_message_id = ?').run(status, update.timestamp, update.providerMessageId)
     if (!record || result.changes === 0) { this.audit('delivery_update_unmatched', { providerMessageId: update.providerMessageId, status }); return }
     this.db.prepare('UPDATE inbound_events SET status = ? WHERE id = ?').run(status === 'failed' ? 'delivery_failed' : status, record.inbound_id)
