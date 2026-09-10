@@ -748,6 +748,12 @@ export class AutonomousSupervisor extends EventEmitter {
       this.notifyOwner('failure', { messageId: message.id, error }); return
     }
     this.recordUsage('outbound', 0, message.channel)
+    if (!result.providerMessageId) {
+      const error = 'Provider accepted the send without returning a message ID'
+      this.db.prepare('UPDATE outbound_sends SET status = ?, error = ?, sent_at = ? WHERE inbound_id = ?').run('delivery-unknown', error, Date.now(), message.id)
+      this.db.prepare('UPDATE inbound_events SET status = ? WHERE id = ?').run('delivery_unknown', message.id)
+      this.state.lastDeliveryStatus = 'delivery-unknown'; this.state.lastDeliveryInboundId = message.id; this.state.lastError = error; this.state.status = 'degraded'; this.notifyOwner('failure', { messageId: message.id, channel: message.channel, error }); this.publish(); return
+    }
     this.db.prepare('UPDATE outbound_sends SET provider_message_id = ?, status = ?, sent_at = ? WHERE inbound_id = ?').run(result.providerMessageId ?? null, 'sent', Date.now(), message.id)
     this.recordInitialDelivery(result.providerMessageId, message.channel, message.id)
     this.db.prepare('UPDATE inbound_events SET status = ? WHERE id = ?').run('sent', message.id)
@@ -927,6 +933,12 @@ export class AutonomousSupervisor extends EventEmitter {
       const result = await this.outboundTransport.sendText(message.from, body)
       if (result.success) {
         this.recordUsage('outbound', 0, 'whatsapp')
+        if (!result.providerMessageId) {
+          const missingId = 'Provider accepted the send without returning a message ID'
+          this.db.prepare('UPDATE outbound_sends SET sent_at = ?, status = ?, error = ? WHERE inbound_id = ?').run(Date.now(), 'delivery-unknown', missingId, message.id)
+          this.db.prepare('UPDATE inbound_events SET status = ? WHERE id = ?').run('delivery_unknown', message.id)
+          this.state.lastDeliveryStatus = 'delivery-unknown'; this.state.lastDeliveryInboundId = message.id; this.state.lastError = missingId; this.state.status = 'degraded'; this.notifyOwner('failure', { messageId: message.id, channel: 'whatsapp', error: missingId }); this.publish(); return
+        }
         this.db.prepare('UPDATE outbound_sends SET provider_message_id = ?, sent_at = ?, status = ?, error = ? WHERE inbound_id = ?').run(result.providerMessageId ?? null, Date.now(), 'sent', null, message.id)
         this.recordInitialDelivery(result.providerMessageId, 'whatsapp', message.id)
         this.db.prepare('INSERT OR IGNORE INTO conversation_messages (id,jid,role,content,timestamp) VALUES (?,?,?,?,?)').run(`out:${message.id}`, message.from, 'assistant', body, Date.now())
