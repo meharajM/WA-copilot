@@ -226,10 +226,8 @@ export class AutonomousSupervisor extends EventEmitter {
 
   start(): SupervisorState {
     try { this.outboundTransport = createWhatsAppOutboundTransport() } catch (error) { this.state.status = 'degraded'; this.state.paused = true; this.state.lastError = error instanceof Error ? error.message : String(error); this.audit('start_failed_transport'); this.publish(); return this.getState() }
-    if (this.state.mode === 'auto' && this.state.responsePermission) {
-      const block = !ESCALATION_CONTACT ? 'Configure AICA_ESCALATION_CONTACT before enabling Auto-reply' : !LLM_DATA_POLICY_APPROVED ? 'Set AICA_LLM_DATA_POLICY_APPROVED=true after reviewing the approved provider and data handling' : !canRunBaileysAutoReply(this.outboundTransport.kind, BAILEYS_EXPERIMENTAL_APPROVED) ? 'Baileys Auto-reply requires explicit experimental transport approval' : null
-      if (block) { this.state.status = 'degraded'; this.state.paused = true; this.state.lastError = block; this.audit('start_blocked_auto_policy'); this.publish(); return this.getState() }
-    }
+    const block = this.autoReplyBlockReason()
+    if (block) { this.state.status = 'degraded'; this.state.paused = true; this.state.lastError = block; this.audit('start_blocked_auto_policy'); this.publish(); return this.getState() }
     if (!this.acquireLease()) { this.publish(); return this.getState() }
     this.state.status = 'running'; this.state.paused = false; this.startHealthMonitor(); this.audit('start'); this.publish(); return this.getState()
   }
@@ -240,8 +238,18 @@ export class AutonomousSupervisor extends EventEmitter {
     this.audit('stop'); this.publish(); return this.getState()
   }
   pause(emergency = false): SupervisorState { this.state.paused = true; this.state.emergencyPaused ||= emergency; for (const { controller } of this.generationControllers.values()) controller.abort(); this.audit(emergency ? 'pause_all' : 'pause'); this.publish(); return this.getState() }
+  private autoReplyBlockReason(): string | null {
+    if (this.state.mode !== 'auto' || !this.state.responsePermission) return null
+    if (!ESCALATION_CONTACT) return 'Configure AICA_ESCALATION_CONTACT before enabling Auto-reply'
+    if (!LLM_DATA_POLICY_APPROVED) return 'Set AICA_LLM_DATA_POLICY_APPROVED=true after reviewing the approved provider and data handling'
+    if (!canRunBaileysAutoReply(this.outboundTransport.kind, BAILEYS_EXPERIMENTAL_APPROVED)) return 'Baileys Auto-reply requires explicit experimental transport approval'
+    return null
+  }
+
   resume(): SupervisorState {
     if (this.state.recoveryMode) throw new Error('Recovery mode must be cleared before resume')
+    const block = this.autoReplyBlockReason()
+    if (block) { this.state.status = 'degraded'; this.state.paused = true; this.state.lastError = block; this.audit('resume_blocked_auto_policy'); this.publish(); return this.getState() }
     this.state.paused = false; this.state.emergencyPaused = false; this.audit('resume'); this.publish()
     for (const jid of this.queues.keys()) void this.drain(jid)
     for (const jid of this.emailQueues.keys()) void this.drainEmail(jid)
@@ -262,7 +270,7 @@ export class AutonomousSupervisor extends EventEmitter {
     return this.enterRecoveryMode('backup_staged_restart_required')
   }
   pauseConversation(jid: string): SupervisorState { this.pausedConversations.add(jid); for (const generation of this.generationControllers.values()) if (generation.jid === jid) generation.controller.abort(); this.audit('pause_conversation', { jid }); return this.getState() }
-  resumeConversation(jid: string): SupervisorState { this.pausedConversations.delete(jid); this.db.prepare("UPDATE takeovers SET active = 0, ended_at = ? WHERE jid = ?").run(Date.now(), jid); this.audit('resume_conversation', { jid }); if (jid.startsWith('email:')) void this.drainEmail(jid); else if (jid.startsWith('instagram:') || jid.startsWith('messenger:') || jid.startsWith('twitter:')) void this.drainMeta(jid); else void this.drain(jid); return this.getState() }
+  resumeConversation(jid: string): SupervisorState { const block = this.autoReplyBlockReason(); if (block) { this.state.status = 'degraded'; this.state.lastError = block; this.audit('resume_conversation_blocked_auto_policy', { jid }); this.publish(); return this.getState() }; this.pausedConversations.delete(jid); this.db.prepare("UPDATE takeovers SET active = 0, ended_at = ? WHERE jid = ?").run(Date.now(), jid); this.audit('resume_conversation', { jid }); if (jid.startsWith('email:')) void this.drainEmail(jid); else if (jid.startsWith('instagram:') || jid.startsWith('messenger:') || jid.startsWith('twitter:')) void this.drainMeta(jid); else void this.drain(jid); return this.getState() }
   setMode(mode: AutonomyMode, responsePermission: boolean): SupervisorState {
     if (!canEnableAutoMode(this.state.mode, mode)) throw new Error('Enable Draft mode before Auto-reply')
     if (mode === 'auto' && responsePermission && !ESCALATION_CONTACT) throw new Error('Configure AICA_ESCALATION_CONTACT before enabling Auto-reply')

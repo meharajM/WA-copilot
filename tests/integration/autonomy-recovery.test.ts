@@ -76,6 +76,8 @@ describe('autonomy recovery', () => {
     internal.state.responsePermission = true
     const result = supervisor.start()
     expect(result).toMatchObject({ status: 'degraded', paused: true, lastError: expect.stringContaining('AICA_ESCALATION_CONTACT') })
+    expect(supervisor.resume()).toMatchObject({ status: 'degraded', paused: true, lastError: expect.stringContaining('AICA_ESCALATION_CONTACT') })
+    expect(supervisor.resumeConversation('unsafe-conversation')).toMatchObject({ status: 'degraded', lastError: expect.stringContaining('AICA_ESCALATION_CONTACT') })
     Object.assign(internal.state, previous)
   })
 
