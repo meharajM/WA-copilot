@@ -18,7 +18,7 @@ Current evidence on the development host:
 - The application declares Node `>=22.12.0`.
 - Node `22.22.2` passes the declared engine check when the supported Node
   runtime is selected.
-- Electron resolves to `40.0.0`, and its platform executable is present after
+- Electron resolves to `40.10.6` within the declared Electron 40 range, and its platform executable is present after
   the Electron postinstall payload is restored.
 - Native modules include `better-sqlite3` and libsignal. Their Electron ABI
   rebuild completed during an unsigned macOS arm64 Electron 40 directory
@@ -30,8 +30,15 @@ Current evidence on the development host:
 - `@whiskeysockets/libsignal-node` reports `GPL-3.0`; distribution licensing
   review is required before shipping a production bundle. This is an explicit
   legal gate, not an automated approval.
+- The production dependency audit was rerun after applying available
+  non-breaking lockfile updates. Findings dropped from 27 to 6. The remaining
+  findings are an Electron patched-version/major-upgrade decision, an unfixed
+  libsignal `protobufjs` advisory, and an unfixed `vosk-browser` `uuid`
+  advisory. `npm audit fix --force` was not used because it changes the Electron
+  major version.
 
 The checklist item remains open until dependency-license review, production
 signing/notarization and a clean release-host package run are recorded. The
 Node 22 runtime check, Electron 40 native rebuild and local packaged launch
-have now been verified.
+have now been verified. The remaining audit findings are release blockers to
+resolve or explicitly accept in the distribution/security review.
