@@ -72,6 +72,18 @@ describe('autonomy recovery', () => {
     })
   })
 
+  it('does not reconnect Baileys when another WhatsApp transport is selected', async () => {
+    const internal = supervisor as unknown as { outboundTransport: { kind: string } }
+    const original = internal.outboundTransport
+    internal.outboundTransport = { kind: 'cloud' }
+    const { whatsappService } = await import('../../src/main/whatsapp/WhatsAppService')
+    const connect = vi.spyOn(whatsappService, 'connect')
+    await supervisor.reconnectChannel()
+    expect(connect).not.toHaveBeenCalled()
+    connect.mockRestore()
+    internal.outboundTransport = original
+  })
+
   it('exposes bounded autonomy controls through the internal MCP service', async () => {
     const { autonomyMcpService } = await import('../../src/main/services/AutonomyMcpService')
     expect(autonomyMcpService.listTools().tools.map(tool => tool.name)).toEqual(expect.arrayContaining(['get_machine_health', 'get_agent_status', 'get_queue_status', 'get_channel_status', 'get_recent_failures', 'capture_diagnostics', 'surface_browser', 'pause_agent', 'resume_agent', 'retry_job', 'reconnect_channel']))

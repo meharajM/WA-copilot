@@ -223,6 +223,7 @@ export class AutonomousSupervisor extends EventEmitter {
 
   async reconnectChannel(): Promise<SupervisorState> {
     this.audit('reconnect_channel')
+    if (this.outboundTransport.kind !== 'baileys') { this.audit('reconnect_channel_not_baileys', { transport: this.outboundTransport.kind }); this.checkHealth(); return this.getState() }
     try { await whatsappService.connect(whatsappService.getConnectionState().phoneNumber || undefined); this.checkHealth(); return this.getState() }
     catch (error) { this.state.status = 'degraded'; this.state.lastError = error instanceof Error ? error.message : String(error); this.notifyOwner('failure', { error: this.state.lastError }); this.publish(); throw error }
   }
