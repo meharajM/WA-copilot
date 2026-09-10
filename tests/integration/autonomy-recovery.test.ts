@@ -288,9 +288,17 @@ describe('autonomy recovery', () => {
     const readInboundId = 'cloud-delivery-read-1'
     db.prepare('INSERT INTO inbound_events (id,jid,content,received_at,status,channel) VALUES (?,?,?,?,?,?)').run(readInboundId, 'customer-cloud-read', 'Hello', Date.now(), 'sent', 'whatsapp')
     db.prepare('INSERT INTO outbound_sends (inbound_id,provider_message_id,jid,content,sent_at,status,error) VALUES (?,?,?,?,?,?,?)').run(readInboundId, 'wamid.read-1', 'customer-cloud-read', 'Response', Date.now(), 'sent', null)
-    activeSupervisor.onDeliveryUpdate({ providerMessageId: 'wamid.read-1', status: 'read', timestamp: Date.now(), channel: 'whatsapp' })
+    const readTimestamp = Date.now()
+    activeSupervisor.onDeliveryUpdate({ providerMessageId: 'wamid.read-1', status: 'read', timestamp: readTimestamp, channel: 'whatsapp' })
     expect(db.prepare('SELECT status FROM outbound_sends WHERE inbound_id = ?').get(readInboundId)).toMatchObject({ status: 'delivered' })
     expect(db.prepare('SELECT status FROM delivery_events WHERE provider_message_id = ? ORDER BY id DESC LIMIT 1').get('wamid.read-1')).toMatchObject({ status: 'read' })
+    const readEvents = (db.prepare('SELECT COUNT(*) AS count FROM delivery_events WHERE provider_message_id = ?').get('wamid.read-1') as { count: number }).count
+    activeSupervisor.onDeliveryUpdate({ providerMessageId: 'wamid.read-1', status: 'read', timestamp: readTimestamp, channel: 'whatsapp' })
+    expect((db.prepare('SELECT COUNT(*) AS count FROM delivery_events WHERE provider_message_id = ?').get('wamid.read-1') as { count: number }).count).toBe(readEvents)
+    const duplicateTimestamp = readTimestamp + 1
+    activeSupervisor.onDeliveryUpdate({ providerMessageId: 'wamid.read-1', status: 'read', timestamp: duplicateTimestamp, channel: 'whatsapp' })
+    activeSupervisor.onDeliveryUpdate({ providerMessageId: 'wamid.read-1', status: 'read', timestamp: duplicateTimestamp, channel: 'whatsapp' })
+    expect((db.prepare('SELECT COUNT(*) AS count FROM delivery_events WHERE provider_message_id = ? AND event_at = ?').get('wamid.read-1', duplicateTimestamp) as { count: number }).count).toBe(1)
     activeSupervisor.onDeliveryUpdate({ providerMessageId: 'wamid.unknown-1', status: 'failed', timestamp: Date.now() })
     expect(db.prepare("SELECT action FROM operator_actions WHERE action = 'delivery_update_unmatched'").get()).toBeTruthy()
     expect(db.prepare('SELECT inbound_id FROM delivery_events WHERE provider_message_id = ?').get('wamid.unknown-1')).toMatchObject({ inbound_id: null })
