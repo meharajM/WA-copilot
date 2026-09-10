@@ -181,6 +181,24 @@ describe('autonomy recovery', () => {
     ;(supervisor as unknown as { queues: Map<string, unknown[]> }).queues.delete('new-after-stale-cap')
   })
 
+  it('retains active work while pruning stale inactive conversation metadata', () => {
+    const db = new Database(path.join(dataDir, 'autonomy.db'))
+    const stale = Date.now() - 91 * 24 * 60 * 60 * 1000
+    db.prepare('INSERT OR REPLACE INTO conversations (jid,revision,updated_at) VALUES (?,?,?)').run('stale-prune-inactive', 1, stale)
+    db.prepare('INSERT OR REPLACE INTO conversations (jid,revision,updated_at) VALUES (?,?,?)').run('stale-prune-active', 1, stale)
+    db.prepare('INSERT INTO inbound_events (id,jid,content,received_at,status,channel) VALUES (?,?,?,?,?,?)').run('stale-prune-active-event', 'stale-prune-active', 'queued', stale, 'queued', 'email')
+    db.close()
+    ;(supervisor as unknown as { pruneRetention: () => void }).pruneRetention()
+    const resultDb = new Database(path.join(dataDir, 'autonomy.db'), { readonly: true })
+    expect(resultDb.prepare('SELECT 1 FROM conversations WHERE jid = ?').get('stale-prune-inactive')).toBeUndefined()
+    expect(resultDb.prepare('SELECT 1 FROM conversations WHERE jid = ?').get('stale-prune-active')).toEqual({ 1: 1 })
+    resultDb.close()
+    const cleanupDb = new Database(path.join(dataDir, 'autonomy.db'))
+    cleanupDb.prepare('DELETE FROM inbound_events WHERE id = ?').run('stale-prune-active-event')
+    cleanupDb.prepare("DELETE FROM conversations WHERE jid LIKE 'stale-prune-%'").run()
+    cleanupDb.close()
+  })
+
   it('quarantines interrupted outbound claims before queue restoration', () => {
     const db = new Database(path.join(dataDir, 'autonomy.db'))
     const inboundId = 'interrupted-send-1'

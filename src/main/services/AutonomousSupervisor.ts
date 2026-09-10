@@ -1047,7 +1047,13 @@ export class AutonomousSupervisor extends EventEmitter {
         this.db.prepare('DELETE FROM usage_events WHERE created_at < ?').run(cutoff).changes,
         this.db.prepare('DELETE FROM operator_actions WHERE created_at < ?').run(cutoff).changes,
         this.db.prepare('DELETE FROM quality_reviews WHERE reviewed_at < ?').run(cutoff).changes,
-        this.db.prepare('DELETE FROM takeovers WHERE active = 0 AND ended_at IS NOT NULL AND ended_at < ?').run(cutoff).changes
+        this.db.prepare('DELETE FROM takeovers WHERE active = 0 AND ended_at IS NOT NULL AND ended_at < ?').run(cutoff).changes,
+        this.db.prepare(`DELETE FROM conversations
+          WHERE updated_at < ?
+            AND jid NOT IN (SELECT jid FROM inbound_events WHERE status IN ('queued','processing','retrying'))
+            AND jid NOT IN (SELECT jid FROM outbound_sends WHERE status IN ('pending','authorized','sending','delivery-unknown'))
+            AND jid NOT IN (SELECT jid FROM drafts WHERE status = 'pending')
+            AND jid NOT IN (SELECT jid FROM takeovers WHERE active = 1)`).run(cutoff).changes
       ]
       return counts.reduce((total, count) => total + count, 0)
     })()

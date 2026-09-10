@@ -43,7 +43,7 @@ Implements the architecture plan. Complete phases in order. Keep observe-only as
 - [x] Make the host worker authoritative for autonomous conversations. (WhatsApp and email bridges suppress their legacy renderer-agent path while the main-process supervisor is running or degraded; renderer sending remains available for explicit human use.)
 - [x] Replace renderer full-session replacement with append/version-checked writes. (Chat persistence now merges stable message IDs and rejects stale renderer snapshots by `updatedAt`; existing messages are never cleared by a save.)
 - [x] Preserve existing message IDs during migration. (Normalized adapters persist provider event/message IDs as the inbound primary key; no remapping layer replaces them.)
-- [x] Apply retention and deletion across every local autonomous store. (Supervisor prunes aged messages, inbound events, decisions, retries, read notifications, usage and operator records; `AICA_RETENTION_DAYS` defaults to 90 and active work is preserved.)
+- [x] Apply retention and deletion across every local autonomous store. (Supervisor prunes aged messages, inactive conversation metadata, inbound events, decisions, retries, read notifications, usage and operator records; `AICA_RETENTION_DAYS` defaults to 90 and active work is preserved.)
 
 ## Phase 2 — LangChain/LangGraph workflow
 
@@ -384,3 +384,4 @@ Known limitations and failed baseline checks:
 - Iteration: quarantined interrupted pending/authorized/sending outbound claims as `delivery-unknown` before restart queue restoration, preventing a stale claim from silently suppressing recovery; added regression coverage.
 - Iteration: made external `delivery-unknown` retry fail closed when the original normalized payload is missing, avoiding a malformed WhatsApp fallback on email/Meta/X; the unresolved record remains available for quarantine or manual reconciliation.
 - Iteration: changed maximum-conversation admission to count only conversations updated within the configured retention window, so historical inactive rows cannot exhaust the active-cap budget; added regression coverage.
+- Iteration: extended retention pruning to remove stale inactive conversation metadata while preserving queued work, unresolved sends, pending drafts and active takeovers; added regression coverage.
