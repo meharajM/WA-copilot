@@ -167,10 +167,10 @@ Implemented in the current branch:
 
 Verification snapshot:
 
-- Autonomy, workflow, policy, Cloud API, webhook and recovery tests remain covered by the focused suites; the latest full suite is 39 test files passed, 1 skipped, 280 tests passed, 7 skipped.
-- Production build: passing.
+- Autonomy, workflow, policy, Cloud API, webhook and recovery tests remain covered by the focused suites; the latest full suite is 39 test files passed, 1 skipped, 281 tests passed, 7 skipped.
+- Production build and unsigned Electron 44.3.0 macOS arm64 directory package: passing; packaged main-process launch smoke test: passing.
 - Full typecheck: passing (`npx tsc --noEmit`).
-- Full test suite: 39 files passed, 1 skipped; 280 tests passed, 7 skipped (287 total).
+- Full test suite: 39 files passed, 1 skipped; 281 tests passed, 7 skipped (288 total).
 
 Known limitations and failed baseline checks:
 
