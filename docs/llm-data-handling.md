@@ -35,5 +35,10 @@ Until those decisions are recorded, keep the supervisor in observe-only or
 draft mode. Local WebLLM availability does not satisfy this gate because the
 autonomous worker does not currently route through it.
 
+Auto-reply also requires `AICA_LLM_DATA_POLICY_APPROVED=true` (or `1`/`yes`)
+in the owner-machine environment. This acknowledges that the provider,
+region/residency, retention and allowed-data decisions above were reviewed;
+it is not a claim that the provider has approved the use case.
+
 Implementation references: `src/main/services/AutonomousSupervisor.ts`,
 `src/main/packages/core/index.ts`, and `src/renderer/src/lib/llm.ts`.

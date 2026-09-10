@@ -16,7 +16,7 @@ Implements the architecture plan. Complete phases in order. Keep observe-only as
 - [ ] Verify Instagram, Messenger and Lead Ads permissions and review requirements.
 - [ ] Verify X DM access, pricing and spending controls.
 - [ ] Audit Gmail OAuth scopes and restricted-scope obligations.
-- [ ] Choose approved LLM providers, data regions and local/cloud data handling.
+- [ ] Choose approved LLM providers, data regions and local/cloud data handling. (`AICA_LLM_DATA_POLICY_APPROVED` now gates Auto-reply and is visible in health/UI; the actual provider, region, retention and allowed-data decision remains a deployment gate.)
 - [x] List every inbound path and every outbound sender. (Repository-derived inventory is documented in `docs/omnichannel-inventory.md`; Baileys, WhatsApp Web, Cloud, email, Meta, X and lead ingress plus autonomous and explicit human senders are enumerated.)
 - [x] Find every caller of WhatsAppService.sendMessage and every renderer app:submit-message caller. (The inventory separates the supervisor’s authoritative autonomous path from explicit renderer, IPC, MCP and legacy UI actions.)
 - [x] List every session persistence writer and bot/permission state writer. (The inventory covers autonomy SQLite/state, chat-history SQLite, channel stores, secure stores, MCP audit and renderer UI persistence.)
@@ -357,3 +357,4 @@ Known limitations and failed baseline checks:
 - Iteration: closed the email attachment safety gap by escalating external messages with attachment/media metadata before model generation, with integration coverage; binary retrieval/scanning remains intentionally disabled.
 - Iteration: selected and documented the recommended Meta pilot login boundary (operator-provisioned Facebook Login/Page token for Page-backed Messenger and Instagram), with least-privilege exclusions and official verification links; live scope/review confirmation remains open.
 - Iteration: added `docs/omnichannel-live-pilot-matrix.md` with provider prerequisites, operator actions, expected safety outcomes and evidence fields for the remaining live-account, staging, recovery and charge-review gates.
+- Iteration: added an explicit `AICA_LLM_DATA_POLICY_APPROVED` fail-closed prerequisite for Auto-reply and surfaced its state in health/UI; provider, region, residency and retention approval remain deployment evidence gates.

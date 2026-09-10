@@ -75,6 +75,7 @@ const COST_PER_1K_TOKENS = Math.max(0, Number(process.env.AICA_LLM_COST_PER_1K_T
 const RETENTION_DAYS = configuredCap('AICA_RETENTION_DAYS', 90)
 const ESCALATION_CONTACT = (process.env.AICA_ESCALATION_CONTACT || '').trim()
 const ESCALATION_SLA_MINUTES = configuredCap('AICA_ESCALATION_SLA_MINUTES', 60)
+const LLM_DATA_POLICY_APPROVED = /^(1|true|yes)$/i.test((process.env.AICA_LLM_DATA_POLICY_APPROVED || '').trim())
 const LEASE_TTL_MS = 60_000
 
 export class AutonomousSupervisor extends EventEmitter {
@@ -180,7 +181,7 @@ export class AutonomousSupervisor extends EventEmitter {
 
   static getInstance(): AutonomousSupervisor { return this.instance ??= new AutonomousSupervisor() }
   getState(): SupervisorState { return { ...this.state, queueDepth: [...this.queues.values(), ...this.emailQueues.values(), ...this.metaQueues.values()].reduce((n, q) => n + q.length, 0), usageToday: { llmCalls: this.usageCount('llm'), outboundMessages: this.usageCount('outbound'), estimatedCost: this.usageCost() } } }
-  getHealth() { return { executionLocation: 'electron-main', transport: this.outboundTransport.kind, llmConfigured: this.gemini !== null, channel: whatsappService.getConnectionState(), email: emailChannelService.getConnectionState(), rag: RAGEngine.getInstance().health(), memory: MemoryService.getInstance().getHealth(), supervisor: this.getState(), escalation: { contact: ESCALATION_CONTACT || null, contactConfigured: Boolean(ESCALATION_CONTACT), slaMinutes: ESCALATION_SLA_MINUTES }, memoryRss: process.memoryUsage().rss, uptime: process.uptime(), leaseHeld: this.hasLease(), checkedAt: Date.now() } }
+  getHealth() { return { executionLocation: 'electron-main', transport: this.outboundTransport.kind, llmConfigured: this.gemini !== null, llmDataPolicyApproved: LLM_DATA_POLICY_APPROVED, channel: whatsappService.getConnectionState(), email: emailChannelService.getConnectionState(), rag: RAGEngine.getInstance().health(), memory: MemoryService.getInstance().getHealth(), supervisor: this.getState(), escalation: { contact: ESCALATION_CONTACT || null, contactConfigured: Boolean(ESCALATION_CONTACT), slaMinutes: ESCALATION_SLA_MINUTES }, memoryRss: process.memoryUsage().rss, uptime: process.uptime(), leaseHeld: this.hasLease(), checkedAt: Date.now() } }
   getMetrics(days = 14) {
     const safeDays = Number.isInteger(days) && days > 0 && days <= 90 ? days : 14
     const since = Date.now() - safeDays * 24 * 60 * 60 * 1000
@@ -260,6 +261,7 @@ export class AutonomousSupervisor extends EventEmitter {
   setMode(mode: AutonomyMode, responsePermission: boolean): SupervisorState {
     if (!canEnableAutoMode(this.state.mode, mode)) throw new Error('Enable Draft mode before Auto-reply')
     if (mode === 'auto' && responsePermission && !ESCALATION_CONTACT) throw new Error('Configure AICA_ESCALATION_CONTACT before enabling Auto-reply')
+    if (mode === 'auto' && responsePermission && !LLM_DATA_POLICY_APPROVED) throw new Error('Set AICA_LLM_DATA_POLICY_APPROVED=true after reviewing the approved provider and data handling')
     this.state.mode = mode; this.state.responsePermission = mode === 'auto' && responsePermission
     this.audit('set_mode', { mode, responsePermission: this.state.responsePermission }); this.publish(); return this.getState()
   }
