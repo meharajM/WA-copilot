@@ -2,6 +2,7 @@ import Database from 'better-sqlite3'
 import { app, BrowserWindow, ipcMain } from 'electron'
 import * as path from 'node:path'
 import * as fs from 'node:fs'
+import { promises as dns } from 'node:dns'
 import { createHash, randomUUID } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { GeminiClient } from '../packages/core/index'
@@ -103,6 +104,8 @@ export class AutonomousSupervisor extends EventEmitter {
   private lastRetentionAt = 0
   private readonly leaseOwner = randomUUID()
   private leaseGeneration = 0
+  private networkProbeInFlight = false
+  private networkHealth: { status: 'unknown' | 'online' | 'offline'; checkedAt: number; latencyMs?: number; error?: string } = { status: 'unknown', checkedAt: 0 }
 
   private constructor() {
     super()
@@ -186,7 +189,7 @@ export class AutonomousSupervisor extends EventEmitter {
 
   static getInstance(): AutonomousSupervisor { return this.instance ??= new AutonomousSupervisor() }
   getState(): SupervisorState { return { ...this.state, queueDepth: [...this.queues.values(), ...this.emailQueues.values(), ...this.metaQueues.values()].reduce((n, q) => n + q.length, 0), usageToday: { llmCalls: this.usageCount('llm'), outboundMessages: this.usageCount('outbound'), estimatedCost: this.usageCost() } } }
-  getHealth() { return { executionLocation: 'electron-main', transport: this.outboundTransport.kind, baileysExperimentalApproval: BAILEYS_EXPERIMENTAL_APPROVED, llmConfigured: this.gemini !== null, llmDataPolicyApproved: LLM_DATA_POLICY_APPROVED, channel: whatsappService.getConnectionState(), browser: whatsappWebConnector.getState(), email: emailChannelService.getConnectionState(), providers: { meta: { configured: this.metaTransport !== null }, x: { configured: this.xTransport !== null } }, queues: { whatsapp: [...this.queues.values()].reduce((total, queue) => total + queue.length, 0), email: [...this.emailQueues.values()].reduce((total, queue) => total + queue.length, 0), meta: [...this.metaQueues.values()].reduce((total, queue) => total + queue.length, 0) }, rag: RAGEngine.getInstance().health(), memory: MemoryService.getInstance().getHealth(), supervisor: this.getState(), escalation: { contact: ESCALATION_CONTACT || null, contactConfigured: Boolean(ESCALATION_CONTACT), slaMinutes: ESCALATION_SLA_MINUTES, overdue: this.countOverdueEscalations() }, memoryRss: process.memoryUsage().rss, uptime: process.uptime(), leaseHeld: this.hasLease(), checkedAt: Date.now() } }
+  getHealth() { return { executionLocation: 'electron-main', transport: this.outboundTransport.kind, baileysExperimentalApproval: BAILEYS_EXPERIMENTAL_APPROVED, llmConfigured: this.gemini !== null, llmDataPolicyApproved: LLM_DATA_POLICY_APPROVED, channel: whatsappService.getConnectionState(), browser: whatsappWebConnector.getState(), email: emailChannelService.getConnectionState(), network: this.networkHealth, providers: { meta: { configured: this.metaTransport !== null }, x: { configured: this.xTransport !== null } }, queues: { whatsapp: [...this.queues.values()].reduce((total, queue) => total + queue.length, 0), email: [...this.emailQueues.values()].reduce((total, queue) => total + queue.length, 0), meta: [...this.metaQueues.values()].reduce((total, queue) => total + queue.length, 0) }, rag: RAGEngine.getInstance().health(), memory: MemoryService.getInstance().getHealth(), supervisor: this.getState(), escalation: { contact: ESCALATION_CONTACT || null, contactConfigured: Boolean(ESCALATION_CONTACT), slaMinutes: ESCALATION_SLA_MINUTES, overdue: this.countOverdueEscalations() }, memoryRss: process.memoryUsage().rss, uptime: process.uptime(), leaseHeld: this.hasLease(), checkedAt: Date.now() } }
   getMetrics(days = 14) {
     const safeDays = Number.isInteger(days) && days > 0 && days <= 90 ? days : 14
     const since = Date.now() - safeDays * 24 * 60 * 60 * 1000
@@ -714,6 +717,7 @@ export class AutonomousSupervisor extends EventEmitter {
   private checkHealth(): void {
     const channel = whatsappService.getConnectionState()
     this.state.lastHealthCheck = Date.now()
+    void this.probeNetworkHealth()
     this.expireDrafts()
     this.checkEscalationSla()
     if (this.outboundTransport.kind === 'baileys' && channel.status === 'connected') this.baileysWasConnected = true
@@ -731,6 +735,29 @@ export class AutonomousSupervisor extends EventEmitter {
       this.state.lastError = null
     }
     this.publish()
+  }
+
+  private async probeNetworkHealth(): Promise<void> {
+    if (this.networkProbeInFlight) return
+    this.networkProbeInFlight = true
+    const startedAt = Date.now()
+    let timer: NodeJS.Timeout | undefined
+    try {
+      await Promise.race([
+        dns.lookup('api.whatsapp.com'),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error('network probe timed out')), 2_000)
+          timer.unref?.()
+        })
+      ])
+      this.networkHealth = { status: 'online', checkedAt: Date.now(), latencyMs: Date.now() - startedAt }
+    } catch (error) {
+      this.networkHealth = { status: 'offline', checkedAt: Date.now(), latencyMs: Date.now() - startedAt, error: error instanceof Error ? error.message : String(error) }
+    } finally {
+      if (timer) clearTimeout(timer)
+      this.networkProbeInFlight = false
+      if (this.db.open) this.publish()
+    }
   }
 
   private expireDrafts(): void {
