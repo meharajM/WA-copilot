@@ -194,6 +194,7 @@ Known limitations and failed baseline checks:
 
 ## Iteration log
 
+- Iteration: re-ran the full verification set after the delivery-boundary audit. Result: 39 test files passed, 1 skipped; 284 tests passed, 7 skipped; main/renderer typechecks passed; lint passed with 0 errors and 330 existing warnings. No synthetic email/X delivery receipts were added because provider-authoritative callbacks are unavailable.
 - Iteration: added secure Cloud credential fields, OS-keychain allowlisting, store-backed transport selection, awaitable webhook startup, and startup integration coverage. Result: webhook server test passes; build passes; five unrelated email typecheck errors remain.
 - Iteration: added the common outbound transport contract and fail-closed Cloud selection. Result: transport and webhook tests pass; build passes; Baileys remains the default.
 - Iteration: added outbound payload hashes and `delivery-unknown` handling for ambiguous provider errors. Result: 17 targeted tests pass; build remains passing.
