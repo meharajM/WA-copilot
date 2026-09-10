@@ -66,3 +66,5 @@ export class WhatsAppWebConnector {
     } catch (error) { this.state = { ...this.state, status: 'error', error: error instanceof Error ? error.message : String(error), lastHealthCheck: Date.now() } }
   }
 }
+
+export const whatsappWebConnector = new WhatsAppWebConnector()

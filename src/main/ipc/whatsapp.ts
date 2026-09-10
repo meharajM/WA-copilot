@@ -9,10 +9,8 @@ import { ipcMain, BrowserWindow } from 'electron'
 import Store from 'electron-store'
 import { whatsappService } from '../whatsapp/WhatsAppService'
 import { autonomousSupervisor } from '../services/AutonomousSupervisor'
-import { WhatsAppWebConnector } from '../services/WhatsAppWebConnector'
+import { whatsappWebConnector } from '../services/WhatsAppWebConnector'
 import { allowsBaileysDirectSend } from '../services/WhatsAppTransportPolicy'
-
-const whatsappWebConnector = new WhatsAppWebConnector()
 
 export function registerWhatsAppHandlers(): void {
     // Attempt auto-restore of saved session credentials

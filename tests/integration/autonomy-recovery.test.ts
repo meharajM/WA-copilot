@@ -332,7 +332,7 @@ describe('autonomy recovery', () => {
   })
 
   it('surfaces bounded escalation contact and SLA configuration', () => {
-    expect(supervisor.getHealth()).toMatchObject({ llmDataPolicyApproved: false, escalation: { contactConfigured: false, contact: null, slaMinutes: 60 } })
+    expect(supervisor.getHealth()).toMatchObject({ llmDataPolicyApproved: false, browser: { status: 'disconnected', profile: 'whatsapp-web-profile' }, escalation: { contactConfigured: false, contact: null, slaMinutes: 60 } })
     supervisor.setMode('draft', false)
     expect(() => supervisor.setMode('auto', true)).toThrow('AICA_ESCALATION_CONTACT')
     supervisor.setMode('observe', false)
