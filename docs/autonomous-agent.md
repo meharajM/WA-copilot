@@ -27,5 +27,6 @@ Supported transport and channel status:
 - WhatsApp Web uses a dedicated persistent Playwright profile, manual QR/session restoration, bounded incoming DOM monitoring, screenshots, and human takeover. Autonomous outbound Web sends remain disabled until live delivery semantics are validated.
 - Gmail/email, Instagram, Messenger, and X DM adapters use normalized host queues and channel-specific policy gates. X public posting is not exposed; Meta lead events never imply messaging consent.
 - A browser-extension bridge and hosted HTTPS relay are not included in the current desktop build. Official webhooks require an explicitly configured, authenticated reachable relay for production deployment; localhost listeners are for controlled development/pilot use.
+- The Memento MCP/Neo4j memory adapter is not shipped. The settings UI does not allow selecting it, and stale persisted selections fail closed to the local SQLite backend until a real adapter is implemented and tested.
 
 Browser and MCP machine control remain separate from customer generation and are not invoked by the supervisor. MCP controls are owner-authenticated, validated, rate-limited, time-bounded, cancellable where supported, and audited; arbitrary shell execution, unrestricted filesystem access, and unrestricted browser evaluation are disabled.

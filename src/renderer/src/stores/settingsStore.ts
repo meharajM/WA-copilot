@@ -71,8 +71,8 @@ interface SettingsState {
     setFileSystemSafeMode: (enabled: boolean) => void
 
     // Memory Settings
-    memoryBackend: 'server-memory' | 'memento-mcp'
-    setMemoryBackend: (backend: 'server-memory' | 'memento-mcp') => void
+    memoryBackend: 'server-memory'
+    setMemoryBackend: (backend: 'server-memory') => void
 
     resetToDefaults: () => void
 
@@ -110,7 +110,7 @@ const defaultSettings = {
     playwrightBrowser: 'auto' as PlaywrightBrowserType, // Auto-detect based on OS
     playwrightHeadless: false, // Default to headed for user visibility
     fileSystemSafeMode: true, // Default to safe mode (shadow writes)
-    memoryBackend: 'server-memory' as 'server-memory' | 'memento-mcp', // Default backend
+    memoryBackend: 'server-memory' as const,
     activeUserId: null,
     isSyncing: false,
     lastSyncTime: 0,

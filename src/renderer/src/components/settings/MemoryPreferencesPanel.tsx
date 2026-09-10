@@ -40,7 +40,7 @@ export function MemoryPreferencesPanel() {
         loadStats()
     }, [])
 
-    const handleBackendChange = async (backend: 'server-memory' | 'memento-mcp') => {
+    const handleBackendChange = async (backend: 'server-memory') => {
         await settings.setMemoryBackend(backend)
         // Refresh stats to see new backend state
         setTimeout(loadStats, 500)
@@ -87,22 +87,15 @@ export function MemoryPreferencesPanel() {
                         </p>
                     </button>
 
-                    <button
-                        onClick={() => handleBackendChange('memento-mcp')}
-                        className={`flex flex-col items-start p-4 rounded-xl border transition-all ${
-                            settings.memoryBackend === 'memento-mcp'
-                                ? 'bg-purple-500/10 border-purple-500/50'
-                                : 'bg-[var(--color-surface)] border-transparent hover:bg-[var(--color-border)]'
-                        }`}
-                    >
+                    <div className="flex flex-col items-start p-4 rounded-xl border border-dashed border-[var(--color-border)] bg-[var(--color-surface)] opacity-70">
                         <div className="flex items-center gap-2 mb-2">
-                            <HardDrive className={`w-5 h-5 ${settings.memoryBackend === 'memento-mcp' ? 'text-purple-400' : 'text-[var(--color-text-muted)]'}`} />
-                            <span className="font-bold text-[var(--color-text-primary)]">Memento MCP (Neo4j)</span>
+                            <HardDrive className="w-5 h-5 text-[var(--color-text-muted)]" />
+                            <span className="font-bold text-[var(--color-text-primary)]">Memento MCP (Neo4j) — unavailable</span>
                         </div>
                         <p className="text-xs text-left text-[var(--color-text-dim)]">
-                            Graph database storage. Scalable and relational. Best for massive context and complex queries.
+                            The adapter is not implemented. SQLite fallback is used if an old setting selects it.
                         </p>
-                    </button>
+                    </div>
                 </div>
             </div>
 

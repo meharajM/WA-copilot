@@ -200,6 +200,7 @@ Known limitations and failed baseline checks:
 
 ## Iteration log
 
+- Iteration: removed the selectable-but-unimplemented Memento MCP memory path from the renderer and made stale persisted Memento configuration fall back to SQLite before initialization. Result: main and renderer typechecks pass; full suite 39 files passed, 1 skipped, 292 passed, 7 skipped; Memento remains an explicit future adapter rather than a runtime failure path.
 - Iteration: re-ran the runtime compatibility check and split the checklist’s local runtime evidence from its legal/release gates; Node `22.12.0`, Electron `44.3.0`, the Electron executable, and machine-readable licenses for all direct dependencies were confirmed. Result: local compatibility and automated pilot/staging controls are now explicitly closed; live, legal, provider and release gates remain open.
 - Iteration: added a redacted live-evidence record template and linked it from the pilot matrix and remaining external gates, so provider access, delivery receipts, staging, recovery and charge-review evidence can be captured without closing gates from local tests. Result: documentation-only; checklist remains at 25 open external/live items.
 - Iteration: restored provider-message IDs on idempotent email outbox replays, preventing a deduplicated successful send from being misclassified as `delivery-unknown`. Result: focused email/outbox/recovery suites 64 passed; full suite 39 files passed, 1 skipped, 292 passed, 7 skipped; main/renderer typechecks passed; lint passed with 0 errors and 330 existing warnings.
