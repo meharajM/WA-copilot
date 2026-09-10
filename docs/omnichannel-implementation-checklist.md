@@ -82,7 +82,7 @@ Implements the architecture plan. Complete phases in order. Keep observe-only as
 - [x] Insert intent before provider request and atomically claim dispatch. (Single active Electron authority; multi-worker ownership generation remains pending.)
 - [x] Recheck policy immediately before sending. (Revision and pause checks run before each provider call.)
 - [x] Store provider IDs, payload hash and delivery events. (Provider IDs, payload hashes and initial sent events are stored for all successful sends; later Cloud callbacks append delivery events, including unmatched provider callbacks.)
-- [x] Retry only confirmed pre-send transient failures. (Automatic retry is limited to provider rate-limit responses; network, timeout and 5xx outcomes become delivery-unknown for owner reconciliation.)
+- [x] Retry only confirmed pre-send transient failures. (Automatic retry is limited to provider rate-limit responses across WhatsApp, email, Meta and X; network, timeout and 5xx outcomes become delivery-unknown for owner reconciliation.)
 - [x] Never automatically retry a timeout after provider acceptance is possible. (Timeout/connection-reset errors become `delivery-unknown`.)
 - [x] Restore in paused recovery mode and quarantine ambiguous sends. (Validated backup restore enters recovery hold; ambiguous provider outcomes become `delivery-unknown` and require explicit owner retry or quarantine.)
 - [x] Use an ownership generation to reject stale workers. (The single-node supervisor lease increments a durable generation on acquisition and matches owner plus generation on renew, release and health checks.)
@@ -377,3 +377,4 @@ Known limitations and failed baseline checks:
 - Iteration: refreshed the verification snapshot from the latest full run: 39 files, 264 tests passed, 7 skipped (271 total); no implementation status changed.
 - Iteration: corrected shared delivery-failure audit messages to identify the actual channel instead of always saying WhatsApp; recovery regression coverage remains green with 33 focused tests.
 - Iteration: applied the daily outbound cap to email, Meta and X dispatch as well as WhatsApp; over-cap external work is durably failed, audited and owner-notified before provider calls.
+- Iteration: added bounded exponential retry handling for confirmed pre-send rate-limit responses on email, Meta and X; ambiguous/network/provider-acceptance uncertainty remains delivery-unknown and is never auto-retried.

@@ -713,7 +713,14 @@ export class AutonomousSupervisor extends EventEmitter {
     const payloadHash = createHash('sha256').update(JSON.stringify({ to: message.to, subject: message.subject, body, inReplyTo: message.messageId, references: message.references })).digest('hex')
     if (this.db.prepare('SELECT status FROM outbound_sends WHERE inbound_id = ?').get(message.id)) return
     this.db.prepare('INSERT INTO outbound_sends (inbound_id,provider_message_id,jid,content,sent_at,status,error,payload_hash) VALUES (?,?,?,?,?,?,?,?)').run(message.id, null, jid, body, Date.now(), 'sending', null, payloadHash)
-    const result = await send(body)
+    let result: { success: boolean; providerMessageId?: string; error?: string } = { success: false, error: 'external send failed' }
+    for (let attempt = 0; attempt < 3; attempt++) {
+      result = await send(body)
+      if (result.success || !isConfirmedPreSendTransientError(result.error || '') || attempt === 2) break
+      this.db.prepare('INSERT INTO retries (inbound_id,attempt,error,next_at) VALUES (?,?,?,?)').run(message.id, attempt + 1, result.error, Date.now() + (2 ** attempt) * 1000)
+      this.db.prepare('UPDATE inbound_events SET status = ? WHERE id = ?').run('retrying', message.id)
+      await new Promise(resolve => setTimeout(resolve, (2 ** attempt) * 1000))
+    }
     if (!result.success) {
       const error = result.error || 'email send failed'
       this.db.prepare('UPDATE outbound_sends SET status = ?, error = ?, sent_at = ? WHERE inbound_id = ?').run(isAmbiguousSendError(error) ? 'delivery-unknown' : 'failed', error, Date.now(), message.id)

@@ -74,8 +74,9 @@ describe('autonomy recovery', () => {
     for (let index = 0; index < 1000; index++) usage.run('outbound', 1, 0, 0, 'cap-test', Date.now())
     db.close()
     supervisor.start()
-    const internal = supervisor as unknown as { state: { mode: string; responsePermission: boolean; paused: boolean }; runDecision: ReturnType<typeof vi.fn>; processExternal: (message: unknown, jid: string, send: () => Promise<unknown>) => Promise<void> }
+    const internal = supervisor as unknown as { state: { mode: string; responsePermission: boolean; paused: boolean }; hasLease: () => boolean; runDecision: ReturnType<typeof vi.fn>; processExternal: (message: unknown, jid: string, send: () => Promise<unknown>) => Promise<void> }
     internal.state.mode = 'auto'; internal.state.responsePermission = true; internal.state.paused = false
+    internal.hasLease = () => true
     internal.runDecision = vi.fn().mockResolvedValue({ text: 'Hours are 9–5.', confidence: 1, grounding: 'grounded', escalated: false, sensitiveTopic: false, reason: 'test' })
     const send = vi.fn().mockResolvedValue({ success: true, providerMessageId: 'must-not-send' })
     await internal.processExternal({ id: inboundId, channel: 'email', from: 'customer@example.com', to: 'support@example.com', content: 'What are your hours?', timestamp: Date.now(), type: 'text', isFromMe: false }, jid, send)
@@ -89,6 +90,34 @@ describe('autonomy recovery', () => {
     cleanupDb.close()
     supervisor.stop()
   })
+
+  it('retries external rate limits but not ambiguous failures', async () => {
+    const db = new Database(path.join(dataDir, 'autonomy.db'))
+    const inboundId = 'external-rate-limit-1'
+    const jid = 'email:external-rate-limit'
+    db.prepare('INSERT INTO inbound_events (id,jid,content,received_at,status,channel) VALUES (?,?,?,?,?,?)').run(inboundId, jid, 'What are your hours?', Date.now(), 'queued', 'email')
+    db.close()
+    supervisor.start()
+    const internal = supervisor as unknown as { state: { mode: string; responsePermission: boolean; paused: boolean }; hasLease: () => boolean; runDecision: ReturnType<typeof vi.fn>; processExternal: (message: unknown, jid: string, send: () => Promise<unknown>) => Promise<void> }
+    internal.state.mode = 'auto'; internal.state.responsePermission = true; internal.state.paused = false
+    internal.hasLease = () => true
+    internal.runDecision = vi.fn().mockResolvedValue({ text: 'Hours are 9–5.', confidence: 1, grounding: 'grounded', escalated: false, sensitiveTopic: false, reason: 'test' })
+    const send = vi.fn()
+      .mockResolvedValueOnce({ success: false, error: 'HTTP 429 rate limit' })
+      .mockResolvedValueOnce({ success: false, error: 'HTTP 429 rate limit' })
+      .mockResolvedValueOnce({ success: true, providerMessageId: 'email-retry-1' })
+    await internal.processExternal({ id: inboundId, channel: 'email', from: 'customer@example.com', to: 'support@example.com', content: 'What are your hours?', timestamp: Date.now(), type: 'text', isFromMe: false }, jid, send)
+    expect(send).toHaveBeenCalledTimes(3)
+    const resultDb = new Database(path.join(dataDir, 'autonomy.db'), { readonly: true })
+    expect(resultDb.prepare('SELECT status FROM inbound_events WHERE id = ?').get(inboundId)).toEqual({ status: 'sent' })
+    expect(resultDb.prepare('SELECT COUNT(*) AS count FROM retries WHERE inbound_id = ?').get(inboundId)).toEqual({ count: 2 })
+    resultDb.close()
+    const cleanupDb = new Database(path.join(dataDir, 'autonomy.db'))
+    cleanupDb.prepare('DELETE FROM retries WHERE inbound_id = ?').run(inboundId)
+    cleanupDb.prepare('DELETE FROM inbound_events WHERE id = ?').run(inboundId)
+    cleanupDb.close()
+    supervisor.stop()
+  }, 6000)
 
   it('aggregates outbound usage by channel for owner visibility', () => {
     const db = new Database(path.join(dataDir, 'autonomy.db'))
