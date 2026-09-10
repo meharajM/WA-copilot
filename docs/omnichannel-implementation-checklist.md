@@ -1,6 +1,6 @@
 # Omnichannel support implementation checklist
 
-Date: September 9, 2026
+Date: September 10, 2026
 
 Implements the architecture plan. Complete phases in order. Keep observe-only as the default until phases 0–4 pass. Capture external evidence with `docs/omnichannel-live-evidence-record.md`; do not close a live gate from repository tests alone.
 
