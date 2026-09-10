@@ -2,7 +2,7 @@
 
 Date: September 9, 2026
 
-Implements the architecture plan. Complete phases in order. Keep observe-only as the default until phases 0–4 pass.
+Implements the architecture plan. Complete phases in order. Keep observe-only as the default until phases 0–4 pass. Capture external evidence with `docs/omnichannel-live-evidence-record.md`; do not close a live gate from repository tests alone.
 
 ## Phase 0 — baseline, access and containment
 
@@ -188,12 +188,13 @@ Known limitations and failed baseline checks:
 
 ## Current next three tasks
 
-- [ ] Complete provider-specific delivery reconciliation and live delivery-history verification for email, Meta and X.
+- [ ] Complete provider-specific delivery reconciliation and live delivery-history verification for email, Meta and X. (Record provider IDs and redacted delivery-history evidence in `docs/omnichannel-live-evidence-record.md`.)
 - [x] Decide and implement the production HTTPS webhook relay or explicitly keep the desktop pilot localhost-only. (Decision: desktop pilot remains localhost-only; no public listener or implicit tunnel is shipped.)
-- [ ] Complete hosted/ownership and live-account gates: secrets, ownership transfer, provider access, pilot drills and charge review.
+- [ ] Complete hosted/ownership and live-account gates: secrets, ownership transfer, provider access, pilot drills and charge review. (Use one evidence record per pilot/deployment run.)
 
 ## Iteration log
 
+- Iteration: added a redacted live-evidence record template and linked it from the pilot matrix and remaining external gates, so provider access, delivery receipts, staging, recovery and charge-review evidence can be captured without closing gates from local tests. Result: documentation-only; checklist remains at 25 open external/live items.
 - Iteration: restored provider-message IDs on idempotent email outbox replays, preventing a deduplicated successful send from being misclassified as `delivery-unknown`. Result: focused email/outbox/recovery suites 64 passed; full suite 39 files passed, 1 skipped, 292 passed, 7 skipped; main/renderer typechecks passed; lint passed with 0 errors and 330 existing warnings.
 - Iteration: included Gmail/MCP provider IDs in email delivery acknowledgments and added a repeatable MCP send-path regression without weakening outbox idempotency. Result: focused email-channel suite 4 passed; full suite 39 files passed, 1 skipped, 292 passed, 7 skipped; main/renderer typechecks passed; lint passed with 0 errors and 330 existing warnings.
 - Iteration: extended bounce coverage with an exact `inReplyTo`/provider-ID match, proving the intended email outbound becomes failed while unmatched and duplicate bounce events remain isolated. Result: focused recovery/email suites 64 passed; full suite 39 files passed, 1 skipped, 291 passed, 7 skipped; main/renderer typechecks passed; lint passed with 0 errors and 330 existing warnings.

@@ -1,7 +1,8 @@
 # Omnichannel live-pilot evidence matrix
 
-This is the operator worksheet for the remaining live gates. A row is complete
-only when the owner records the date, account/provider, observed result, and a
+This is the operator worksheet for the remaining live gates. Copy
+`docs/omnichannel-live-evidence-record.md` for each run. A row is complete only
+when the owner records the date, account/provider, observed result, and a
 redacted log or screenshot reference. Repository tests do not substitute for a
 live provider result.
 
