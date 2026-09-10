@@ -67,7 +67,7 @@ describe('autonomy recovery', () => {
 
   it('exposes bounded autonomy controls through the internal MCP service', async () => {
     const { autonomyMcpService } = await import('../../src/main/services/AutonomyMcpService')
-    expect(autonomyMcpService.listTools().tools.map(tool => tool.name)).toEqual(expect.arrayContaining(['get_agent_status', 'get_channel_status', 'pause_agent', 'resume_agent', 'retry_job', 'reconnect_channel']))
+    expect(autonomyMcpService.listTools().tools.map(tool => tool.name)).toEqual(expect.arrayContaining(['get_machine_health', 'get_agent_status', 'get_queue_status', 'get_channel_status', 'get_recent_failures', 'capture_diagnostics', 'surface_browser', 'pause_agent', 'resume_agent', 'retry_job', 'reconnect_channel']))
     expect((await autonomyMcpService.callTool('get_agent_status', {})).result).toMatchObject({ mode: 'observe' })
     expect((await autonomyMcpService.callTool('retry_job', {})).error).toBe('Invalid inboundId')
   })
