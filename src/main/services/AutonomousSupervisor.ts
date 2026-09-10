@@ -527,7 +527,7 @@ export class AutonomousSupervisor extends EventEmitter {
 
   listRecentFailures(limit = 50): Array<{ id: number; kind: string; details: string; createdAt: number }> {
     const safeLimit = Number.isInteger(limit) && limit > 0 && limit <= 100 ? limit : 50
-    return this.db.prepare("SELECT id, kind, details, created_at AS createdAt FROM notifications WHERE kind IN ('failure','budget','recovery') ORDER BY created_at DESC LIMIT ?").all(safeLimit) as Array<{ id: number; kind: string; details: string; createdAt: number }>
+    return this.db.prepare("SELECT id, kind, details, created_at AS createdAt FROM notifications WHERE kind IN ('failure','budget','recovery','escalation_sla_overdue') ORDER BY created_at DESC LIMIT ?").all(safeLimit) as Array<{ id: number; kind: string; details: string; createdAt: number }>
   }
 
   listDecisionEvidence(limit = 50): Array<{ inboundId: string; jid: string; createdAt: number; decision: ResponseDecision }> {

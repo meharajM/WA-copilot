@@ -94,8 +94,10 @@ describe('autonomy recovery', () => {
   it('lists bounded recent failure notifications for diagnostics', () => {
     const db = new Database(path.join(dataDir, 'autonomy.db'))
     db.prepare('INSERT INTO notifications (kind,details,created_at) VALUES (?,?,?)').run('failure', '{"error":"test"}', Date.now())
+    db.prepare('INSERT INTO notifications (kind,details,created_at) VALUES (?,?,?)').run('escalation_sla_overdue', '{"inboundId":"sla-1"}', Date.now() + 1)
     db.close()
-    expect(supervisor.listRecentFailures(1)).toMatchObject([{ kind: 'failure', details: '{"error":"test"}' }])
+    expect(supervisor.listRecentFailures(10)).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'failure', details: '{"error":"test"}' })]))
+    expect(supervisor.listRecentFailures(10)).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'escalation_sla_overdue', details: '{"inboundId":"sla-1"}' })]))
     expect(supervisor.listRecentFailures(0).length).toBeGreaterThanOrEqual(1)
   })
 
@@ -346,7 +348,7 @@ describe('autonomy recovery', () => {
     ;(supervisor as unknown as { checkHealth: () => void }).checkHealth()
     expect(supervisor.getHealth().escalation).toMatchObject({ overdue: 1 })
     const readDb = new Database(path.join(dataDir, 'autonomy.db'), { readonly: true })
-    expect(readDb.prepare("SELECT COUNT(*) AS count FROM notifications WHERE kind = 'escalation_sla_overdue'").get()).toEqual({ count: 1 })
+    expect(readDb.prepare("SELECT COUNT(*) AS count FROM notifications WHERE kind = 'escalation_sla_overdue' AND json_extract(details, '$.inboundId') = ?").get(inboundId)).toEqual({ count: 1 })
     readDb.close()
   })
 
