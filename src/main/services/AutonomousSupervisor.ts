@@ -185,7 +185,7 @@ export class AutonomousSupervisor extends EventEmitter {
 
   static getInstance(): AutonomousSupervisor { return this.instance ??= new AutonomousSupervisor() }
   getState(): SupervisorState { return { ...this.state, queueDepth: [...this.queues.values(), ...this.emailQueues.values(), ...this.metaQueues.values()].reduce((n, q) => n + q.length, 0), usageToday: { llmCalls: this.usageCount('llm'), outboundMessages: this.usageCount('outbound'), estimatedCost: this.usageCost() } } }
-  getHealth() { return { executionLocation: 'electron-main', transport: this.outboundTransport.kind, baileysExperimentalApproval: BAILEYS_EXPERIMENTAL_APPROVED, llmConfigured: this.gemini !== null, llmDataPolicyApproved: LLM_DATA_POLICY_APPROVED, channel: whatsappService.getConnectionState(), email: emailChannelService.getConnectionState(), providers: { meta: { configured: this.metaTransport !== null }, x: { configured: this.xTransport !== null } }, queues: { whatsapp: [...this.queues.values()].reduce((total, queue) => total + queue.length, 0), email: [...this.emailQueues.values()].reduce((total, queue) => total + queue.length, 0), meta: [...this.metaQueues.values()].reduce((total, queue) => total + queue.length, 0) }, rag: RAGEngine.getInstance().health(), memory: MemoryService.getInstance().getHealth(), supervisor: this.getState(), escalation: { contact: ESCALATION_CONTACT || null, contactConfigured: Boolean(ESCALATION_CONTACT), slaMinutes: ESCALATION_SLA_MINUTES }, memoryRss: process.memoryUsage().rss, uptime: process.uptime(), leaseHeld: this.hasLease(), checkedAt: Date.now() } }
+  getHealth() { return { executionLocation: 'electron-main', transport: this.outboundTransport.kind, baileysExperimentalApproval: BAILEYS_EXPERIMENTAL_APPROVED, llmConfigured: this.gemini !== null, llmDataPolicyApproved: LLM_DATA_POLICY_APPROVED, channel: whatsappService.getConnectionState(), email: emailChannelService.getConnectionState(), providers: { meta: { configured: this.metaTransport !== null }, x: { configured: this.xTransport !== null } }, queues: { whatsapp: [...this.queues.values()].reduce((total, queue) => total + queue.length, 0), email: [...this.emailQueues.values()].reduce((total, queue) => total + queue.length, 0), meta: [...this.metaQueues.values()].reduce((total, queue) => total + queue.length, 0) }, rag: RAGEngine.getInstance().health(), memory: MemoryService.getInstance().getHealth(), supervisor: this.getState(), escalation: { contact: ESCALATION_CONTACT || null, contactConfigured: Boolean(ESCALATION_CONTACT), slaMinutes: ESCALATION_SLA_MINUTES, overdue: this.countOverdueEscalations() }, memoryRss: process.memoryUsage().rss, uptime: process.uptime(), leaseHeld: this.hasLease(), checkedAt: Date.now() } }
   getMetrics(days = 14) {
     const safeDays = Number.isInteger(days) && days > 0 && days <= 90 ? days : 14
     const since = Date.now() - safeDays * 24 * 60 * 60 * 1000
@@ -641,6 +641,7 @@ export class AutonomousSupervisor extends EventEmitter {
     const channel = whatsappService.getConnectionState()
     this.state.lastHealthCheck = Date.now()
     this.expireDrafts()
+    this.checkEscalationSla()
     if (this.outboundTransport.kind === 'baileys' && channel.status === 'connected') this.baileysWasConnected = true
     if (this.outboundTransport.kind === 'baileys' && this.baileysWasConnected && this.state.status === 'running' && channel.status !== 'connected') {
       this.baileysDispatchBlocked = true
@@ -661,6 +662,15 @@ export class AutonomousSupervisor extends EventEmitter {
   private expireDrafts(): void {
     const result = this.db.prepare("UPDATE drafts SET status = 'expired' WHERE status = 'pending' AND expires_at <= ?").run(Date.now())
     if (result.changes > 0) this.audit('expire_drafts', { count: result.changes })
+  }
+  private countOverdueEscalations(now = Date.now()): number {
+    const cutoff = now - ESCALATION_SLA_MINUTES * 60 * 1000
+    return (this.db.prepare("SELECT COUNT(*) AS count FROM inbound_events WHERE status = 'escalated' AND received_at <= ?").get(cutoff) as { count: number }).count
+  }
+  private checkEscalationSla(): void {
+    const cutoff = Date.now() - ESCALATION_SLA_MINUTES * 60 * 1000
+    const rows = this.db.prepare(`SELECT e.id AS inboundId, e.jid FROM inbound_events e WHERE e.status = 'escalated' AND e.received_at <= ? AND NOT EXISTS (SELECT 1 FROM operator_actions a WHERE a.action = 'escalation_sla_overdue' AND json_extract(a.details, '$.inboundId') = e.id) ORDER BY e.received_at ASC LIMIT 20`).all(cutoff) as Array<{ inboundId: string; jid: string }>
+    for (const row of rows) { this.audit('escalation_sla_overdue', { inboundId: row.inboundId, jid: row.jid, slaMinutes: ESCALATION_SLA_MINUTES }); this.notifyOwner('escalation_sla_overdue', row) }
   }
 
   private async drain(jid: string): Promise<void> {

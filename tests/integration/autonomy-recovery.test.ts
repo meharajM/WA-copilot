@@ -338,6 +338,18 @@ describe('autonomy recovery', () => {
     supervisor.setMode('observe', false)
   })
 
+  it('notifies once when an escalation exceeds the configured SLA', () => {
+    const db = new Database(path.join(dataDir, 'autonomy.db'))
+    const inboundId = 'escalation-sla-1'
+    db.prepare('INSERT INTO inbound_events (id,jid,content,received_at,status,channel) VALUES (?,?,?,?,?,?)').run(inboundId, 'customer-sla', 'Need a person', Date.now() - 61 * 60 * 1000, 'escalated', 'whatsapp')
+    db.close()
+    ;(supervisor as unknown as { checkHealth: () => void }).checkHealth()
+    expect(supervisor.getHealth().escalation).toMatchObject({ overdue: 1 })
+    const readDb = new Database(path.join(dataDir, 'autonomy.db'), { readonly: true })
+    expect(readDb.prepare("SELECT COUNT(*) AS count FROM notifications WHERE kind = 'escalation_sla_overdue'").get()).toEqual({ count: 1 })
+    readDb.close()
+  })
+
   it('does not restart a persisted Auto-reply state without current safety approvals', () => {
     const internal = supervisor as unknown as { state: { mode: string; responsePermission: boolean; status: string; paused: boolean } }
     const previous = { ...internal.state }

@@ -167,10 +167,10 @@ Implemented in the current branch:
 
 Verification snapshot:
 
-- Autonomy, workflow, policy, Cloud API, webhook and recovery tests remain covered by the focused suites; the latest full suite is 39 test files passed, 1 skipped, 281 tests passed, 7 skipped.
+- Autonomy, workflow, policy, Cloud API, webhook and recovery tests remain covered by the focused suites; the latest full suite is 39 test files passed, 1 skipped, 282 tests passed, 7 skipped.
 - Production build and unsigned Electron 44.3.0 macOS arm64 directory package: passing; packaged main-process launch smoke test: passing.
 - Full typecheck: passing (`npx tsc --noEmit`).
-- Full test suite: 39 files passed, 1 skipped; 281 tests passed, 7 skipped (288 total).
+- Full test suite: 39 files passed, 1 skipped; 282 tests passed, 7 skipped (289 total).
 
 Known limitations and failed baseline checks:
 
@@ -410,6 +410,7 @@ Known limitations and failed baseline checks:
 - Iteration: fixed Electron 44 packaging discovery by pinning compatible `node-abi@4.35.0`; unsigned macOS arm64 directory packaging and an 8-second packaged launch smoke test now pass. Result: native rebuild/package compatibility is verified; production signing/notarization remains open.
 - Verification iteration: restored the workspace `better-sqlite3` module to Node ABI 127 after the Electron package run and reran the full suite/typechecks: 39 files passed, 1 skipped; 281 tests passed, 7 skipped. The ABI handoff is documented for release CI.
 - Iteration: aligned channel capabilities with the actual receipt boundary: Instagram/Messenger now advertise signed delivery receipts, while email/X receipt updates are rejected and audited instead of creating false delivery history; regression coverage added.
+- Iteration: added bounded escalation-SLA monitoring to the existing health loop; overdue escalations are visible in health/UI and produce one durable owner notification/audit event per inbound item, with recovery coverage.
 - Iteration: changed maximum-conversation admission to count only conversations updated within the configured retention window, so historical inactive rows cannot exhaust the active-cap budget; added regression coverage.
 - Iteration: extended retention pruning to remove stale inactive conversation metadata while preserving queued work, unresolved sends, pending drafts and active takeovers; added regression coverage.
 - Verification iteration: full repository checks passed after the recovery and retention slices: 39 test files passed, 1 skipped; 273 tests passed, 7 skipped; main/renderer typechecks and build passed; lint reported 0 errors with existing warnings.
