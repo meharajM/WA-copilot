@@ -555,8 +555,9 @@ export class AutonomousSupervisor extends EventEmitter {
     if (!this.db.prepare('SELECT 1 FROM approved_templates WHERE name = ? AND language_code = ? AND active = 1').get(name, languageCode)) throw new Error('Template is not active in the approved registry')
     if (this.outboundTransport.kind !== 'cloud') throw new Error('Approved templates require WhatsApp Cloud transport')
     if (parameters.length > 10 || parameters.some(value => value.length > 500)) throw new Error('Invalid template parameters')
-    const inbound = this.db.prepare('SELECT e.jid, e.received_at AS receivedAt FROM inbound_events e WHERE e.id = ?').get(inboundId) as { jid: string; receivedAt: number } | undefined
+    const inbound = this.db.prepare('SELECT e.jid, e.channel, e.received_at AS receivedAt FROM inbound_events e WHERE e.id = ?').get(inboundId) as { jid: string; channel: string; receivedAt: number } | undefined
     if (!inbound) throw new Error('Inbound message not found')
+    if (inbound.channel !== 'whatsapp') throw new Error('Approved templates require a WhatsApp inbound conversation')
     if (!this.hasLease()) throw new Error('Supervisor lease is not held')
     if (isWithinWhatsAppServiceWindow(inbound.receivedAt)) throw new Error('Use free-form response inside the WhatsApp service window')
     if (this.state.paused || this.state.status === 'stopped' || this.pausedConversations.has(inbound.jid)) throw new Error('Supervisor is paused')
