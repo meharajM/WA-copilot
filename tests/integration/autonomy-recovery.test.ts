@@ -69,6 +69,16 @@ describe('autonomy recovery', () => {
     supervisor.setMode('observe', false)
   })
 
+  it('does not restart a persisted Auto-reply state without current safety approvals', () => {
+    const internal = supervisor as unknown as { state: { mode: string; responsePermission: boolean; status: string; paused: boolean } }
+    const previous = { ...internal.state }
+    internal.state.mode = 'auto'
+    internal.state.responsePermission = true
+    const result = supervisor.start()
+    expect(result).toMatchObject({ status: 'degraded', paused: true, lastError: expect.stringContaining('AICA_ESCALATION_CONTACT') })
+    Object.assign(internal.state, previous)
+  })
+
   it('persists owner quality reviews and derives review metrics', () => {
     const db = new Database(path.join(dataDir, 'autonomy.db'))
     const inboundId = 'quality-review-1'

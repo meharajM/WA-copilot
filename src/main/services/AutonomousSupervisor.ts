@@ -226,7 +226,10 @@ export class AutonomousSupervisor extends EventEmitter {
 
   start(): SupervisorState {
     try { this.outboundTransport = createWhatsAppOutboundTransport() } catch (error) { this.state.status = 'degraded'; this.state.paused = true; this.state.lastError = error instanceof Error ? error.message : String(error); this.audit('start_failed_transport'); this.publish(); return this.getState() }
-    if (this.state.mode === 'auto' && this.state.responsePermission && !canRunBaileysAutoReply(this.outboundTransport.kind, BAILEYS_EXPERIMENTAL_APPROVED)) { this.state.status = 'degraded'; this.state.paused = true; this.state.lastError = 'Baileys Auto-reply requires explicit experimental transport approval'; this.audit('start_blocked_baileys_auto'); this.publish(); return this.getState() }
+    if (this.state.mode === 'auto' && this.state.responsePermission) {
+      const block = !ESCALATION_CONTACT ? 'Configure AICA_ESCALATION_CONTACT before enabling Auto-reply' : !LLM_DATA_POLICY_APPROVED ? 'Set AICA_LLM_DATA_POLICY_APPROVED=true after reviewing the approved provider and data handling' : !canRunBaileysAutoReply(this.outboundTransport.kind, BAILEYS_EXPERIMENTAL_APPROVED) ? 'Baileys Auto-reply requires explicit experimental transport approval' : null
+      if (block) { this.state.status = 'degraded'; this.state.paused = true; this.state.lastError = block; this.audit('start_blocked_auto_policy'); this.publish(); return this.getState() }
+    }
     if (!this.acquireLease()) { this.publish(); return this.getState() }
     this.state.status = 'running'; this.state.paused = false; this.startHealthMonitor(); this.audit('start'); this.publish(); return this.getState()
   }
