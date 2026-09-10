@@ -167,10 +167,10 @@ Implemented in the current branch:
 
 Verification snapshot:
 
-- Autonomy, workflow, policy, Cloud API, webhook and recovery tests remain covered by the focused suites; the latest full suite is 39 test files passed, 1 skipped, 277 tests passed, 7 skipped.
+- Autonomy, workflow, policy, Cloud API, webhook and recovery tests remain covered by the focused suites; the latest full suite is 39 test files passed, 1 skipped, 280 tests passed, 7 skipped.
 - Production build: passing.
 - Full typecheck: passing (`npx tsc --noEmit`).
-- Full test suite: 39 files passed, 1 skipped; 277 tests passed, 7 skipped (284 total).
+- Full test suite: 39 files passed, 1 skipped; 280 tests passed, 7 skipped (287 total).
 
 Known limitations and failed baseline checks:
 
@@ -374,7 +374,7 @@ Known limitations and failed baseline checks:
 - Iteration: added `docs/omnichannel-live-pilot-matrix.md` with provider prerequisites, operator actions, expected safety outcomes and evidence fields for the remaining live-account, staging, recovery and charge-review gates.
 - Iteration: added an explicit `AICA_LLM_DATA_POLICY_APPROVED` fail-closed prerequisite for Auto-reply and surfaced its state in health/UI; provider, region, residency and retention approval remain deployment evidence gates.
 - Iteration: resolved stale merge-conflict markers in `.env.example` and documented safe defaults for Gemini, LLM data approval, escalation contact/SLA and business scope.
-- Iteration: refreshed the verification snapshot from the latest full run: 39 files passed, 1 skipped; 277 tests passed, 7 skipped (284 total); no implementation status changed.
+- Iteration: refreshed the verification snapshot from the latest full run: 39 files passed, 1 skipped; 280 tests passed, 7 skipped (287 total); no implementation status changed.
 - Iteration: corrected shared delivery-failure audit messages to identify the actual channel instead of always saying WhatsApp; recovery regression coverage remains green with 33 focused tests.
 - Iteration: applied the daily outbound cap to email, Meta and X dispatch as well as WhatsApp; over-cap external work is durably failed, audited and owner-notified before provider calls.
 - Iteration: added bounded exponential retry handling for confirmed pre-send rate-limit responses on email, Meta and X; ambiguous/network/provider-acceptance uncertainty remains delivery-unknown and is never auto-retried.
