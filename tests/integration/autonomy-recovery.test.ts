@@ -874,6 +874,25 @@ describe('autonomy recovery', () => {
     db.close()
   })
 
+  it('does not retry a template after Pause All during backoff', async () => {
+    vi.resetModules()
+    const activeSupervisor = (await import('../../src/main/services/AutonomousSupervisor')).autonomousSupervisor
+    const db = (activeSupervisor as unknown as { db: Database.Database }).db
+    db.prepare('DELETE FROM supervisor_lease').run()
+    db.prepare("DELETE FROM usage_events WHERE kind = 'outbound'").run()
+    activeSupervisor.start()
+    db.prepare('INSERT OR IGNORE INTO approved_templates(name,language_code,category,active,updated_at) VALUES (?,?,?,?,?)').run('support_followup', 'en_US', 'utility', 1, Date.now())
+    db.prepare('INSERT INTO inbound_events(id,jid,content,received_at,status) VALUES (?,?,?,?,?)').run('template-pause', 'customer-template-pause', 'Follow up', Date.now() - 25 * 60 * 60 * 1000, 'escalated')
+    db.prepare('INSERT INTO conversations(jid,revision,updated_at) VALUES (?,?,?)').run('customer-template-pause', 1, Date.now())
+    let calls = 0
+    ;(activeSupervisor as unknown as { outboundTransport: unknown }).outboundTransport = { kind: 'cloud', sendText: vi.fn(), sendTemplate: async () => { calls++; activeSupervisor.pause(true); return { success: false, error: '429 rate limit' } } }
+    await expect(activeSupervisor.sendApprovedTemplate('template-pause', 'support_followup', 'en_US')).rejects.toThrow('Supervisor paused before template dispatch')
+    expect(calls).toBe(1)
+    expect(db.prepare('SELECT status FROM outbound_sends WHERE inbound_id = ?').get('template-pause')).toEqual({ status: 'failed' })
+    activeSupervisor.stop()
+    db.close()
+  })
+
   it('refuses to start while another supervisor lease is fresh', async () => {
     vi.resetModules()
     const activeSupervisor = (await import('../../src/main/services/AutonomousSupervisor')).autonomousSupervisor

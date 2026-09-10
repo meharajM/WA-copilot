@@ -623,6 +623,10 @@ export class AutonomousSupervisor extends EventEmitter {
     this.audit('send_approved_template', { inboundId, name, languageCode })
     let result: { success: boolean; providerMessageId?: string; error?: string } = { success: false, error: 'template send failed' }
     for (let attempt = 0; attempt < 3; attempt++) {
+      if (this.state.paused || this.pausedConversations.has(inbound.jid) || !this.hasLease()) {
+        result = { success: false, error: 'Supervisor paused before template dispatch' }
+        break
+      }
       try {
         result = await this.outboundTransport.sendTemplate(inbound.jid, name, languageCode, parameters)
       } catch (error) {

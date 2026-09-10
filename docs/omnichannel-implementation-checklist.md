@@ -194,6 +194,7 @@ Known limitations and failed baseline checks:
 
 ## Iteration log
 
+- Iteration: made template retry backoff honor Pause All, conversation pause and lease loss before another provider call. Result: focused recovery suite 56 passed; full suite 39 files passed, 1 skipped, 288 passed, 7 skipped; main/renderer typechecks passed; lint passed with 0 errors and 330 existing warnings.
 - Iteration: moved the outbound-cap gate before failed-template outbox mutation, preventing cap rejection from stranding a retryable record. Result: focused recovery suite 55 passed; full suite 39 files passed, 1 skipped, 287 passed, 7 skipped; main/renderer typechecks passed; lint passed with 0 errors and 330 existing warnings.
 - Iteration: normalized thrown approved-template transport failures into the existing failed/delivery-unknown state machine and added regression coverage for ambiguous exceptions. Result: focused recovery suite 54 passed; full suite 39 files passed, 1 skipped, 286 passed, 7 skipped; main/renderer typechecks passed; lint passed with 0 errors and 330 existing warnings.
 - Iteration: made approved Cloud-template sends retryable after permanent failures while preserving the outbox record; confirmed pre-send rate limits use the existing bounded retry classifier. Result: focused recovery suite 53 passed; full suite 39 files passed, 1 skipped, 285 passed, 7 skipped; main/renderer typechecks passed.
