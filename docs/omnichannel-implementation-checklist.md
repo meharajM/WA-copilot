@@ -173,10 +173,10 @@ Implemented in the current branch:
 
 Verification snapshot:
 
-- Autonomy, workflow, policy, Cloud API, webhook and recovery tests remain covered by the focused suites; the latest full suite is 39 test files passed, 1 skipped, 292 tests passed, 7 skipped.
+- Autonomy, workflow, policy, Cloud API, webhook, recovery and memory-fallback tests remain covered by the focused suites; the latest full suite is 40 test files passed, 1 skipped, 294 tests passed, 7 skipped.
 - Production build and unsigned Electron 44.3.0 macOS arm64 directory package: passing; packaged main-process launch smoke test: passing.
 - Full typecheck: passing (`npx tsc --noEmit`).
-- Full test suite: 39 files passed, 1 skipped; 292 tests passed, 7 skipped (299 total).
+- Full test suite: 40 files passed, 1 skipped; 294 tests passed, 7 skipped (301 total).
 
 Known limitations and failed baseline checks:
 
@@ -200,7 +200,7 @@ Known limitations and failed baseline checks:
 
 ## Iteration log
 
-- Iteration: removed the selectable-but-unimplemented Memento MCP memory path from the renderer and made stale persisted Memento configuration fall back to SQLite before initialization. Result: main and renderer typechecks pass; full suite 39 files passed, 1 skipped, 292 passed, 7 skipped; Memento remains an explicit future adapter rather than a runtime failure path.
+- Iteration: removed the selectable-but-unimplemented Memento MCP memory path from the renderer and made stale persisted Memento configuration fall back to SQLite before initialization, with regression coverage for both fallback and supported configurations. Result: main and renderer typechecks pass; full suite 40 test files passed, 1 skipped, 294 passed, 7 skipped; Memento remains an explicit future adapter rather than a runtime failure path.
 - Iteration: re-ran the runtime compatibility check and split the checklist’s local runtime evidence from its legal/release gates; Node `22.12.0`, Electron `44.3.0`, the Electron executable, and machine-readable licenses for all direct dependencies were confirmed. Result: local compatibility and automated pilot/staging controls are now explicitly closed; live, legal, provider and release gates remain open.
 - Iteration: added a redacted live-evidence record template and linked it from the pilot matrix and remaining external gates, so provider access, delivery receipts, staging, recovery and charge-review evidence can be captured without closing gates from local tests. Result: documentation-only; checklist remains at 25 open external/live items.
 - Iteration: restored provider-message IDs on idempotent email outbox replays, preventing a deduplicated successful send from being misclassified as `delivery-unknown`. Result: focused email/outbox/recovery suites 64 passed; full suite 39 files passed, 1 skipped, 292 passed, 7 skipped; main/renderer typechecks passed; lint passed with 0 errors and 330 existing warnings.
