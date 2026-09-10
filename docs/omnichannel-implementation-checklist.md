@@ -392,4 +392,4 @@ Known limitations and failed baseline checks:
 - Iteration: audited and owner-notified fail-closed external retry requests when the original payload is missing, preserving the unresolved delivery record for manual reconciliation.
 - Iteration: changed maximum-conversation admission to count only conversations updated within the configured retention window, so historical inactive rows cannot exhaust the active-cap budget; added regression coverage.
 - Iteration: extended retention pruning to remove stale inactive conversation metadata while preserving queued work, unresolved sends, pending drafts and active takeovers; added regression coverage.
-- Verification iteration: full repository checks passed after the recovery and retention slices: 39 test files passed, 1 skipped; 271 tests passed, 7 skipped; main/renderer typechecks and build passed; lint reported 0 errors with existing warnings.
+- Verification iteration: full repository checks passed after the recovery and retention slices: 39 test files passed, 1 skipped; 273 tests passed, 7 skipped; main/renderer typechecks and build passed; lint reported 0 errors with existing warnings.
