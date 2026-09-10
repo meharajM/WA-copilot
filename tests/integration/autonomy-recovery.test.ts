@@ -822,6 +822,7 @@ describe('autonomy recovery', () => {
     insert.run('template-stale-newer', 'customer-template-stale', 'New question', Date.now(), 'queued')
     conversation.run('customer-template-stale', 2, Date.now())
     await expect(activeSupervisor.sendApprovedTemplate('template-stale', 'support_followup', 'en_US')).rejects.toThrow('inbound is stale')
+    expect(db.prepare("SELECT 1 FROM operator_actions WHERE action = 'template_send_blocked_stale'").get()).toBeTruthy()
     expect((activeSupervisor as unknown as { outboundTransport: { sendTemplate: ReturnType<typeof vi.fn> } }).outboundTransport.sendTemplate).not.toHaveBeenCalled()
     activeSupervisor.stop()
     db.close()
