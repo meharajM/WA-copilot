@@ -408,6 +408,11 @@ describe('autonomy recovery', () => {
     expect((db.prepare('SELECT status FROM outbound_sends WHERE inbound_id = ?').get(inboundId) as { status: string }).status).toBe('failed')
     expect(db.prepare('SELECT channel, status, inbound_id FROM delivery_events WHERE provider_message_id = ?').get('wamid.failed-1')).toMatchObject({ channel: 'whatsapp', status: 'failed', inbound_id: inboundId })
     expect((activeSupervisor.getState() as { lastError: string | null }).lastError).toBe('whatsapp delivery failed for wamid.failed-1')
+    const collisionId = 'meta-delivery-collision-1'
+    db.prepare('INSERT INTO inbound_events (id,jid,content,received_at,status,channel) VALUES (?,?,?,?,?,?)').run(collisionId, 'instagram:collision', 'Hello', Date.now(), 'sent', 'instagram')
+    db.prepare('INSERT INTO outbound_sends (inbound_id,provider_message_id,jid,content,sent_at,status,error) VALUES (?,?,?,?,?,?,?)').run(collisionId, 'shared-provider-id', 'instagram:collision', 'Response', Date.now(), 'sent', null)
+    activeSupervisor.onDeliveryUpdate({ providerMessageId: 'shared-provider-id', status: 'delivered', timestamp: Date.now(), channel: 'whatsapp' })
+    expect((db.prepare('SELECT status FROM outbound_sends WHERE inbound_id = ?').get(collisionId) as { status: string }).status).toBe('sent')
     const readInboundId = 'cloud-delivery-read-1'
     db.prepare('INSERT INTO inbound_events (id,jid,content,received_at,status,channel) VALUES (?,?,?,?,?,?)').run(readInboundId, 'customer-cloud-read', 'Hello', Date.now(), 'sent', 'whatsapp')
     db.prepare('INSERT INTO outbound_sends (inbound_id,provider_message_id,jid,content,sent_at,status,error) VALUES (?,?,?,?,?,?,?)').run(readInboundId, 'wamid.read-1', 'customer-cloud-read', 'Response', Date.now(), 'sent', null)

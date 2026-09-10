@@ -405,13 +405,13 @@ export class AutonomousSupervisor extends EventEmitter {
     const eventStatus = update.status
     const status = update.status === 'failed' ? 'failed' : update.status === 'delivered' || update.status === 'read' ? 'delivered' : 'sent'
     const channel = update.channel || 'whatsapp'
-    const record = this.db.prepare('SELECT inbound_id, status AS currentStatus FROM outbound_sends WHERE provider_message_id = ?').get(update.providerMessageId) as { inbound_id: string; currentStatus: string } | undefined
+    const record = this.db.prepare('SELECT o.inbound_id, o.status AS currentStatus FROM outbound_sends o JOIN inbound_events e ON e.id = o.inbound_id WHERE o.provider_message_id = ? AND e.channel = ?').get(update.providerMessageId, channel) as { inbound_id: string; currentStatus: string } | undefined
     const duplicate = this.db.prepare('SELECT 1 FROM delivery_events WHERE provider_message_id = ? AND channel = ? AND status = ? AND event_at = ? LIMIT 1').get(update.providerMessageId, channel, eventStatus, update.timestamp)
     if (!duplicate) this.db.prepare('INSERT INTO delivery_events (provider_message_id,channel,status,event_at,inbound_id,created_at) VALUES (?,?,?,?,?,?)').run(update.providerMessageId, channel, eventStatus, update.timestamp, record?.inbound_id ?? null, Date.now())
     else this.audit('delivery_update_duplicate', { providerMessageId: update.providerMessageId, channel, status: eventStatus, timestamp: update.timestamp })
     const rank: Record<string, number> = { sending: 0, 'delivery-unknown': 1, sent: 1, failed: 2, delivered: 3 }
     const advances = !record || (rank[status] ?? -1) > (rank[record.currentStatus] ?? -1)
-    const result = advances ? this.db.prepare('UPDATE outbound_sends SET status = ?, sent_at = ? WHERE provider_message_id = ?').run(status, update.timestamp, update.providerMessageId) : { changes: 0 }
+    const result = advances ? this.db.prepare('UPDATE outbound_sends SET status = ?, sent_at = ? WHERE provider_message_id = ? AND inbound_id = ?').run(status, update.timestamp, update.providerMessageId, record?.inbound_id) : { changes: 0 }
     if (record && !advances) this.audit('delivery_update_stale', { providerMessageId: update.providerMessageId, currentStatus: record.currentStatus, status })
     if (!record) { this.audit('delivery_update_unmatched', { providerMessageId: update.providerMessageId, status }); return }
     if (!advances || result.changes === 0) { this.publish(); return }
