@@ -22,8 +22,17 @@ Current evidence on the development host:
   the Electron postinstall payload is restored.
 - Native modules include `better-sqlite3` and libsignal. `better-sqlite3` was
   rebuilt for Electron 44 ABI `149` and loaded successfully from the Electron
-  runtime; the application build and main/renderer typechecks also pass.
-  A signed production package has not yet been verified.
+  runtime; the application build and main/renderer typechecks also pass. The
+  unsigned macOS arm64 directory package completed and its packaged main
+  process stayed alive during an 8-second launch smoke test. The production
+  signing identity remains a release-host gate.
+- `electron-builder` 26.4.0 bundled an older `node-abi` that could not resolve
+  Electron 44. The direct dev dependency `node-abi@4.35.0` keeps the builder
+  able to rebuild native modules for the selected Electron version.
+- Packaging mutates the workspace native module to Electron ABI `149`; local
+  Node/Vitest checks require `npm rebuild better-sqlite3` afterward to restore
+  Node ABI `127`. Release CI should package from a clean install or perform
+  the equivalent rebuild in its next job.
 - The development host's normal Apple signing identity stalled during the
   first package attempt; the verification build therefore used ad-hoc signing.
   Production signing/notarization remains a release-host gate.
