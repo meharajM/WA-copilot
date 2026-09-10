@@ -119,6 +119,32 @@ describe('autonomy recovery', () => {
     supervisor.stop()
   }, 6000)
 
+  it('requeues an external rate limit when paused during backoff', async () => {
+    const db = new Database(path.join(dataDir, 'autonomy.db'))
+    const inboundId = 'external-rate-limit-pause-1'
+    const jid = 'email:external-rate-limit-pause'
+    db.prepare('INSERT INTO inbound_events (id,jid,content,received_at,status,channel) VALUES (?,?,?,?,?,?)').run(inboundId, jid, 'What are your hours?', Date.now(), 'queued', 'email')
+    db.close()
+    supervisor.start()
+    const internal = supervisor as unknown as { state: { mode: string; responsePermission: boolean; paused: boolean }; hasLease: () => boolean; runDecision: ReturnType<typeof vi.fn>; processExternal: (message: unknown, jid: string, send: () => Promise<unknown>) => Promise<void>; emailQueues: Map<string, unknown[]> }
+    internal.state.mode = 'auto'; internal.state.responsePermission = true; internal.state.paused = false; internal.hasLease = () => true
+    internal.runDecision = vi.fn().mockResolvedValue({ text: 'Hours are 9–5.', confidence: 1, grounding: 'grounded', escalated: false, sensitiveTopic: false, reason: 'test' })
+    const send = vi.fn().mockImplementation(async () => { internal.state.paused = true; return { success: false, error: 'HTTP 429 rate limit' } })
+    await internal.processExternal({ id: inboundId, channel: 'email', from: 'customer@example.com', to: 'support@example.com', content: 'What are your hours?', timestamp: Date.now(), type: 'text', isFromMe: false }, jid, send)
+    expect(send).toHaveBeenCalledTimes(1)
+    const resultDb = new Database(path.join(dataDir, 'autonomy.db'), { readonly: true })
+    expect(resultDb.prepare('SELECT status FROM inbound_events WHERE id = ?').get(inboundId)).toEqual({ status: 'queued' })
+    expect(resultDb.prepare('SELECT 1 FROM outbound_sends WHERE inbound_id = ?').get(inboundId)).toBeUndefined()
+    resultDb.close()
+    expect(internal.emailQueues.get(jid)).toHaveLength(1)
+    const cleanupDb = new Database(path.join(dataDir, 'autonomy.db'))
+    cleanupDb.prepare('DELETE FROM retries WHERE inbound_id = ?').run(inboundId)
+    cleanupDb.prepare('DELETE FROM inbound_events WHERE id = ?').run(inboundId)
+    cleanupDb.close()
+    internal.emailQueues.delete(jid)
+    supervisor.stop()
+  }, 6000)
+
   it('aggregates outbound usage by channel for owner visibility', () => {
     const db = new Database(path.join(dataDir, 'autonomy.db'))
     db.prepare('INSERT INTO usage_events (kind,amount,estimated_tokens,estimated_cost,channel,created_at) VALUES (?,?,?,?,?,?)').run('outbound', 1, 0, 0, 'twitter', Date.now())
