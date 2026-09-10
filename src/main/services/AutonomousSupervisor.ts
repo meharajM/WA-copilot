@@ -612,17 +612,29 @@ export class AutonomousSupervisor extends EventEmitter {
     if (isWithinWhatsAppServiceWindow(inbound.receivedAt)) throw new Error('Use free-form response inside the WhatsApp service window')
     if (this.state.paused || this.state.status === 'stopped' || this.pausedConversations.has(inbound.jid)) throw new Error('Supervisor is paused')
     if (this.db.prepare('SELECT 1 FROM consents WHERE jid = ? AND opted_out = 1').get(inbound.jid)) throw new Error('Customer has opted out')
-    if (this.db.prepare('SELECT status FROM outbound_sends WHERE inbound_id = ?').get(inboundId)) return this.getState()
+    const existing = this.db.prepare('SELECT status FROM outbound_sends WHERE inbound_id = ?').get(inboundId) as { status: string } | undefined
+    if (existing && existing.status !== 'failed') return this.getState()
+    if (existing) this.db.prepare("UPDATE outbound_sends SET provider_message_id = NULL, status = 'sending', error = NULL, sent_at = ? WHERE inbound_id = ?").run(Date.now(), inboundId)
     if (this.usageCount('outbound') >= DAILY_OUTBOUND_CAP) throw new Error('Daily outbound message budget cap reached')
     const content = `[template:${name}:${languageCode}]`
     const payloadHash = createHash('sha256').update(JSON.stringify({ name, languageCode, parameters })).digest('hex')
-    this.db.prepare('INSERT INTO outbound_sends (inbound_id,provider_message_id,jid,content,sent_at,status,error,payload_hash) VALUES (?,?,?,?,?,?,?,?)').run(inboundId, null, inbound.jid, content, Date.now(), 'sending', null, payloadHash)
+    if (!existing) this.db.prepare('INSERT INTO outbound_sends (inbound_id,provider_message_id,jid,content,sent_at,status,error,payload_hash) VALUES (?,?,?,?,?,?,?,?)').run(inboundId, null, inbound.jid, content, Date.now(), 'sending', null, payloadHash)
+    else this.db.prepare("UPDATE outbound_sends SET jid = ?, content = ?, sent_at = ?, status = 'sending', error = NULL, payload_hash = ? WHERE inbound_id = ?").run(inbound.jid, content, Date.now(), payloadHash, inboundId)
     this.audit('send_approved_template', { inboundId, name, languageCode })
-    const result = await this.outboundTransport.sendTemplate(inbound.jid, name, languageCode, parameters)
+    let result: { success: boolean; providerMessageId?: string; error?: string } = { success: false, error: 'template send failed' }
+    for (let attempt = 0; attempt < 3; attempt++) {
+      result = await this.outboundTransport.sendTemplate(inbound.jid, name, languageCode, parameters)
+      if (result.success || !isConfirmedPreSendTransientError(result.error || '') || attempt === 2) break
+      this.db.prepare('INSERT INTO retries (inbound_id,attempt,error,next_at) VALUES (?,?,?,?)').run(inboundId, attempt + 1, result.error, Date.now() + (2 ** attempt) * 1000)
+      await new Promise(resolve => setTimeout(resolve, (2 ** attempt) * 1000))
+    }
     if (!result.success) {
-      this.db.prepare('UPDATE outbound_sends SET status = ?, error = ?, sent_at = ? WHERE inbound_id = ?').run('failed', result.error || 'template send failed', Date.now(), inboundId)
-      this.notifyOwner('failure', { messageId: inboundId, error: result.error || 'template send failed' })
-      throw new Error(result.error || 'Template send failed')
+      const error = result.error || 'template send failed'
+      const deliveryUnknown = isAmbiguousSendError(error) || classifyProviderError(error) === 'transient'
+      this.db.prepare('UPDATE outbound_sends SET status = ?, error = ?, sent_at = ? WHERE inbound_id = ?').run(deliveryUnknown ? 'delivery-unknown' : 'failed', error, Date.now(), inboundId)
+      if (deliveryUnknown) this.db.prepare('UPDATE inbound_events SET status = ? WHERE id = ?').run('delivery_unknown', inboundId)
+      this.notifyOwner('failure', { messageId: inboundId, channel: 'whatsapp', error })
+      throw new Error(error)
     }
     this.recordUsage('outbound', 0, 'whatsapp')
     if (!result.providerMessageId) {

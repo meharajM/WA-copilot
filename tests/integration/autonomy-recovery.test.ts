@@ -818,6 +818,26 @@ describe('autonomy recovery', () => {
     db.close()
   })
 
+  it('allows an owner to retry a previously failed approved template', async () => {
+    vi.resetModules()
+    const activeSupervisor = (await import('../../src/main/services/AutonomousSupervisor')).autonomousSupervisor
+    const db = (activeSupervisor as unknown as { db: Database.Database }).db
+    db.prepare('DELETE FROM supervisor_lease').run()
+    activeSupervisor.start()
+    db.prepare('INSERT OR IGNORE INTO approved_templates(name,language_code,category,active,updated_at) VALUES (?,?,?,?,?)').run('support_followup', 'en_US', 'utility', 1, Date.now())
+    db.prepare('INSERT INTO inbound_events(id,jid,content,received_at,status) VALUES (?,?,?,?,?)').run('template-retry', 'customer-template-retry', 'Follow up', Date.now() - 25 * 60 * 60 * 1000, 'escalated')
+    db.prepare('INSERT INTO conversations(jid,revision,updated_at) VALUES (?,?,?)').run('customer-template-retry', 1, Date.now())
+    let calls = 0
+    ;(activeSupervisor as unknown as { outboundTransport: unknown }).outboundTransport = { kind: 'cloud', sendText: vi.fn(), sendTemplate: async () => { calls++; return calls === 1 ? { success: false, error: 'template rejected' } : { success: true, providerMessageId: 'wamid.template-retry' } } }
+    await expect(activeSupervisor.sendApprovedTemplate('template-retry', 'support_followup', 'en_US')).rejects.toThrow('template rejected')
+    expect(db.prepare('SELECT status FROM outbound_sends WHERE inbound_id = ?').get('template-retry')).toEqual({ status: 'failed' })
+    await activeSupervisor.sendApprovedTemplate('template-retry', 'support_followup', 'en_US')
+    expect(calls).toBe(2)
+    expect(db.prepare('SELECT status, provider_message_id FROM outbound_sends WHERE inbound_id = ?').get('template-retry')).toMatchObject({ status: 'sent', provider_message_id: 'wamid.template-retry' })
+    activeSupervisor.stop()
+    db.close()
+  })
+
   it('refuses to start while another supervisor lease is fresh', async () => {
     vi.resetModules()
     const activeSupervisor = (await import('../../src/main/services/AutonomousSupervisor')).autonomousSupervisor

@@ -167,10 +167,10 @@ Implemented in the current branch:
 
 Verification snapshot:
 
-- Autonomy, workflow, policy, Cloud API, webhook and recovery tests remain covered by the focused suites; the latest full suite is 39 test files passed, 1 skipped, 284 tests passed, 7 skipped.
+- Autonomy, workflow, policy, Cloud API, webhook and recovery tests remain covered by the focused suites; the latest full suite is 39 test files passed, 1 skipped, 285 tests passed, 7 skipped.
 - Production build and unsigned Electron 44.3.0 macOS arm64 directory package: passing; packaged main-process launch smoke test: passing.
 - Full typecheck: passing (`npx tsc --noEmit`).
-- Full test suite: 39 files passed, 1 skipped; 284 tests passed, 7 skipped (291 total).
+- Full test suite: 39 files passed, 1 skipped; 285 tests passed, 7 skipped (292 total).
 
 Known limitations and failed baseline checks:
 
@@ -194,6 +194,7 @@ Known limitations and failed baseline checks:
 
 ## Iteration log
 
+- Iteration: made approved Cloud-template sends retryable after permanent failures while preserving the outbox record; confirmed pre-send rate limits use the existing bounded retry classifier. Result: focused recovery suite 53 passed; full suite 39 files passed, 1 skipped, 285 passed, 7 skipped; main/renderer typechecks passed.
 - Iteration: re-ran the full verification set after the delivery-boundary audit. Result: 39 test files passed, 1 skipped; 284 tests passed, 7 skipped; main/renderer typechecks passed; lint passed with 0 errors and 330 existing warnings. No synthetic email/X delivery receipts were added because provider-authoritative callbacks are unavailable.
 - Iteration: added secure Cloud credential fields, OS-keychain allowlisting, store-backed transport selection, awaitable webhook startup, and startup integration coverage. Result: webhook server test passes; build passes; five unrelated email typecheck errors remain.
 - Iteration: added the common outbound transport contract and fail-closed Cloud selection. Result: transport and webhook tests pass; build passes; Baileys remains the default.
