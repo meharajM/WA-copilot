@@ -742,8 +742,9 @@ export class AutonomousSupervisor extends EventEmitter {
     }
     if (!result.success) {
       const error = result.error || 'email send failed'
-      this.db.prepare('UPDATE outbound_sends SET status = ?, error = ?, sent_at = ? WHERE inbound_id = ?').run(isAmbiguousSendError(error) ? 'delivery-unknown' : 'failed', error, Date.now(), message.id)
-      this.db.prepare('UPDATE inbound_events SET status = ? WHERE id = ?').run(isAmbiguousSendError(error) ? 'delivery_unknown' : 'failed', message.id)
+      const deliveryUnknown = isAmbiguousSendError(error) || classifyProviderError(error) === 'transient'
+      this.db.prepare('UPDATE outbound_sends SET status = ?, error = ?, sent_at = ? WHERE inbound_id = ?').run(deliveryUnknown ? 'delivery-unknown' : 'failed', error, Date.now(), message.id)
+      this.db.prepare('UPDATE inbound_events SET status = ? WHERE id = ?').run(deliveryUnknown ? 'delivery_unknown' : 'failed', message.id)
       this.notifyOwner('failure', { messageId: message.id, error }); return
     }
     this.recordUsage('outbound', 0, message.channel)
