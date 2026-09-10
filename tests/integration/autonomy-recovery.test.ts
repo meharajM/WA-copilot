@@ -65,6 +65,13 @@ describe('autonomy recovery', () => {
     expect(metrics).toMatchObject({ groundedDecisionRate: 0, deliveryUnknown: 0, draftApprovalRate: 0, averageDraftEditingTimeMs: 0, estimatedCostPerResolvedConversation: 0, reviewedDecisions: 0, reviewAccuracy: 0, escalationPrecision: 0, recoveryDrills: 0, averageRecoveryTimeMs: 0 })
   })
 
+  it('exposes bounded autonomy controls through the internal MCP service', async () => {
+    const { autonomyMcpService } = await import('../../src/main/services/AutonomyMcpService')
+    expect(autonomyMcpService.listTools().tools.map(tool => tool.name)).toEqual(expect.arrayContaining(['get_agent_status', 'get_channel_status', 'pause_agent', 'resume_agent', 'retry_job', 'reconnect_channel']))
+    expect((await autonomyMcpService.callTool('get_agent_status', {})).result).toMatchObject({ mode: 'observe' })
+    expect((await autonomyMcpService.callTool('retry_job', {})).error).toBe('Invalid inboundId')
+  })
+
   it('blocks external dispatch at the shared outbound cap', async () => {
     const db = new Database(path.join(dataDir, 'autonomy.db'))
     const inboundId = 'external-cap-1'

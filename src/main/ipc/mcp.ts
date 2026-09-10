@@ -10,6 +10,7 @@ import { FileSystemService } from '../services/FileSystemService'
 import { McpProcessManager } from '../services/McpProcessManager'
 import { isMcpToolAllowed, validateMcpServerConfig, validateMcpToolCall } from '../services/McpPolicy'
 import { recordMcpAudit } from '../services/McpAudit'
+import { autonomyMcpService } from '../services/AutonomyMcpService'
 
 // --- State ---
 const activeConnections = new Map<string, Client>()
@@ -17,6 +18,7 @@ const inProcessPlaywrightConnections = new Set<string>()
 const inProcessMemoryConnections = new Set<string>()
 const inProcessRagConnections = new Set<string>()
 const inProcessFilesystemConnections = new Set<string>()
+const inProcessAutonomyConnections = new Set<string>()
 const connectingServers = new Set<string>()
 const serverAllowedTools = new Map<string, string[]>()
 const requestControllers = new Map<string, { controller: AbortController; senderId: number }>()
@@ -167,6 +169,11 @@ export function registerMcpHandlers(): void {
                 return { success: true, serverId: id, inProcess: true }
             }
 
+            if (command === 'internal-autonomy') {
+                inProcessAutonomyConnections.add(id)
+                return { success: true, serverId: id, inProcess: true }
+            }
+
             let transport: StdioClientTransport | SSEClientTransport
 
             if (type === 'stdio') {
@@ -267,6 +274,11 @@ export function registerMcpHandlers(): void {
             serverAllowedTools.delete(id)
             return { success: true }
         }
+        if (id === 'internal-autonomy' || inProcessAutonomyConnections.has(id)) {
+            inProcessAutonomyConnections.delete(id)
+            serverAllowedTools.delete(id)
+            return { success: true }
+        }
 
         const client = activeConnections.get(id)
         if (client) {
@@ -290,6 +302,7 @@ export function registerMcpHandlers(): void {
         if (id === 'internal-memory' || inProcessMemoryConnections.has(id)) return { tools: MemoryService.getInstance().listTools().tools }
         if (id === 'internal-rag' || inProcessRagConnections.has(id)) return { tools: RAGService.getInstance().listTools().tools }
         if (id === 'internal-filesystem' || inProcessFilesystemConnections.has(id)) return { tools: FileSystemService.getInstance().listTools().tools }
+        if (id === 'internal-autonomy' || inProcessAutonomyConnections.has(id)) return autonomyMcpService.listTools()
 
         const client = activeConnections.get(id)
         if (!client) return { tools: [], error: `Server not connected: ${id}` }
@@ -322,6 +335,8 @@ export function registerMcpHandlers(): void {
                     ? () => RAGService.getInstance().callTool(toolName, args)
                     : id === 'internal-filesystem' || inProcessFilesystemConnections.has(id)
                         ? () => FileSystemService.getInstance().callTool(toolName, args)
+                        : id === 'internal-autonomy' || inProcessAutonomyConnections.has(id)
+                            ? () => autonomyMcpService.callTool(toolName, args)
                         : null
         if (internalCall) {
             const controller = new AbortController()

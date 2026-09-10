@@ -9,6 +9,7 @@ describe('MCP host policy', () => {
     expect(validateMcpServerConfig({ id: 'x', type: 'stdio', command: 'uvx', args: ['arbitrary-package'] })).toMatchObject({ valid: false })
     expect(validateMcpServerConfig({ id: 'markitdown', type: 'stdio', command: 'uvx', args: ['markitdown-mcp[all]'] })).toMatchObject({ valid: true })
     expect(validateMcpServerConfig({ id: 'internal', type: 'stdio', command: 'internal', args: [] })).toMatchObject({ valid: true })
+    expect(validateMcpServerConfig({ id: 'autonomy', type: 'stdio', command: 'internal-autonomy', args: [] })).toMatchObject({ valid: true })
   })
 
   it('bounds tool identity and argument size', () => {
