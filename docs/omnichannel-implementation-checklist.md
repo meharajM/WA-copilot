@@ -167,10 +167,10 @@ Implemented in the current branch:
 
 Verification snapshot:
 
-- Autonomy, workflow, policy, Cloud API, webhook and recovery tests remain covered by the focused suites; the current full suite is 39 test files passed, 261 tests passed, 7 skipped.
+- Autonomy, workflow, policy, Cloud API, webhook and recovery tests remain covered by the focused suites; the current full suite is 39 test files passed, 264 tests passed, 7 skipped.
 - Production build: passing.
 - Full typecheck: passing (`npx tsc --noEmit`).
-- Full test suite: 39 files passed, 261 tests passed, 7 skipped (268 total).
+- Full test suite: 39 files passed, 264 tests passed, 7 skipped (271 total).
 
 Known limitations and failed baseline checks:
 
