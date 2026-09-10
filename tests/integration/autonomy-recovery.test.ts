@@ -199,15 +199,19 @@ describe('autonomy recovery', () => {
     const jid = 'email:processing-failure'
     const message = { schemaVersion: 1, id: inboundId, channel: 'email', from: 'customer@example.com', to: 'support@example.com', content: 'What are your hours?', timestamp: Date.now(), type: 'text', isFromMe: false, conversationId: 'processing-failure' }
     db.prepare('INSERT INTO inbound_events (id,jid,content,received_at,status,channel,payload) VALUES (?,?,?,?,?,?,?)').run(inboundId, jid, message.content, message.timestamp, 'queued', 'email', JSON.stringify(message))
+    const secondMessage = { ...message, id: 'processing-failure-2' }
+    db.prepare('INSERT INTO inbound_events (id,jid,content,received_at,status,channel,payload) VALUES (?,?,?,?,?,?,?)').run(secondMessage.id, jid, secondMessage.content, secondMessage.timestamp, 'queued', 'email', JSON.stringify(secondMessage))
     const internal = activeSupervisor as unknown as { emailQueues: Map<string, unknown[]>; state: { paused: boolean; status: string }; processEmail: () => Promise<void>; drainEmail: (jid: string) => Promise<void> }
-    internal.emailQueues.set(jid, [message])
+    internal.emailQueues.set(jid, [message, secondMessage])
     internal.state.paused = false; internal.state.status = 'running'
     internal.processEmail = vi.fn().mockRejectedValue(new Error('model timeout'))
     await internal.drainEmail(jid)
     expect(db.prepare('SELECT status FROM inbound_events WHERE id = ?').get(inboundId)).toEqual({ status: 'failed' })
     expect(activeSupervisor.getState()).toMatchObject({ activeJob: null, lastError: 'model timeout', status: 'degraded' })
+    expect(internal.emailQueues.get(jid)).toEqual([secondMessage])
     internal.emailQueues.delete(jid)
     db.prepare('DELETE FROM inbound_events WHERE id = ?').run(inboundId)
+    db.prepare('DELETE FROM inbound_events WHERE id = ?').run(secondMessage.id)
     db.close()
   })
 

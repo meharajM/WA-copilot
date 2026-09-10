@@ -388,6 +388,7 @@ Known limitations and failed baseline checks:
 - Iteration: extended provider-ID enforcement to owner-triggered approved templates; a successful Cloud template call without an ID now remains `delivery-unknown` and surfaces an explicit retry/quarantine error.
 - Iteration: tightened delivery callback validation to reject whitespace-only provider IDs and non-positive timestamps before event persistence; malformed callback regression coverage added.
 - Iteration: made delivery callback validation type-safe for non-string runtime provider IDs, preventing malformed webhook payloads from throwing before the audit path; regression coverage added.
+- Iteration: stopped each channel drain after its first thrown processing failure, preserving later queued messages for explicit recovery instead of cascading work while degraded; regression coverage added.
 - Iteration: changed maximum-conversation admission to count only conversations updated within the configured retention window, so historical inactive rows cannot exhaust the active-cap budget; added regression coverage.
 - Iteration: extended retention pruning to remove stale inactive conversation metadata while preserving queued work, unresolved sends, pending drafts and active takeovers; added regression coverage.
 - Verification iteration: full repository checks passed after the recovery and retention slices: 39 test files passed, 1 skipped; 271 tests passed, 7 skipped; main/renderer typechecks and build passed; lint reported 0 errors with existing warnings.

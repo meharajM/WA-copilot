@@ -631,7 +631,7 @@ export class AutonomousSupervisor extends EventEmitter {
         const message = this.queues.get(jid)!.shift()!
         this.state.activeJob = message.id; this.publish()
         try { await this.process(message) }
-        catch (error) { this.recordProcessingFailure(message.id, jid, error); this.state.activeJob = null }
+        catch (error) { this.recordProcessingFailure(message.id, jid, error); this.state.activeJob = null; break }
         this.state.lastProcessedMessage = message.id; this.state.activeJob = null; this.publish()
       }
     } finally { this.active.delete(jid); this.publish() }
@@ -645,7 +645,7 @@ export class AutonomousSupervisor extends EventEmitter {
         const message = this.emailQueues.get(jid)!.shift()!
         this.state.activeJob = message.id; this.publish()
         try { await this.processEmail(message, jid) }
-        catch (error) { this.recordProcessingFailure(message.id, jid, error); this.state.activeJob = null }
+        catch (error) { this.recordProcessingFailure(message.id, jid, error); this.state.activeJob = null; break }
         this.state.lastProcessedMessage = message.id; this.state.activeJob = null; this.publish()
       }
     } finally { this.active.delete(jid); this.publish() }
@@ -659,7 +659,7 @@ export class AutonomousSupervisor extends EventEmitter {
         const message = this.metaQueues.get(jid)!.shift()!
         this.state.activeJob = message.id; this.publish()
         try { await this.processExternal(message, jid, async body => message.channel === 'twitter' ? (this.xTransport ? this.xTransport.sendText(message.from, body) : { success: false, error: 'X transport is not configured' }) : (this.metaTransport ? this.metaTransport.sendText(message.from, body) : { success: false, error: 'Meta transport is not configured' })) }
-        catch (error) { this.recordProcessingFailure(message.id, jid, error); this.state.activeJob = null }
+        catch (error) { this.recordProcessingFailure(message.id, jid, error); this.state.activeJob = null; break }
         this.state.lastProcessedMessage = message.id; this.state.activeJob = null; this.publish()
       }
     } finally { this.active.delete(jid); this.publish() }
