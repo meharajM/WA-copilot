@@ -419,7 +419,7 @@ export class AutonomousSupervisor extends EventEmitter {
     this.state.lastDeliveryStatus = status
     this.state.lastProviderMessageId = update.providerMessageId
     this.state.lastDeliveryInboundId = record.inbound_id
-    if (status === 'failed') { this.state.lastError = `WhatsApp delivery failed for ${update.providerMessageId}`; this.notifyOwner('failure', { messageId: record.inbound_id, providerMessageId: update.providerMessageId, error: this.state.lastError }); this.emit('failure', { messageId: record.inbound_id, error: this.state.lastError }) }
+    if (status === 'failed') { this.state.lastError = `${channel} delivery failed for ${update.providerMessageId}`; this.notifyOwner('failure', { messageId: record.inbound_id, providerMessageId: update.providerMessageId, error: this.state.lastError }); this.emit('failure', { messageId: record.inbound_id, error: this.state.lastError }) }
     this.publish()
   }
 

@@ -375,3 +375,4 @@ Known limitations and failed baseline checks:
 - Iteration: added an explicit `AICA_LLM_DATA_POLICY_APPROVED` fail-closed prerequisite for Auto-reply and surfaced its state in health/UI; provider, region, residency and retention approval remain deployment evidence gates.
 - Iteration: resolved stale merge-conflict markers in `.env.example` and documented safe defaults for Gemini, LLM data approval, escalation contact/SLA and business scope.
 - Iteration: refreshed the verification snapshot from the latest full run: 39 files, 264 tests passed, 7 skipped (271 total); no implementation status changed.
+- Iteration: corrected shared delivery-failure audit messages to identify the actual channel instead of always saying WhatsApp; recovery regression coverage remains green with 33 focused tests.
