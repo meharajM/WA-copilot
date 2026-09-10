@@ -228,6 +228,7 @@ export class AutonomousSupervisor extends EventEmitter {
 
   start(): SupervisorState {
     try { this.outboundTransport = createWhatsAppOutboundTransport() } catch (error) { this.state.status = 'degraded'; this.state.paused = true; this.state.lastError = error instanceof Error ? error.message : String(error); this.audit('start_failed_transport'); this.publish(); return this.getState() }
+    if (this.outboundTransport.kind === 'baileys' && whatsappService.getConnectionState().status === 'connected') this.baileysDispatchBlocked = false
     const block = this.autoReplyBlockReason()
     if (block) { this.state.status = 'degraded'; this.state.paused = true; this.state.lastError = block; this.audit('start_blocked_auto_policy'); this.publish(); return this.getState() }
     if (!this.acquireLease()) { this.publish(); return this.getState() }
