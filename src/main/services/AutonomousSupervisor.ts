@@ -172,6 +172,7 @@ export class AutonomousSupervisor extends EventEmitter {
     for (const version of [1, AUTONOMY_SCHEMA_VERSION]) this.db.prepare('INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)').run(version, Date.now())
     try { this.state = { ...DEFAULT_STATE, ...JSON.parse(fs.readFileSync(this.storePath, 'utf8')) } } catch { /* first run */ }
     if (restored) { this.state.recoveryMode = true; this.state.paused = true; this.state.status = 'degraded'; this.state.lastError = 'Restored backup requires review before resume' }
+    this.quarantineInterruptedSends()
     this.restoreQueuedMessages()
     for (const row of this.db.prepare('SELECT jid FROM takeovers WHERE active = 1').all() as Array<{ jid: string }>) this.pausedConversations.add(row.jid)
     if (process.env.GOOGLE_API_KEY) this.gemini = new GeminiClient(process.env.GOOGLE_API_KEY)
@@ -852,6 +853,19 @@ export class AutonomousSupervisor extends EventEmitter {
       else { const queue = this.queues.get(row.jid) ?? []; queue.push(message as WhatsAppMessage); this.queues.set(row.jid, queue) }
       this.messageRevisions.set(row.id, row.revision ?? 0)
     }
+  }
+
+  private quarantineInterruptedSends(): void {
+    const rows = this.db.prepare("SELECT inbound_id FROM outbound_sends WHERE status IN ('pending','authorized','sending')").all() as Array<{ inbound_id: string }>
+    if (!rows.length) return
+    const now = Date.now()
+    this.db.transaction(() => {
+      for (const row of rows) {
+        this.db.prepare("UPDATE outbound_sends SET status = 'delivery-unknown', error = COALESCE(error, ?), sent_at = ? WHERE inbound_id = ?").run('Supervisor restarted before provider outcome was known', now, row.inbound_id)
+        this.db.prepare("UPDATE inbound_events SET status = 'delivery_unknown' WHERE id = ? AND status IN ('queued','processing','retrying')").run(row.inbound_id)
+      }
+    })()
+    this.audit('quarantine_interrupted_sends', { count: rows.length })
   }
 
   private async sendWithRetry(message: WhatsAppMessage, text: string, expectedRevision: number): Promise<void> {

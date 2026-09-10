@@ -165,6 +165,23 @@ describe('autonomy recovery', () => {
     db.close()
   })
 
+  it('quarantines interrupted outbound claims before queue restoration', () => {
+    const db = new Database(path.join(dataDir, 'autonomy.db'))
+    const inboundId = 'interrupted-send-1'
+    db.prepare('INSERT INTO inbound_events (id,jid,content,received_at,status,channel) VALUES (?,?,?,?,?,?)').run(inboundId, 'email:interrupted-send', 'What are your hours?', Date.now(), 'processing', 'email')
+    db.prepare('INSERT INTO outbound_sends (inbound_id,provider_message_id,jid,content,sent_at,status,error) VALUES (?,?,?,?,?,?,?)').run(inboundId, null, 'email:interrupted-send', 'Response', Date.now(), 'sending', null)
+    db.close()
+    ;(supervisor as unknown as { quarantineInterruptedSends: () => void }).quarantineInterruptedSends()
+    const resultDb = new Database(path.join(dataDir, 'autonomy.db'), { readonly: true })
+    expect(resultDb.prepare('SELECT status, error FROM outbound_sends WHERE inbound_id = ?').get(inboundId)).toMatchObject({ status: 'delivery-unknown', error: 'Supervisor restarted before provider outcome was known' })
+    expect(resultDb.prepare('SELECT status FROM inbound_events WHERE id = ?').get(inboundId)).toEqual({ status: 'delivery_unknown' })
+    resultDb.close()
+    const cleanupDb = new Database(path.join(dataDir, 'autonomy.db'))
+    cleanupDb.prepare('DELETE FROM outbound_sends WHERE inbound_id = ?').run(inboundId)
+    cleanupDb.prepare('DELETE FROM inbound_events WHERE id = ?').run(inboundId)
+    cleanupDb.close()
+  })
+
   it('aggregates outbound usage by channel for owner visibility', () => {
     const db = new Database(path.join(dataDir, 'autonomy.db'))
     db.prepare('INSERT INTO usage_events (kind,amount,estimated_tokens,estimated_cost,channel,created_at) VALUES (?,?,?,?,?,?)').run('outbound', 1, 0, 0, 'twitter', Date.now())
