@@ -519,6 +519,7 @@ describe('autonomy recovery', () => {
     db.prepare('INSERT INTO outbound_sends (inbound_id,provider_message_id,jid,content,sent_at,status,error) VALUES (?,?,?,?,?,?,?)').run(missingPayloadId, null, jid, 'previous response', Date.now(), 'delivery-unknown', 'timeout')
     expect(() => activeSupervisor.retryDelivery(missingPayloadId)).toThrow('original message payload')
     expect(db.prepare('SELECT status FROM outbound_sends WHERE inbound_id = ?').get(missingPayloadId)).toMatchObject({ status: 'delivery-unknown' })
+    expect(db.prepare("SELECT 1 FROM operator_actions WHERE action = 'retry_delivery_blocked_missing_payload'").get()).toBeTruthy()
     ;(activeSupervisor as unknown as { db: Database.Database }).db.close()
   })
 
