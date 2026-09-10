@@ -48,7 +48,7 @@ Implements the architecture plan. Complete phases in order. Keep observe-only as
 ## Phase 2 — LangChain/LangGraph workflow
 
 - [x] Add only required LangChain/LangGraph packages and pin versions. (The three required packages are exact-pinned in package and lock files.)
-- [ ] Verify package licenses, Node compatibility and packaged Electron compatibility. (`npm run check:runtime` passes under Node 22; an unsigned macOS arm64 Electron 40 directory build rebuilt `better-sqlite3` and launched the packaged main process. The production audit is down from 27 to 6 findings after non-breaking lockfile updates; the remaining Electron upgrade decision, unfixed libsignal/protobuf and `vosk-browser`/`uuid` advisories, production signing/notarization and GPL-3.0 distribution review remain open. See `docs/package-compatibility.md`.)
+- [ ] Verify package licenses, Node compatibility and packaged Electron compatibility. (`npm run check:runtime` passes under Node 22; Electron 44.3.0 application build passes and `better-sqlite3` was rebuilt/loaded under Electron ABI 149. The production audit is down from 6 to 5 findings; upstream Baileys/libsignal/protobuf, `vosk-browser`/`uuid` advisories, production signing/notarization and GPL-3.0 distribution review remain open. See `docs/package-compatibility.md`.)
 - [x] Use a persistent SQLite checkpointer locally; use Postgres only for hosted operation. (SQLite adapter is connected to autonomy.db.)
 - [x] Keep graph execution independent of renderer Zustand state.
 - [x] Stamp every run with graph, prompt, policy and conversation-revision versions. (Decision records now carry all four version fields.)
@@ -406,6 +406,7 @@ Known limitations and failed baseline checks:
 - Iteration: kept Auto-reply mode selection separate from response permission; selecting Auto-reply no longer grants send authority without the explicit permission control.
 - Iteration: aligned identity-matched WhatsApp owner messages with self-echo handling so both pause the recipient’s customer thread; legacy takeover coverage now asserts the correct JID.
 - Iteration: prevented the Start control from bypassing an emergency Pause All hold; Start now reacquires/monitors the supervisor while remaining paused until explicit Resume.
+- Iteration: upgraded Electron from 40.10.6 to 44.3.0, rebuilt `better-sqlite3` for Electron ABI 149, and verified runtime compatibility, typechecks, full tests, and application build. Result: the production audit is down from 6 to 5 findings; release signing, licensing and upstream advisories remain open.
 - Iteration: changed maximum-conversation admission to count only conversations updated within the configured retention window, so historical inactive rows cannot exhaust the active-cap budget; added regression coverage.
 - Iteration: extended retention pruning to remove stale inactive conversation metadata while preserving queued work, unresolved sends, pending drafts and active takeovers; added regression coverage.
 - Verification iteration: full repository checks passed after the recovery and retention slices: 39 test files passed, 1 skipped; 273 tests passed, 7 skipped; main/renderer typechecks and build passed; lint reported 0 errors with existing warnings.
