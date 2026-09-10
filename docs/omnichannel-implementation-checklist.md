@@ -194,6 +194,7 @@ Known limitations and failed baseline checks:
 
 ## Iteration log
 
+- Iteration: re-ran the runtime compatibility check and corrected the recorded Node version to `22.12.0`; Electron `44.3.0`, the Electron executable, and machine-readable licenses for all direct dependencies were confirmed. Result: local runtime evidence remains green; GPL, upstream advisories, signing/notarization, and release-host gates remain open.
 - Iteration: added a redacted live-evidence record template and linked it from the pilot matrix and remaining external gates, so provider access, delivery receipts, staging, recovery and charge-review evidence can be captured without closing gates from local tests. Result: documentation-only; checklist remains at 25 open external/live items.
 - Iteration: restored provider-message IDs on idempotent email outbox replays, preventing a deduplicated successful send from being misclassified as `delivery-unknown`. Result: focused email/outbox/recovery suites 64 passed; full suite 39 files passed, 1 skipped, 292 passed, 7 skipped; main/renderer typechecks passed; lint passed with 0 errors and 330 existing warnings.
 - Iteration: included Gmail/MCP provider IDs in email delivery acknowledgments and added a repeatable MCP send-path regression without weakening outbox idempotency. Result: focused email-channel suite 4 passed; full suite 39 files passed, 1 skipped, 292 passed, 7 skipped; main/renderer typechecks passed; lint passed with 0 errors and 330 existing warnings.

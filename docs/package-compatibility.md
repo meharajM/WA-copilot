@@ -16,7 +16,7 @@ lockfile/install actually used.
 Current evidence on the development host:
 
 - The application declares Node `>=22.12.0`.
-- Node `22.22.2` passes the declared engine check when the supported Node
+- Node `22.12.0` passes the declared engine check when the supported Node
   runtime is selected.
 - Electron resolves to `44.3.0` within the declared Electron 44 range, and its platform executable is present after
   the Electron postinstall payload is restored.
@@ -43,6 +43,12 @@ Current evidence on the development host:
   Findings dropped from 6 to 5: Baileys, libsignal, `protobufjs`, `uuid` and
   `vosk-browser`. The remaining findings are upstream/unfixed in the current
   dependency graph; `npm audit fix --force` was not used.
+
+Latest local verification (`npm run check:runtime`, September 10, 2026):
+Node `22.12.0`, Electron `44.3.0`, Electron executable present, and every
+direct dependency reported a machine-readable license. This confirms runtime
+compatibility evidence only; it does not approve GPL distribution, upstream
+advisories, production signing/notarization, or a clean release-host package.
 
 The checklist item remains open until dependency-license review, production
 signing/notarization and a clean release-host package run are recorded. The
