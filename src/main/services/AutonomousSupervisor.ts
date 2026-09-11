@@ -461,18 +461,33 @@ export class AutonomousSupervisor extends EventEmitter {
   }
 
   async approveDraft(inboundId: string): Promise<SupervisorState> {
-    const draft = this.db.prepare("SELECT d.jid, d.content, d.conversation_revision AS revision, d.expires_at AS expiresAt, e.received_at AS receivedAt FROM drafts d JOIN inbound_events e ON e.id = d.inbound_id WHERE d.inbound_id = ? AND d.status = 'pending'").get(inboundId) as { jid: string; content: string; revision: number; expiresAt: number; receivedAt: number } | undefined
+    const draft = this.db.prepare("SELECT d.jid, d.content, d.conversation_revision AS revision, d.expires_at AS expiresAt, e.received_at AS receivedAt, e.channel, e.payload FROM drafts d JOIN inbound_events e ON e.id = d.inbound_id WHERE d.inbound_id = ? AND d.status = 'pending'").get(inboundId) as { jid: string; content: string; revision: number; expiresAt: number; receivedAt: number; channel: string; payload: string | null } | undefined
     if (!draft || draft.expiresAt <= Date.now()) throw new Error('Draft is missing or expired')
-    if (!isWithinWhatsAppServiceWindow(draft.receivedAt)) throw new Error('Draft is outside the WhatsApp service window; use an approved template')
+    const channel = draft.channel as ChannelMessage['channel']
+    if (!['whatsapp', 'email', 'instagram', 'messenger', 'twitter'].includes(channel)) throw new Error(`Unsupported draft channel: ${draft.channel}`)
+    const capabilities = getChannelCapabilities(channel)
+    if (capabilities.responseWindowMs !== null && Date.now() - draft.receivedAt > capabilities.responseWindowMs) throw new Error(`Draft is outside the ${channel} response window`)
     const current = (this.db.prepare('SELECT revision FROM conversations WHERE jid = ?').get(draft.jid) as { revision: number } | undefined)?.revision
     if (current !== draft.revision) {
       this.db.prepare("UPDATE drafts SET status = 'superseded' WHERE inbound_id = ?").run(inboundId)
       throw new Error('Draft is stale and was superseded')
     }
-    if (this.state.paused || this.state.status === 'stopped') throw new Error('Supervisor must be running and unpaused')
+    if (!this.hasLease()) throw new Error('Supervisor lease is not held')
+    if (this.state.paused || this.state.status === 'stopped' || this.pausedConversations.has(draft.jid)) throw new Error('Supervisor must be running and unpaused')
     this.db.prepare("UPDATE drafts SET status = 'approved' WHERE inbound_id = ? AND status = 'pending'").run(inboundId)
     this.audit('approve_draft', { inboundId })
-    await this.sendWithRetry({ id: inboundId, from: draft.jid, to: whatsappService.getConnectionState().phoneNumber || '', content: '', timestamp: Date.now(), type: 'text', isFromMe: false }, draft.content, draft.revision)
+    if (channel === 'whatsapp') {
+      let message: WhatsAppMessage
+      try { message = draft.payload ? JSON.parse(draft.payload) as WhatsAppMessage : { id: inboundId, from: draft.jid, to: whatsappService.getConnectionState().phoneNumber || '', content: '', timestamp: draft.receivedAt, type: 'text', isFromMe: false } } catch { message = { id: inboundId, from: draft.jid, to: whatsappService.getConnectionState().phoneNumber || '', content: '', timestamp: draft.receivedAt, type: 'text', isFromMe: false } }
+      await this.sendWithRetry(message, draft.content, draft.revision)
+    } else if (channel === 'email' || channel === 'instagram' || channel === 'messenger' || channel === 'twitter') {
+      if (!draft.payload) throw new Error('Draft payload is missing; cannot route this channel')
+      let message: ChannelMessage
+      try { message = JSON.parse(draft.payload) as ChannelMessage } catch { throw new Error('Draft payload is invalid; cannot route this channel') }
+      if (!isValidNormalizedChannelMessage(message) || message.channel !== channel) throw new Error('Draft payload is invalid; cannot route this channel')
+      const body = `Hi — I’m the AI support assistant for ${BusinessPersona.getInstance().getProfile().name}.\n\n${draft.content}`
+      await this.deliverExternal(message, draft.jid, body, this.externalSender(message))
+    }
     return this.getState()
   }
 
@@ -572,7 +587,17 @@ export class AutonomousSupervisor extends EventEmitter {
   }
 
   private async processEmail(message: ChannelMessage, jid: string): Promise<void> {
-    await this.processExternal(message, jid, async body => emailChannelService.send({ to: message.to, subject: message.subject ? `Re: ${message.subject}` : 'Customer support response', body, inReplyTo: message.messageId, references: message.references }))
+    await this.processExternal(message, jid, this.externalSender(message))
+  }
+
+  private externalSender(message: ChannelMessage): (body: string) => Promise<{ success: boolean; providerMessageId?: string; error?: string }> {
+    if (message.channel === 'email') {
+      return body => emailChannelService.send({ to: message.from, subject: message.subject ? `Re: ${message.subject}` : 'Customer support response', body, inReplyTo: message.messageId, references: message.references })
+    }
+    if (message.channel === 'twitter') {
+      return body => this.xTransport ? this.xTransport.sendText(message.from, body) : Promise.resolve({ success: false, error: 'X transport is not configured' })
+    }
+    return body => this.metaTransport ? this.metaTransport.sendText(message.from, body) : Promise.resolve({ success: false, error: 'Meta transport is not configured' })
   }
 
   private async runDecision(message: WorkflowMessage): Promise<ResponseDecision> {
@@ -612,6 +637,10 @@ export class AutonomousSupervisor extends EventEmitter {
     }
     if (!this.hasLease() || this.state.paused) { this.db.prepare('UPDATE inbound_events SET status = ? WHERE id = ?').run('queued', message.id); return }
     const body = `Hi — I’m the AI support assistant for ${BusinessPersona.getInstance().getProfile().name}.\n\n${decision.text!}`
+    await this.deliverExternal(message, jid, body, send)
+  }
+
+  private async deliverExternal(message: ChannelMessage, jid: string, body: string, send: (body: string) => Promise<{ success: boolean; providerMessageId?: string; error?: string }>): Promise<void> {
     if (message.channel === 'twitter') {
       const cutoff = Date.now() - 24 * 60 * 60 * 1000
       const count = (this.db.prepare("SELECT COUNT(*) AS count FROM outbound_sends WHERE jid = ? AND sent_at >= ? AND status IN ('sent','sending','delivery-unknown')").get(jid, cutoff) as { count: number }).count
@@ -621,12 +650,12 @@ export class AutonomousSupervisor extends EventEmitter {
         return
       }
     }
-    const payloadHash = createHash('sha256').update(JSON.stringify({ to: message.to, subject: message.subject, body, inReplyTo: message.messageId, references: message.references })).digest('hex')
+    const payloadHash = createHash('sha256').update(JSON.stringify({ to: message.from, subject: message.subject, body, inReplyTo: message.messageId, references: message.references })).digest('hex')
     if (this.db.prepare('SELECT status FROM outbound_sends WHERE inbound_id = ?').get(message.id)) return
     this.db.prepare('INSERT INTO outbound_sends (inbound_id,provider_message_id,jid,content,sent_at,status,error,payload_hash) VALUES (?,?,?,?,?,?,?,?)').run(message.id, null, jid, body, Date.now(), 'sending', null, payloadHash)
     const result = await send(body)
     if (!result.success) {
-      const error = result.error || 'email send failed'
+      const error = result.error || 'external message send failed'
       this.db.prepare('UPDATE outbound_sends SET status = ?, error = ?, sent_at = ? WHERE inbound_id = ?').run(isAmbiguousSendError(error) ? 'delivery-unknown' : 'failed', error, Date.now(), message.id)
       this.db.prepare('UPDATE inbound_events SET status = ? WHERE id = ?').run(isAmbiguousSendError(error) ? 'delivery_unknown' : 'failed', message.id)
       this.notifyOwner('failure', { messageId: message.id, error }); return

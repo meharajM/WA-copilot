@@ -130,8 +130,8 @@ for arg in "$@"; do
     --universal)      MAC_ARCH="universal" ;;
     --strict-universal) STRICT_UNIVERSAL=true ;;
     --yes|-y) AUTO_CONFIRM=true ;;
-    --skip-checks) SKIP_CHECKS=true ;;
-    --skip-build)  SKIP_BUILD=true; SKIP_CHECKS=true ;;
+    --skip-checks) echo "--skip-checks is disabled for production publishing"; exit 1 ;;
+    --skip-build)  SKIP_BUILD=true ;;
   esac
 done
 
@@ -179,8 +179,8 @@ cd "$ROOT_DIR"
 
 # ── Step 1: Quality checks ────────────────────────────────────────────────────
 if [ "$SKIP_CHECKS" = false ]; then
-  echo "🔍 [1/4] Running Quality Checks (Lint + Typecheck)..."
-  npm run lint && npm run typecheck
+  echo "🔍 [1/4] Running release gate..."
+  "$SCRIPT_DIR/release-gate.sh"
 fi
 
 # ── Step 2: Build JS bundle ───────────────────────────────────────────────────
@@ -200,17 +200,28 @@ if [ "$SKIP_BUILD" = false ]; then
       auto_clean_native_build_outputs
       clean_mac_universal_temps "$MAC_OUT_DIR"
     fi
-    npx electron-builder --mac --${MAC_ARCH} --config.directories.output="${MAC_OUT_DIR}"
+    npx electron-builder --mac --${MAC_ARCH} \
+      --config.forceCodeSigning=true \
+      --config.mac.notarize=true \
+      --config.directories.output="${MAC_OUT_DIR}"
+    APP_PATH=$(find "${MAC_OUT_DIR}" -maxdepth 2 -type d -name '*.app' -print -quit)
+    DMG_PATH=$(find "${MAC_OUT_DIR}" -maxdepth 1 -type f -name '*.dmg' -print -quit)
+    "$SCRIPT_DIR/verify-macos-release.sh" "$APP_PATH" "$DMG_PATH"
+    "$SCRIPT_DIR/write-release-checksums.sh" "${MAC_OUT_DIR}"
   )
   [ "$BUILD_LINUX" = true ] && (
     echo "🐧 Packaging Linux..."
     reset_output_dir "$LINUX_OUT_DIR"
     npx electron-builder --linux --x64 --arm64 --config.directories.output="${LINUX_OUT_DIR}"
+    "$SCRIPT_DIR/write-release-checksums.sh" "${LINUX_OUT_DIR}"
   )
   [ "$BUILD_WIN" = true ]   && (
     echo "🪟 Packaging Windows..."
     reset_output_dir "$WIN_OUT_DIR"
-    npx electron-builder --win --x64 --config.directories.output="${WIN_OUT_DIR}"
+    npx electron-builder --win --x64 \
+      --config.forceCodeSigning=true \
+      --config.directories.output="${WIN_OUT_DIR}"
+    "$SCRIPT_DIR/write-release-checksums.sh" "${WIN_OUT_DIR}"
   )
 fi
 
@@ -221,19 +232,19 @@ ENDPOINT="--endpoint-url ${R2_ENDPOINT_URL}"
 UPLOAD_PIDS=()
 
 [ "$BUILD_MAC" = true ] && (
-  upload_artifacts "${MAC_OUT_DIR}" "*.dmg" "*.zip" "*.blockmap"
+  upload_artifacts "${MAC_OUT_DIR}" "*.dmg" "*.zip" "*.blockmap" "SHA256SUMS"
   retry_aws_cp "scripts/install-mac.sh" "${R2}/install-mac.sh"
 ) &
 [ "$BUILD_MAC" = true ] && UPLOAD_PIDS+=($!)
 
 [ "$BUILD_LINUX" = true ] && (
-  upload_artifacts "${LINUX_OUT_DIR}" "*.AppImage" "*.deb" "*.blockmap"
+  upload_artifacts "${LINUX_OUT_DIR}" "*.AppImage" "*.deb" "*.blockmap" "SHA256SUMS"
   retry_aws_cp "scripts/install-linux.sh" "${R2}/install-linux.sh"
 ) &
 [ "$BUILD_LINUX" = true ] && UPLOAD_PIDS+=($!)
 
 [ "$BUILD_WIN" = true ] && (
-  upload_artifacts "${WIN_OUT_DIR}" "*.exe" "*.blockmap"
+  upload_artifacts "${WIN_OUT_DIR}" "*.exe" "*.blockmap" "SHA256SUMS"
   retry_aws_cp "scripts/install-windows.ps1" "${R2}/install-windows.ps1"
 ) &
 [ "$BUILD_WIN" = true ] && UPLOAD_PIDS+=($!)

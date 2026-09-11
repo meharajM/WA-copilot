@@ -117,7 +117,21 @@ export class MemoryServiceFactory {
    * Load configuration from electron-store
    */
   static loadConfig(): MemoryConfig {
-    return this.store.get('memory', DEFAULT_CONFIG) as MemoryConfig
+    const config = this.store.get('memory', DEFAULT_CONFIG) as MemoryConfig
+
+    if (config.backend !== 'memento-mcp') {
+      return config
+    }
+
+    const fallbackConfig: MemoryConfig = {
+      ...config,
+      backend: 'sqlite',
+      sqlite: config.sqlite || { ...DEFAULT_CONFIG.sqlite! }
+    }
+
+    console.warn('[MemoryServiceFactory] Memento-MCP is not implemented; falling back to SQLite')
+    this.store.set('memory', fallbackConfig)
+    return fallbackConfig
   }
   
   /**

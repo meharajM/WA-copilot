@@ -96,6 +96,10 @@ function consumeRateLimit(key: string): boolean {
     recent.push(Date.now()); rateBuckets.set(key, recent); return true
 }
 
+function toolNames(tools: { tools?: Array<{ name?: unknown }> }): string[] {
+    return (tools.tools || []).map(tool => tool.name).filter((name): name is string => typeof name === 'string')
+}
+
 // --- IPC Register ---
 
 export function registerMcpHandlers(): void {
@@ -110,7 +114,9 @@ export function registerMcpHandlers(): void {
         if (!validation.valid) { recordMcpAudit('connect', null, null, 'denied', { error: validation.error }); return { success: false, error: validation.error } }
         serverConfig = validation.config
         const { id, type, command, args, url, env } = serverConfig
-        serverAllowedTools.set(id, serverConfig.allowedTools || (command === 'uvx' && args?.some((arg: string) => arg.includes('markitdown-mcp')) ? ['convert_to_markdown'] : []))
+        serverAllowedTools.set(id, Array.isArray(serverConfig.allowedTools)
+            ? serverConfig.allowedTools
+            : (command === 'uvx' && args?.some((arg: string) => arg.includes('markitdown-mcp')) ? ['convert_to_markdown'] : []))
 
         logMcpOperation('info', 'MCP connection requested', {
             operation: 'connect',
@@ -136,7 +142,9 @@ export function registerMcpHandlers(): void {
             if (isPlaywrightServer(serverConfig)) {
                 if (inProcessPlaywrightConnections.has(id)) return { success: true, serverId: id, inProcess: true }
                 try {
-                    await PlaywrightService.getInstance().initialize()
+                    const service = PlaywrightService.getInstance()
+                    await service.initialize()
+                    if (serverConfig.allowedTools === undefined) serverAllowedTools.set(id, toolNames(service.listTools()))
                     inProcessPlaywrightConnections.add(id)
                     logMcpOperation('info', 'In-process Playwright connection established', { operation: 'connect', serverId: id, inProcess: true })
                     return { success: true, serverId: id, inProcess: true }
@@ -147,7 +155,9 @@ export function registerMcpHandlers(): void {
 
             // In-process Memory
             if (command === 'internal-memory' || (args && args.includes('memory-service'))) {
-                MemoryService.getInstance().initialize()
+                const service = MemoryService.getInstance()
+                service.initialize()
+                if (serverConfig.allowedTools === undefined) serverAllowedTools.set(id, toolNames(service.listTools()))
                 inProcessMemoryConnections.add(id)
                 logMcpOperation('info', 'In-process Memory connection established', { operation: 'connect', serverId: id, inProcess: true })
                 return { success: true, serverId: id, inProcess: true }
@@ -155,6 +165,7 @@ export function registerMcpHandlers(): void {
 
             // In-process RAG
             if (command === 'internal-rag' || (args && args.includes('rag-service'))) {
+                if (serverConfig.allowedTools === undefined) serverAllowedTools.set(id, toolNames(RAGService.getInstance().listTools()))
                 inProcessRagConnections.add(id)
                 logMcpOperation('info', 'In-process RAG connection established', { operation: 'connect', serverId: id, inProcess: true })
                 return { success: true, serverId: id, inProcess: true }
@@ -162,6 +173,7 @@ export function registerMcpHandlers(): void {
 
             // In-process Filesystem
             if (command === 'internal-filesystem' || (args && args.includes('filesystem-service'))) {
+                if (serverConfig.allowedTools === undefined) serverAllowedTools.set(id, toolNames(FileSystemService.getInstance().listTools()))
                 inProcessFilesystemConnections.add(id)
                 logMcpOperation('info', 'In-process Filesystem connection established', { operation: 'connect', serverId: id, inProcess: true })
                 return { success: true, serverId: id, inProcess: true }
@@ -324,6 +336,10 @@ export function registerMcpHandlers(): void {
                         ? () => FileSystemService.getInstance().callTool(toolName, args)
                         : null
         if (internalCall) {
+            if (!isMcpToolAllowed(serverAllowedTools.get(id), toolName)) {
+                recordMcpAudit('call-tool', id, toolName, 'denied', { reason: 'capability_allowlist', internal: true })
+                return { result: null, error: 'MCP tool is not allowlisted for this server' }
+            }
             const controller = new AbortController()
             if (typeof requestId === 'string') requestControllers.set(requestKey, { controller, senderId: event.sender.id })
             try {

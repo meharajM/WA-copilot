@@ -13,7 +13,7 @@
  * Consumed by: useAgent.ts (fire-and-forget after each chat submission)
  */
 import type { IAgentClient } from "./agent/IAgentClient";
-import { LLMMessage, type LLMSettings } from "./types";
+import { LLMMessage, LLMSettings } from "./types";
 
 
 /**
@@ -40,7 +40,7 @@ export class MemoryReflector {
     /**
      * Fire-and-forget analysis of recent conversation history.
      */
-    async analyze(recentHistory: LLMMessage[], settings: Record<string, unknown> | null | undefined) {
+    async analyze(recentHistory: LLMMessage[], settings: LLMSettings | null | undefined) {
         if (this.isAnalyzing) {
             console.log('[MemoryReflector] Skipping analysis - already busy');
             return;
@@ -60,7 +60,7 @@ export class MemoryReflector {
             // The IAgentClient interface ensures the swap is type-safe.
             const { AgentRuntime } = await import("./agent-runtime");
             const reflectorAgent: IAgentClient = new AgentRuntime({
-                settings: settings as LLMSettings,
+                settings,
                 isSubAgent: true,
                 // We don't listen to messages, just results
                 onMessage: (_msg: LLMMessage) => {
@@ -134,7 +134,7 @@ GOAL: Extract Facts & State. No Narratives. No Meta-Commentary.
      * Deep analysis of a newly uploaded document.
      * Extracts core business facts, entities, and rules into long-term memory.
      */
-    async analyzeDocument(docContent: string, fileName: string, settings: Record<string, unknown> | null | undefined) {
+    async analyzeDocument(docContent: string, fileName: string, settings: LLMSettings | null | undefined) {
         if (this.isAnalyzing) {
             console.log('[MemoryReflector] Delaying document analysis - busy');
             return;
@@ -146,7 +146,7 @@ GOAL: Extract Facts & State. No Narratives. No Meta-Commentary.
         try {
             const { AgentRuntime } = await import("./agent-runtime");
             const reflectorAgent: IAgentClient = new AgentRuntime({
-                settings: settings as LLMSettings,
+                settings,
                 isSubAgent: true
             });
 

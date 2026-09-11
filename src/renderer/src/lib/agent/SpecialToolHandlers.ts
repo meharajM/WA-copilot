@@ -137,15 +137,41 @@ export class SpecialToolHandlers {
     async handleUpdateProgressSummary(args: any, iterationCount: number): Promise<{ result: string; checkpoint: AgentCheckpoint }> {
         const summary = args.summary || "";
         const checkpoint: AgentCheckpoint = { step: iterationCount, summary, timestamp: Date.now() };
+        const entityName = `AgentState_${this.agentInstanceId}`;
+        const metadata = {
+            lastCheckpoint: checkpoint,
+            status: "active",
+            iterationCount,
+        };
 
-        await executeToolCall("memory_update_entity", {
-            name: `AgentState_${this.agentInstanceId}`,
-            Metadata: {
-                lastCheckpoint: checkpoint,
-                status: "active",
-                iterationCount,
-            },
-        });
+        const stateEntityResult = await executeToolCall("memory_read_entity", { name: entityName });
+        const stateEntity = stateEntityResult.result as { id?: string; name?: string } | null;
+
+        if (stateEntity?.id || stateEntity?.name) {
+            const updateResult = await executeToolCall("memory_update_entity", {
+                id: stateEntity.id,
+                name: stateEntity.name || entityName,
+                metadata,
+            });
+            if (updateResult.error) {
+                throw new Error(updateResult.error);
+            }
+        } else {
+            const createResult = await executeToolCall("memory_create_entity", {
+                name: entityName,
+                type: "agent_execution_state",
+                description: `Agent checkpoint saved at ${new Date().toISOString()}`,
+                metadata: {
+                    agentInstanceId: this.agentInstanceId,
+                    sessionId: this.options.activeSessionId || "unknown",
+                    isInternal: true,
+                    ...metadata,
+                },
+            });
+            if (createResult.error) {
+                throw new Error(createResult.error);
+            }
+        }
         console.log(`[SpecialToolHandlers] Progress checkpoint saved to memory (Step ${iterationCount})`);
 
         return {

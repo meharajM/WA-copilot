@@ -13,6 +13,7 @@ import { persist, createJSONStorage } from 'zustand/middleware'
 
 /** Supported email providers for MCP integration */
 export type EmailProvider = 'imap-smtp' | 'gmail-api' | 'outlook-api' | 'custom-mcp'
+export type GmailAuthMode = 'app-password' | 'google-oauth'
 
 /** Connection state for the email channel */
 export interface EmailConnectionState {
@@ -30,6 +31,8 @@ interface EmailConfig {
   accountName: string
   /** Selected email provider type */
   provider: EmailProvider
+  /** Gmail auth strategy when Gmail is selected */
+  gmailAuthMode: GmailAuthMode
   /** IMAP server hostname (for imap-smtp provider) */
   imapHost: string
   /** IMAP server port */
@@ -77,6 +80,9 @@ interface EmailState {
   /** Update email provider type */
   setProvider: (provider: EmailProvider) => void
 
+  /** Update Gmail auth mode */
+  setGmailAuthMode: (mode: GmailAuthMode) => void
+
   /** Update IMAP/SMTP connection settings */
   setConnectionSettings: (settings: Partial<Pick<EmailConfig, 'accountName' | 'imapHost' | 'imapPort' | 'smtpHost' | 'smtpPort' | 'emailAddress' | 'userName' | 'imapTls' | 'smtpTls'>>) => void
 
@@ -95,6 +101,7 @@ interface EmailState {
 const DEFAULT_CONFIG: EmailConfig = {
   accountName: 'default',
   provider: 'imap-smtp',
+  gmailAuthMode: 'app-password',
   imapHost: '',
   imapPort: 993,
   smtpHost: '',
@@ -132,6 +139,9 @@ export const useEmailStore = create<EmailState>()(
       setProvider: (provider) =>
         set((state) => ({ config: { ...state.config, provider } })),
 
+      setGmailAuthMode: (gmailAuthMode) =>
+        set((state) => ({ config: { ...state.config, gmailAuthMode } })),
+
       setConnectionSettings: (settings) =>
         set((state) => ({
           config: { ...state.config, ...settings },
@@ -160,6 +170,17 @@ export const useEmailStore = create<EmailState>()(
     {
       name: 'aica-email-v1',
       storage: createJSONStorage(() => localStorage),
+      merge: (persistedState, currentState) => {
+        const persisted = persistedState as Partial<EmailState> | undefined
+        return {
+          ...currentState,
+          ...persisted,
+          config: {
+            ...currentState.config,
+            ...(persisted?.config || {}),
+          },
+        }
+      },
       partialize: (state) => ({
         config: state.config,
         // connectionState is NOT persisted — always fresh on startup

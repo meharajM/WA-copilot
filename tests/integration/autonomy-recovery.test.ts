@@ -101,6 +101,67 @@ describe('autonomy recovery', () => {
     supervisor.stop()
   })
 
+  it('routes external email replies to the customer sender', async () => {
+    const { emailChannelService } = await import('../../src/main/services/EmailChannelService')
+    const send = vi.spyOn(emailChannelService, 'send').mockResolvedValue({ success: true, providerMessageId: 'email-outbound-1' })
+    const message = {
+      schemaVersion: 1 as const,
+      id: 'email-reply-routing-1',
+      channel: 'email' as const,
+      businessId: 'local-business',
+      channelAccountId: 'support@example.com',
+      conversationId: '<reply-thread@example.com>',
+      from: 'customer@example.com',
+      to: 'support@example.com',
+      subject: 'Order status',
+      messageId: '<incoming@example.com>',
+      content: 'Where is my order?',
+      timestamp: Date.now(),
+      type: 'text' as const,
+      isFromMe: false
+    }
+    const sender = (supervisor as unknown as { externalSender: (value: typeof message) => (body: string) => Promise<unknown> }).externalSender(message)
+    await sender('Your order is on the way.')
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({
+      to: 'customer@example.com',
+      inReplyTo: '<incoming@example.com>'
+    }))
+    send.mockRestore()
+  })
+
+  it('approves an email draft through the email channel instead of WhatsApp', async () => {
+    const { emailChannelService } = await import('../../src/main/services/EmailChannelService')
+    const send = vi.spyOn(emailChannelService, 'send').mockResolvedValue({ success: true, providerMessageId: 'email-draft-outbound-1' })
+    const db = (supervisor as unknown as { db: Database.Database }).db
+    const inboundId = 'email-draft-approval-1'
+    const message = {
+      schemaVersion: 1 as const,
+      id: inboundId,
+      channel: 'email' as const,
+      businessId: 'local-business',
+      channelAccountId: 'support@example.com',
+      conversationId: '<draft-thread@example.com>',
+      from: 'customer@example.com',
+      to: 'support@example.com',
+      subject: 'Order status',
+      messageId: '<draft-incoming@example.com>',
+      content: 'Please check my order.',
+      timestamp: Date.now(),
+      type: 'text' as const,
+      isFromMe: false
+    }
+    const jid = `email:${message.conversationId}`
+    db.prepare('INSERT INTO inbound_events (id,jid,content,received_at,status,channel,payload) VALUES (?,?,?,?,?,?,?)').run(inboundId, jid, message.content, message.timestamp, 'draft', 'email', JSON.stringify(message))
+    db.prepare('INSERT INTO conversations (jid,revision,updated_at) VALUES (?,?,?)').run(jid, 1, Date.now())
+    db.prepare('INSERT INTO drafts (inbound_id,jid,content,content_hash,conversation_revision,status,expires_at,created_at) VALUES (?,?,?,?,?,?,?,?)').run(inboundId, jid, 'We are checking this for you.', 'draft-hash', 1, 'pending', Date.now() + 60_000, Date.now())
+    supervisor.start()
+    await supervisor.approveDraft(inboundId)
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ to: 'customer@example.com' }))
+    expect(db.prepare('SELECT status FROM outbound_sends WHERE inbound_id = ?').get(inboundId)).toEqual({ status: 'sent' })
+    supervisor.stop()
+    send.mockRestore()
+  })
+
   it('blocks opted-out email events before queueing', () => {
     const jid = 'email:opted-out@example.com'
     const queueDepth = supervisor.getState().queueDepth
