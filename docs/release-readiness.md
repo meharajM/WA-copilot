@@ -2,6 +2,10 @@
 
 This document defines the production release boundary for AIConsumerAgent.
 
+Customer connection onboarding is documented in
+`docs/customer-connection-onboarding.md`; the production OAuth connection
+service and HTTPS webhook relay remain deployment work.
+
 ## Deterministic Gate
 
 Run:
