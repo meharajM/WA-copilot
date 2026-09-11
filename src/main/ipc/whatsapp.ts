@@ -6,11 +6,22 @@
  */
 
 import { ipcMain, BrowserWindow } from 'electron'
+import Store from 'electron-store'
 import { whatsappService } from '../whatsapp/WhatsAppService'
+import { autonomousSupervisor } from '../services/AutonomousSupervisor'
+import { WhatsAppWebConnector } from '../services/WhatsAppWebConnector'
+import { allowsBaileysDirectSend } from '../services/WhatsAppTransportPolicy'
+
+const whatsappWebConnector = new WhatsAppWebConnector()
 
 export function registerWhatsAppHandlers(): void {
     // Attempt auto-restore of saved session credentials
-    whatsappService.init().catch(e => console.error('[whatsapp.ts] Init failed', e))
+    const settings = new Store<Record<string, unknown>>({ name: 'aica-store', defaults: {} }) as Store<Record<string, unknown>> & { get: (key: string) => unknown }
+    if (settings.get('whatsapp_transport') !== 'cloud' && settings.get('whatsapp_transport') !== 'web' && process.env.WHATSAPP_TRANSPORT !== 'cloud' && process.env.WHATSAPP_TRANSPORT !== 'web') {
+        whatsappService.init()
+            .then(() => autonomousSupervisor.recover())
+            .catch(e => console.error('[whatsapp.ts] Init failed', e))
+    } else autonomousSupervisor.recover()
 
     // ── One-way state push: main → renderer ─────────────────────────────────
     // When connection state changes, push it to all renderer windows.
@@ -24,6 +35,7 @@ export function registerWhatsAppHandlers(): void {
 
     // When a new WhatsApp message arrives, push it to all renderer windows.
     whatsappService.on('message', (message) => {
+        autonomousSupervisor.onMessage(message)
         for (const win of BrowserWindow.getAllWindows()) {
             if (!win.isDestroyed()) {
                 win.webContents.send('whatsapp:message', message)
@@ -66,6 +78,8 @@ export function registerWhatsAppHandlers(): void {
     })
 
     ipcMain.handle('whatsapp:send-message', async (_event, to: unknown, content: unknown) => {
+        const selected = process.env.WHATSAPP_TRANSPORT || settings.get('whatsapp_transport')
+        if (!allowsBaileysDirectSend(selected)) throw new Error('Direct Baileys sending is disabled while another WhatsApp transport is selected')
         if (typeof to !== 'string' || to.trim() === '') {
             throw new Error('Invalid "to" argument')
         }
@@ -85,6 +99,8 @@ export function registerWhatsAppHandlers(): void {
     })
 
     ipcMain.handle('whatsapp:send-media-message', async (_event, to: unknown, filePath: unknown, caption: unknown, type: unknown) => {
+        const selected = process.env.WHATSAPP_TRANSPORT || settings.get('whatsapp_transport')
+        if (!allowsBaileysDirectSend(selected)) throw new Error('Direct Baileys media sending is disabled while another WhatsApp transport is selected')
         if (typeof to !== 'string' || to.trim() === '') {
             throw new Error('Invalid "to" argument')
         }
@@ -109,4 +125,15 @@ export function registerWhatsAppHandlers(): void {
         }
         return whatsappService.setTargetPhoneNumber(phoneNumber.trim())
     })
+    ipcMain.handle('whatsapp-web:get-state', () => whatsappWebConnector.getState())
+    ipcMain.handle('whatsapp-web:start', () => whatsappWebConnector.start())
+    ipcMain.handle('whatsapp-web:stop', () => whatsappWebConnector.stop().then(() => whatsappWebConnector.getState()))
+    ipcMain.handle('whatsapp-web:human-takeover', () => whatsappWebConnector.humanTakeover())
+    ipcMain.handle('whatsapp-web:capture-failure', (_event, name: unknown) => whatsappWebConnector.captureFailure(typeof name === 'string' && /^[a-z0-9_-]{1,40}$/i.test(name) ? name : undefined))
+    ipcMain.handle('whatsapp-web:start-monitoring', async (_event, chatId: unknown) => {
+        if (typeof chatId !== 'string' || !/^[a-zA-Z0-9@._:+-]{1,200}$/.test(chatId)) throw new Error('Invalid WhatsApp Web conversation ID')
+        await whatsappWebConnector.startMonitoring(chatId, message => autonomousSupervisor.onMessage(message))
+        return whatsappWebConnector.getState()
+    })
+    ipcMain.handle('whatsapp-web:stop-monitoring', () => whatsappWebConnector.stopMonitoring())
 }

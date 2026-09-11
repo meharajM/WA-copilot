@@ -21,6 +21,9 @@ const ALLOWED_SECRET_KEYS = [
   "email_imap_password",
   "email_smtp_password",
   "gmail_oauth_client_id",
+  "whatsapp_cloud_access_token",
+  "whatsapp_cloud_app_secret",
+  "whatsapp_cloud_verify_token",
 ] as const;
 
 type SecretKey = (typeof ALLOWED_SECRET_KEYS)[number];
@@ -33,6 +36,14 @@ function getUserSecretKey(key: string, userId?: string): string {
   return userId ? `user_${userId}_${key}` : key;
 }
 
+export function readSecureSecret(key: string, userId?: string): string | null {
+  if (!isAllowedSecretKey(key)) return null;
+  const stored = secretStore.get(getUserSecretKey(key, userId));
+  if (!stored) return null;
+  if (!safeStorage.isEncryptionAvailable()) return stored;
+  try { return safeStorage.decryptString(Buffer.from(stored, "base64")); } catch { return stored; }
+}
+
 export function registerSecureHandlers(): void {
   // Check if encryption is available
   ipcMain.handle("secure:is-available", () => {
@@ -40,9 +51,7 @@ export function registerSecureHandlers(): void {
   });
 
   // Encrypt and store a secret
-  ipcMain.handle(
-    "secure:set",
-    async (_event, key: string, value: string, userId?: string) => {
+  ipcMain.handle("secure:set", async (_event, key: string, value: string, userId?: string) => {
       // Validate key is in allowlist
       if (!isAllowedSecretKey(key)) {
         console.warn(
@@ -56,12 +65,13 @@ export function registerSecureHandlers(): void {
 
       if (!safeStorage.isEncryptionAvailable()) {
         console.warn(
-          "[Secure] Encryption not available, falling back to plain storage",
+          "[Secure] Encryption not available; refusing to store secret",
         );
-        // Fallback: store without encryption (better than nothing)
-        const storeKey = getUserSecretKey(key, userId);
-        secretStore.set(storeKey, value);
-        return { success: true, encrypted: false };
+        return {
+          success: false,
+          encrypted: false,
+          error: "Secure storage encryption is unavailable",
+        };
       }
 
       try {
@@ -94,8 +104,15 @@ export function registerSecureHandlers(): void {
     }
 
     if (!safeStorage.isEncryptionAvailable()) {
-      // Fallback: stored without encryption
-      return { success: true, value: stored, encrypted: false };
+      console.warn(
+        "[Secure] Encryption not available; refusing to read stored secret",
+      );
+      return {
+        success: false,
+        value: null,
+        encrypted: false,
+        error: "Secure storage encryption is unavailable",
+      };
     }
 
     try {
@@ -104,15 +121,20 @@ export function registerSecureHandlers(): void {
       return { success: true, value: decrypted, encrypted: true };
     } catch (error) {
       console.error("[Secure] Decryption failed:", error);
-      // Might be plaintext from before encryption was available
-      return { success: true, value: stored, encrypted: false };
+      // Old versions could persist plaintext. Remove any undecryptable value so
+      // it cannot be silently accepted as a secret or remain on disk.
+      secretStore.delete(storeKey);
+      return {
+        success: false,
+        value: null,
+        encrypted: false,
+        error: "Stored secret was not securely encrypted and has been removed",
+      };
     }
   });
 
   // Delete a secret
-  ipcMain.handle(
-    "secure:delete",
-    async (_event, key: string, userId?: string) => {
+  ipcMain.handle("secure:delete", async (_event, key: string, userId?: string) => {
       if (!isAllowedSecretKey(key)) {
         return { success: false, error: `Key '${key}' is not allowed` };
       }

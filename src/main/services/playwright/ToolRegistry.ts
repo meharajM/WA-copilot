@@ -25,7 +25,7 @@ import { ClickTextTool } from './tools/ClickTextTool';
 import { NewTabTool, SwitchTabTool, CloseTabTool, GetTabsTool } from './tools/TabTools';
 import { SelectOptionTool, UploadFileTool, HoverTool, PressTool, ScrollTool, DragDropTool } from './tools/InputTools';
 import { GetPageContentTool, ExtractDataTool, BackgroundScrapeTool } from './tools/ExtractionTools';
-import { EvaluateTool, HandleDialogTool, SwitchFrameTool, FindByXpathTool, CheckElementTool, SetViewportTool } from './tools/AdvancedTools';
+import { HandleDialogTool, SwitchFrameTool, FindByXpathTool, CheckElementTool, SetViewportTool } from './tools/AdvancedTools';
 import { GetCookiesTool, SetCookieTool, RequestHumanInterventionTool } from './tools/SessionTools';
 import { GoBackTool, GoForwardTool, WaitForNavigationTool } from './tools/MiscTools';
 import { BrowserActionSequenceTool, WebSearchTool, FillFormTool } from './tools/TurboTools';
@@ -60,7 +60,6 @@ export function getPlaywrightTools(): PlaywrightTool[] {
         new GetPageContentTool(),
         new ExtractDataTool(),
         new BackgroundScrapeTool(),
-        new EvaluateTool(),
         new HandleDialogTool(),
         new SwitchFrameTool(),
         new FindByXpathTool(),

@@ -2,6 +2,7 @@ import Database from 'better-sqlite3'
 import { app } from 'electron'
 import * as path from 'path'
 import { MemoryServiceFactory } from './memory/MemoryServiceFactory'
+import type { SearchOptions } from './memory/UnifiedMemoryBackend'
 import { PIIDetector } from './memory/privacy/PIIDetector'
 import { SecretRedactor } from './memory/privacy/SecretRedactor'
 import { MetricsCollector } from './memory/MetricsCollector'
@@ -36,6 +37,7 @@ export interface Entity {
     name: string
     type: string
     description: string
+    observations?: string[]
     metadata: Record<string, any>
     created_at: string
     updated_at: string
@@ -141,6 +143,23 @@ const MEMORY_TOOLS: ToolSchema[] = [
         }
     },
     {
+        name: 'memory_read_entity',
+        description: 'Read a single entity by id or name from the knowledge graph.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                id: {
+                    type: 'string',
+                    description: 'Entity id to read'
+                },
+                name: {
+                    type: 'string',
+                    description: 'Entity name to read'
+                }
+            }
+        }
+    },
+    {
         name: 'memory_update_entity',
         description: 'Update an existing entity. Use this to correct facts or add new observations to existing entities.',
         inputSchema: {
@@ -149,6 +168,10 @@ const MEMORY_TOOLS: ToolSchema[] = [
                 id: {
                     type: 'string',
                     description: 'The UUID of the entity to update (from search results)'
+                },
+                name: {
+                    type: 'string',
+                    description: 'Entity name to update when id is not available'
                 },
                 description: {
                     type: 'string',
@@ -162,8 +185,7 @@ const MEMORY_TOOLS: ToolSchema[] = [
                     type: 'object',
                     description: 'Merged metadata updates'
                 }
-            },
-            required: ['id']
+            }
         }
     }
 ]
@@ -227,6 +249,10 @@ export class MemoryService {
             MemoryService.instance = new MemoryService()
         }
         return MemoryService.instance
+    }
+
+    getHealth(): { status: 'ready' | 'uninitialized'; backend: string | null } {
+        return { status: this.backend ? 'ready' : 'uninitialized', backend: this.backend?.constructor.name || null }
     }
 
     /**
@@ -437,12 +463,12 @@ export class MemoryService {
     /**
      * Search entities with metrics tracking
      */
-    async search(query: string, limit: number = 10): Promise<Entity[]> {
+    async search(query: string, limit: number = 10, context?: SearchOptions['context']): Promise<Entity[]> {
         if (!this.backend) await this.initialize()
 
         const startTime = Date.now()
 
-        const results = await this.backend!.search(query, { limit })
+        const results = await this.backend!.search(query, { limit, context })
 
         const latency = Date.now() - startTime
         this.metricsCollector.recordLatency(latency)
@@ -510,7 +536,7 @@ export class MemoryService {
                         args.name,
                         args.type,
                         args.description,
-                        args.metadata
+                        this.getToolMetadata(args)
                     )
                     return { result: entity }
                 }
@@ -531,22 +557,48 @@ export class MemoryService {
                     return { result: results }
                 }
 
+                case 'memory_read_entity': {
+                    const entity = await this.findEntityByIdOrName(args.id, args.name)
+                    return { result: entity ? this.convertToLegacyEntity(entity) : null }
+                }
+
                 case 'memory_update_entity': {
-                    // Check if updateEntity exists on backend (it should via UnifiedMemoryBackend)
-                    if (this.backend && 'updateEntity' in this.backend) {
-                        try {
-                            const updated = await this.backend.updateEntity(args.id, {
-                                description: args.description,
-                                observations: args.observation ? [args.observation] : undefined,
-                                metadata: args.metadata
-                            })
-                            return { result: this.convertToLegacyEntity(updated) }
-                        } catch (e) {
-                            return { result: null, error: `Update failed: ${e instanceof Error ? e.message : String(e)}` }
+                    try {
+                        const existing = await this.findEntityByIdOrName(args.id, args.name)
+                        if (!existing) {
+                            return { result: null, error: `Entity not found: ${args.id || args.name || '(missing id/name)'}` }
                         }
-                    } else {
-                        return { result: null, error: 'Backend does not support entity updates' }
+
+                        const metadataUpdate = this.getToolMetadata(args)
+                        const observations = Array.isArray(args.observations)
+                            ? args.observations
+                            : args.observation
+                                ? [args.observation]
+                                : undefined
+
+                        const updated = await this.backend!.updateEntity(existing.id, {
+                            description: args.description ?? existing.description,
+                            observations: observations
+                                ? [...(existing.observations || []), ...observations]
+                                : existing.observations,
+                            metadata: {
+                                ...(this.getEntityMetadata(existing)),
+                                ...metadataUpdate
+                            }
+                        })
+                        return { result: this.convertToLegacyEntity(updated) }
+                    } catch (e) {
+                        return { result: null, error: `Update failed: ${e instanceof Error ? e.message : String(e)}` }
                     }
+                }
+
+                case 'memory_delete_entity': {
+                    const existing = await this.findEntityByIdOrName(args.id, args.name)
+                    if (!existing) {
+                        return { result: { deleted: false, reason: 'not_found' } }
+                    }
+                    await this.backend!.deleteEntity(existing.id)
+                    return { result: { deleted: true, id: existing.id, name: existing.name } }
                 }
 
                 default:
@@ -657,17 +709,48 @@ export class MemoryService {
         return { valid: true }
     }
 
+    private getToolMetadata(args: any): Record<string, any> {
+        const metadata = args?.metadata ?? args?.Metadata
+        return metadata && typeof metadata === 'object' && !Array.isArray(metadata) ? metadata : {}
+    }
+
+    private getEntityMetadata(entity: BackendEntity | Record<string, any>): Record<string, any> {
+        const rawEntity = entity as BackendEntity & { Metadata?: Record<string, any> }
+        const metadata = rawEntity.metadata ?? rawEntity.Metadata
+        return metadata && typeof metadata === 'object' && !Array.isArray(metadata) ? metadata : {}
+    }
+
+    private async findEntityByIdOrName(id?: string, name?: string): Promise<BackendEntity | null> {
+        if (!this.backend) await this.initialize()
+
+        if (id) {
+            const byId = await this.backend!.getEntity(id)
+            if (byId?.id === id) return byId
+        }
+
+        if (!name) return null
+
+        // Name is the ID in the default SQLite and server-memory backends.
+        const byNameAsId = await this.backend!.getEntity(name)
+        if (byNameAsId?.name === name) return byNameAsId
+
+        const results = await this.backend!.search(name, { limit: 100 })
+        return results.find((entity) => entity.name === name) || null
+    }
+
     /**
      * Convert backend entity to legacy format
      * @private
      */
     private convertToLegacyEntity(backendEntity: BackendEntity): Entity {
+        const metadata = this.getEntityMetadata(backendEntity)
         return {
             id: backendEntity.id,
             name: backendEntity.name,
             type: backendEntity.type,
             description: backendEntity.description,
-            metadata: backendEntity.metadata,
+            observations: backendEntity.observations || [],
+            metadata,
             created_at: backendEntity.createdAt,
             updated_at: backendEntity.updatedAt || backendEntity.createdAt
         }

@@ -146,15 +146,18 @@ const MIN_DRAFT_CONFIDENCE = 0.5
  * // → { action: 'send', confidence: 0.95, rationale: '...' }
  */
 export function evaluateEmailPolicy(context: EmailResponseContext): EmailPolicyDecision {
-  // Layer 1: Check for sensitive topics (hard escalation triggers)
-  const sensitiveTopics = detectSensitiveTopics(context.responseText)
+  // Layer 1: Check the complete exchange for sensitive topics. A neutral answer
+  // must not make a sensitive inbound request eligible for automatic sending.
+  const sensitiveTopics = detectSensitiveTopics(
+    `${context.originalContent}\n${context.responseText}`
+  )
   const hasSensitiveTopic = sensitiveTopics.length > 0
 
   if (hasSensitiveTopic) {
     return {
       action: 'escalate',
       confidence: 0,
-      rationale: `Response contains sensitive topic(s): ${sensitiveTopics.join(', ')}. Requires human review.`,
+      rationale: `Email contains sensitive topic(s): ${sensitiveTopics.join(', ')}. Requires human review.`,
       hasSensitiveTopic: true,
       sensitiveTopics,
     }

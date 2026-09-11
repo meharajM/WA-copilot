@@ -44,6 +44,22 @@ describe('whatsapp integration contracts', () => {
     expect(resolved).toBe('9876543210@s.whatsapp.net')
   })
 
+  it('resolves explicit WhatsApp JID when autonomous bot mode is connected', () => {
+    useWhatsAppStore.setState({
+      businessBotMode: true,
+      connectionState: {
+        ...useWhatsAppStore.getState().connectionState,
+        status: 'connected',
+        phoneNumber: '14155551212@s.whatsapp.net',
+      },
+    })
+
+    const resolved = resolveWhatsAppTarget(
+      '📱 **WhatsApp** (9876543210@s.whatsapp.net): customer asked about refund'
+    )
+    expect(resolved).toBe('9876543210@s.whatsapp.net')
+  })
+
   it('returns null when disconnected even if a JID is present in message', () => {
     const resolved = resolveWhatsAppTarget(
       '📱 **WhatsApp** (9876543210@s.whatsapp.net): test'

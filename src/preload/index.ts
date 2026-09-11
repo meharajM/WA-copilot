@@ -1,5 +1,13 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
+let mcpSessionToken: Promise<string> | null = null
+function getMcpSessionToken(): Promise<string> {
+    return mcpSessionToken ??= ipcRenderer.invoke('mcp:authorize').then((result: { success: boolean; token?: string; error?: string }) => {
+        if (!result.success || !result.token) throw new Error(result.error || 'MCP session authorization failed')
+        return result.token
+    })
+}
+
 // IPC channels for main process communication
 const electronAPI = {
     // Platform info
@@ -7,11 +15,13 @@ const electronAPI = {
 
     // MCP Server operations
     mcp: {
-        connect: (serverConfig: unknown) => ipcRenderer.invoke('mcp:connect', serverConfig),
-        disconnect: (serverId: string) => ipcRenderer.invoke('mcp:disconnect', serverId),
-        listTools: (serverId: string) => ipcRenderer.invoke('mcp:list-tools', serverId),
-        callTool: (serverId: string, toolName: string, args: unknown) =>
-            ipcRenderer.invoke('mcp:call-tool', serverId, toolName, args),
+        authorize: () => ipcRenderer.invoke('mcp:authorize'),
+        connect: async (serverConfig: unknown) => ipcRenderer.invoke('mcp:connect', serverConfig, await getMcpSessionToken()),
+        disconnect: async (serverId: string) => ipcRenderer.invoke('mcp:disconnect', serverId, await getMcpSessionToken()),
+        listTools: async (serverId: string) => ipcRenderer.invoke('mcp:list-tools', serverId, await getMcpSessionToken()),
+        callTool: async (serverId: string, toolName: string, args: unknown, requestId?: string) =>
+            ipcRenderer.invoke('mcp:call-tool', serverId, toolName, args, requestId, await getMcpSessionToken()),
+        cancelTool: async (requestId: string) => ipcRenderer.invoke('mcp:cancel-tool', requestId, await getMcpSessionToken()),
     },
 
     // LLM operations (for future main process LLM handling)
@@ -189,6 +199,52 @@ const electronAPI = {
         },
         notifyAdmin: (customerJid: string, summary: string, mainQuestion: string) =>
             ipcRenderer.invoke('whatsapp:notify-admin', { customerJid, summary, mainQuestion }),
+        web: {
+            getState: () => ipcRenderer.invoke('whatsapp-web:get-state'),
+            start: () => ipcRenderer.invoke('whatsapp-web:start'),
+            stop: () => ipcRenderer.invoke('whatsapp-web:stop'),
+            humanTakeover: () => ipcRenderer.invoke('whatsapp-web:human-takeover'),
+            captureFailure: (name?: string) => ipcRenderer.invoke('whatsapp-web:capture-failure', name),
+            startMonitoring: (chatId: string) => ipcRenderer.invoke('whatsapp-web:start-monitoring', chatId),
+            stopMonitoring: () => ipcRenderer.invoke('whatsapp-web:stop-monitoring')
+        },
+    },
+    autonomy: {
+        getState: () => ipcRenderer.invoke('autonomy:get-state'),
+        getHealth: () => ipcRenderer.invoke('autonomy:get-health'),
+        getMetrics: (days?: number) => ipcRenderer.invoke('autonomy:get-metrics', days ?? 14),
+        reconnectChannel: () => ipcRenderer.invoke('autonomy:reconnect-channel'),
+        start: () => ipcRenderer.invoke('autonomy:start'),
+        stop: () => ipcRenderer.invoke('autonomy:stop'),
+        pause: (emergency?: boolean) => ipcRenderer.invoke('autonomy:pause', emergency),
+        resume: () => ipcRenderer.invoke('autonomy:resume'),
+        enterRecoveryMode: (reason?: string) => ipcRenderer.invoke('autonomy:enter-recovery-mode', reason),
+        clearRecoveryMode: () => ipcRenderer.invoke('autonomy:clear-recovery-mode'),
+        stageBackup: (backupPath: string) => ipcRenderer.invoke('autonomy:stage-backup', backupPath),
+        pruneRetention: () => ipcRenderer.invoke('autonomy:prune-retention'),
+        pauseConversation: (jid: string) => ipcRenderer.invoke('autonomy:pause-conversation', jid),
+        resumeConversation: (jid: string) => ipcRenderer.invoke('autonomy:resume-conversation', jid),
+        retryDelivery: (inboundId: string) => ipcRenderer.invoke('autonomy:retry-delivery', inboundId),
+        quarantineDelivery: (inboundId: string) => ipcRenderer.invoke('autonomy:quarantine-delivery', inboundId),
+        cancelOutbound: (inboundId: string) => ipcRenderer.invoke('autonomy:cancel-outbound', inboundId),
+        listApprovedTemplates: () => ipcRenderer.invoke('autonomy:list-approved-templates'),
+        listTakeovers: () => ipcRenderer.invoke('autonomy:list-takeovers'),
+        listDrafts: () => ipcRenderer.invoke('autonomy:list-drafts'),
+        listUnresolvedOutbound: () => ipcRenderer.invoke('autonomy:list-unresolved-outbound'),
+        listDeliveryHistory: (limit?: number) => ipcRenderer.invoke('autonomy:list-delivery-history', limit ?? 50),
+        listDecisionEvidence: (limit?: number) => ipcRenderer.invoke('autonomy:list-decision-evidence', limit ?? 50),
+        usageHistory: (days?: number) => ipcRenderer.invoke('autonomy:usage-history', days ?? 30),
+        approveDraft: (inboundId: string) => ipcRenderer.invoke('autonomy:approve-draft', inboundId),
+        sendApprovedTemplate: (inboundId: string, name: string, languageCode: string, parameters?: string[]) => ipcRenderer.invoke('autonomy:send-approved-template', inboundId, name, languageCode, parameters ?? []),
+        listNotifications: () => ipcRenderer.invoke('autonomy:list-notifications'),
+        ackNotification: (id: number) => ipcRenderer.invoke('autonomy:ack-notification', id),
+        onNotification: (callback: (data: unknown) => void) => { const l = (_e: unknown, d: unknown) => callback(d); ipcRenderer.on('autonomy:notification', l); return () => ipcRenderer.removeListener('autonomy:notification', l) },
+        registerApprovedTemplate: (name: string, languageCode: string, category: string) => ipcRenderer.invoke('autonomy:register-approved-template', name, languageCode, category),
+        revokeApprovedTemplate: (name: string, languageCode: string) => ipcRenderer.invoke('autonomy:revoke-approved-template', name, languageCode),
+        setMode: (mode: string, responsePermission: boolean) => ipcRenderer.invoke('autonomy:set-mode', mode, responsePermission),
+        onState: (callback: (state: unknown) => void) => { const l = (_e: unknown, s: unknown) => callback(s); ipcRenderer.on('autonomy:state', l); return () => ipcRenderer.removeListener('autonomy:state', l) },
+        onDecision: (callback: (data: unknown) => void) => { const l = (_e: unknown, d: unknown) => callback(d); ipcRenderer.on('autonomy:decision', l); return () => ipcRenderer.removeListener('autonomy:decision', l) },
+        onFailure: (callback: (data: unknown) => void) => { const l = (_e: unknown, d: unknown) => callback(d); ipcRenderer.on('autonomy:failure', l); return () => ipcRenderer.removeListener('autonomy:failure', l) },
     },
     // Email channel operations
     email: {

@@ -30,6 +30,11 @@ export interface GmailOAuthStatus {
   email: string | null
 }
 
+export interface GmailWatchStatus {
+  historyId: string | null
+  expiration: number | null
+}
+
 const gmailStore = new Store<Record<string, string>>({
   name: 'gmail-oauth',
   defaults: {},
@@ -188,6 +193,20 @@ export class GmailOAuthService {
     this.accessToken = json.access_token
     this.accessTokenExpiry = Date.now() + json.expires_in * 1000
     return this.accessToken
+  }
+
+  async renewWatch(topicName: string): Promise<GmailWatchStatus> {
+    if (!/^projects\/[^/]+\/topics\/[^/]+$/.test(topicName)) throw new Error('Invalid Gmail Pub/Sub topic')
+    const accessToken = await this.getAccessToken()
+    if (!accessToken) throw new Error('Gmail OAuth token missing')
+    const response = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/watch', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ labelIds: ['INBOX'], topicName })
+    })
+    const json = await response.json().catch(() => ({})) as { historyId?: string; expiration?: string | number; error?: { message?: string } }
+    if (!response.ok || !json.expiration) throw new Error(`Gmail watch renewal failed: ${json.error?.message || `HTTP ${response.status}`}`)
+    return { historyId: typeof json.historyId === 'string' ? json.historyId : null, expiration: Number(json.expiration) || null }
   }
 
   private waitForCallback(): Promise<string | null> {

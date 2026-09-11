@@ -75,12 +75,15 @@ export class ChatPersistenceService {
         `)
     }
 
-    public saveSession(session: SerializedSession) {
+    public saveSession(session: SerializedSession): boolean {
         const transaction = this.db.transaction(() => {
-            // 1. Save/Update Session Metadata
+            const existing = this.db.prepare('SELECT updatedAt FROM sessions WHERE id = ?').get(session.id) as { updatedAt: number } | undefined
+            if (existing && session.updatedAt < existing.updatedAt) return false
+
             const sessionStmt = this.db.prepare(`
-                INSERT OR REPLACE INTO sessions (id, title, createdAt, updatedAt, channel, contact_id, status, workspacePath, topic)
+                INSERT INTO sessions (id, title, createdAt, updatedAt, channel, contact_id, status, workspacePath, topic)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET title = excluded.title, updatedAt = excluded.updatedAt, channel = excluded.channel, contact_id = excluded.contact_id, status = excluded.status, workspacePath = excluded.workspacePath, topic = excluded.topic
             `)
             sessionStmt.run(
                 session.id,
@@ -94,14 +97,10 @@ export class ChatPersistenceService {
                 session.topic || null
             )
 
-            // 2. Save Messages
-            // Clear existing messages for this session to handle updates/deletes simply 
-            // (or we could INSERT OR REPLACE if we had reliable message IDs)
-            this.db.prepare('DELETE FROM session_messages WHERE sessionId = ?').run(session.id)
-            
             const msgStmt = this.db.prepare(`
                 INSERT INTO session_messages (id, sessionId, role, content, timestamp, thought, toolCalls, actions, findings, plan)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET role = excluded.role, content = excluded.content, timestamp = excluded.timestamp, thought = excluded.thought, toolCalls = excluded.toolCalls, actions = excluded.actions, findings = excluded.findings, plan = excluded.plan
             `)
 
             for (const msg of session.messages) {
@@ -118,9 +117,10 @@ export class ChatPersistenceService {
                     msg.plan ? JSON.stringify(msg.plan) : null
                 )
             }
+            return true
         })
 
-        transaction()
+        return transaction()
     }
 
     public getAllSessions(): SerializedSession[] {

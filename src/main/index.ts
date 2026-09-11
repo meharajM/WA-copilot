@@ -5,6 +5,15 @@ import { initEnv, __dirname } from './utils/env'
 import { setupIpcHandlers } from './ipc'
 import { McpProcessManager } from './services/McpProcessManager'
 import { emailChannelService } from './services/EmailChannelService'
+import { autonomousSupervisor } from './services/AutonomousSupervisor'
+import { whatsAppCloudWebhookServer } from './services/WhatsAppCloudWebhookServer'
+import { MetaWebhookServer } from './services/MetaWebhookServer'
+import type { MetaMessagingChannel } from './services/MetaMessaging'
+import { XWebhookServer } from './services/XWebhookServer'
+import { shouldAutoResume } from './services/AutonomyPolicy'
+
+const metaWebhookServer = new MetaWebhookServer(message => autonomousSupervisor.onMetaMessage(message), lead => autonomousSupervisor.recordMetaLead(lead), update => autonomousSupervisor.onDeliveryUpdate(update))
+const xWebhookServer = new XWebhookServer(message => autonomousSupervisor.onMetaMessage(message))
 
 
 // Enable experimental on-device AI features (Gemini Nano / Chrome Prompt API)
@@ -116,6 +125,21 @@ app.whenReady().then(async () => {
 
     // Verify environment and paths
     setupIpcHandlers()
+    const previousAutonomy = autonomousSupervisor.getState()
+    if (shouldAutoResume(previousAutonomy)) {
+        const resumed = autonomousSupervisor.start()
+        autonomousSupervisor.recover()
+        console.log('[Autonomy] crash-safe startup resume', { status: resumed.status, paused: resumed.paused, queueDepth: resumed.queueDepth })
+    }
+    await whatsAppCloudWebhookServer.start()
+    const metaChannel = process.env.META_WEBHOOK_CHANNEL
+    const metaVerifyToken = process.env.META_WEBHOOK_VERIFY_TOKEN
+    const metaAppSecret = process.env.META_APP_SECRET
+    if ((metaChannel === 'instagram' || metaChannel === 'messenger') && metaVerifyToken && metaAppSecret) {
+        const port = Number(process.env.META_WEBHOOK_PORT || 8788)
+        await metaWebhookServer.start(metaChannel as MetaMessagingChannel, metaVerifyToken, metaAppSecret, port)
+    }
+    if (process.env.X_WEBHOOK_CONSUMER_SECRET) await xWebhookServer.start(process.env.X_WEBHOOK_CONSUMER_SECRET, Number(process.env.X_WEBHOOK_PORT || 8789), process.env.X_ACCOUNT_ID || '')
 
     // Workers cannot fetch file:// URLs easily. We serve the model over HTTP locally.
     // Check for production env explicitly to ensure it runs during e2e tests
@@ -141,6 +165,10 @@ app.on('before-quit', async (event) => {
     isQuitting = true
     
     await emailChannelService.stop().catch(() => {})
+    autonomousSupervisor.stop()
+    await whatsAppCloudWebhookServer.stop()
+    await metaWebhookServer.stop()
+    await xWebhookServer.stop()
     await McpProcessManager.getInstance().teardownAll()
     
     app.quit()

@@ -10,6 +10,11 @@ export interface GeminiResponse {
     usage?: { promptTokens: number; completionTokens: number }
 }
 
+export interface GeminiGenerationOptions {
+    maxOutputTokens?: number
+    signal?: AbortSignal
+}
+
 export class GeminiClient {
     private apiKey: string
 
@@ -20,7 +25,7 @@ export class GeminiClient {
     /**
      * General text-based generation (used for profile extraction, summaries, etc.)
      */
-    async generateText(prompt: string, context?: string): Promise<string> {
+    async generateText(prompt: string, context?: string, options: GeminiGenerationOptions = {}): Promise<string> {
         const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${this.apiKey}`
         
         const body = {
@@ -32,14 +37,15 @@ export class GeminiClient {
             generationConfig: {
                 temperature: 0.1,
                 topP: 0.95,
-                maxOutputTokens: 2048,
+                maxOutputTokens: options.maxOutputTokens ?? 2048,
             }
         }
 
         const response = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body)
+            body: JSON.stringify(body),
+            signal: options.signal
         })
 
         if (!response.ok) {

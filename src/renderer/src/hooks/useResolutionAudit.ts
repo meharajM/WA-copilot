@@ -55,8 +55,11 @@ export function computeResolutionAuditActions(
       })
     }
   }
-
   return actions
+}
+
+export function shouldUseLegacyResolutionAudit(autonomyState: { status?: string } | null | undefined): boolean {
+    return autonomyState?.status !== 'running' && autonomyState?.status !== 'degraded'
 }
 
 /**
@@ -74,7 +77,9 @@ export function useResolutionAudit() {
         if (timerRef.current) clearInterval(timerRef.current)
 
         // Run audit every minute
-        timerRef.current = setInterval(() => {
+        timerRef.current = setInterval(async () => {
+            const autonomyState = await electron.autonomy.getState().catch(() => null)
+            if (!shouldUseLegacyResolutionAudit(autonomyState)) return
             const actions = computeResolutionAuditActions(sessions)
 
             actions.forEach((action) => {

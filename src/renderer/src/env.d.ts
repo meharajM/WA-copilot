@@ -20,10 +20,12 @@ interface ElectronAPI {
     platform: string
 
     mcp: {
+        authorize: () => Promise<{ success: boolean; token?: string; error?: string }>
         connect: (serverConfig: unknown) => Promise<{ success: boolean; serverId?: string; error?: string }>
         disconnect: (serverId: string) => Promise<{ success: boolean }>
         listTools: (serverId: string) => Promise<{ tools: Array<{ name: string; description: string }> }>
-        callTool: (serverId: string, toolName: string, args: unknown) => Promise<{ result: unknown }>
+        callTool: (serverId: string, toolName: string, args: unknown, requestId?: string) => Promise<{ result: unknown }>
+        cancelTool: (requestId: string) => Promise<{ success: boolean; error?: string }>
     }
 
     llm: {
@@ -128,7 +130,7 @@ interface ElectronAPI {
 
     whatsapp?: {
         getState: () => Promise<{
-            status: 'disconnected' | 'connecting' | 'connected' | 'error'
+            status: 'disconnected' | 'connecting' | 'qr_required' | 'connected' | 'logged_out' | 'blocked' | 'error'
             qrCode: string | null
             error: string | null
             phoneNumber: string | null
@@ -144,8 +146,54 @@ interface ElectronAPI {
         onMessage: (callback: (message: unknown) => void) => () => void
         onEscalation: (callback: (data: unknown) => void) => () => void
         notifyAdmin: (customerJid: string, summary: string, mainQuestion: string) => Promise<{ success: boolean; error?: string }>
+        web: {
+            getState: () => Promise<any>
+            start: () => Promise<any>
+            stop: () => Promise<any>
+            humanTakeover: () => Promise<any>
+            captureFailure: (name?: string) => Promise<string | null>
+            startMonitoring: (chatId: string) => Promise<any>
+            stopMonitoring: () => Promise<void>
+        }
     }
 
+    autonomy: {
+        getState: () => Promise<any>
+        getHealth: () => Promise<any>
+        getMetrics: (days?: number) => Promise<any>
+        reconnectChannel: () => Promise<any>
+        start: () => Promise<any>
+        stop: () => Promise<any>
+        pause: (emergency?: boolean) => Promise<any>
+        resume: () => Promise<any>
+        enterRecoveryMode: (reason?: string) => Promise<any>
+        clearRecoveryMode: () => Promise<any>
+        stageBackup: (backupPath: string) => Promise<any>
+        pruneRetention: () => Promise<any>
+        pauseConversation: (jid: string) => Promise<any>
+        resumeConversation: (jid: string) => Promise<any>
+        retryDelivery: (inboundId: string) => Promise<any>
+        quarantineDelivery: (inboundId: string) => Promise<any>
+        cancelOutbound: (inboundId: string) => Promise<any>
+        listApprovedTemplates: () => Promise<any>
+        listTakeovers: () => Promise<any>
+        listDrafts: () => Promise<any>
+        listUnresolvedOutbound: () => Promise<any>
+        listDeliveryHistory: (limit?: number) => Promise<any>
+        listDecisionEvidence: (limit?: number) => Promise<any>
+        usageHistory: (days?: number) => Promise<any>
+        approveDraft: (inboundId: string) => Promise<any>
+        listNotifications: () => Promise<any>
+        ackNotification: (id: number) => Promise<any>
+        onNotification: (callback: (data: any) => void) => () => void
+        sendApprovedTemplate: (inboundId: string, name: string, languageCode: string, parameters?: string[]) => Promise<any>
+        registerApprovedTemplate: (name: string, languageCode: string, category: string) => Promise<any>
+        revokeApprovedTemplate: (name: string, languageCode: string) => Promise<any>
+        setMode: (mode: string, responsePermission: boolean) => Promise<any>
+        onState: (callback: (state: any) => void) => () => void
+        onDecision: (callback: (data: any) => void) => () => void
+        onFailure: (callback: (data: any) => void) => () => void
+    }
     email?: {
         getState: () => Promise<{
             status: 'disconnected' | 'connecting' | 'connected' | 'error'

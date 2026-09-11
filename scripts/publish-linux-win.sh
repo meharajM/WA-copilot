@@ -34,8 +34,8 @@ for arg in "$@"; do
     --linux-only)  BUILD_WIN=false ;;
     --win-only)    BUILD_LINUX=false ;;
     --yes|-y) AUTO_CONFIRM=true ;;
-    --skip-checks) SKIP_CHECKS=true ;;
-    --skip-build)  SKIP_BUILD=true; SKIP_CHECKS=true ;;
+    --skip-checks) echo "--skip-checks is disabled for production publishing"; exit 1 ;;
+    --skip-build)  SKIP_BUILD=true ;;
   esac
 done
 
@@ -70,7 +70,7 @@ fi
 
 # Step 1: Quality checks
 if [ "$SKIP_CHECKS" = false ]; then
-  npm run lint && npm run typecheck
+  "$SCRIPT_DIR/release-gate.sh"
 fi
 
 # Step 2: Build + Package
@@ -85,9 +85,14 @@ if [ "$SKIP_BUILD" = false ]; then
   if [ "$BUILD_WIN" = true ]; then
     rm -rf "${WIN_OUT_DIR}"
     mkdir -p "${WIN_OUT_DIR}"
-    npx electron-builder --win --x64 --config.directories.output="${WIN_OUT_DIR}"
+    npx electron-builder --win --x64 \
+      --config.forceCodeSigning=true \
+      --config.directories.output="${WIN_OUT_DIR}"
   fi
 fi
+
+[ "$BUILD_LINUX" = true ] && "$SCRIPT_DIR/write-release-checksums.sh" "${LINUX_OUT_DIR}"
+[ "$BUILD_WIN" = true ] && "$SCRIPT_DIR/write-release-checksums.sh" "${WIN_OUT_DIR}"
 
 # Step 3: Upload
 R2="s3://${R2_BUCKET_NAME}"
@@ -106,18 +111,16 @@ upload_artifacts() {
 
 if [ "$BUILD_LINUX" = true ]; then
   UPLOAD_DIR="${LINUX_OUT_DIR}"
-  [ "$SKIP_BUILD" = true ] && [ ! -d "${UPLOAD_DIR}" ] && UPLOAD_DIR="dist"
   shopt -s nullglob
-  upload_artifacts "${UPLOAD_DIR}" "*.AppImage" "*.deb" "*.blockmap" "latest*.yml"
+  upload_artifacts "${UPLOAD_DIR}" "*.AppImage" "*.deb" "*.blockmap" "latest*.yml" "SHA256SUMS"
   shopt -u nullglob
   aws s3 cp "scripts/install-linux.sh" "${R2}/install-linux.sh" $ENDPOINT
 fi
 
 if [ "$BUILD_WIN" = true ]; then
   UPLOAD_DIR="${WIN_OUT_DIR}"
-  [ "$SKIP_BUILD" = true ] && [ ! -d "${UPLOAD_DIR}" ] && UPLOAD_DIR="dist"
   shopt -s nullglob
-  upload_artifacts "${UPLOAD_DIR}" "*.exe" "*.blockmap" "latest*.yml"
+  upload_artifacts "${UPLOAD_DIR}" "*.exe" "*.blockmap" "latest*.yml" "SHA256SUMS"
   shopt -u nullglob
   aws s3 cp "scripts/install-windows.ps1" "${R2}/install-windows.ps1" $ENDPOINT
 fi

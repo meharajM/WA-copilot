@@ -26,16 +26,13 @@ Current flow:
 7. Messages that pass the gate are routed into the chat runtime and persisted like other channels.
 8. Outbound replies go through the email send tool path or Gmail API path.
 
-Target behavior:
+Current policy behavior:
 
 1. High-confidence, knowledge-grounded replies may send automatically when policy and settings allow it.
-2. Low-confidence cases should send a short standard fallback reply to the customer.
-3. The same low-confidence case should create an in-app reminder or notification for owner follow-up.
-
-Current gap to target:
-
-- The current implementation already supports confidence-based send vs draft vs escalate.
-- It does not yet guarantee the target fallback flow of generic acknowledgement plus explicit owner reminder/notification on low-confidence email outcomes.
+2. Low-confidence, non-sensitive cases send one standard acknowledgement to the customer.
+3. The generated response becomes an escalated Drafts-panel review item for owner follow-up.
+4. Sensitive and do-not-contact cases never auto-send an acknowledgement.
+5. The runtime owns each delivery once: an agent tool send and post-response delivery cannot both send the same response.
 
 ## Relevant Files
 
@@ -78,6 +75,7 @@ Run the repo’s deterministic test layers:
 - `npm run typecheck`
 - `npm run test:unit`
 - `npm run test:integration`
+- `npm run test:e2e`
 
 Email-specific coverage currently lives in:
 
@@ -85,6 +83,8 @@ Email-specific coverage currently lives in:
 - `tests/unit/email-bridge.test.ts`
 - `tests/unit/email-gmail.test.ts`
 - `tests/unit/email-policy.test.ts`
+- `tests/unit/email-agent-delivery.test.ts`
+- `tests/unit/email-channel-service.test.ts`
 - `tests/integration/email-integration.test.ts`
 - `tests/integration/email-confidence-gating.test.ts`
 
@@ -97,7 +97,9 @@ This validates:
 
 - OpenRouter provider access.
 - Tool-call parsing and recovery.
-- Email-specific live scenarios in `tests/live/openrouter.live.test.ts`.
+- Generic and WhatsApp tool-call scenarios in `tests/live/openrouter.live.test.ts`.
+
+The live OpenRouter suite does not replace the dedicated-mailbox email QA flow.
 
 ### 5. Manual smoke test
 If you want a true end-to-end email smoke test:
@@ -115,6 +117,9 @@ If you want a true end-to-end email smoke test:
 - The `uvx ENOENT` failure was traced to the runtime spawn path, not the dependency installer itself.
 - `EmailChannelService` now expands PATH before spawning the MCP server.
 - The error now includes a clearer hint when `uvx` is still unavailable to the Electron process.
+- Sensitive-topic policy checks the inbound request as well as the generated response.
+- Low-confidence acknowledgements and owner review drafts are implemented.
+- Production email bridge and channel-service behavior have focused automated coverage.
 
 ## Next Things To Verify
 

@@ -4,6 +4,7 @@ import {
   type EmailPollingConfig,
   type OutboundEmailPayload
 } from '../services/EmailChannelService'
+import { autonomousSupervisor } from '../services/AutonomousSupervisor'
 
 function broadcast(channel: string, payload: unknown): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -19,6 +20,7 @@ export function registerEmailHandlers(): void {
   })
 
   emailChannelService.on('message', (message) => {
+    if (message && typeof message === 'object' && 'channel' in message && (message as { channel?: string }).channel === 'email') autonomousSupervisor.onEmailMessage(message as Parameters<typeof autonomousSupervisor.onEmailMessage>[0])
     broadcast('email:message', message)
   })
 

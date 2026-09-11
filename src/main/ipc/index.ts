@@ -18,6 +18,7 @@ import { whatsappService } from '../whatsapp/WhatsAppService'
 import { IntelligenceService } from '../services/IntelligenceService'
 import { ChatPersistenceService } from '../services/ChatPersistenceService'
 import { SessionMirrorService } from '../services/SessionMirrorService'
+import { autonomousSupervisor } from '../services/AutonomousSupervisor'
 
 export function setupIpcHandlers(): void {
     registerAppHandlers()
@@ -33,6 +34,7 @@ export function setupIpcHandlers(): void {
     registerWhatsAppHandlers()
     registerEmailHandlers()
     registerEmailOAuthHandlers()
+    autonomousSupervisor.registerIpc()
     
     // Self-learning analytics
     ipcMain.handle('intelligence:get-knowledge', async () => {

@@ -20,6 +20,7 @@ import {
 import { useLogStore } from '../stores/logStore'
 import { useSettingsStore, Theme } from '../stores/settingsStore'
 import { useWhatsAppStore } from '../stores/whatsappStore'
+import { AutonomyPanel } from './AutonomyPanel'
 import { useMcpStore } from '../stores/mcpStore'
 import { APP_INFO } from '../lib/constants'
 import { MemoryPreferencesPanel } from './settings/MemoryPreferencesPanel'
@@ -34,6 +35,7 @@ import { SystemDependenciesSettings } from './SystemDependenciesSettings'
 import { BotIdentityPanel } from './settings/BotIdentityPanel'
 import { EmailSettingsPanel } from './settings/EmailSettingsPanel'
 import { Mail } from 'lucide-react'
+import electron from '../lib/electron'
 
 type SettingsSection = 'whatsapp' | 'email' | 'tools' | 'identity' | 'llm' | 'memory' | 'browser' | 'appearance' | 'logs' | 'about'
 
@@ -48,6 +50,13 @@ export function SettingsPanel({ onClose, initialSection = 'whatsapp' }: Settings
     // WhatsApp State
     const { connectionState, openDialog, whatsappEnabled, setWhatsAppEnabled, businessBotMode, setBusinessBotMode } = useWhatsAppStore()
     const waStatus = connectionState.status
+    const [waTransport, setWaTransport] = useState<'baileys' | 'cloud' | 'web'>('baileys')
+    const [cloudPhoneId, setCloudPhoneId] = useState('')
+    const [cloudApiVersion, setCloudApiVersion] = useState('v23.0')
+    const [cloudToken, setCloudToken] = useState('')
+    const [cloudSecret, setCloudSecret] = useState('')
+    const [cloudVerifyToken, setCloudVerifyToken] = useState('')
+    const [cloudSecretsConfigured, setCloudSecretsConfigured] = useState(false)
 
     // MCP Tools State
     const mcp = useMcpStore()
@@ -63,6 +72,30 @@ export function SettingsPanel({ onClose, initialSection = 'whatsapp' }: Settings
     useEffect(() => {
         getLogPath().then(setLogPath)
     }, [getLogPath])
+
+    useEffect(() => {
+        void Promise.all([
+            electron.store.get<'baileys' | 'cloud' | 'web'>('whatsapp_transport', 'baileys'),
+            electron.store.get<string>('whatsapp_cloud_phone_number_id', ''),
+            electron.store.get<string>('whatsapp_cloud_api_version', 'v23.0'),
+            electron.secure.listKeys()
+        ]).then(([transport, phoneId, apiVersion, keys]) => {
+            setWaTransport(transport || 'baileys')
+            setCloudPhoneId(phoneId || '')
+            setCloudApiVersion(apiVersion || 'v23.0')
+            setCloudSecretsConfigured((keys as { success?: boolean; keys?: string[] })?.keys?.includes('whatsapp_cloud_access_token') === true)
+        }).catch(console.error)
+    }, [])
+
+    const saveCloudSettings = async () => {
+        await electron.store.set('whatsapp_transport', waTransport)
+        await electron.store.set('whatsapp_cloud_phone_number_id', cloudPhoneId.trim())
+        await electron.store.set('whatsapp_cloud_api_version', cloudApiVersion.trim())
+        if (cloudToken.trim()) await electron.secure.set('whatsapp_cloud_access_token', cloudToken.trim())
+        if (cloudSecret.trim()) await electron.secure.set('whatsapp_cloud_app_secret', cloudSecret.trim())
+        if (cloudVerifyToken.trim()) await electron.secure.set('whatsapp_cloud_verify_token', cloudVerifyToken.trim())
+        setCloudToken(''); setCloudSecret(''); setCloudVerifyToken(''); setCloudSecretsConfigured(true)
+    }
 
 
     const sections: { id: SettingsSection | 'whatsapp' | 'tools'; label: string; icon: React.ReactNode }[] = [
@@ -198,6 +231,21 @@ export function SettingsPanel({ onClose, initialSection = 'whatsapp' }: Settings
                             <p className="text-xs text-blue-200/70 leading-relaxed">
                                 <strong>Tip:</strong> Ensure your "Knowledge Base" is up to date. The bot uses your local files (PDFs, TXT) to answer customer questions accurately.
                             </p>
+                        </div>
+                        <AutonomyPanel />
+                        <div className="bg-[var(--color-card-elevated)] border border-[var(--color-border)] rounded-xl p-6 space-y-4">
+                            <div><h4 className="font-bold text-[var(--color-text-primary)]">WhatsApp Transport</h4><p className="text-xs text-[var(--color-text-muted)]">Baileys is the default. Cloud mode is opt-in and requires a webhook relay for production.</p></div>
+                            <select value={waTransport} onChange={e => setWaTransport(e.target.value as 'baileys' | 'cloud' | 'web')} className="w-full rounded-lg bg-white/5 border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-text-primary)]">
+                                <option value="baileys">Baileys (current)</option><option value="cloud">WhatsApp Cloud API</option><option value="web">WhatsApp Web (manual only)</option>
+                            </select>
+                            {waTransport === 'cloud' && <div className="space-y-3">
+                                <input value={cloudPhoneId} onChange={e => setCloudPhoneId(e.target.value)} placeholder="Cloud phone number ID" className="w-full rounded-lg bg-white/5 border border-[var(--color-border)] px-3 py-2 text-sm" />
+                                <input value={cloudApiVersion} onChange={e => setCloudApiVersion(e.target.value)} placeholder="Graph API version (e.g. v23.0)" className="w-full rounded-lg bg-white/5 border border-[var(--color-border)] px-3 py-2 text-sm" />
+                                <input type="password" value={cloudToken} onChange={e => setCloudToken(e.target.value)} placeholder={cloudSecretsConfigured ? 'Access token saved (leave blank to keep)' : 'Cloud access token'} className="w-full rounded-lg bg-white/5 border border-[var(--color-border)] px-3 py-2 text-sm" />
+                                <input type="password" value={cloudSecret} onChange={e => setCloudSecret(e.target.value)} placeholder="App secret (write-only)" className="w-full rounded-lg bg-white/5 border border-[var(--color-border)] px-3 py-2 text-sm" />
+                                <input type="password" value={cloudVerifyToken} onChange={e => setCloudVerifyToken(e.target.value)} placeholder="Webhook verify token (write-only)" className="w-full rounded-lg bg-white/5 border border-[var(--color-border)] px-3 py-2 text-sm" />
+                            </div>}
+                            <button onClick={() => void saveCloudSettings()} className="px-3 py-2 rounded-lg bg-white/10 text-xs text-[var(--color-text-primary)]">Save transport settings</button>
                         </div>
                     </div>
                 )}

@@ -265,6 +265,21 @@ describe('confidence scoring', () => {
 // ── Sensitive Topic Detection ─────────────────────────────────────────────────
 
 describe('sensitive topic detection', () => {
+  it('escalates when only the original inbound email contains a sensitive topic', () => {
+    const decision = evaluateEmailPolicy({
+      responseText: 'Thanks for contacting us. A team member will review your request.',
+      originalContent: 'I need a refund for order 123.',
+      usedRag: true,
+      hasUncertaintyMarkers: false,
+      toolCallCount: 2,
+      citesKnowledgeBase: true,
+    })
+
+    expect(decision.action).toBe('escalate')
+    expect(decision.hasSensitiveTopic).toBe(true)
+    expect(decision.sensitiveTopics).toContain('refund')
+  })
+
   it('detects chargeback mentions', () => {
     const decision = evaluateEmailPolicy(createContext({
       responseText: 'I can help you file a chargeback.',

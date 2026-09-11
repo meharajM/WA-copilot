@@ -11,6 +11,23 @@ interface EmailConnectionState {
   unreadCount: number
 }
 
+export function dispatchInboundEmailToAgent(email: EmailMessage): boolean {
+  const { config } = useEmailStore.getState()
+
+  if (!config.autoReplyMode) {
+    console.log('[useEmailBridge] Ignoring inbound message (autoReplyMode is off)')
+    return false
+  }
+
+  window.dispatchEvent(new CustomEvent('app:submit-message', {
+    detail: {
+      content: `📧 **Email** (${email.from}): ${email.subject}\n\n${email.body || ''}`,
+      emailMessage: email
+    }
+  }))
+  return true
+}
+
 export function useEmailBridge(): void {
   const config = useEmailStore((s) => s.config)
   const setConnectionState = useEmailStore((s) => s.setConnectionState)
@@ -32,19 +49,10 @@ export function useEmailBridge(): void {
 
     const unsubMessage = electron.email.onMessage((payload) => {
       const email = payload as EmailMessage
-      const { config } = useEmailStore.getState()
-
-      if (!config.autoReplyMode) {
-        console.log('[useEmailBridge] Ignoring inbound message (autoReplyMode is off)')
-        return;
-      }
-
-      window.dispatchEvent(new CustomEvent('app:submit-message', {
-        detail: {
-          content: `📧 **Email** (${email.from}): ${email.subject}\n\n${email.body || ''}`,
-          emailMessage: email
-        }
-      }))
+      electron.autonomy.getState().then((autonomy) => {
+        if (autonomy?.status === 'running' || autonomy?.status === 'degraded') return
+        dispatchInboundEmailToAgent(email)
+      }).catch((error) => console.warn('[useEmailBridge] Could not read autonomy state; legacy email path skipped', error))
     })
 
     const unsubDelivery = electron.email.onDeliveryStatus((status) => {

@@ -1,4 +1,5 @@
-import { ipcMain } from 'electron'
+import { BrowserWindow, ipcMain } from 'electron'
+import { randomUUID } from 'node:crypto'
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js"
@@ -7,6 +8,8 @@ import { MemoryService } from '../services/MemoryService'
 import { RAGService } from '../rag/RAGService'
 import { FileSystemService } from '../services/FileSystemService'
 import { McpProcessManager } from '../services/McpProcessManager'
+import { isMcpToolAllowed, validateMcpServerConfig, validateMcpToolCall } from '../services/McpPolicy'
+import { recordMcpAudit } from '../services/McpAudit'
 
 // --- State ---
 const activeConnections = new Map<string, Client>()
@@ -15,6 +18,11 @@ const inProcessMemoryConnections = new Set<string>()
 const inProcessRagConnections = new Set<string>()
 const inProcessFilesystemConnections = new Set<string>()
 const connectingServers = new Set<string>()
+const serverAllowedTools = new Map<string, string[]>()
+const requestControllers = new Map<string, { controller: AbortController; senderId: number }>()
+const rateBuckets = new Map<string, number[]>()
+const sessionTokens = new Map<number, string>()
+const MCP_CALL_TIMEOUT_MS = 30_000
 
 // --- Helpers ---
 
@@ -52,6 +60,7 @@ function cleanupClosedConnection(serverId: string): void {
         activeConnections.delete(serverId)
     }
     McpProcessManager.getInstance().unregisterProcess(serverId)
+    serverAllowedTools.delete(serverId)
 }
 
 function sanitizeArgs(args: unknown): unknown {
@@ -69,12 +78,45 @@ function sanitizeArgs(args: unknown): unknown {
     return sanitized
 }
 
+async function withMcpTimeout<T>(operation: Promise<T>, controller: AbortController): Promise<T> {
+    let timer: NodeJS.Timeout | undefined
+    const cancelled = new Promise<T>((_, reject) => controller.signal.addEventListener('abort', () => reject(new Error('MCP tool call cancelled')), { once: true }))
+    try {
+        return await Promise.race([operation, cancelled, new Promise<T>((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new Error('MCP tool call timed out')) }, MCP_CALL_TIMEOUT_MS) })])
+    } finally { if (timer) clearTimeout(timer) }
+}
+
+function trustedRenderer(event: Electron.IpcMainInvokeEvent): boolean { return Boolean(BrowserWindow.fromWebContents(event.sender)) }
+function authorizedRenderer(event: Electron.IpcMainInvokeEvent, token: unknown): boolean {
+    return trustedRenderer(event) && typeof token === 'string' && sessionTokens.get(event.sender.id) === token
+}
+function consumeRateLimit(key: string): boolean {
+    const recent = (rateBuckets.get(key) || []).filter(timestamp => timestamp > Date.now() - 60_000)
+    if (recent.length >= 60) { rateBuckets.set(key, recent); return false }
+    recent.push(Date.now()); rateBuckets.set(key, recent); return true
+}
+
+function toolNames(tools: { tools?: Array<{ name?: unknown }> }): string[] {
+    return (tools.tools || []).map(tool => tool.name).filter((name): name is string => typeof name === 'string')
+}
+
 // --- IPC Register ---
 
 export function registerMcpHandlers(): void {
-    ipcMain.handle('mcp:connect', async (_event, serverConfig) => {
+    ipcMain.handle('mcp:authorize', async (event) => {
+        if (!trustedRenderer(event)) return { success: false, error: 'Untrusted MCP caller' }
+        const token = randomUUID(); sessionTokens.set(event.sender.id, token); return { success: true, token }
+    })
+    ipcMain.handle('mcp:connect', async (event, serverConfig, token?: unknown) => {
+        if (!authorizedRenderer(event, token)) return { success: false, error: 'Unauthorized MCP session' }
         const startTime = Date.now()
+        const validation = validateMcpServerConfig(serverConfig)
+        if (!validation.valid) { recordMcpAudit('connect', null, null, 'denied', { error: validation.error }); return { success: false, error: validation.error } }
+        serverConfig = validation.config
         const { id, type, command, args, url, env } = serverConfig
+        serverAllowedTools.set(id, Array.isArray(serverConfig.allowedTools)
+            ? serverConfig.allowedTools
+            : (command === 'uvx' && args?.some((arg: string) => arg.includes('markitdown-mcp')) ? ['convert_to_markdown'] : []))
 
         logMcpOperation('info', 'MCP connection requested', {
             operation: 'connect',
@@ -100,7 +142,9 @@ export function registerMcpHandlers(): void {
             if (isPlaywrightServer(serverConfig)) {
                 if (inProcessPlaywrightConnections.has(id)) return { success: true, serverId: id, inProcess: true }
                 try {
-                    await PlaywrightService.getInstance().initialize()
+                    const service = PlaywrightService.getInstance()
+                    await service.initialize()
+                    if (serverConfig.allowedTools === undefined) serverAllowedTools.set(id, toolNames(service.listTools()))
                     inProcessPlaywrightConnections.add(id)
                     logMcpOperation('info', 'In-process Playwright connection established', { operation: 'connect', serverId: id, inProcess: true })
                     return { success: true, serverId: id, inProcess: true }
@@ -111,7 +155,9 @@ export function registerMcpHandlers(): void {
 
             // In-process Memory
             if (command === 'internal-memory' || (args && args.includes('memory-service'))) {
-                MemoryService.getInstance().initialize()
+                const service = MemoryService.getInstance()
+                service.initialize()
+                if (serverConfig.allowedTools === undefined) serverAllowedTools.set(id, toolNames(service.listTools()))
                 inProcessMemoryConnections.add(id)
                 logMcpOperation('info', 'In-process Memory connection established', { operation: 'connect', serverId: id, inProcess: true })
                 return { success: true, serverId: id, inProcess: true }
@@ -119,6 +165,7 @@ export function registerMcpHandlers(): void {
 
             // In-process RAG
             if (command === 'internal-rag' || (args && args.includes('rag-service'))) {
+                if (serverConfig.allowedTools === undefined) serverAllowedTools.set(id, toolNames(RAGService.getInstance().listTools()))
                 inProcessRagConnections.add(id)
                 logMcpOperation('info', 'In-process RAG connection established', { operation: 'connect', serverId: id, inProcess: true })
                 return { success: true, serverId: id, inProcess: true }
@@ -126,6 +173,7 @@ export function registerMcpHandlers(): void {
 
             // In-process Filesystem
             if (command === 'internal-filesystem' || (args && args.includes('filesystem-service'))) {
+                if (serverConfig.allowedTools === undefined) serverAllowedTools.set(id, toolNames(FileSystemService.getInstance().listTools()))
                 inProcessFilesystemConnections.add(id)
                 logMcpOperation('info', 'In-process Filesystem connection established', { operation: 'connect', serverId: id, inProcess: true })
                 return { success: true, serverId: id, inProcess: true }
@@ -191,6 +239,7 @@ export function registerMcpHandlers(): void {
             const duration = Date.now() - startTime
             logMcpOperation('info', 'MCP server connected', { operation: 'connect', serverId: id, duration })
             activeConnections.set(id, client)
+            recordMcpAudit('connect', id, null, 'success', { transport: type })
             return { success: true, serverId: id }
         } catch (error: unknown) {
             const duration = Date.now() - startTime
@@ -200,28 +249,34 @@ export function registerMcpHandlers(): void {
             let det = msg
             if (msg.includes('ENOENT')) det = getInstallInstructions(command, args)
             cleanupClosedConnection(id)
+            recordMcpAudit('connect', id || null, null, 'failure', { error: msg })
             return { success: false, error: det }
         } finally {
             connectingServers.delete(id)
         }
     })
 
-    ipcMain.handle('mcp:disconnect', async (_event, id: string) => {
+    ipcMain.handle('mcp:disconnect', async (event, id: string, token?: unknown) => {
+        if (!authorizedRenderer(event, token)) return { success: false, error: 'Unauthorized MCP session' }
         const startTime = Date.now()
         if (id === 'internal' || inProcessPlaywrightConnections.has(id)) {
             inProcessPlaywrightConnections.delete(id)
+            serverAllowedTools.delete(id)
             return { success: true }
         }
         if (id === 'internal-memory' || inProcessMemoryConnections.has(id)) {
             inProcessMemoryConnections.delete(id)
+            serverAllowedTools.delete(id)
             return { success: true }
         }
         if (id === 'internal-rag' || inProcessRagConnections.has(id)) {
             inProcessRagConnections.delete(id)
+            serverAllowedTools.delete(id)
             return { success: true }
         }
         if (id === 'internal-filesystem' || inProcessFilesystemConnections.has(id)) {
             inProcessFilesystemConnections.delete(id)
+            serverAllowedTools.delete(id)
             return { success: true }
         }
 
@@ -240,7 +295,8 @@ export function registerMcpHandlers(): void {
         return { success: true }
     })
 
-    ipcMain.handle('mcp:list-tools', async (_event, id: string) => {
+    ipcMain.handle('mcp:list-tools', async (event, id: string, token?: unknown) => {
+        if (!authorizedRenderer(event, token)) return { tools: [], error: 'Unauthorized MCP session' }
         // Alias support for hardcoded service names
         if (id === 'internal' || inProcessPlaywrightConnections.has(id)) return { tools: PlaywrightService.getInstance().listTools().tools }
         if (id === 'internal-memory' || inProcessMemoryConnections.has(id)) return { tools: MemoryService.getInstance().listTools().tools }
@@ -261,46 +317,64 @@ export function registerMcpHandlers(): void {
         }
     })
 
-    ipcMain.handle('mcp:call-tool', async (_event, id, toolName, args) => {
-        // In-process calls with alias support
-        if (id === 'internal' || inProcessPlaywrightConnections.has(id)) {
-            const res = await PlaywrightService.getInstance().callTool(toolName, args)
-            if (res.error) return { result: null, error: res.error }
-            const text = typeof res.result === 'string' ? res.result : JSON.stringify(res.result, null, 2)
-            return { result: { content: [{ type: 'text', text }] } }
-        }
-        if (id === 'internal-memory' || inProcessMemoryConnections.has(id)) {
-            const res = await MemoryService.getInstance().callTool(toolName, args)
-            if (res.error) return { result: null, error: res.error }
-            const text = typeof res.result === 'string' ? res.result : JSON.stringify(res.result, null, 2)
-            return { result: { content: [{ type: 'text', text }] } }
-        }
-        if (id === 'internal-rag' || inProcessRagConnections.has(id)) {
-            const res = await RAGService.getInstance().callTool(toolName, args)
-            if (res.error) return { result: null, error: res.error }
-            const text = typeof res.result === 'string' ? res.result : JSON.stringify(res.result, null, 2)
-            return { result: { content: [{ type: 'text', text }] } }
-        }
-        if (id === 'internal-filesystem' || inProcessFilesystemConnections.has(id)) {
-            const res = await FileSystemService.getInstance().callTool(toolName, args)
-            if (res.error) return { result: null, error: res.error }
-            const text = typeof res.result === 'string' ? res.result : JSON.stringify(res.result, null, 2)
-            return { result: { content: [{ type: 'text', text }] } }
+    ipcMain.handle('mcp:call-tool', async (event, id, toolName, args, requestId?: unknown, token?: unknown) => {
+        if (!authorizedRenderer(event, token)) return { result: null, error: 'Unauthorized MCP session' }
+        const startTime = Date.now()
+        const validationError = validateMcpToolCall(id, toolName, args)
+        if (validationError) { recordMcpAudit('call-tool', typeof id === 'string' ? id : null, typeof toolName === 'string' ? toolName : null, 'denied', { error: validationError }); return { result: null, error: validationError } }
+        const bucketKey = `${id}:${toolName}`
+        if (!consumeRateLimit(bucketKey)) { recordMcpAudit('call-tool', id, toolName, 'denied', { reason: 'rate_limit' }); return { result: null, error: 'MCP tool rate limit exceeded' } }
+        const requestKey = typeof requestId === 'string' && requestId.length <= 100 ? requestId : `${bucketKey}:${startTime}`
+        if (requestControllers.has(requestKey)) return { result: null, error: 'MCP request ID is already active' }
+        const internalCall = id === 'internal' || inProcessPlaywrightConnections.has(id)
+            ? () => PlaywrightService.getInstance().callTool(toolName, args)
+            : id === 'internal-memory' || inProcessMemoryConnections.has(id)
+                ? () => MemoryService.getInstance().callTool(toolName, args)
+                : id === 'internal-rag' || inProcessRagConnections.has(id)
+                    ? () => RAGService.getInstance().callTool(toolName, args)
+                    : id === 'internal-filesystem' || inProcessFilesystemConnections.has(id)
+                        ? () => FileSystemService.getInstance().callTool(toolName, args)
+                        : null
+        if (internalCall) {
+            if (!isMcpToolAllowed(serverAllowedTools.get(id), toolName)) {
+                recordMcpAudit('call-tool', id, toolName, 'denied', { reason: 'capability_allowlist', internal: true })
+                return { result: null, error: 'MCP tool is not allowlisted for this server' }
+            }
+            const controller = new AbortController()
+            if (typeof requestId === 'string') requestControllers.set(requestKey, { controller, senderId: event.sender.id })
+            try {
+                const res = await withMcpTimeout(internalCall(), controller)
+                if (res.error) return { result: null, error: res.error }
+                const text = typeof res.result === 'string' ? res.result : JSON.stringify(res.result, null, 2)
+                return { result: { content: [{ type: 'text', text }] } }
+            } finally { requestControllers.delete(requestKey) }
         }
 
         const client = activeConnections.get(id)
         if (!client) return { result: null, error: 'Server not connected' }
+        if (!isMcpToolAllowed(serverAllowedTools.get(id), toolName)) { recordMcpAudit('call-tool', id, toolName, 'denied', { reason: 'capability_allowlist' }); return { result: null, error: 'MCP tool is not allowlisted for this server' } }
 
         try {
             const finalArgs = (args && typeof args === 'object' && !Array.isArray(args)) ? args : { input: args }
             logMcpOperation('info', `Calling tool: ${toolName}`, { operation: 'call-tool', serverId: id, toolName, args: sanitizeArgs(finalArgs) })
-            const res = await client.callTool({ name: toolName, arguments: finalArgs || {} })
+            const controller = new AbortController()
+            requestControllers.set(requestKey, { controller, senderId: event.sender.id })
+            const res = await withMcpTimeout(client.callTool({ name: toolName, arguments: finalArgs || {} }, undefined, { signal: controller.signal, timeout: MCP_CALL_TIMEOUT_MS }), controller)
+            recordMcpAudit('call-tool', id, toolName, 'success', { durationMs: Date.now() - startTime })
             return { result: res }
         } catch (err: unknown) {
             const errorObj = err instanceof Error ? err : new Error(String(err))
             if (isConnectionClosedError(errorObj)) cleanupClosedConnection(id)
+            recordMcpAudit('call-tool', id, toolName, 'failure', { error: errorObj.message, durationMs: Date.now() - startTime })
             return { result: null, error: errorObj.message }
-        }
+        } finally { requestControllers.delete(requestKey) }
+    })
+
+    ipcMain.handle('mcp:cancel-tool', async (event, requestId: unknown, token?: unknown) => {
+        if (!authorizedRenderer(event, token) || typeof requestId !== 'string') return { success: false, error: 'Invalid MCP cancellation request' }
+        const request = requestControllers.get(requestId)
+        if (!request || request.senderId !== event.sender.id) return { success: false, error: 'MCP request is not active' }
+        request.controller.abort(); recordMcpAudit('cancel-tool', null, null, 'success', { requestId }); return { success: true }
     })
 }
 
