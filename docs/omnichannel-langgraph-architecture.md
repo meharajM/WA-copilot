@@ -28,6 +28,8 @@ Version 1 is a single-business, single-owner desktop deployment. The worker runs
 
 The hosted worker is a later deployment target, not a second active sender. Moving ownership between runtimes is an explicit operator action with a persisted ownership generation. Both runtimes must never dispatch for the same business account at once.
 
+Customer-owned Meta, Instagram, Messenger, WhatsApp and X accounts must use the customer connection flow in `docs/customer-connection-onboarding.md`. OAuth and guided asset selection replace developer-only environment-variable setup; provider credentials remain outside the renderer and are stored in the OS secure store for the desktop pilot or an encrypted hosted vault for multi-customer operation.
+
 ### Deferred capabilities
 
 - Autonomous ad creation, spend changes, audience changes, public posting, and bulk outreach.

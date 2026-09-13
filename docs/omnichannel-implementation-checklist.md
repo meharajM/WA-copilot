@@ -193,6 +193,7 @@ Known limitations and failed baseline checks:
 
 ## Iteration log
 
+- Documentation iteration: added `docs/customer-connection-onboarding.md`, defining the non-developer OAuth flow, Meta/X asset selection, secure credential boundaries, recovery states, safety defaults, and the hosted webhook-relay transition. Linked it from release-readiness and architecture docs; no live-provider checklist item was closed.
 - Iteration: added secure Cloud credential fields, OS-keychain allowlisting, store-backed transport selection, awaitable webhook startup, and startup integration coverage. Result: webhook server test passes; build passes; five unrelated email typecheck errors remain.
 - Iteration: added the common outbound transport contract and fail-closed Cloud selection. Result: transport and webhook tests pass; build passes; Baileys remains the default.
 - Iteration: added outbound payload hashes and `delivery-unknown` handling for ambiguous provider errors. Result: 17 targeted tests pass; build remains passing.
