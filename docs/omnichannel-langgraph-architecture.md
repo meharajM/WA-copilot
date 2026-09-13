@@ -2,6 +2,8 @@
 
 Date: September 9, 2026
 
+Cost and architecture rationale reviewed: September 13, 2026. See sections 2 and 10 for alternatives, operating assumptions and pricing sources.
+
 Status: Selected architectural direction; implementation proposal, not a statement of shipped capabilities.
 
 Decision: Keep our Electron application, integrate LangGraph JS and selected LangChain components, and use official channel APIs. Begin with WhatsApp Cloud API and the existing email integration; extend to Instagram messaging, Facebook Messenger, Meta advertising lead events, and X.
@@ -38,6 +40,10 @@ The hosted worker is a later deployment target, not a second active sender. Movi
 
 ## 2. Why this approach
 
+We are building a reusable support product for business owners, not just buying an inbox for one business. Keeping Electron, our RAG and memory gives us control over the owner experience, approved knowledge and business tools. The economic case is lower incremental platform cost as customers grow, provided shared engineering and customer-support costs remain manageable. It is not a claim that custom software is the cheapest way to serve the first customer.
+
+LangGraph is justified by our explicit requirements for persistent review, interruption and recovery. LangChain supplies selected integrations; it does not lower model token prices. Official APIs reduce our dependence on undocumented browser/session behavior, but introduce provider approvals, policy changes and usage charges. Our advantage must come from useful business workflows and reliable owner control, not merely from generating WhatsApp answers.
+
 LangChain components provide model and tool integration. LangGraph supplies workflow checkpoints and human-review interrupts; a durable checkpointer is required for restart recovery. It does not provide the inbox, WhatsApp transport, consent ledger, or exactly-once external effects. On resume, interrupted nodes may execute again, so irreversible operations must not be placed before an interrupt without their own deduplication controls. [LangGraph persistence](https://docs.langchain.com/oss/javascript/langgraph/persistence), [interrupt semantics](https://docs.langchain.com/oss/javascript/langgraph/interrupts).
 
 The JavaScript projects are MIT licensed; using their libraries does not require purchasing the hosted platform. Audit the actual selected package licenses and pin versions during implementation. [LangGraph license](https://github.com/langchain-ai/langgraphjs/blob/main/LICENSE), [LangChain license](https://github.com/langchain-ai/langchainjs/blob/main/LICENSE).
@@ -51,6 +57,8 @@ The JavaScript projects are MIT licensed; using their libraries does not require
 | Baileys/browser automation | Unofficial transport and extra session-maintenance burden | Explicit experimental local deployments |
 
 Chatwoot remains a valid future adapter: its AgentBot API supports external agents and handoff. Community software is free; paid self-hosted plans and operational dependencies are separate. [AgentBot](https://www.chatwoot.com/features/chatbots), [self-hosted plans](https://www.chatwoot.com/pricing/self-hosted-plans).
+
+Keep this decision conditional: use a managed platform if the goal becomes launching one conventional support inbox quickly; add Chatwoot when team assignment and shared ownership become central; simplify the graph if review/resume requirements disappear. Reassess using cost per resolved conversation and operator time, not library license price alone. Section 10 compares these choices financially.
 
 ## 3. Channel scope and access requirements
 
@@ -256,15 +264,52 @@ Define an escalation SLA and fallback contact path before enabling unattended op
 
 ## 10. Cost model and controls
 
-Monthly total = hosting + model usage + channel usage + storage/backups + monitoring + optional provider fees + maintenance labor. Advertising spend is a separate owner budget. Estimates below exclude tax, hardware purchase, exchange-rate changes and engineering labor.
+Monthly cash operating cost = hosting + model usage + channel usage + storage/backups + monitoring + optional provider fees. Monthly total ownership cost adds maintenance, onboarding/support and human-review labor, plus amortized remaining development. Advertising spend is a separate owner budget. USD estimates below exclude tax, hardware purchase and exchange-rate changes; labor is included only where explicitly calculated. These are planning examples, not measured production costs or a customer subscription price.
 
 LangChain/LangGraph libraries have no usage subscription. LangSmith services are optional and separately priced. Direct Cloud API integration avoids adding a mandatory support-inbox subscription; any onboarding/intermediary fees must be checked for the selected route. [LangSmith pricing](https://www.langchain.com/pricing).
 
-Meta currently lists service replies within the rolling 24-hour customer-service window as free; paid template categories and other charges are separate. [WhatsApp pricing](https://business.whatsapp.com/products/platform-pricing).
+Meta's public pricing page checked September 13 lists service messages and utility messages responding to users as free within the customer-service window; other delivered template charges depend on category and recipient market. Outside the window, use an eligible approved template; a budget never grants permission to send. [WhatsApp pricing](https://business.whatsapp.com/products/platform-pricing).
+
+Pricing verification limitation: reports of an October 2026 service-pricing change could not be confirmed against Meta's developer pricing pages, which did not load during this review. Do not treat free service replies as a permanent contract or use an unverified future rate. Before launch, obtain the effective rate card for the business/account, recipient markets and billing month. Retain a nonzero channel-cost sensitivity in the budget.
+
+### Cost comparison of the approaches
+
+Infrastructure ranges here are our planning allowances, not vendor quotes. They exclude AI/channel usage and labor unless stated. Feature coverage and billing units differ, so these rows are not equivalent product bundles.
+
+| Approach | License/platform and infrastructure | Main benefit | Main cost or limitation | Decision for us |
+| --- | --- | --- | --- | --- |
+| Our app + LangGraph/LangChain + official APIs | Libraries $0; small hosted runtime/backups roughly $10–30/month under the narrow assumptions below | Reuses our product; model choice, review/resume and local knowledge; no mandatory inbox seat charge | We fund development, provider onboarding, recovery, security and customer support | Selected for building our product |
+| Our app + custom workflow engine | Similar hosting and usage; no framework subscription | Fewer dependencies for a short deterministic flow | We own checkpoint compatibility and approval/resume machinery; removing LangGraph does not remove those requirements | Reconsider only with a smaller scope |
+| Chatwoot + our agent | Community $0; reserve roughly $30–100/month for a small server/backups, then size from the selected release; optional paid support $19/human agent/month, billed annually | Team inbox, assignment and handoff already available | Another application, PostgreSQL and Redis to operate; AI and channel bills remain | Stronger fit when team support is required |
+| respond.io | Growth $159/month equivalent ($1,908/year); Advanced $279/month equivalent ($3,348/year), billed annually | Managed inbox and AI workflows reduce infrastructure work | Contact/AI allowances, overages and provider charges; Advanced adds webhooks/custom channels; verify required channel coverage | Often better for one business needing a quick launch |
+| Native Meta Business AI | No verified account-specific total in this review; obtain eligibility and a quote | Potentially least setup for basic native support | Our required local tools, model choice and cross-channel workflow are not established | Benchmark before building a basic FAQ-only offering |
+| Baileys / WhatsApp Web + our agent | No official Cloud API bill on that transport; machine, inference and upkeep remain | Existing integration and local experimentation | Unofficial compatibility/session failures and outage/support effort are hard to forecast | Experimental, not the production cost-saving strategy |
+
+Vendor evidence: [Chatwoot self-hosted pricing](https://www.chatwoot.com/pricing/self-hosted-plans), [Chatwoot deployment requirements](https://www.chatwoot.com/deploy), [respond.io pricing](https://respond.io/pricing). Chatwoot's deployment page currently lists 8 GB minimum, so the earlier $25–60 allowance is not a universal production budget. respond.io meters active contacts and AI credits, not our model-token unit; WhatsApp fees are extra. Do not add our full model bill to a managed plan if its included AI replaces those calls, or assume included AI is unlimited.
+
+### What we actually pay for
+
+| Cost item | Who incurs it | Budget treatment |
+| --- | --- | --- |
+| Model calls | Business directly with its own billing, or us with metered customer allocation | Sum input, output/thinking, retries, summaries, validation and tool-loop calls |
+| RAG and attachments | Runtime operator | Existing local search avoids a mandatory vector-service subscription; embeddings, OCR, audio transcription, reindexing and storage may add usage |
+| WhatsApp | Business's Meta billing account, plus any selected intermediary | Delivered billable messages by category/market; do not infer fees from inbound job count |
+| Instagram / Messenger / lead events | Us and/or business according to provider arrangement | Verify access terms; budget webhook processing, media, review and token support even without a quoted message tariff |
+| X | Holder of the developer app's billing account | Meter reads/events and writes separately; customer OAuth does not establish separate customer billing |
+| Email | Mailbox owner and runtime operator | Existing mailbox subscription, any Pub/Sub/relay charges, attachments and synchronization; check account quotas |
+| Hosting, backups and diagnostics | Us for managed deployment; owner for local resources | Include retention, restore testing, egress, domain and monitoring; avoid counting backups twice |
+| Customer connection flow | Primarily our product team | OAuth apps, review submissions, secure credential handling, asset selection, reconnect support and any required external assessment |
+| Human operation | Our team and customer | Maintenance, incident response, draft review, escalation handling and onboarding time |
+
+Non-developer onboarding moves technical work from the customer to us; it does not eliminate it. The guided flow in `docs/customer-connection-onboarding.md` is a product investment. Record setup/support hours per business. No fixed assessment or approval fee is assumed without confirming the applicable provider requirements and obtaining a quote.
 
 ### Planning scenarios
 
 Use an illustrative model rate of $0.75/million input tokens and $3.75/million billed output tokens, with 4,000 input and 500 output tokens per processed customer message. This is a cost assumption, not a selected model or guaranteed quality level. Count all calls, including validation and thinking tokens, when measuring actual usage. Current provider rates must be checked at model selection. [Google model pricing](https://ai.google.dev/gemini-api/docs/pricing).
+
+The pricing page reviewed lists these Flash rates through December 31, 2026, and $1.50/$7.50 from January 1, 2027. Under unchanged token usage that doubles the model line; it does not double hosting or channel charges. Revalidate the exact model/version when purchasing. No model configuration is changed by this document.
+
+Formula: model cost = (total input tokens × input rate + total billed output tokens × output rate) / 1,000,000. Here, one generation costs $0.004875. A message, a generation, an active contact and a resolved conversation are different units: a five-turn conversation would cost $0.024375 in generation alone under these assumptions.
 
 | Monthly messages | Input tokens | Output tokens | Illustrative model cost | Small hosted runtime/backups estimate | Subtotal before channel fees and labor |
 | --- | --- | --- | --- | --- | --- |
@@ -274,11 +319,29 @@ Use an illustrative model rate of $0.75/million input tokens and $3.75/million b
 
 These are low-complexity examples. The production budget must report low, base and high scenarios including classification, retrieval, validation, summaries, retries, attachments, checkpoint storage, relay, monitoring and human review. Record actual tokens and provider charges by conversation and disposition. A generated answer that escalates still has a model cost.
 
+The $10–30 infrastructure range assumes one small instance calling a remote model, existing lightweight storage, modest retained text and basic backups. It excludes hosted GPU inference, high availability and multi-tenant production operations. As a price anchor, DigitalOcean lists a 2 GiB/1 vCPU instance at $12/month before backup and other additions; this is not evidence that our workload fits it. [Instance pricing](https://www.digitalocean.com/pricing/droplets).
+
+### Low, base and high sensitivity: 10,000 processed messages/month
+
+These are explicit workload assumptions, not observed percentiles. The multiplier represents aggregate tokens across all model calls relative to the one-pass example. Infrastructure includes the listed backup/storage/monitoring allowance; exclude it from any separate duplicate line item.
+
+| Scenario | Model tokens versus baseline | Model cost | Infrastructure allowance | Cash subtotal before channels and labor |
+| --- | --- | --- | --- | --- |
+| Lean text pilot | 1× | $48.75 | $10–30 | $58.75–78.75 |
+| Planning base: extra validation/summaries | 1.5× | $73.13 | $20–50 | $93.13–123.13 |
+| Stress case: longer context and repeated calls | 3× | $146.25 | $50–100 | $196.25–246.25 |
+
+Add actual channel charges, media/embedding usage and external business-tool fees to every row. The lean case is valid only when its limited work is sufficient for evaluated quality. At the listed January model rates, its model bill becomes $97.50 and cash subtotal $107.50–127.50.
+
+For channel sensitivity, 10,000 billable deliveries at hypothetical rates of $0.005, $0.01 or $0.03 add $50, $100 or $300. These are test inputs, not WhatsApp rate quotes. Use actual billable deliveries after any confirmed allowances, not all inbound messages.
+
 Local execution removes the hosted inference worker expense but may still require relay hosting, electricity and backups. A 20 W incremental continuous load consumes approximately 14.4 kWh over 30 days; a 100 W load consumes 72 kWh. Multiply by the owner's electricity rate. Local models add hardware, latency and concurrency considerations.
 
 ### X budget must be separate
 
 X currently lists DM event reads at $0.010/resource and DM interaction creation at $0.015/request. Under the simple assumption of one billable inbound DM event plus one create request per interaction, 10,000 interactions cost approximately $250 before LLM usage and other events. Confirm actual endpoint semantics and account rates before enabling. Set a provider spending limit and an application cap. [X pricing](https://docs.x.com/x-api/getting-started/pricing).
+
+The same page lists incoming DM webhook events at $0.010/event. Do not automatically count an inbound webhook and retrieval as two separately billed resources; reconcile the provider's deduplication rules and invoices. At the simplified $0.025 interaction rate, 1,000 X interactions add $25. If all 10,000 baseline interactions use X, the lean cash subtotal becomes $308.75–328.75 before labor and additional usage. X therefore needs an explicit allowance or usage pass-through, not an unlimited inclusion.
 
 Do not assume Instagram/Messenger API use, email infrastructure, Pub/Sub, or Meta integration support has zero total cost. Verify provider terms, hosting and account subscriptions for the chosen setup. Do not put ad spend into the support-agent subscription estimate.
 
@@ -293,6 +356,23 @@ Do not assume Instagram/Messenger API use, email infrastructure, Pub/Sub, or Met
 - Show estimates separately from provider-reconciled charges. Budget exhaustion holds drafts and notifies the owner; it must not silently switch providers.
 
 For total ownership cost, add engineering hours × the team's actual hourly cost. Even a few hours of monthly transport repair can outweigh small subscription savings. Track support incidents and human handling time as operating costs.
+
+### Labor, break-even and customer pricing
+
+For an illustrative $70/month lean cash cost and $30/hour labor rate, 4 maintenance hours add $120: total $190/month before development, onboarding and review. If 500 drafts/escalations take two minutes each, they add 16.67 hours or $500 at that same assumed rate. Human review can dominate the token bill; measure it rather than hiding it in a claim of autonomous operation.
+
+Against the $159 managed starting price, a $70 custom cash bill leaves $89, or roughly 3 hours/month at $30/hour, for **additional** custom maintenance before the apparent savings disappear. Against $279 it leaves about 7 hours. This is sensitivity arithmetic, not a like-for-like quote: match channels, contacts, AI allowances, review time and integration requirements first. Managed software also needs configuration and operators.
+
+Remaining implementation is an upfront investment. Estimate it from unfinished work and measured delivery time, not money already spent. For illustration only, 200 additional hours at $30/hour is $6,000, or $500/month spread over 12 months. Replace those inputs with our actual estimate before making a profitability claim.
+
+For future customer pricing:
+
+- Separate a base product/support fee, included AI allowance, optional hosted availability and metered channel overages. Do not promise unlimited X or template messaging.
+- Clearly show whether the customer pays Meta/model bills directly or reimburses us. If we use shared provider billing, enforce per-business metering and caps before opening it to customers.
+- Allocate shared fixed costs across paying businesses, then add each customer's variable costs and support. A $30 server divided among ten customers is only a $3 infrastructure allocation, not a $3 total service cost or proof of capacity/tenant isolation.
+- If fully loaded recurring cost per business is C and target gross margin is g, required recurring revenue is C / (1 − g). Keep development recovery and acquisition costs visible separately; no sale price is selected here.
+
+Recommendation: retain the chosen architecture for the product, begin with WhatsApp and email, and add X only with a funded cap. Before setting a customer price or committing to hosted availability, measure a representative pilot's token usage, message mix, resolution rate, operator minutes, support hours and peak resource use. Revisit build-versus-buy if ongoing custom maintenance consumes the subscription savings without delivering valued capabilities.
 
 ## 11. Repository migration
 
