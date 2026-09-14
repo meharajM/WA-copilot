@@ -6,13 +6,13 @@ Cost and architecture rationale reviewed: September 13, 2026. See sections 2 and
 
 Status: Selected architectural direction; implementation proposal, not a statement of shipped capabilities.
 
-Decision: Keep our Electron application, integrate LangGraph JS and selected LangChain components, and use official channel APIs. Begin with WhatsApp Cloud API and the existing email integration; extend to Instagram messaging, Facebook Messenger, Meta advertising lead events, and X.
+Decision: Keep our local owner console and Node runtime, integrate LangGraph JS and selected LangChain components, and use official channel APIs. Begin with WhatsApp Cloud API and the existing email integration; extend to Instagram messaging, Facebook Messenger, Meta advertising lead events, and X.
 
 This document is the target architecture for this work. `architecture.md`, `email-integration.md`, and `docs/autonomous-agent.md` describe earlier designs or partial implementation and must not be treated as evidence that the requirements below already work.
 
 ## 1. Product objective and boundaries
 
-Build an owner-controlled support agent that can answer customers using approved business knowledge, execute narrowly authorized business operations, and hand conversations to a human. The owner uses Electron to configure channels, inspect conversations, review drafts, monitor costs, and pause automation.
+Build an owner-controlled support agent that can answer customers using approved business knowledge, execute narrowly authorized business operations, and hand conversations to a human. The owner uses the local console to configure channels, inspect conversations, review drafts, monitor costs, and pause automation.
 
 The product is a business support system. A customer message is not permission to control the owner's computer, access another customer's data, launch advertising, or change a budget.
 
@@ -26,9 +26,26 @@ The product is a business support system. A customer message is not permission t
 
 ### Version 1 deployment decision
 
-Version 1 is a single-business, single-owner desktop deployment. The worker runs on the owner's machine in the Electron main process; webhook listeners bind to localhost only. A small authenticated HTTPS relay is a future production deployment option, not part of the current desktop pilot, and there is no automatic local/hosted failover in v1.
+Version 1 is a single-business, single-owner local deployment. A local Node service (`agentd`) runs on the owner's machine and owns durable storage, credentials, model connections, queues, policy and channel adapters. The default owner console is a web UI served by that service on loopback only. Electron is a transition client, not the worker's required lifecycle owner. Webhook listeners bind to localhost only. A small authenticated HTTPS relay is a future production deployment option, not part of the current desktop pilot, and there is no automatic local/hosted failover in v1.
 
 The hosted worker is a later deployment target, not a second active sender. Moving ownership between runtimes is an explicit operator action with a persisted ownership generation. Both runtimes must never dispatch for the same business account at once.
+
+### Electron versus a local web console
+
+This is a local web application, not a public website: the owner opens the console from the same machine that runs `agentd`. Replacing Electron's renderer does not remove the local runtime, model or official-provider costs.
+
+| Concern | Electron desktop UI | Local web UI served by `agentd` |
+| --- | --- | --- |
+| Resource use | Bundles Chromium and runs separate main/renderer processes; a visible window can compete with local inference for RAM, CPU and GPU/VRAM. | Reuses the owner's existing browser process and lets `agentd` continue after the tab closes. It is not zero-cost: an open browser tab still consumes resources. |
+| Worker lifecycle | Existing main-process lifecycle can stop the worker when the application quits. | UI and worker are separate; browser close does not stop approved background work. |
+| Native integrations | Direct path to OS-backed secret storage, file dialogs, tray, notifications and packaged auto-update. | Requires explicit local-service adapters for keychain access, file selection, notifications, startup and updates. Do not expose arbitrary filesystem or shell APIs to the browser. |
+| Security boundary | Preload and typed IPC can expose a narrow privileged surface. Electron settings still require review. | Requires a real local HTTP security boundary: bind only `127.0.0.1`/`::1`, use a per-install secret kept outside browser storage, check Origin, protect mutations from CSRF and never enable permissive CORS. |
+| Distribution and support | One packaged desktop application and familiar installer flow. | Requires an installer for `agentd`, an OS background-service registration path and a browser-compatibility/support policy. |
+| Future owner access | Desktop console is local by default. | Same local console can later be proxied through authenticated remote access, but remote access is not part of v1 and must not expose the loopback listener. |
+
+Recommendation: extract the existing Node worker into `agentd`, serve the existing React interface from it and keep Electron only as a temporary client while native adapters are moved behind explicit service APIs. Do not rewrite the workflow or add a separate web product first.
+
+Validate this decision on target machines before removing Electron: measure whole process-tree RSS, CPU and GPU/VRAM in four states—UI closed/open with local model unloaded/loaded—plus model and concurrent-message latency. `process.memoryUsage()` from one Node process is insufficient. Define a capacity budget from those measurements; Electron removal is justified only if it materially improves the selected model/concurrency target.
 
 ### Deferred capabilities
 
@@ -40,7 +57,7 @@ The hosted worker is a later deployment target, not a second active sender. Movi
 
 ## 2. Why this approach
 
-We are building a reusable support product for business owners, not just buying an inbox for one business. Keeping Electron, our RAG and memory gives us control over the owner experience, approved knowledge and business tools. The economic case is lower incremental platform cost as customers grow, provided shared engineering and customer-support costs remain manageable. It is not a claim that custom software is the cheapest way to serve the first customer.
+We are building a reusable support product for business owners, not just buying an inbox for one business. Keeping our local owner console, RAG and memory gives us control over the owner experience, approved knowledge and business tools. The economic case is lower incremental platform cost as customers grow, provided shared engineering and customer-support costs remain manageable. It is not a claim that custom software is the cheapest way to serve the first customer.
 
 LangGraph is justified by our explicit requirements for persistent review, interruption and recovery. LangChain supplies selected integrations; it does not lower model token prices. Official APIs reduce our dependence on undocumented browser/session behavior, but introduce provider approvals, policy changes and usage charges. Our advantage must come from useful business workflows and reliable owner control, not merely from generating WhatsApp answers.
 
@@ -102,7 +119,7 @@ flowchart TD
     P --> O[Durable outbound intent]
     O --> D[Dispatch authorization and adapter]
     D --> C
-    U[Electron owner UI] --> W
+    U[Owner console: Electron or local web] --> W
     U --> H
     U --> P
 ```
@@ -111,8 +128,8 @@ flowchart TD
 
 | Component | Owns | Must not own |
 | --- | --- | --- |
-| Electron renderer | Display, operator inputs, draft editing | Authoritative permissions, autonomous execution or secrets |
-| Main-process supervisor | Local lifecycle, authenticated commands, pause controls, worker health | An additional parallel customer-response pipeline |
+| Owner console (Electron or local web) | Display, operator inputs, draft editing | Authoritative permissions, autonomous execution or secrets |
+| Local agent service (`agentd`; Electron main process during transition) | Local lifecycle, authenticated commands, pause controls, worker health | An additional parallel customer-response pipeline |
 | Shared Node runtime | LangGraph workflow, channel-independent decisions | Renderer globals or direct UI-store dependencies |
 | Channel adapter | Provider authentication, normalization, sending and delivery mapping | Model-chosen destinations or business policy overrides |
 | Inbox/job store | Deduplication, ordering, leases, retry scheduling | Treating a checkpoint as proof of external delivery |
@@ -121,7 +138,7 @@ flowchart TD
 
 ### Deployment A: owner-machine worker
 
-Run the workflow under the Electron main-process lifecycle, with durable local storage. Move expensive parsing/inference into an isolated worker where required to keep controls responsive. Closing the window may retain tray/background operation; explicitly quitting stops the local worker. Power-off and network outages stop local responses.
+Run the workflow under `agentd` with durable local storage. Move expensive parsing/inference into an isolated worker where required to keep controls responsive. Closing the browser console does not stop the local worker; stopping its OS service does. Power-off and network outages stop local responses. During transition, Electron may launch or connect to `agentd`, but must not be the only way to keep it alive.
 
 Official webhook integrations need reachable HTTPS ingress. The current desktop pilot therefore supports controlled localhost testing only; it does not ship a public listener or implicit tunnel. A future production relay may durably buffer events and connect to the desktop over an authenticated outbound channel, but that relay is not implemented and cannot be treated as part of v1 availability.
 
@@ -129,7 +146,7 @@ The relay handles customer event data. Document its retention and encryption; do
 
 ### Deployment B: hosted worker
 
-Deploy the same Node runtime with HTTPS ingress on an always-on host. Electron becomes the owner console. Cloud execution requires approved knowledge and credentials accessible to that host; local-only tools remain unavailable when the desktop is offline. Do not silently reroute those tools or upload all local files.
+Deploy the same Node runtime with HTTPS ingress on an always-on host. The local web console becomes the owner console; Electron remains an optional transition client. Cloud execution requires approved knowledge and credentials accessible to that host; local-only tools remain unavailable when the desktop is offline. Do not silently reroute those tools or upload all local files.
 
 Only one runtime may own a conversation at a time. Switching local/hosted execution requires a persisted ownership generation or lease and a controlled transfer. Never have both runtimes send for the same job. A single small server is an initial deployment, not high availability.
 
@@ -387,7 +404,7 @@ The current supervisor is a prototype. Its build passing is not evidence of corr
 | `src/main/packages/rag-engine/index.ts` | Reuse retrieval behind tenant/business-scoped evidence contracts |
 | Memory and chat persistence services | Reuse context and sessions with explicit ownership and migration rules |
 | Renderer agent runtime and `useWhatsAppBridge` | Remove automatic duplicate customer execution when a conversation is owned by the new runtime |
-| `AutonomyPanel`, preload and IPC | Add typed contracts and authoritative host controls; remove contradictory toggles |
+| `AutonomyPanel` and local-service API (preload/IPC during transition) | Add typed contracts and authoritative host controls; remove contradictory toggles |
 | Playwright and MCP services | Keep owner tools separate; expose only narrow approved business capabilities to the graph |
 
 Known repairs: reconstruct queued work after restart; make draft mode generate without sending permission; enforce pause after generation and before dispatch; handle ambiguous sends; persist opt-outs/takeover; replace hardcoded confidence; store provider IDs; prevent renderer and main-process duplicate responses. Also review persona instructions that conceal AI identity and replace them with the requested disclosure behavior.
@@ -407,7 +424,7 @@ Do not migrate customer data destructively. Back up existing databases, version 
 | 4: Instagram and Messenger | Independent approved adapters and human ownership | Real authorized account tests, permission failure and owner-echo handling verified |
 | 5: Advertising context | Lead-form events and supported referral attribution | Correct attribution; no unsolicited cross-channel send; no spend-changing operations |
 | 6: X | DM support with separate budget and access validation | Metering, limits, takeover and supported delivery behavior verified |
-| 7: Hosted operation | Same runtime deployed with secure desktop control and ownership transfer | Desktop-off operation, failover boundaries, backup restore and isolation tests pass |
+| 7: Hosted operation | Same runtime deployed with secure owner control and ownership transfer | Owner-device-off operation, failover boundaries, backup restore and isolation tests pass |
 
 Infrastructure/access discovery for hosted operation begins in phase 2 even though the full hosted worker ships later. Platform review proceeds in parallel and may dominate elapsed delivery time. Do not promise a delivery date until account access and the core migration spike are measured.
 
@@ -429,9 +446,9 @@ Build a representative evaluation set before auto-reply: common intents, missing
 
 ## 13. Decisions settled and remaining checks
 
-Settled: Electron remains our product UI; LangGraph plus selected LangChain integrations powers the shared support workflow; official APIs are the production route; RAG/memory are reused; sending remains host-authorized; X is optional and separately budgeted; ad management is deferred.
+Settled: `agentd` plus a loopback web console is the target local deployment; Electron is a temporary client during migration. LangGraph plus selected LangChain integrations powers the shared support workflow; official APIs are the production route; RAG/memory are reused; sending remains host-authorized; X is optional and separately budgeted; ad management is deferred.
 
-Before deployment, verify the owner's Meta assets and Coexistence eligibility, required reviews/scopes, first email provider, Gmail restricted-scope applicability, approved model/data region, initial traffic and spending caps, knowledge-sharing rules, retention period, and local execution choice. Also make the distribution model explicit: our own account, a desktop product where each customer connects their own accounts, or a hosted service operating customer accounts. OAuth review, support and cost estimates depend on this decision.
+Before deployment, verify the owner's Meta assets and Coexistence eligibility, required reviews/scopes, first email provider, Gmail restricted-scope applicability, approved model/data region, initial traffic and spending caps, knowledge-sharing rules, retention period, and local execution choice. Also make the distribution model explicit: our own account, a locally installed product where each customer connects their own accounts, or a hosted service operating customer accounts. OAuth review, support and cost estimates depend on this decision.
 
 Next implementation slice: a restart-safe draft-only LangGraph workflow using our existing RAG and session data, with one authoritative job store and tests for pause, duplicate input and approval recovery. Follow it with the Cloud API adapter and the single outbound gate. This gives us a reviewable foundation before adding more channels.
 
