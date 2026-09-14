@@ -12,6 +12,7 @@
     "scripts": {
         "dev": "electron-vite dev",
         "build": "electron-vite build",
+        "build:agentd": "tsc -p tsconfig.agentd.json",
         "preview": "electron-vite preview",
         "typecheck": "tsc --noEmit",
         "typecheck:renderer": "tsc --noEmit -p tsconfig.renderer.json",
