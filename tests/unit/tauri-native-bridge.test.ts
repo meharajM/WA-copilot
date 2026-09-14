@@ -1,0 +1,59 @@
+import { describe, expect, it, vi } from 'vitest'
+import {
+  createTauriNativeBridge,
+  TAURI_COMMANDS,
+  TAURI_EVENTS,
+} from '../../src/renderer/src/lib/tauri-native-bridge'
+
+describe('tauri native bridge', () => {
+  it('uses fixed commands and never exposes credential reads', async () => {
+    const invoke = vi.fn(async (command: string) => {
+      if (command === TAURI_COMMANDS.appVersion) return '1.2.3'
+      if (command === TAURI_COMMANDS.agentdHealth) return { status: 'ready', version: 'protocol-v1' }
+      if (command === TAURI_COMMANDS.credentialSet) return { success: true }
+      if (command === TAURI_COMMANDS.credentialExists) return { success: true, exists: true }
+      if (command === TAURI_COMMANDS.credentialDelete) return { success: true }
+      return null
+    })
+    const listen = vi.fn(async () => () => undefined)
+    const bridge = createTauriNativeBridge({ invoke, listen })
+
+    await expect(bridge.appVersion()).resolves.toBe('1.2.3')
+    await expect(bridge.health()).resolves.toMatchObject({ status: 'ready', version: 'protocol-v1' })
+    await expect(bridge.setCredential('openai_api_key', 'secret')).resolves.toEqual({ success: true })
+    await expect(bridge.hasCredential('openai_api_key')).resolves.toEqual({ success: true, exists: true })
+    await expect(bridge.deleteCredential('openai_api_key')).resolves.toEqual({ success: true })
+
+    expect(invoke).toHaveBeenCalledWith(TAURI_COMMANDS.credentialSet, { key: 'openai_api_key', value: 'secret' })
+    expect(invoke).not.toHaveBeenCalledWith(expect.stringMatching(/get|read/i), expect.anything())
+  })
+
+  it('fails closed on malformed health/results and empty credentials', async () => {
+    const invoke = vi.fn(async (command: string) => {
+      if (command === TAURI_COMMANDS.agentdHealth) return { status: 'online' }
+      return { unexpected: true }
+    })
+    const bridge = createTauriNativeBridge({ invoke, listen: vi.fn(async () => () => undefined) })
+
+    await expect(bridge.health()).resolves.toEqual({ status: 'unavailable', error: 'Invalid agentd health response' })
+    await expect(bridge.setCredential('openai_api_key', '')).resolves.toMatchObject({ success: false })
+    await expect(bridge.hasCredential('openai_api_key')).resolves.toMatchObject({ success: false, exists: false })
+  })
+
+  it('cleans up an async listener that resolves after unsubscribe', async () => {
+    let resolveListen: ((cleanup: () => void) => void) | undefined
+    const cleanup = vi.fn()
+    const listen = vi.fn(() => new Promise<() => void>((resolve) => { resolveListen = resolve }))
+    const bridge = createTauriNativeBridge({ invoke: vi.fn(), listen })
+    const listener = vi.fn()
+
+    const unsubscribe = bridge.onAgentdHealth(listener)
+    unsubscribe()
+    resolveListen?.(cleanup)
+    await Promise.resolve()
+
+    expect(cleanup).toHaveBeenCalledOnce()
+    expect(listener).not.toHaveBeenCalled()
+    expect(listen).toHaveBeenCalledWith(TAURI_EVENTS.agentdHealth, expect.any(Function))
+  })
+})
