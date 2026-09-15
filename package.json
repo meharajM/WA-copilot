@@ -21,6 +21,8 @@
         "test": "vitest run",
         "test:unit": "vitest run tests/unit",
         "test:integration": "vitest run tests/integration",
+        "test:agentd": "node --test tests/unit/agentd.test.cjs",
+        "agentd": "node scripts/agentd.cjs",
         "test:live": "LIVE_LLM_TESTS=true vitest run tests/live",
         "test:robust": "npm run test:unit && npm run test:integration && npm run test:live",
         "test:watch": "vitest",

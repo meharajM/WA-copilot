@@ -11,6 +11,7 @@ Implements the architecture plan. Complete phases in order. Keep observe-only as
 The completed items below describe the Electron pilot, not completion of the independent runtime. The architecture now selects plain Node `agentd` plus a loopback browser console; Tauri is deferred.
 
 - [ ] Extract service start/stop and injected paths, credentials, native operations and event adapters; remove Electron imports from the daemon dependency graph.
+- [x] Add the first independent `agentd` lifecycle slice: plain Node process, exclusive runtime lock, loopback API, durable inbound-event store and pause/resume controls. (Focused persistence, duplicate-event, CSRF and crash-lock recovery tests pass; existing workflow, OS-keychain secret storage and service registration remain open.)
 - [ ] Package/register an independent OS user service with exclusive storage ownership; verify browser close and optional Electron quit do not stop it.
 - [ ] Serve the existing React UI with a typed API at an ephemeral loopback port; implement keychain bearer storage, owner pairing, session authentication, exact Host/Origin checks and CSRF protections.
 - [ ] Remove browser secret persistence and retain explicit picker/notification adapters; test unauthenticated/cross-origin requests and pairing replay.
