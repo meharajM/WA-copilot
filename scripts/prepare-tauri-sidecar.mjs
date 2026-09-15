@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process'
 import { chmod, cp, mkdir } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { assertNodeHostMatchesRustTarget } from './tauri-target-validation.mjs'
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const tauriRoot = join(projectRoot, 'src-tauri')
@@ -23,6 +24,7 @@ function rustHostTriple() {
 }
 
 const hostTriple = rustHostTriple()
+assertNodeHostMatchesRustTarget(process.platform, process.arch, hostTriple)
 const requestedTarget = process.env.TAURI_ENV_TARGET_TRIPLE
 if (requestedTarget && requestedTarget !== hostTriple) {
   throw new Error(

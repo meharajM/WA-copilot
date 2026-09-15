@@ -15,6 +15,7 @@ Electron remains the supported application path on this branch. No existing chan
 - Branch starts from PR #8 commit `6659d2f3`.
 - Node requirement is `>=22.12.0`; `.nvmrc` selects `22.12.0`.
 - Current host uses Node `24.7.0`, npm `11.5.1`, Rust `1.94.1` and Cargo `1.94.1`.
+- Tauri host requires Rust `>=1.88.0` because locked `keyring` 4.2.0 requires that MSRV.
 - `npm ci` succeeds with the existing lockfile.
 - Existing `npm run typecheck` and `npm run build` fail before this work because `src/main/ipc/antigravity.ts` imports missing `src/main/services/AntigravityAuthService`.
 - Existing `npm test` can remain idle for more than two minutes without reporting results on this checkout. Focused tests and bounded runs are required; these baseline failures must not be attributed to Tauri changes.
@@ -32,7 +33,7 @@ Electron remains the supported application path on this branch. No existing chan
 9. Credential keys are allowlisted. Renderer can set, replace, check existence and delete; it cannot retrieve stored values. No plaintext or `localStorage` fallback is allowed.
 10. Main-window close destroys the WebView and leaves Tauri core plus `agentd` alive. Tray Open creates at most one main window. Explicit Quit stops the owned child and exits.
 11. Tauri capability scope is limited to the `main` window. JavaScript receives no shell-plugin execute permission.
-12. Packaged assets use a restrictive CSP. Electron's `sandbox: false`, `webSecurity: false`, certificate bypasses and broad permission grants are not copied.
+12. Packaged assets use a restrictive CSP. Development may use a separate CSP limited to local Vite HMR. Electron's `sandbox: false`, `webSecurity: false`, certificate bypasses and broad permission grants are not copied.
 13. Tauri uses a separate application identifier and data/credential namespace during the pilot. It does not read or migrate live Electron data.
 14. No sender, OAuth flow, provider token, live channel, MCP process, autonomous worker or existing database is activated by the pilot.
 15. New non-trivial protocol/security behavior has focused runnable tests. Existing baseline failures stay documented and separate.
@@ -121,6 +122,7 @@ Work:
 7. Create tray Open/Quit actions. Window close destroys the main WebView; Open recreates/focuses one window; Quit requests child shutdown, then terminates it within a bounded grace period.
 8. Scope capabilities to `main`; do not grant JavaScript sidecar execution.
 9. Add focused Rust unit tests for key allowlisting, protocol-state transitions and duplicate-window/lifecycle decision helpers where practical without a desktop session.
+10. Generate a tiny ignored placeholder icon at build time for Tauri codegen; replace it with approved artwork before release.
 
 Acceptance:
 
