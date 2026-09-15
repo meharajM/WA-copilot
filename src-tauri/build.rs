@@ -1,17 +1,19 @@
-use std::{env, fs, path::PathBuf};
-
-const PILOT_ICON_PNG: &[u8] = &[
-    137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0,
-    0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 156, 99, 208, 72, 217, 242, 31, 0, 4,
-    56, 2, 64, 193, 123, 6, 5, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
-];
+use std::{env, path::PathBuf, process::Command};
 
 fn main() {
     let manifest_dir =
         PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("manifest directory"));
-    let icon_path = manifest_dir.join("icons/icon.png");
-    fs::create_dir_all(icon_path.parent().expect("icon directory")).expect("create icon directory");
-    fs::write(icon_path, PILOT_ICON_PNG).expect("write pilot icon");
+    let icon_script = manifest_dir
+        .parent()
+        .expect("repository root")
+        .join("scripts/prepare-tauri-icon.mjs");
+    println!("cargo:rerun-if-changed={}", icon_script.display());
+
+    let status = Command::new("node")
+        .arg(icon_script)
+        .status()
+        .expect("Node.js is required to generate the Tauri pilot icon");
+    assert!(status.success(), "failed to generate the Tauri pilot icon");
 
     tauri_build::build()
 }

@@ -428,7 +428,6 @@ fn parse_agentd_message(frame: &[u8]) -> Result<AgentdMessage, ()> {
 #[serde(rename_all = "camelCase")]
 struct FileSelectionOptions {
     title: Option<String>,
-    #[allow(dead_code)]
     button_label: Option<String>,
     filters: Option<Vec<FileFilter>>,
 }
@@ -437,6 +436,13 @@ struct FileSelectionOptions {
 struct FileFilter {
     name: String,
     extensions: Vec<String>,
+}
+
+fn has_unsupported_picker_options(options: &Option<FileSelectionOptions>) -> bool {
+    options
+        .as_ref()
+        .and_then(|options| options.button_label.as_ref())
+        .is_some_and(|label| !label.trim().is_empty())
 }
 
 fn credential_key_allowed(key: &str) -> bool {
@@ -484,6 +490,11 @@ async fn select_file(
     app: AppHandle,
     options: Option<FileSelectionOptions>,
 ) -> Result<Option<String>, String> {
+    if has_unsupported_picker_options(&options) {
+        return Err(
+            "Custom file picker button labels are not supported by the Tauri native dialog".into(),
+        );
+    }
     let (sender, mut receiver) = tauri::async_runtime::channel(1);
     let mut dialog = app.dialog().file();
     if let Some(options) = options {
@@ -847,6 +858,24 @@ mod tests {
         assert!(credential_key_allowed("whatsapp_cloud_verify_token"));
         assert!(!credential_key_allowed("unknown"));
         assert!(!credential_key_allowed(""));
+    }
+
+    #[test]
+    fn custom_file_picker_button_labels_fail_explicitly() {
+        let options = Some(FileSelectionOptions {
+            title: None,
+            button_label: Some("Upload".into()),
+            filters: None,
+        });
+        assert!(has_unsupported_picker_options(&options));
+        assert!(!has_unsupported_picker_options(&None));
+        assert!(!has_unsupported_picker_options(&Some(
+            FileSelectionOptions {
+                title: None,
+                button_label: Some("   ".into()),
+                filters: None,
+            }
+        )));
     }
 
     #[test]

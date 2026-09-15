@@ -122,7 +122,7 @@ Work:
 7. Create tray Open/Quit actions. Window close destroys the main WebView; Open recreates/focuses one window; Quit requests child shutdown, then terminates it within a bounded grace period.
 8. Scope capabilities to `main`; do not grant JavaScript sidecar execution.
 9. Add focused Rust unit tests for key allowlisting, protocol-state transitions and duplicate-window/lifecycle decision helpers where practical without a desktop session.
-10. Generate a tiny ignored placeholder icon at build time for Tauri codegen; replace it with approved artwork before release.
+10. Generate a valid ignored 512×512 RGBA placeholder icon at build time for Tauri codegen and macOS bundling; replace it with approved artwork before release.
 
 Acceptance:
 
@@ -179,6 +179,16 @@ Acceptance:
 - Git diff contains no generated Node executable, target directory, credential, database or user-data artifact.
 - Electron remains the default `dev`/`build` path.
 - Branch is committed and pushed only after review and verification.
+
+## Execution record — September 15, 2026
+
+- Tasks 1–4 are implemented on `codex/tauri-hybrid-ui`; Electron remains the default path. Independent review found no Critical, Important, or Moderate findings. A custom Tauri file-picker button label now fails explicitly because the pinned native dialog API does not expose that option; Electron behavior is unchanged.
+- `npm run test:unit` passed (133 tests), `npm run test:integration` passed (185 tests), `npm run typecheck:renderer`, `npm run build:tauri:web`, and `npm run lint` passed. Lint reports existing repository warnings; the baseline full `npm run typecheck` and Electron `npm run build` remain blocked by the pre-existing missing `AntigravityAuthService` import.
+- Sidecar preparation passed for the current `aarch64-apple-darwin` host and rejected an intentionally mismatched `x86_64-apple-darwin` target. Generated runtime and sidecar files remain ignored.
+- `package-lock.json` now contains only the missing platform-filtered Tauri CLI optional bindings in addition to the existing lock graph. A clean `npm ci --ignore-scripts --no-audit --no-fund` installed 1,189 packages on Darwin arm64; `npm exec -- tauri --version` reports 2.11.4 and `tauri build --help` works.
+- `cargo fmt --check`, `cargo check --locked`, and `cargo test --locked` pass for the Rust host (6 tests, including unsupported picker-label behavior). The first bundle attempt exposed the invalid 1×1 placeholder; after adding a valid 512×512 RGBA icon generator, `npm run build:tauri` succeeded on the current Apple Silicon host. It produced `/tmp/wa-copilot-tauri-host/src-tauri/target/release/bundle/macos/AICA Native Pilot.app` and `/tmp/wa-copilot-tauri-host/src-tauri/target/release/bundle/dmg/AICA Native Pilot_1.0.0_aarch64.dmg`. The DMG checksum verified, and the app contains the packaged Node runtime and `sidecar/agentd` resources. Its code signature is ad-hoc only, not a Developer ID distribution signature.
+- Manual smoke tests: both release app and `npm run dev:tauri` opened in the macOS WebView and reported Tauri v1.0.0 and agentd Ready. File and folder pickers opened and canceled cleanly. Closing the release window left the host and sidecar alive. A dev-watch rebuild loop from rewriting the generated icon was fixed by making generation content-idempotent. Desktop automation could not reach the menu-bar tray control, so tray Open/Quit and keychain operations remain unverified; test processes were terminated afterward. Do not interpret these limited smoke tests as full native runtime validation.
+- No branch push is recorded as part of this execution. Production signing, artwork, parity and whole-process resource benchmarks remain future gates listed below.
 
 ## Later parity work, not hidden in this checkpoint
 
