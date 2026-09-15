@@ -33,10 +33,13 @@ name = "aica-tauri-pilot"
 version = "1.0.0"
 dependencies = [
  "keyring",
+ "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-shell",
+ "zeroize",
 ]
 
 [[package]]
