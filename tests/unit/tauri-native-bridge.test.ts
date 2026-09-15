@@ -1,11 +1,25 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   createTauriNativeBridge,
+  createHealthUpdateHandler,
   TAURI_COMMANDS,
   TAURI_EVENTS,
 } from '../../src/renderer/src/lib/tauri-native-bridge'
 
 describe('tauri native bridge', () => {
+  it('does not allow a late health snapshot to overwrite a newer event', () => {
+    const listener = vi.fn()
+    const updates = createHealthUpdateHandler(listener)
+    const event = { status: 'ready', version: 'event' } as const
+    const staleSnapshot = { status: 'unavailable', error: 'stale' } as const
+
+    updates.onEvent(event)
+    updates.onSnapshot(staleSnapshot)
+
+    expect(listener).toHaveBeenCalledOnce()
+    expect(listener).toHaveBeenCalledWith(event)
+  })
+
   it('uses fixed commands and never exposes credential reads', async () => {
     const invoke = vi.fn(async (command: string) => {
       if (command === TAURI_COMMANDS.appVersion) return '1.2.3'

@@ -38,6 +38,20 @@ export interface HealthSubscription {
   unsubscribe: Unsubscribe
 }
 
+export const createHealthUpdateHandler = (listener: HealthListener) => {
+  let receivedEvent = false
+
+  return {
+    onEvent: (health: NativeHealth) => {
+      receivedEvent = true
+      listener(health)
+    },
+    onSnapshot: (health: NativeHealth) => {
+      if (!receivedEvent) listener(health)
+    },
+  }
+}
+
 const defaultDependencies: TauriBridgeDependencies = {
   invoke: tauriInvoke,
   listen: tauriListen,

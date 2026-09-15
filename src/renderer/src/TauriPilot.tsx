@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { credentialKeys, type CredentialKey, type NativeHealth } from '../../shared/native-bridge'
-import { tauriNativeBridge } from './lib/tauri-native-bridge'
+import { createHealthUpdateHandler, tauriNativeBridge } from './lib/tauri-native-bridge'
 
 const readableKey = (key: CredentialKey): string => key.replaceAll('_', ' ')
 
@@ -21,7 +21,9 @@ export default function TauriPilot() {
 
   useEffect(() => {
     let disposed = false
-    let receivedHealthEvent = false
+    const healthUpdates = createHealthUpdateHandler((value) => {
+      if (!disposed) setHealth(value)
+    })
     void tauriNativeBridge.appVersion().then((value) => {
       if (!disposed) setVersion(value)
     }).catch((reason) => {
@@ -31,18 +33,13 @@ export default function TauriPilot() {
       }
     })
     const healthSubscription = tauriNativeBridge.onAgentdHealth((value) => {
-      if (!disposed) {
-        receivedHealthEvent = true
-        setHealth(value)
-      }
+      healthUpdates.onEvent(value)
     }, (subscriptionError) => {
       if (!disposed) setError(subscriptionError)
     })
     void healthSubscription.ready.then(() => {
       if (disposed) return
-      return tauriNativeBridge.health().then((value) => {
-        if (!disposed && !receivedHealthEvent) setHealth(value)
-      })
+      return tauriNativeBridge.health().then(healthUpdates.onSnapshot)
     })
     return () => {
       disposed = true
