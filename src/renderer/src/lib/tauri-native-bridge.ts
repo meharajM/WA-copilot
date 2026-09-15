@@ -84,15 +84,18 @@ const readResult = (value: unknown): NativeResult => {
 }
 
 const readCredentialExists = (value: unknown): NativeResult & { exists: boolean } => {
+  if (!isRecord(value) || typeof value.exists !== 'boolean') {
+    return { success: false, error: 'Invalid credential existence response', exists: false }
+  }
   const result = readResult(value)
   return {
     ...result,
-    exists: isRecord(value) && value.exists === true,
+    exists: value.exists,
   }
 }
 
 const readSelection = (value: unknown): string | null => {
-  if (value === null || value === undefined) return null
+  if (value === null) return null
   if (typeof value === 'string' && value.length > 0) return value
   throw new Error('Invalid native selection response')
 }
@@ -101,7 +104,7 @@ export const createTauriNativeBridge = (
   dependencies: TauriBridgeDependencies = defaultDependencies,
 ): NativeBridge & {
   appVersion: () => Promise<string>
-  onAgentdHealth: (listener: HealthListener) => Unsubscribe
+  onAgentdHealth: (listener: HealthListener, onError?: (error: string) => void) => Unsubscribe
 } => {
   const invoke = async <T>(command: string, args?: Record<string, unknown>): Promise<T> => (
     dependencies.invoke<T>(command, args)
@@ -165,7 +168,7 @@ export const createTauriNativeBridge = (
     }
   }
 
-  const onAgentdHealth = (listener: HealthListener): Unsubscribe => {
+  const onAgentdHealth = (listener: HealthListener, onError?: (error: string) => void): Unsubscribe => {
     let active = true
     let unlisten: UnlistenFn | undefined
 
@@ -175,7 +178,7 @@ export const createTauriNativeBridge = (
       if (active) unlisten = cleanup
       else cleanup()
     }).catch(() => {
-      // Missing event support is surfaced by the initial health command.
+      onError?.('Agentd health event subscription unavailable')
     })
 
     return () => {

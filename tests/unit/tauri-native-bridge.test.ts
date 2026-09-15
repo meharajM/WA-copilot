@@ -40,6 +40,39 @@ describe('tauri native bridge', () => {
     await expect(bridge.hasCredential('openai_api_key')).resolves.toMatchObject({ success: false, exists: false })
   })
 
+  it('rejects credential existence responses without a boolean exists field', async () => {
+    const bridge = createTauriNativeBridge({
+      invoke: vi.fn(async () => ({ success: true })),
+      listen: vi.fn(async () => () => undefined),
+    })
+
+    await expect(bridge.hasCredential('openai_api_key')).resolves.toEqual({
+      success: false,
+      error: 'Invalid credential existence response',
+      exists: false,
+    })
+  })
+
+  it('treats only null as picker cancellation', async () => {
+    const invoke = vi.fn(async () => null as unknown)
+    const bridge = createTauriNativeBridge({ invoke, listen: vi.fn(async () => () => undefined) })
+
+    await expect(bridge.selectFile()).resolves.toBeNull()
+    invoke.mockResolvedValueOnce(undefined)
+    await expect(bridge.selectFile()).rejects.toThrow('Invalid native selection response')
+    invoke.mockResolvedValueOnce({ path: '/tmp/file.txt' })
+    await expect(bridge.selectFile()).rejects.toThrow('Invalid native selection response')
+  })
+
+  it('reports health event subscription failures to the caller', async () => {
+    const listen = vi.fn(async () => { throw new Error('native registration details') })
+    const onError = vi.fn()
+    const bridge = createTauriNativeBridge({ invoke: vi.fn(), listen })
+
+    bridge.onAgentdHealth(vi.fn(), onError)
+    await vi.waitFor(() => expect(onError).toHaveBeenCalledWith('Agentd health event subscription unavailable'))
+  })
+
   it('cleans up an async listener that resolves after unsubscribe', async () => {
     let resolveListen: ((cleanup: () => void) => void) | undefined
     const cleanup = vi.fn()

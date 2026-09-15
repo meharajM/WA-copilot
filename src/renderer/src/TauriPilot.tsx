@@ -34,6 +34,8 @@ export default function TauriPilot() {
     })
     const unsubscribe = tauriNativeBridge.onAgentdHealth((value) => {
       if (!disposed) setHealth(value)
+    }, (subscriptionError) => {
+      if (!disposed) setError(subscriptionError)
     })
     return () => {
       disposed = true

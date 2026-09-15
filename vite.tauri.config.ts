@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 const projectRoot = dirname(fileURLToPath(import.meta.url))
 
 export default defineConfig({
-  root: projectRoot,
+  root: resolve(projectRoot, 'src/renderer'),
   publicDir: resolve(projectRoot, 'public'),
   resolve: {
     alias: {
