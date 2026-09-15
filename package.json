@@ -12,6 +12,7 @@
     "scripts": {
         "dev": "electron-vite dev",
         "dev:tauri": "tauri dev",
+        "dev:tauri:web": "vite --config vite.tauri.config.ts --host 127.0.0.1 --strictPort",
         "build": "electron-vite build",
         "build:agentd": "tsc -p tsconfig.agentd.json",
         "build:tauri": "tauri build",

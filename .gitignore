@@ -17,6 +17,13 @@ out/
 .env.*
 !.env.example
 
+# Tauri generated files
+src-tauri/target/
+src-tauri/gen/
+src-tauri/binaries/
+src-tauri/sidecar/
+src-tauri/icons/icon.png
+
 # TypeScript
 *.tsbuildinfo
 *.db
