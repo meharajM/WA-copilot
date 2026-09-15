@@ -1,6 +1,6 @@
 # Tauri hybrid UI pilot: operator guide
 
-Status: native host and pilot implementation are integrated on `codex/tauri-hybrid-ui`; packaged/native desktop verification remains pending.
+Status: native host and pilot implementation are integrated on `codex/tauri-hybrid-ui`. A macOS Apple Silicon package smoke pass completed on 2026-09-15; tray Open/Quit, positive path selection, code signing/notarization, and whole-process resource benchmarks remain pending.
 
 This guide covers the opt-in Tauri proving ground only. Electron remains the supported application path. The pilot does not switch the default `dev` or `build` scripts and is not a replacement for the existing app.
 
@@ -51,7 +51,7 @@ The pilot has a separate React entry point (`tauri.html` / `tauri-main.tsx`) and
 - Credential set, existence check, and delete for the typed allowlist in `src/shared/native-bridge.ts`.
 - A small renderer/WebView that can be closed/recreated independently of the intended host-owned `agentd` lifecycle.
 
-The web UI and Node sidecar protocol have focused automated coverage, and Rust host commands have unit coverage. Rust command wiring in a running app, packaging, OS credential-store behavior, picker behavior, tray/window lifecycle, and native WebView operation are still pending desktop verification. Tauri's native file-dialog API does not expose a custom confirmation-button label; a Tauri request that supplies `buttonLabel` fails explicitly instead of silently ignoring it. Electron continues to honor its existing picker option. No manual native runtime verification is claimed by this guide.
+The web UI and Node sidecar protocol have focused automated coverage, and Rust host commands have unit coverage. The macOS smoke pass below verified release startup, `agentd` readiness, native picker open/cancel behavior, and a disposable Keychain set/check/delete/absence round trip. Closing the release window left its host and sidecar running. Tray Open/Quit, positive path selection, health-failure rendering, and cross-platform behavior still need desktop verification. Tauri's native file-dialog API does not expose a custom confirmation-button label; a Tauri request that supplies `buttonLabel` fails explicitly instead of silently ignoring it. Electron continues to honor its existing picker option. This smoke pass is not production release sign-off.
 
 ## Security and data boundaries
 
@@ -73,18 +73,19 @@ The web UI and Node sidecar protocol have focused automated coverage, and Rust h
 - Claiming lower total resource use based on WebView footprint alone. The Node sidecar, app host, local model, and model runtime all contribute; whole-process RSS/CPU/GPU/VRAM benchmarking is a later gate.
 - Treating a successful Vite build as evidence that native keychain, dialogs, tray, window recreation, or app shutdown work on the target OS.
 
-## Manual verification checklist — pending
+## Manual verification checklist — macOS smoke pass (2026-09-15); follow-ups pending
 
-Run after a desktop build succeeds. Record OS, architecture, Rust target, Node version, and exact command for each run.
+Test host: macOS 26.6.2, arm64, `aarch64-apple-darwin`, Node 24.7.0, Rust 1.94.1. Release command: `npm run build:tauri`.
 
 - [x] `npm run dev:tauri` opened the pilot in the macOS WebView.
 - [ ] Confirm the Electron app still starts with `npm run dev` (not exercised during this pass).
-- [x] Both release and dev pilots reported Tauri v1.0.0 and `agentd` Ready. Health updates and worker failure states still need exercising.
-- [x] File/folder buttons opened native pickers; cancel returned a distinct “Selection canceled” state. No file or folder was selected.
-- [ ] With disposable data only, set a test credential, check existence, delete it, then verify absence using only the status API. Confirm no credential getter, localStorage value, or plaintext log exists.
-- [ ] Close the main window and use tray Open to recreate at most one window. Closing was observed to leave the host and sidecar alive, but tray Open and PID stability across recreation were not verified.
+- [x] The exact branch release app reported Tauri v1.0.0 and `agentd` Ready. Health-failure rendering still needs exercising.
+- [x] File/folder buttons opened native pickers; Escape returned the distinct “Selection canceled” state. No file or folder was selected; selected-path display remains unverified.
+- [x] With a disposable non-credential test value and an initially empty pilot Keychain slot, set/check/delete/absence all succeeded. The input cleared after save; the UI exposed no value. Do not use production credentials for this test.
+- [x] Closing the exact-branch release window left its Rust host and `agentd` sidecar processes running.
+- [ ] Use tray Open to recreate at most one window and verify idempotent reopen/PID stability. The desktop automation used for this pass could not reach the macOS status-item menu.
 - [ ] Use explicit tray Quit and verify the child exits within the configured grace period. Also test host termination/EOF cleanup.
-- [x] `npm run build:tauri` created an ad-hoc-signed (not Developer ID signed/notarized) Apple Silicon app and DMG: `/tmp/wa-copilot-tauri-host/src-tauri/target/release/bundle/macos/AICA Native Pilot.app` and `/tmp/wa-copilot-tauri-host/src-tauri/target/release/bundle/dmg/AICA Native Pilot_1.0.0_aarch64.dmg`. `hdiutil verify` passed.
+- [x] `npm run build:tauri` created an Apple Silicon app and DMG at `src-tauri/target/release/bundle/macos/AICA Native Pilot.app` and `src-tauri/target/release/bundle/dmg/AICA Native Pilot_1.0.0_aarch64.dmg`; `hdiutil verify` passed. The Mach-O executable has only a linker ad-hoc signature; the outer app bundle has no `_CodeSignature`, and `codesign --verify --deep --strict` plus `spctl --assess` fail. This is a local test artifact only: do not distribute/open as a downloaded app until Developer ID signing and notarization are configured.
 - [x] Packaged contents include the Node runtime and `Resources/sidecar/agentd` files; generated executables, resources and icons remain ignored by Git. Review the CSP/capability source before release, and keep checking that app data and credentials remain separate from Electron.
 - [ ] Benchmark full process tree with UI open/closed and local model loaded/unloaded before making resource-use claims.
 
