@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # AIConsumerAgent macOS Installer
 # Downloads the latest build from Cloudflare R2 and installs it to /Applications.
-# Run this script to install AIConsumerAgent without requiring an Apple developer certificate.
+# The downloaded app must be Developer ID signed and notarized.
 
 set -e
 
@@ -47,8 +47,10 @@ if [ -d "${INSTALL_DIR}/${APP_NAME}.app" ]; then
 fi
 cp -R "${MOUNT_POINT}/${APP_NAME}.app" "${INSTALL_DIR}/"
 
-# Strip the quarantine attribute so Gatekeeper does not block the app
-xattr -dr com.apple.quarantine "${INSTALL_DIR}/${APP_NAME}.app" 2>/dev/null || true
+echo "🔐 Verifying Apple signature and notarization..."
+codesign --verify --deep --strict --verbose=2 "${INSTALL_DIR}/${APP_NAME}.app"
+spctl --assess --type execute --verbose=2 "${INSTALL_DIR}/${APP_NAME}.app"
+xcrun stapler validate "${INSTALL_DIR}/${APP_NAME}.app"
 
 echo "🔌 Unmounting disk image..."
 hdiutil detach "$MOUNT_POINT" -quiet

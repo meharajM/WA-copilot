@@ -33,7 +33,7 @@ describe('IPC channel contracts', () => {
     const preloadSource = await fs.readFile(preloadPath, 'utf8')
     const invokeChannels = extractChannels(
       preloadSource,
-      /ipcRenderer\.invoke\((['"])([^'"]+)\1/g
+      /ipcRenderer\.invoke\(\s*(['"])([^'"]+)\1/g
     )
 
     const mainFiles = await getAllFiles(path.resolve(process.cwd(), 'src/main'))
@@ -44,7 +44,7 @@ describe('IPC channel contracts', () => {
     for (const source of mainSources) {
       for (const channel of extractChannels(
         source,
-        /ipcMain\.handle\((['"])([^'"]+)\1/g
+        /ipcMain\.handle\(\s*(['"])([^'"]+)\1/g
       )) {
         mainHandlers.add(channel)
       }
@@ -62,7 +62,7 @@ describe('IPC channel contracts', () => {
     const preloadSource = await fs.readFile(preloadPath, 'utf8')
     const invokeChannels = extractChannels(
       preloadSource,
-      /ipcRenderer\.invoke\((['"])([^'"]+)\1/g
+      /ipcRenderer\.invoke\(\s*(['"])([^'"]+)\1/g
     )
 
     const required = [

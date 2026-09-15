@@ -65,12 +65,13 @@ export function registerSecureHandlers(): void {
 
       if (!safeStorage.isEncryptionAvailable()) {
         console.warn(
-          "[Secure] Encryption not available, falling back to plain storage",
+          "[Secure] Encryption not available; refusing to store secret",
         );
-        // Fallback: store without encryption (better than nothing)
-        const storeKey = getUserSecretKey(key, userId);
-        secretStore.set(storeKey, value);
-        return { success: true, encrypted: false };
+        return {
+          success: false,
+          encrypted: false,
+          error: "Secure storage encryption is unavailable",
+        };
       }
 
       try {
@@ -103,8 +104,15 @@ export function registerSecureHandlers(): void {
     }
 
     if (!safeStorage.isEncryptionAvailable()) {
-      // Fallback: stored without encryption
-      return { success: true, value: stored, encrypted: false };
+      console.warn(
+        "[Secure] Encryption not available; refusing to read stored secret",
+      );
+      return {
+        success: false,
+        value: null,
+        encrypted: false,
+        error: "Secure storage encryption is unavailable",
+      };
     }
 
     try {
@@ -113,8 +121,15 @@ export function registerSecureHandlers(): void {
       return { success: true, value: decrypted, encrypted: true };
     } catch (error) {
       console.error("[Secure] Decryption failed:", error);
-      // Might be plaintext from before encryption was available
-      return { success: true, value: stored, encrypted: false };
+      // Old versions could persist plaintext. Remove any undecryptable value so
+      // it cannot be silently accepted as a secret or remain on disk.
+      secretStore.delete(storeKey);
+      return {
+        success: false,
+        value: null,
+        encrypted: false,
+        error: "Stored secret was not securely encrypted and has been removed",
+      };
     }
   });
 

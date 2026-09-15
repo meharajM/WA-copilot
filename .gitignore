@@ -9,6 +9,11 @@ yarn-error.log*
 # Electron/Vite Build
 dist/
 build/
+!build/
+build/*
+!build/icon.png
+!build/entitlements.mac.plist
+!build/entitlements.mac.inherit.plist
 release/
 out/
 .electron-builder

@@ -15,6 +15,7 @@ if [ ! -f "$ENV_FILE" ]; then
   echo "❌ Missing credentials file: .env.r2"
   exit 1
 fi
+
 set -a; source "$ENV_FILE"; set +a
 
 export AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID"
@@ -29,8 +30,8 @@ AUTO_CONFIRM=false
 for arg in "$@"; do
   case $arg in
     --yes|-y) AUTO_CONFIRM=true ;;
-    --skip-checks) SKIP_CHECKS=true ;;
-    --skip-build)  SKIP_BUILD=true; SKIP_CHECKS=true ;;
+    --skip-checks) echo "--skip-checks is disabled for production publishing"; exit 1 ;;
+    --skip-build)  SKIP_BUILD=true ;;
   esac
 done
 
@@ -58,7 +59,7 @@ cd "$ROOT_DIR"
 
 # Step 1: Quality checks
 if [ "$SKIP_CHECKS" = false ]; then
-  npm run lint && npm run typecheck
+  "$SCRIPT_DIR/release-gate.sh"
 fi
 
 # Step 2: Build + Package
@@ -67,8 +68,12 @@ if [ "$SKIP_BUILD" = false ]; then
   npm run build
   rm -rf "${WIN_OUT_DIR}"
   mkdir -p "${WIN_OUT_DIR}"
-  npx electron-builder --win --x64 --config.directories.output="${WIN_OUT_DIR}"
+  npx electron-builder --win --x64 \
+    --config.forceCodeSigning=true \
+    --config.directories.output="${WIN_OUT_DIR}"
 fi
+
+"$SCRIPT_DIR/write-release-checksums.sh" "${WIN_OUT_DIR}"
 
 # Step 3: Upload
 R2="s3://${R2_BUCKET_NAME}"
@@ -86,10 +91,9 @@ upload_artifacts() {
 }
 
 UPLOAD_DIR="${WIN_OUT_DIR}"
-[ "$SKIP_BUILD" = true ] && [ ! -d "${UPLOAD_DIR}" ] && UPLOAD_DIR="dist"
 
 shopt -s nullglob
-upload_artifacts "${UPLOAD_DIR}" "*.exe" "*.blockmap" "latest.yml"
+upload_artifacts "${UPLOAD_DIR}" "*.exe" "*.blockmap" "latest.yml" "SHA256SUMS"
 shopt -u nullglob
 aws s3 cp "scripts/install-windows.ps1" "${R2}/install-windows.ps1" $ENDPOINT
 

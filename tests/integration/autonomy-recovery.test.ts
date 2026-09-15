@@ -24,6 +24,7 @@ vi.mock('../../src/main/whatsapp/WhatsAppService', async () => {
 describe('autonomy recovery', () => {
   let supervisor: typeof import('../../src/main/services/AutonomousSupervisor').autonomousSupervisor
   let whatsappStateSpy: ReturnType<typeof vi.spyOn>
+  let EmailChannelService: typeof import('../../src/main/services/EmailChannelService').EmailChannelService
 
   beforeAll(async () => {
     fs.rmSync(dataDir, { recursive: true, force: true })
@@ -31,6 +32,7 @@ describe('autonomy recovery', () => {
     const { whatsappService } = await import('../../src/main/whatsapp/WhatsAppService')
     const connectedState = { ...whatsappService.getConnectionState(), status: 'connected' as const, error: null, phoneNumber: '+15550001111' }
     whatsappStateSpy = vi.spyOn(whatsappService, 'getConnectionState').mockReturnValue(connectedState)
+    ;({ EmailChannelService } = await import('../../src/main/services/EmailChannelService'))
     ;({ autonomousSupervisor: supervisor } = await import('../../src/main/services/AutonomousSupervisor'))
   })
 
@@ -62,7 +64,35 @@ describe('autonomy recovery', () => {
 
   it('returns derived quality, delivery, editing, and cost metrics', () => {
     const metrics = supervisor.getMetrics(14) as Record<string, number>
-    expect(metrics).toMatchObject({ groundedDecisionRate: 0, deliveryUnknown: 0, draftApprovalRate: 0, averageDraftEditingTimeMs: 0, estimatedCostPerResolvedConversation: 0, reviewedDecisions: 0, reviewAccuracy: 0, escalationPrecision: 0, recoveryDrills: 0, averageRecoveryTimeMs: 0 })
+    expect(metrics).toMatchObject({ groundedDecisionRate: 0, deliveryUnknown: 0, draftApprovalRate: 0, averageDraftEditingTimeMs: 0, estimatedCostPerResolvedConversation: null, reviewedDecisions: 0, reviewAccuracy: 0, escalationPrecision: 0, recoveryDrills: 0, averageRecoveryTimeMs: 0 })
+  })
+
+  it('counts explicit current conversation outcomes, never replies or escalations, as resolutions', () => {
+    const db = new Database(path.join(dataDir, 'autonomy.db'))
+    const jid = 'outcome-test'
+    db.prepare('INSERT INTO conversations (jid,revision,updated_at) VALUES (?,1,?)').run(jid, Date.now())
+    for (const status of ['sent', 'escalated']) db.prepare('INSERT INTO inbound_events (id,jid,status,received_at) VALUES (?,?,?,?)').run(`outcome-${status}`, jid, status, Date.now())
+    db.prepare("INSERT INTO usage_events (kind,amount,estimated_cost,created_at) VALUES ('outcome-test',1,2,?)").run(Date.now())
+    expect(supervisor.getMetrics().resolvedConversations).toBe(0)
+    expect(supervisor.getMetrics().estimatedCostPerResolvedConversation).toBeNull()
+    expect(() => supervisor.recordConversationOutcome(jid, 0, 'resolved_agent', 'Confirmed')).toThrow('revision changed')
+    expect(() => supervisor.recordConversationOutcome(jid, 1, 'sent', 'Confirmed')).toThrow('Invalid')
+    expect(() => supervisor.recordConversationOutcome(jid, 1, 'resolved_agent', '')).toThrow('Invalid')
+    supervisor.recordConversationOutcome(jid, 1, 'escalated', 'Needs owner')
+    expect(supervisor.getMetrics().resolvedConversations).toBe(0)
+    supervisor.recordConversationOutcome(jid, 1, 'resolved_human', 'Owner confirmed task complete')
+    supervisor.recordConversationOutcome(jid, 1, 'resolved_human', 'Owner confirmed task complete')
+    expect(supervisor.getMetrics()).toMatchObject({ resolvedConversations: 1, estimatedCostPerResolvedConversation: 2 })
+    expect(db.prepare('SELECT outcome FROM conversation_outcomes WHERE jid = ?').get(jid)).toEqual({ outcome: 'resolved_human' })
+    db.prepare('UPDATE conversations SET revision = 2 WHERE jid = ?').run(jid)
+    expect(supervisor.getMetrics().resolvedConversations).toBe(0)
+    supervisor.recordConversationOutcome(jid, 2, 'closed_unresolved', 'Unable to solve')
+    expect(supervisor.getMetrics().resolvedConversations).toBe(0)
+    db.prepare('DELETE FROM conversation_outcomes WHERE jid = ?').run(jid)
+    db.prepare('DELETE FROM conversations WHERE jid = ?').run(jid)
+    db.prepare('DELETE FROM inbound_events WHERE jid = ?').run(jid)
+    db.prepare("DELETE FROM usage_events WHERE kind = 'outcome-test'").run()
+    db.close()
   })
 
   it('reports bounded provider configuration and per-channel queue health', () => {
@@ -520,6 +550,65 @@ describe('autonomy recovery', () => {
     db.close()
     supervisor.stop()
     supervisor.setMode('observe', false)
+  })
+
+  it('routes external email replies to the customer sender', async () => {
+    const send = vi.spyOn(EmailChannelService.prototype, 'send').mockResolvedValue({ success: true, providerMessageId: 'email-outbound-1' })
+    const message = {
+      schemaVersion: 1 as const,
+      id: 'email-reply-routing-1',
+      channel: 'email' as const,
+      businessId: 'local-business',
+      channelAccountId: 'support@example.com',
+      conversationId: '<reply-thread@example.com>',
+      from: 'customer@example.com',
+      to: 'support@example.com',
+      subject: 'Order status',
+      messageId: '<incoming@example.com>',
+      content: 'Where is my order?',
+      timestamp: Date.now(),
+      type: 'text' as const,
+      isFromMe: false
+    }
+    const sender = (supervisor as unknown as { externalSender: (value: typeof message) => (body: string) => Promise<unknown> }).externalSender(message)
+    await sender('Your order is on the way.')
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({
+      to: 'customer@example.com',
+      inReplyTo: '<incoming@example.com>'
+    }))
+    send.mockRestore()
+  })
+
+  it('approves an email draft through the email channel instead of WhatsApp', async () => {
+    const send = vi.spyOn(EmailChannelService.prototype, 'send').mockResolvedValue({ success: true, providerMessageId: 'email-draft-outbound-1' })
+    const db = (supervisor as unknown as { db: Database.Database }).db
+    const inboundId = 'email-draft-approval-1'
+    const message = {
+      schemaVersion: 1 as const,
+      id: inboundId,
+      channel: 'email' as const,
+      businessId: 'local-business',
+      channelAccountId: 'support@example.com',
+      conversationId: '<draft-thread@example.com>',
+      from: 'customer@example.com',
+      to: 'support@example.com',
+      subject: 'Order status',
+      messageId: '<draft-incoming@example.com>',
+      content: 'Please check my order.',
+      timestamp: Date.now(),
+      type: 'text' as const,
+      isFromMe: false
+    }
+    const jid = `email:${message.conversationId}`
+    db.prepare('INSERT INTO inbound_events (id,jid,content,received_at,status,channel,payload) VALUES (?,?,?,?,?,?,?)').run(inboundId, jid, message.content, message.timestamp, 'draft', 'email', JSON.stringify(message))
+    db.prepare('INSERT INTO conversations (jid,revision,updated_at) VALUES (?,?,?)').run(jid, 1, Date.now())
+    db.prepare('INSERT INTO drafts (inbound_id,jid,content,content_hash,conversation_revision,status,expires_at,created_at) VALUES (?,?,?,?,?,?,?,?)').run(inboundId, jid, 'We are checking this for you.', 'draft-hash', 1, 'pending', Date.now() + 60_000, Date.now())
+    supervisor.start()
+    await supervisor.approveDraft(inboundId)
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ to: 'customer@example.com' }))
+    expect(db.prepare('SELECT status FROM outbound_sends WHERE inbound_id = ?').get(inboundId)).toEqual({ status: 'sent' })
+    supervisor.stop()
+    send.mockRestore()
   })
 
   it('blocks opted-out email events before queueing', () => {

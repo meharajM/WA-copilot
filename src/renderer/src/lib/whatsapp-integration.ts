@@ -30,7 +30,9 @@ export const resolveWhatsAppTarget = (text: string): string | null => {
     }
     
     const waState = useWhatsAppStore.getState();
-    const isWaConnected = waState.whatsappEnabled && waState.connectionState.status === "connected";
+    const isWaConnected =
+        (waState.whatsappEnabled || waState.businessBotMode) &&
+        waState.connectionState.status === "connected";
     
     // Fallback to active WhatsApp Mode if enabled
     if (!jid && isWaConnected && waState.connectionState.phoneNumber) {
@@ -39,7 +41,7 @@ export const resolveWhatsAppTarget = (text: string): string | null => {
     }
     
     if (jid && !isWaConnected) {
-        console.warn(`[WhatsAppIntegration] Found JID ${jid} but WhatsApp mode is disabled or disconnected. (Enabled: ${waState.whatsappEnabled}, Status: ${waState.connectionState.status})`);
+        console.warn(`[WhatsAppIntegration] Found JID ${jid} but WhatsApp mode is disabled or disconnected. (Enabled: ${waState.whatsappEnabled}, Autonomous: ${waState.businessBotMode}, Status: ${waState.connectionState.status})`);
     }
 
     // Ensure we only return a JID if the socket is actually connected and mode is valid

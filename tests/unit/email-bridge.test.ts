@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { EmailBridge } from '../../src/renderer/src/lib/email-bridge'
+import { dispatchInboundEmailToAgent } from '../../src/renderer/src/hooks/useEmailBridge'
 import { useEmailStore } from '../../src/renderer/src/stores/emailStore'
+import { useMcpStore } from '../../src/renderer/src/stores/mcpStore'
 import {
   generateEmailSessionKey,
   normalizeSubject,
@@ -23,11 +26,14 @@ function resetEmailStore(): void {
     },
     config: {
       provider: 'imap-smtp',
+      gmailAuthMode: 'app-password',
       imapHost: '',
       imapPort: 993,
       smtpHost: '',
       smtpPort: 587,
       emailAddress: '',
+      accountName: 'default',
+      userName: '',
       imapTls: true,
       smtpTls: true,
       pollingIntervalSeconds: 60,
@@ -43,6 +49,14 @@ function resetChatStore(): void {
     sessions: [],
     activeSessionId: null,
     _processingSessions: new Map(),
+  })
+}
+
+function resetMcpStore(): void {
+  useMcpStore.setState({
+    servers: [],
+    initialized: true,
+    activeUserId: null,
   })
 }
 
@@ -298,6 +312,148 @@ describe('email channel isolation', () => {
 
     expect(emailSessions.length).toBe(2)
     expect(emailSessions.every((s) => s.channel === 'email')).toBe(true)
+  })
+})
+
+// ── Email Bridge Runtime ─────────────────────────────────────────────────────
+
+describe('email bridge runtime', () => {
+  beforeEach(() => {
+    resetEmailStore()
+    resetChatStore()
+    resetMcpStore()
+    ;(EmailBridge as any).instance = null
+    const windowMock = (globalThis as any).window ?? ((globalThis as any).window = {})
+    ;(globalThis as any).CustomEvent = class {
+      type: string
+      detail: unknown
+
+      constructor(type: string, init?: { detail?: unknown }) {
+        this.type = type
+        this.detail = init?.detail
+      }
+    }
+    windowMock.dispatchEvent = vi.fn()
+    windowMock.electron = {
+      mcp: {
+        disconnect: vi.fn().mockResolvedValue({ success: true }),
+      },
+    }
+  })
+
+  it('does not start the bridge when the email channel is disabled', async () => {
+    const bridge = EmailBridge.getInstance()
+
+    const started = await bridge.start()
+
+    expect(started).toBe(false)
+    expect(useEmailStore.getState().connectionState.status).toBe('disconnected')
+  })
+
+  it('starts and stops the bridge when the channel is enabled', async () => {
+    useEmailStore.setState((state) => ({
+      config: {
+        ...state.config,
+        enabled: true,
+        emailAddress: 'support@example.com',
+        imapHost: 'imap.example.com',
+        smtpHost: 'smtp.example.com',
+      },
+    }))
+    useMcpStore.setState({
+      servers: [
+        {
+          id: 'email-server',
+          name: 'email',
+          description: 'Email MCP server',
+          type: 'stdio',
+          connected: true,
+          tools: [],
+          autoConnect: false,
+        },
+      ],
+    })
+
+    const bridge = EmailBridge.getInstance()
+    const started = await bridge.start()
+
+    expect(started).toBe(true)
+    expect(useEmailStore.getState().connectionState.status).toBe('connected')
+
+    await bridge.stop()
+
+    expect(useEmailStore.getState().connectionState.status).toBe('disconnected')
+    expect(((globalThis as any).window as any).electron.mcp.disconnect).toHaveBeenCalledWith('email-server')
+  })
+
+  it('ignores inbound emails for auto-reply when auto-reply is disabled', async () => {
+    useEmailStore.setState((state) => ({
+      config: {
+        ...state.config,
+        autoReplyMode: false,
+      },
+    }))
+
+    const bridge = EmailBridge.getInstance()
+    await (bridge as any).processEmail(
+      createMockEmail({
+        from: 'customer@example.com',
+        subject: 'Order status',
+      })
+    )
+
+    expect(((globalThis as any).window as any).dispatchEvent).not.toHaveBeenCalled()
+  })
+
+  it('dispatches inbound emails into the agent pipeline when auto-reply is enabled', async () => {
+    useEmailStore.setState((state) => ({
+      config: {
+        ...state.config,
+        autoReplyMode: true,
+      },
+    }))
+
+    const bridge = EmailBridge.getInstance()
+    await (bridge as any).processEmail(
+      createMockEmail({
+        from: 'customer@example.com',
+        subject: 'Order status',
+      })
+    )
+
+    const windowMock = (globalThis as any).window as any
+    expect(windowMock.dispatchEvent).toHaveBeenCalledTimes(1)
+    const event = windowMock.dispatchEvent.mock.calls[0][0]
+    expect(event.type).toBe('app:submit-message')
+    expect(event.detail.content).toContain('📧 **Email** (customer@example.com): Order status')
+  })
+
+  it('uses the production hook dispatch path and preserves the inbound email payload', () => {
+    useEmailStore.setState((state) => ({
+      config: {
+        ...state.config,
+        autoReplyMode: true,
+      },
+    }))
+    const email = createMockEmail({
+      from: 'billing@example.com',
+      subject: 'Refund request',
+      body: 'Please refund order 123.',
+    })
+
+    expect(dispatchInboundEmailToAgent(email)).toBe(true)
+
+    const windowMock = (globalThis as any).window as any
+    const event = windowMock.dispatchEvent.mock.calls[0][0]
+    expect(event.detail.emailMessage).toBe(email)
+    expect(event.detail.content).toContain('Please refund order 123.')
+  })
+
+  it('does not dispatch through the production hook path when auto-reply is disabled', () => {
+    const email = createMockEmail()
+
+    expect(dispatchInboundEmailToAgent(email)).toBe(false)
+    expect(((globalThis as any).window as any).dispatchEvent).not.toHaveBeenCalled()
   })
 })
 

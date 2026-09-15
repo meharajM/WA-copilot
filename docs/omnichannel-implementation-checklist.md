@@ -6,6 +6,22 @@ Implements the architecture plan. Complete phases in order. Keep observe-only as
 
 ## Phase 0 — baseline, access and containment
 
+### September 14 architecture revision — open delivery gates
+
+The completed items below describe the Electron pilot, not completion of the independent runtime. The architecture now selects plain Node `agentd` plus a loopback browser console; Tauri is deferred.
+
+- [ ] Extract service start/stop and injected paths, credentials, native operations and event adapters; remove Electron imports from the daemon dependency graph.
+- [ ] Package/register an independent OS user service with exclusive storage ownership; verify browser close and optional Electron quit do not stop it.
+- [ ] Serve the existing React UI with a typed API at an ephemeral loopback port; implement keychain bearer storage, owner pairing, session authentication, exact Host/Origin checks and CSRF protections.
+- [ ] Remove browser secret persistence and retain explicit picker/notification adapters; test unauthenticated/cross-origin requests and pairing replay.
+- [ ] Prove one draft-only WhatsApp job through the browser UI, including restart and client closure; do not rewrite the UI or workflow first.
+- [ ] Implement the selected public Node HTTPS/SQLite relay before a real Cloud API pilot: signature authentication, durable commit before ack, outbound agent polling, local-commit acknowledgments, TTL/expiry and offline no-send tests.
+- [ ] Record all four hardware states (UI open/closed × model loaded/unloaded), whole-process-tree RAM/CPU/GPU, p95 model/concurrent latency and results against the architecture capacity budget.
+- [x] Replace sent-plus-escalated resolution counts with durable, revision-bound owner outcomes; show N/A without resolutions and keep escalation separate. (Host API and regression test; outcome-review UI remains below.)
+- [ ] Add owner outcome-review UI and measure resolution episodes/attributed provider cost before pricing from cost per resolution.
+
+### Existing pilot baseline
+
 - [x] Record the v1 model: single business, single owner, worker on the owner's machine. (The current Electron pilot is intentionally single-business and single-owner.)
 - [x] Decide whether an HTTPS webhook relay is required. (Keep the desktop pilot localhost-only; production Cloud/Meta/X webhooks require an external authenticated HTTPS relay, which is outside this Electron process.)
 - [x] Record whether this is our account, a desktop product for customer-owned accounts, or a hosted service. (Current boundary: desktop product for one customer-owned business account; not a hosted or multi-tenant service.)

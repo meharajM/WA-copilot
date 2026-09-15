@@ -235,6 +235,7 @@ const electronAPI = {
         listDeliveryHistory: (limit?: number) => ipcRenderer.invoke('autonomy:list-delivery-history', limit ?? 50),
         listDecisionEvidence: (limit?: number) => ipcRenderer.invoke('autonomy:list-decision-evidence', limit ?? 50),
         reviewDecision: (inboundId: string, label: string, notes?: string) => ipcRenderer.invoke('autonomy:review-decision', inboundId, label, notes ?? ''),
+        recordConversationOutcome: (jid: string, revision: number, outcome: string, evidence: string) => ipcRenderer.invoke('autonomy:record-conversation-outcome', jid, revision, outcome, evidence),
         usageHistory: (days?: number) => ipcRenderer.invoke('autonomy:usage-history', days ?? 30),
         channelUsage: (days?: number) => ipcRenderer.invoke('autonomy:channel-usage', days ?? 1),
         approveDraft: (inboundId: string) => ipcRenderer.invoke('autonomy:approve-draft', inboundId),

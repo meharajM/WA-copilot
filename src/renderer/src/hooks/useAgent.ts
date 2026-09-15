@@ -69,6 +69,147 @@ export interface UseAgentReturn {
     ) => Promise<void>;
 }
 
+interface EmailToolCallLike {
+    name?: unknown;
+    function?: { name?: unknown };
+    result?: unknown;
+}
+
+function isHandledEmailSendResult(result: unknown): boolean {
+    if (result && typeof result === 'object') {
+        const record = result as Record<string, unknown>;
+        return record.success === true
+            || record.sent === true
+            || record.status === 'sent'
+            || record.status === 'success'
+            || record.status === 'draft_created';
+    }
+
+    if (typeof result !== 'string' || !result.trim()) return false;
+
+    try {
+        return isHandledEmailSendResult(JSON.parse(result));
+    } catch {
+        return /email sent successfully|draft created successfully/i.test(result);
+    }
+}
+
+export function hasHandledEmailSendToolCall(toolCalls: unknown): boolean {
+    if (!Array.isArray(toolCalls)) return false;
+
+    return toolCalls.some((call) => {
+        if (!call || typeof call !== 'object') return false;
+        const typedCall = call as EmailToolCallLike;
+        const isEmailSend = typedCall.name === 'email_send_message'
+            || typedCall.function?.name === 'email_send_message';
+        return isEmailSend && isHandledEmailSendResult(typedCall.result);
+    });
+}
+
+export const LOW_CONFIDENCE_EMAIL_ACKNOWLEDGEMENT =
+    'Thanks for your message. We have received it and a member of our team will review it and follow up.';
+
+interface EmailPostResponseDependencies {
+    send: (payload: {
+        to: string;
+        subject: string;
+        body: string;
+        inReplyTo?: string;
+        references?: string;
+        accountName?: string;
+    }) => Promise<{ success: boolean; error?: string }>;
+    addDraft: (draft: ReturnType<typeof createDraftResponse>) => void;
+    addReviewNotice?: (content: string) => void;
+}
+
+interface HandleEmailPostResponseInput {
+    responseText: string;
+    inboundEmailMessage: EmailMessage;
+    decision: ReturnType<typeof evaluateEmailPolicy>;
+    draftMode: boolean;
+    accountName?: string;
+    emailSendHandledByAgent: boolean;
+}
+
+async function attemptEmailSend(
+    send: EmailPostResponseDependencies['send'],
+    payload: Parameters<EmailPostResponseDependencies['send']>[0]
+): Promise<{ success: boolean; error?: string }> {
+    try {
+        return await send(payload);
+    } catch (error) {
+        return {
+            success: false,
+            error: error instanceof Error ? error.message : String(error),
+        };
+    }
+}
+
+export async function handleEmailPostResponse(
+    input: HandleEmailPostResponseInput,
+    dependencies: EmailPostResponseDependencies
+): Promise<'skipped' | 'drafted' | 'acknowledged' | 'acknowledgement_failed' | 'sent' | 'send_failed_drafted'> {
+    if (input.emailSendHandledByAgent || !input.responseText.trim()) return 'skipped';
+
+    const { inboundEmailMessage, decision } = input;
+    const originalEmail = {
+        from: inboundEmailMessage.from,
+        subject: inboundEmailMessage.subject,
+        to: inboundEmailMessage.from,
+        inReplyTo: inboundEmailMessage.messageId,
+        references: inboundEmailMessage.references || inboundEmailMessage.messageId,
+        accountName: input.accountName || 'default',
+    };
+    const outboundBase = {
+        to: inboundEmailMessage.from,
+        subject: `Re: ${normalizeSubject(inboundEmailMessage.subject || '(No Subject)')}`,
+        inReplyTo: originalEmail.inReplyTo,
+        references: originalEmail.references,
+        accountName: originalEmail.accountName,
+    };
+
+    if (decision.action === 'escalate' && !decision.hasSensitiveTopic) {
+        const acknowledgement = await attemptEmailSend(dependencies.send, {
+            ...outboundBase,
+            body: LOW_CONFIDENCE_EMAIL_ACKNOWLEDGEMENT,
+        });
+        const reviewDecision = acknowledgement.success
+            ? decision
+            : {
+                ...decision,
+                rationale: `${decision.rationale} Neutral acknowledgement failed (${acknowledgement.error || 'unknown error'}); owner reply required.`,
+            };
+
+        dependencies.addDraft(createDraftResponse(input.responseText, reviewDecision, originalEmail));
+        dependencies.addReviewNotice?.(
+            acknowledgement.success
+                ? 'Low-confidence email acknowledged; response escalated for owner review in Drafts.'
+                : 'Email acknowledgement failed; response escalated for owner review in Drafts.'
+        );
+        return acknowledgement.success ? 'acknowledged' : 'acknowledgement_failed';
+    }
+
+    if (input.draftMode || decision.action !== 'send') {
+        dependencies.addDraft(createDraftResponse(input.responseText, decision, originalEmail));
+        dependencies.addReviewNotice?.('Email response drafted for review in Drafts panel.');
+        return 'drafted';
+    }
+
+    const sendResult = await attemptEmailSend(dependencies.send, {
+        ...outboundBase,
+        body: input.responseText,
+    });
+    if (sendResult.success) return 'sent';
+
+    const fallbackDecision = {
+        ...decision,
+        action: 'draft' as const,
+        rationale: `Direct send failed (${sendResult.error || 'unknown error'}). Draft created for review.`,
+    };
+    dependencies.addDraft(createDraftResponse(input.responseText, fallbackDecision, originalEmail));
+    return 'send_failed_drafted';
+}
+
 /**
  * Encapsulates all agent execution logic, extracted from App.tsx.
  *
@@ -171,6 +312,7 @@ export function useAgent(): UseAgentReturn {
             const cleanFrom = normalizeWhatsAppId(fromJid) ?? fromJid ?? 'unknown';
             const isAdmin = isSameWhatsAppIdentity(fromJid, adminJid);
             const isEmailFlow = !!inboundEmailMessage;
+            let emailSendHandledByAgent = false;
 
             // 1.5 Handle Customer Multimedia Rejection
             if (multimodalWhatsAppMessage && !isAdmin && multimodalWhatsAppMessage.type !== 'text') {
@@ -258,6 +400,10 @@ export function useAgent(): UseAgentReturn {
                 if (isEmailFlow) {
                     reconstructedHistory.push(getEmailSystemPrompt(persona as { name: string, tone: string }));
                     reconstructedHistory.push(getConfidenceGatePrompt());
+                    reconstructedHistory.push({
+                        role: 'system',
+                        content: 'For this inbound email, return response text only. Do not call email_send_message or email_create_draft; the host applies email policy, threading, acknowledgement, and review handling.',
+                    });
                 }
 
                 // ── Step 4: Instantiate the agent ──────────────────────────────────
@@ -275,6 +421,13 @@ export function useAgent(): UseAgentReturn {
                          * Always writes to `originSessionId` — never the currently-active session.
                          */
                         onMessage: (msg: LLMMessage) => {
+                            if (isEmailFlow && (
+                                hasHandledEmailSendToolCall(msg.tool_calls)
+                                || hasHandledEmailSendToolCall((msg as LLMMessage & { toolCalls?: unknown }).toolCalls)
+                            )) {
+                                emailSendHandledByAgent = true;
+                            }
+
                             // Do not add raw tool execution results as standalone chat bubbles.
                             if (msg.role === "tool") return undefined;
 
@@ -314,6 +467,12 @@ export function useAgent(): UseAgentReturn {
                          * Always targets `originSessionId`.
                          */
                         onMessageUpdate: (id: string, updates: Partial<LLMMessage>) => {
+                            if (isEmailFlow && hasHandledEmailSendToolCall(
+                                (updates as Partial<LLMMessage> & { toolCalls?: unknown }).toolCalls
+                            )) {
+                                emailSendHandledByAgent = true;
+                            }
+
                             const { updateSessionMessage } = useChatStore.getState();
                             const storeUpdates: Partial<import('../stores/chatStore').Message> = {
                                 ...updates as Partial<import('../stores/chatStore').Message>
@@ -441,76 +600,45 @@ export function useAgent(): UseAgentReturn {
                                 .join('\n')
                             : '';
 
-                    if (responseText.trim()) {
-                        const session = useChatStore.getState().sessions.find((s) => s.id === originSessionId);
-                        const toolCallCount = session?.messages
-                            .filter((m) => m.role === 'assistant')
-                            .reduce((count, m) => count + (m.toolCalls?.length || 0), 0) || 0;
-                        const usedRag = session?.messages.some((m) =>
-                            (m.toolCalls || []).some((t) => t.name === 'rag_search')
-                        ) || false;
+                    const session = useChatStore.getState().sessions.find((s) => s.id === originSessionId);
+                    const toolCallCount = session?.messages
+                        .filter((m) => m.role === 'assistant')
+                        .reduce((count, m) => count + (m.toolCalls?.length || 0), 0) || 0;
+                    const usedRag = session?.messages.some((m) =>
+                        (m.toolCalls || []).some((t) => t.name === 'rag_search')
+                    ) || false;
+                    const decision = evaluateEmailPolicy({
+                        responseText,
+                        originalContent: inboundEmailMessage.body || content,
+                        usedRag,
+                        hasUncertaintyMarkers: false,
+                        toolCallCount,
+                        citesKnowledgeBase: usedRag,
+                    });
 
-                        const decision = evaluateEmailPolicy({
+                    await handleEmailPostResponse(
+                        {
                             responseText,
-                            originalContent: inboundEmailMessage.body || content,
-                            usedRag,
-                            hasUncertaintyMarkers: false,
-                            toolCallCount,
-                            citesKnowledgeBase: usedRag,
-                        });
-
-                        const shouldDraft = emailConfig.draftMode || decision.action !== 'send';
-                        if (shouldDraft) {
-                            const draft = createDraftResponse(
-                                responseText,
-                                decision,
-                                {
-                                    from: inboundEmailMessage.from,
-                                    subject: inboundEmailMessage.subject,
-                                    to: inboundEmailMessage.from,
-                                    inReplyTo: inboundEmailMessage.messageId,
-                                    references: inboundEmailMessage.references || inboundEmailMessage.messageId,
-                                }
-                            );
-                            useDraftStore.getState().addDraft(draft);
-
-                            useChatStore.getState().addSessionMessage(originSessionId, {
-                                role: 'assistant',
-                                content: 'Email response drafted for review in Drafts panel.',
-                                actions: [
-                                    { type: 'custom', label: 'Open Drafts', payload: { action: 'open_drafts' } }
-                                ],
-                            });
-                        } else {
-                            const sendResult = await electron.email.send({
-                                to: inboundEmailMessage.from,
-                                subject: `Re: ${normalizeSubject(inboundEmailMessage.subject || '(No Subject)')}`,
-                                body: responseText,
-                                inReplyTo: inboundEmailMessage.messageId,
-                                references: inboundEmailMessage.references || inboundEmailMessage.messageId,
-                                accountName: emailConfig.accountName || 'default',
-                            });
-                            if (!sendResult.success) {
-                                const fallbackDecision = {
-                                    ...decision,
-                                    action: 'draft' as const,
-                                    rationale: `Direct send failed (${sendResult.error || 'unknown error'}). Draft created for review.`,
-                                };
-                                const fallbackDraft = createDraftResponse(
-                                    responseText,
-                                    fallbackDecision,
-                                    {
-                                        from: inboundEmailMessage.from,
-                                        subject: inboundEmailMessage.subject,
-                                        to: inboundEmailMessage.from,
-                                        inReplyTo: inboundEmailMessage.messageId,
-                                        references: inboundEmailMessage.references || inboundEmailMessage.messageId,
-                                    }
-                                );
-                                useDraftStore.getState().addDraft(fallbackDraft);
-                            }
+                            inboundEmailMessage,
+                            decision,
+                            draftMode: emailConfig.draftMode,
+                            accountName: emailConfig.accountName,
+                            emailSendHandledByAgent,
+                        },
+                        {
+                            send: (payload) => electron.email.send(payload),
+                            addDraft: (draft) => useDraftStore.getState().addDraft(draft),
+                            addReviewNotice: (notice) => {
+                                useChatStore.getState().addSessionMessage(originSessionId, {
+                                    role: 'assistant',
+                                    content: notice,
+                                    actions: [
+                                        { type: 'custom', label: 'Open Drafts', payload: { action: 'open_drafts' } }
+                                    ],
+                                });
+                            },
                         }
-                    }
+                    );
                 }
 
             } catch (error) {

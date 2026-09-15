@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react'
-import { HardDrive, Server, RefreshCw } from 'lucide-react'
+import { Database, HardDrive, Server, RefreshCw } from 'lucide-react'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { MemoryInspector } from './memory/MemoryInspector'
 
@@ -39,10 +39,8 @@ export function MemoryPreferencesPanel() {
         loadStats()
     }, [])
 
-    const handleBackendChange = async (backend: 'server-memory') => {
+    const handleBackendChange = async (backend: 'sqlite' | 'server-memory') => {
         await settings.setMemoryBackend(backend)
-        // Refresh stats to see new backend state
-        setTimeout(loadStats, 500)
     }
 
     const formatBytes = (bytes: number) => {
@@ -70,6 +68,23 @@ export function MemoryPreferencesPanel() {
                 <label className="block text-sm font-medium mb-4 text-[var(--color-text-primary)]">Storage Backend</label>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <button
+                        onClick={() => handleBackendChange('sqlite')}
+                        className={`flex flex-col items-start p-4 rounded-xl border transition-all ${
+                            settings.memoryBackend === 'sqlite'
+                                ? 'bg-purple-500/10 border-purple-500/50'
+                                : 'bg-[var(--color-surface)] border-transparent hover:bg-[var(--color-border)]'
+                        }`}
+                    >
+                        <div className="flex items-center gap-2 mb-2">
+                            <Database className={`w-5 h-5 ${settings.memoryBackend === 'sqlite' ? 'text-purple-400' : 'text-[var(--color-text-muted)]'}`} />
+                            <span className="font-bold text-[var(--color-text-primary)]">Local SQLite</span>
+                        </div>
+                        <p className="text-xs text-left text-[var(--color-text-dim)]">
+                            Recommended local backend with durable, indexed storage.
+                        </p>
+                    </button>
+
+                    <button
                         onClick={() => handleBackendChange('server-memory')}
                         className={`flex flex-col items-start p-4 rounded-xl border transition-all ${
                             settings.memoryBackend === 'server-memory'
@@ -82,20 +97,13 @@ export function MemoryPreferencesPanel() {
                             <span className="font-bold text-[var(--color-text-primary)]">Server Memory</span>
                         </div>
                         <p className="text-xs text-left text-[var(--color-text-dim)]">
-                            Local JSON-based storage. Fast and simple. Best for personal use and standard workloads.
+                            Compatibility backend for existing JSON-based memory stores.
                         </p>
                     </button>
-
-                    <div className="flex flex-col items-start p-4 rounded-xl border border-dashed border-[var(--color-border)] bg-[var(--color-surface)] opacity-70">
-                        <div className="flex items-center gap-2 mb-2">
-                            <HardDrive className="w-5 h-5 text-[var(--color-text-muted)]" />
-                            <span className="font-bold text-[var(--color-text-primary)]">Memento MCP (Neo4j) — unavailable</span>
-                        </div>
-                        <p className="text-xs text-left text-[var(--color-text-dim)]">
-                            The adapter is not implemented. SQLite fallback is used if an old setting selects it.
-                        </p>
-                    </div>
                 </div>
+                <p className="mt-3 text-xs text-[var(--color-text-dim)]">
+                    Backend changes take effect after restarting the app. Memento MCP is hidden until its adapter is implemented.
+                </p>
             </div>
 
             {/* Current Stats */}

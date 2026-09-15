@@ -71,8 +71,8 @@ interface SettingsState {
     setFileSystemSafeMode: (enabled: boolean) => void
 
     // Memory Settings
-    memoryBackend: 'server-memory'
-    setMemoryBackend: (backend: 'server-memory') => void
+    memoryBackend: 'sqlite' | 'server-memory'
+    setMemoryBackend: (backend: 'sqlite' | 'server-memory') => void
 
     resetToDefaults: () => void
 
@@ -110,7 +110,7 @@ const defaultSettings = {
     playwrightBrowser: 'auto' as PlaywrightBrowserType, // Auto-detect based on OS
     playwrightHeadless: false, // Default to headed for user visibility
     fileSystemSafeMode: true, // Default to safe mode (shadow writes)
-    memoryBackend: 'server-memory' as const,
+    memoryBackend: 'sqlite' as 'sqlite' | 'server-memory',
     activeUserId: null,
     isSyncing: false,
     lastSyncTime: 0,
@@ -315,6 +315,10 @@ export const useSettingsStore = create<SettingsState>()(
             // Force offlineSpeech to true in Electron after rehydration
             onRehydrateStorage: () => (state) => {
                 if (state && window.electron) {
+                    if ((state.memoryBackend as string) === 'memento-mcp') {
+                        console.warn('[Settings] Memento MCP is unavailable; reverting memory backend to SQLite')
+                        void state.setMemoryBackend('sqlite')
+                    }
                     // In Electron, always use offline speech (native Vosk)
                     if (!state.offlineSpeech) {
                         console.log('[Settings] Forcing offlineSpeech=true in Electron environment')
