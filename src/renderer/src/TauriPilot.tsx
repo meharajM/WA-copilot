@@ -21,6 +21,7 @@ export default function TauriPilot() {
 
   useEffect(() => {
     let disposed = false
+    let receivedHealthEvent = false
     void tauriNativeBridge.appVersion().then((value) => {
       if (!disposed) setVersion(value)
     }).catch((reason) => {
@@ -30,10 +31,13 @@ export default function TauriPilot() {
       }
     })
     void tauriNativeBridge.health().then((value) => {
-      if (!disposed) setHealth(value)
+      if (!disposed && !receivedHealthEvent) setHealth(value)
     })
     const unsubscribe = tauriNativeBridge.onAgentdHealth((value) => {
-      if (!disposed) setHealth(value)
+      if (!disposed) {
+        receivedHealthEvent = true
+        setHealth(value)
+      }
     }, (subscriptionError) => {
       if (!disposed) setError(subscriptionError)
     })

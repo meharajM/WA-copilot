@@ -178,7 +178,7 @@ export const createTauriNativeBridge = (
       if (active) unlisten = cleanup
       else cleanup()
     }).catch(() => {
-      onError?.('Agentd health event subscription unavailable')
+      if (active) onError?.('Agentd health event subscription unavailable')
     })
 
     return () => {

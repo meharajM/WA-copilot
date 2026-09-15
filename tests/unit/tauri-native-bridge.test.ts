@@ -40,6 +40,25 @@ describe('tauri native bridge', () => {
     await expect(bridge.hasCredential('openai_api_key')).resolves.toMatchObject({ success: false, exists: false })
   })
 
+  it('rejects credential keys outside the runtime allowlist', async () => {
+    const invoke = vi.fn()
+    const bridge = createTauriNativeBridge({ invoke, listen: vi.fn(async () => () => undefined) })
+
+    await expect(bridge.setCredential('not_allowlisted' as never, 'secret')).resolves.toMatchObject({
+      success: false,
+      error: 'Credential key is not available in this Tauri host',
+    })
+    await expect(bridge.hasCredential('not_allowlisted' as never)).resolves.toMatchObject({
+      success: false,
+      exists: false,
+    })
+    await expect(bridge.deleteCredential('not_allowlisted' as never)).resolves.toMatchObject({
+      success: false,
+      error: 'Credential key is not available in this Tauri host',
+    })
+    expect(invoke).not.toHaveBeenCalled()
+  })
+
   it('rejects credential existence responses without a boolean exists field', async () => {
     const bridge = createTauriNativeBridge({
       invoke: vi.fn(async () => ({ success: true })),
@@ -71,6 +90,18 @@ describe('tauri native bridge', () => {
 
     bridge.onAgentdHealth(vi.fn(), onError)
     await vi.waitFor(() => expect(onError).toHaveBeenCalledWith('Agentd health event subscription unavailable'))
+  })
+
+  it('does not report a listener registration failure after unsubscribe', async () => {
+    const listen = vi.fn(async () => { throw new Error('registration failed') })
+    const onError = vi.fn()
+    const bridge = createTauriNativeBridge({ invoke: vi.fn(), listen })
+
+    const unsubscribe = bridge.onAgentdHealth(vi.fn(), onError)
+    unsubscribe()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(onError).not.toHaveBeenCalled()
   })
 
   it('cleans up an async listener that resolves after unsubscribe', async () => {

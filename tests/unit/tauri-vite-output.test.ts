@@ -1,4 +1,5 @@
-import { resolve, relative } from 'node:path'
+import { resolve, relative, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import config from '../../vite.tauri.config'
 
@@ -8,6 +9,9 @@ describe('Tauri Vite output', () => {
     const outDir = config.build?.outDir as string
     const input = (config.build?.rollupOptions?.input as Record<string, string>).index
 
-    expect(resolve(outDir, relative(root, input))).toBe(resolve(outDir, 'tauri.html'))
+    const htmlOutput = resolve(outDir, relative(root, input))
+    const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
+
+    expect(htmlOutput).toBe(resolve(projectRoot, 'dist/tauri.html'))
   })
 })
