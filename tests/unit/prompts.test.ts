@@ -9,7 +9,8 @@ vi.mock('../../src/renderer/src/stores/whatsappStore', () => ({
     useWhatsAppStore: {
         getState: vi.fn().mockReturnValue({
             connectionState: { status: 'disconnected' },
-            whatsappEnabled: false
+            whatsappEnabled: false,
+            businessBotMode: false
         })
     }
 }))
@@ -24,6 +25,7 @@ vi.mock('../../src/renderer/src/stores/personaStore', () => ({
 
 import { buildSystemPrompt } from '../../src/renderer/src/lib/llm/prompts'
 import { usePersonaStore } from '../../src/renderer/src/stores/personaStore'
+import { useWhatsAppStore } from '../../src/renderer/src/stores/whatsappStore'
 
 describe('System Prompt Generation', () => {
     beforeEach(() => {
@@ -81,5 +83,33 @@ describe('System Prompt Generation', () => {
         expect(prompt).toContain('You are a focused sub-agent executing a delegated task')
         expect(prompt).not.toContain('AIConsumerAgent')
         expect(prompt).not.toContain('WhatsApp Support Agent')
+    })
+
+    it('uses the actual markdown conversion tool name for multimodal inputs', async () => {
+        const prompt = await buildSystemPrompt([{ name: 'convert_to_markdown', description: 'desc' } as any])
+
+        expect(prompt).toContain('convert_to_markdown')
+        expect(prompt).not.toContain('mcp_markitdown_convert_to_markdown')
+    })
+
+    it('does not contradict attachment file URI instructions', async () => {
+        const prompt = await buildSystemPrompt([{ name: 'convert_to_markdown', description: 'desc' } as any])
+
+        expect(prompt).toContain('copy that exact `uri` value')
+        expect(prompt).toContain('It may be a `file://` URI')
+        expect(prompt).toContain('Do not add a `file://` prefix to fs_* tool paths')
+    })
+
+    it('uses business WhatsApp instructions when autonomous bot mode is enabled', async () => {
+        vi.mocked(useWhatsAppStore.getState).mockReturnValue({
+            connectionState: { status: 'connected' },
+            whatsappEnabled: false,
+            businessBotMode: true
+        } as any)
+
+        const prompt = await buildSystemPrompt([{ name: 'rag_search', description: 'desc' } as any])
+
+        expect(prompt).toContain('WHATSAPP BUSINESS AGENT ACTIVE')
+        expect(prompt).toContain('STRICT BUSINESS MODE')
     })
 })

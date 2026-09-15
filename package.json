@@ -1,6 +1,6 @@
 {
     "name": "aica",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "type": "module",
     "description": "Self-hosted WhatsApp AI agent for privacy-first business automation",
     "main": "./out/main/index.js",
@@ -27,9 +27,17 @@
         "test": "vitest run",
         "test:unit": "vitest run tests/unit",
         "test:integration": "vitest run tests/integration",
+        "test:agentd": "node --test tests/unit/agentd.test.cjs",
+        "agentd": "node scripts/agentd.cjs",
         "test:live": "LIVE_LLM_TESTS=true vitest run tests/live",
         "test:robust": "npm run test:unit && npm run test:integration && npm run test:live",
         "test:watch": "vitest",
+        "test:e2e": "npm run test:playwright",
+        "test:mock": "node tests/e2e/no-suite.cjs mock",
+        "test:playwright": "npm run build && node tests/e2e/electron-smoke.cjs",
+        "test:e2e:packaged:mac": "npm run build:mac:qa && WA_COPILOT_E2E_EXECUTABLE=dist/qa-mac/mac-arm64/AIConsumerAgent.app/Contents/MacOS/AIConsumerAgent node tests/e2e/electron-smoke.cjs",
+        "test:speech": "node tests/e2e/no-suite.cjs speech",
+        "release:gate": "bash scripts/release-gate.sh",
         "clean": "rm -rf out dist",
         "clean:native:build": "rm -rf node_modules/better-sqlite3/build",
         "clean:state": "rm -rf ~/Library/Application\\ Support/WA-Co-Pilot",
@@ -47,6 +55,7 @@
         "rebuild:linux:intel": "npm run prebuild:electron && npm run clean && npm run build && electron-builder --linux --x64",
         "rebuild:linux:arm": "npm run prebuild:electron && npm run clean && npm run build && electron-builder --linux --arm64",
         "build:mac": "npm run prebuild:electron && npm run build && electron-builder --mac",
+        "build:mac:qa": "bash scripts/build-mac-qa.sh",
         "build:mac:intel": "npm run prebuild:electron && npm run build && electron-builder --mac --x64",
         "build:mac:arm": "npm run prebuild:electron && npm run build && electron-builder --mac --arm64",
         "build:mac:universal": "npm run prebuild:electron && npm run clean:native:build && npm run build && electron-builder --mac --universal",
@@ -149,7 +158,10 @@
                 "zip"
             ],
             "category": "public.app-category.productivity",
-            "icon": "build/icon.png"
+            "icon": "build/icon.png",
+            "hardenedRuntime": true,
+            "entitlements": "build/entitlements.mac.plist",
+            "entitlementsInherit": "build/entitlements.mac.inherit.plist"
         },
         "win": {
             "target": [

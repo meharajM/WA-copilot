@@ -179,8 +179,8 @@ export class ServerMemoryAdapter implements UnifiedMemoryBackend {
     }
 
     // Try to find via search
-    const results = await this.search(id, { limit: 1 })
-    return results.length > 0 ? results[0] : null
+    const results = await this.search(id, { limit: 100 })
+    return results.find((entity) => entity.id === id) || null
   }
 
   /**
@@ -194,18 +194,26 @@ export class ServerMemoryAdapter implements UnifiedMemoryBackend {
       throw new Error(`Entity not found: ${id}`)
     }
 
-    // Add observations if provided
-    if (updates.observations) {
-      await this.callTool('add_observations', {
-        entityName: id,
-        observations: updates.observations
+    const existingObservations = existing.observations || []
+    const addedObservations = (updates.observations || []).filter(
+      (observation, index, observations) =>
+        !existingObservations.includes(observation) && observations.indexOf(observation) === index
+    )
+
+    if (addedObservations.length > 0) {
+      const result = await this.callTool('add_observations', {
+        observations: [{ entityName: existing.name, contents: addedObservations }]
       })
+      if (result.error) {
+        throw new Error(`Failed to add observations: ${result.error}`)
+      }
     }
 
     const updated: Entity = {
       ...existing,
       ...updates,
       id: existing.id, // Don't allow ID changes
+      observations: [...existingObservations, ...addedObservations],
       updatedAt: new Date().toISOString()
     }
 

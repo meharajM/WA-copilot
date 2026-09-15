@@ -74,6 +74,10 @@
         <h2>1. The Application Interface</h2>
         <p>The sidebar of AIConsumerAgent provides access to several specialized views. Understanding the purpose of each "tab" is essential for effective testing.</p>
 
+        <div class="alert-info">
+            <b>QA Contract</b>: For current pass/fail expectations, treat <code>docs/app-behavior.md</code> as the primary source of truth if this manual and the running app disagree.
+        </div>
+
         <div class="tab-box">
             <div class="tab-icon">📊</div>
             <div class="tab-info">
@@ -86,7 +90,7 @@
             <div class="tab-icon">💬</div>
             <div class="tab-info">
                 <div class="tab-title">All Chats (Conversations)</div>
-                <div class="tab-desc">A unified stream of active WhatsApp sessions. Select a chat to view the AI's internal "Thoughts" and verify if it is using your knowledge base correctly.</div>
+                <div class="tab-desc">A unified stream of active sessions across channels such as WhatsApp and email. Select a chat to inspect the latest messages, agent output, and tool activity in the correct session.</div>
             </div>
         </div>
 
@@ -94,7 +98,7 @@
             <div class="tab-icon">👥</div>
             <div class="tab-info">
                 <div class="tab-title">Lead Directory (CRM)</div>
-                <div class="tab-desc">A CRM-lite view. It auto-extracts **Customer Names**, **Phone Numbers**, and **Leads Status**. Use this to track conversions from casual chat to business lead.</div>
+                <div class="tab-desc">A CRM-lite view of contact-linked sessions. It surfaces session titles, contact identifiers, channel badges, timestamps, and status for quick triage, but it is not a full structured CRM extraction system.</div>
             </div>
         </div>
 
@@ -102,7 +106,15 @@
             <div class="tab-icon">🧠</div>
             <div class="tab-info">
                 <div class="tab-title">Brain View (Advanced)</div>
-                <div class="tab-desc">For technical audit. View the **Memory Logs** (what the agent has learned about users) and **RAG Indexed Files** (verify if your PDFs were correctly converted).</div>
+                <div class="tab-desc">For technical audit of indexed knowledge. Use it to verify uploaded documents and other sources were ingested. Memory backend stats and the memory inspector live under Settings → Knowledge Base.</div>
+            </div>
+        </div>
+
+        <div class="tab-box">
+            <div class="tab-icon">📨</div>
+            <div class="tab-info">
+                <div class="tab-title">Email Drafts</div>
+                <div class="tab-desc">Review pending email drafts, escalations, and recent email send history. This is the main surface for human approval when email policy does not allow direct sending.</div>
             </div>
         </div>
     </section>
@@ -140,7 +152,7 @@
         </div>
 
         <div class="alert-info">
-            <b>🔑 Important</b>: If the "Verify Connection" button fails, ensure your OpenRouter account has at least $1.00 in credits, as the bot performs a small health check on connection.
+            <b>🔑 Important</b>: If the "Test Connection &amp; Fetch Models" button fails, ensure your OpenRouter account has available credits, because the app performs a small health check on connection.
         </div>
     </section>
 
@@ -166,7 +178,7 @@
             <div class="connector"></div>
             <div class="usage-card">
                 <div class="usage-card-icon">4️⃣</div>
-                <div class="usage-card-text"><b>Go Live</b>: Enable "Bot Mode" switch. The agent is now autonomous.</div>
+                <div class="usage-card-text"><b>Go Live</b>: After pairing WhatsApp, enable <b>Response Permission</b> to allow sending and optionally enable <b>Autonomous Bot Mode</b> for automatic handling.</div>
             </div>
             <div class="connector"></div>
             <div class="usage-card" style="border: 2px solid var(--accent); background: #EFF6FF;">

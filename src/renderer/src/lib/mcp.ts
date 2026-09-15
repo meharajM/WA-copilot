@@ -1,8 +1,8 @@
 import { useMcpStore, MCPServer, MCPTool } from "../stores/mcpStore";
 import electron from "./electron";
-import { useWhatsAppStore } from "../stores/whatsappStore";
 import { useDraftStore } from "../stores/draftStore";
 import { createDraftResponse } from "./email-policy";
+import { enforceToolCallPolicy } from "./tool-policy";
 
 /// <reference path="../env.d.ts" />
 
@@ -136,7 +136,7 @@ export async function executeToolCall(
   args: Record<string, unknown> | null | undefined
 ): Promise<{ result: unknown; error?: string }> {
   const startTime = Date.now();
-  const safeArgs = ensureRecord(args);
+  let safeArgs = ensureRecord(args);
   const sanitizedArgs = sanitizeArgsForLogging(safeArgs);
   const MAX_RETRIES = 1;
 
@@ -232,6 +232,19 @@ export async function executeToolCall(
     }
   }
 
+  const policy = enforceToolCallPolicy(toolName, safeArgs);
+  if (policy.action === "handled") {
+    logMcpRenderer("warn", "Tool call handled by side-effect policy", {
+      operation: "executeToolCall",
+      toolName,
+      result: policy.response.result,
+      error: policy.response.error,
+    });
+    return policy.response;
+  }
+  if (policy.args) {
+    safeArgs = policy.args;
+  }
 
   const server = findServerForTool(toolName);
   if (!server) {
@@ -250,8 +263,7 @@ export async function executeToolCall(
     if (toolName.startsWith('whatsapp_')) {
       logMcpRenderer("info", "Executing whatsapp tool via direct IPC fallback", { tool: toolName });
       try {
-        // Automatically resolve the target number
-        const targetJid = (safeArgs?.to as string) || useWhatsAppStore.getState().connectionState.phoneNumber;
+        const targetJid = safeArgs?.to as string | undefined;
         if (!targetJid) {
           return { result: null, error: "Missing 'to' parameter: Target WhatsApp number could not be resolved automatically." };
         }

@@ -45,7 +45,37 @@ export interface HandoffResult {
     originalGoal: string | null;
 }
 
+type MemoryEntity = {
+    id?: string;
+    name?: string;
+    type?: string;
+    description?: string;
+    observations?: string[];
+    metadata?: Record<string, unknown>;
+    Metadata?: Record<string, unknown>;
+};
+
 // ── Service ────────────────────────────────────────────────────────────────────
+
+function getEntityMetadata(entity: MemoryEntity | null | undefined): Record<string, unknown> {
+    if (!entity) return {};
+    const metadata = entity.metadata ?? entity.Metadata;
+    return metadata && typeof metadata === "object" && !Array.isArray(metadata) ? metadata : {};
+}
+
+function getEntityObservations(entity: MemoryEntity | null | undefined): string[] {
+    return Array.isArray(entity?.observations) ? entity.observations.filter((obs): obs is string => typeof obs === "string") : [];
+}
+
+function getSearchEntities(result: unknown): MemoryEntity[] {
+    if (Array.isArray(result)) return result as MemoryEntity[];
+    if (result && typeof result === "object") {
+        const record = result as { entities?: unknown; nodes?: unknown };
+        if (Array.isArray(record.entities)) return record.entities as MemoryEntity[];
+        if (Array.isArray(record.nodes)) return record.nodes as MemoryEntity[];
+    }
+    return [];
+}
 
 /**
  * Initializes or restores agent execution state in long-term memory.
@@ -71,9 +101,10 @@ export async function initializeSessionState(
         const result = await executeToolCall("memory_read_entity", { name: entityName });
 
         if (result && result.result) {
-            const entity = result.result as any;
-            if (entity.Metadata?.lastCheckpoint) {
-                restoredCheckpoint = entity.Metadata.lastCheckpoint as AgentCheckpoint;
+            const entity = result.result as MemoryEntity;
+            const metadata = getEntityMetadata(entity);
+            if (metadata.lastCheckpoint) {
+                restoredCheckpoint = metadata.lastCheckpoint as AgentCheckpoint;
                 console.log(
                     `[AgentStateService] Restored checkpoint from memory: Step ${restoredCheckpoint?.step}`
                 );
@@ -123,24 +154,23 @@ export async function loadParentContext(
 
         if (!parentState.result) return null;
 
-        const parent = parentState.result as any;
+        const parent = parentState.result as MemoryEntity;
+        const parentMetadata = getEntityMetadata(parent);
         let contextContent = "";
 
         // Load checkpoint summary
-        if (parent.Metadata?.lastCheckpoint) {
-            const checkpoint = parent.Metadata.lastCheckpoint;
+        if (parentMetadata.lastCheckpoint) {
+            const checkpoint = parentMetadata.lastCheckpoint as AgentCheckpoint;
             contextContent += `[Parent Context - Step ${checkpoint.step}]\n${checkpoint.summary}\n\n`;
         }
 
         // Load last 3 observations
-        if (parent.observations && Array.isArray(parent.observations)) {
-            const lastObservations = parent.observations.slice(-3);
-            if (lastObservations.length > 0) {
-                contextContent += `Recent Context:\n`;
-                lastObservations.forEach((obs: string, idx: number) => {
-                    contextContent += `${idx + 1}. ${obs}\n`;
-                });
-            }
+        const lastObservations = getEntityObservations(parent).slice(-3);
+        if (lastObservations.length > 0) {
+            contextContent += `Recent Context:\n`;
+            lastObservations.forEach((obs: string, idx: number) => {
+                contextContent += `${idx + 1}. ${obs}\n`;
+            });
         }
 
         if (!contextContent) return null;
@@ -170,20 +200,18 @@ export async function detectHandoff(sessionId: string | undefined): Promise<Hand
 
     try {
         const handoffCheck = await executeToolCall("memory_search", {
-            query: `handoff ${sessionId}`,
+            query: sessionId,
         });
 
-        if (!handoffCheck.result || typeof handoffCheck.result !== "object") {
+        const entities = getSearchEntities(handoffCheck.result);
+        if (entities.length === 0) {
             return { found: false, checkpoint: null, originalGoal: null };
         }
 
-        const resultData = handoffCheck.result as { entities?: any[] };
-        if (!resultData.entities || !Array.isArray(resultData.entities)) {
-            return { found: false, checkpoint: null, originalGoal: null };
-        }
-
-        const pendingHandoffs = resultData.entities.filter(
-            (e: any) => e.Metadata?.sessionId === sessionId
+        const pendingHandoffs = entities.filter(
+            (entity) =>
+                entity.type === "agent_handoff" &&
+                getEntityMetadata(entity).sessionId === sessionId
         );
 
         if (pendingHandoffs.length === 0) {
@@ -195,16 +223,18 @@ export async function detectHandoff(sessionId: string | undefined): Promise<Hand
 
         // Delete the handoff entity (it's been consumed)
         try {
-            await executeToolCall("memory_delete_entity", { name: handoff.name });
+            await executeToolCall("memory_delete_entity", { id: handoff.id, name: handoff.name });
             console.log(`[AgentStateService] Deleted consumed handoff: ${handoff.name}`);
         } catch (e) {
             console.warn(`[AgentStateService] Failed to delete handoff: ${e}`);
         }
 
+        const handoffMetadata = getEntityMetadata(handoff);
+
         return {
             found: true,
-            checkpoint: handoff.Metadata?.lastCheckpoint || null,
-            originalGoal: handoff.Metadata?.originalGoal || null,
+            checkpoint: (handoffMetadata.lastCheckpoint as AgentCheckpoint | undefined) || null,
+            originalGoal: (handoffMetadata.originalGoal as string | undefined) || null,
         };
     } catch (err) {
         console.warn(`[AgentStateService] Failed to check for handoffs: ${err}`);

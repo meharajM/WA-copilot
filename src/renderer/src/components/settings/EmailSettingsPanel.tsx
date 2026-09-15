@@ -8,9 +8,10 @@
  */
 
 import React, { useEffect, useMemo, useState } from 'react'
-import { useEmailStore, EmailProvider } from '../../stores/emailStore'
+import { useEmailStore, type EmailProvider, type GmailAuthMode } from '../../stores/emailStore'
 import { Card } from '../primitives/Card'
 import electron from '../../lib/electron'
+import { buildEmailRuntimeConfig } from '../../lib/email-runtime'
 import {
   Mail,
   Server,
@@ -99,6 +100,7 @@ export function EmailSettingsPanel() {
     setAutoReplyMode,
     setDraftMode,
     setProvider,
+    setGmailAuthMode,
     setConnectionSettings,
     setPollingInterval,
   } = useEmailStore()
@@ -106,6 +108,7 @@ export function EmailSettingsPanel() {
   const [showAdvanced, setShowAdvanced] = useState(false)
 
   const [localProvider, setLocalProvider] = useState<EmailProvider>(config.provider)
+  const [localGmailAuthMode, setLocalGmailAuthMode] = useState<GmailAuthMode>(config.gmailAuthMode)
   const [localEmail, setLocalEmail] = useState(config.emailAddress)
   const [localAccountName, setLocalAccountName] = useState(config.accountName)
   const [localUserName, setLocalUserName] = useState(config.userName)
@@ -124,18 +127,19 @@ export function EmailSettingsPanel() {
   const [oauthBusy, setOauthBusy] = useState(false)
 
   const readyForAuth = useMemo(() => normalizeEmail(localEmail).includes('@'), [localEmail])
+  const wantsGmailOAuth = localProvider === 'gmail-api' && localGmailAuthMode === 'google-oauth'
   const readyForVerify = useMemo(() => {
-    if (localProvider === 'gmail-api') {
+    if (wantsGmailOAuth) {
       return oauthStatus.signedIn
     }
     return localPassword.trim().length > 0
-  }, [localPassword, localProvider, oauthStatus.signedIn])
-  const isGmailProvider = localProvider === 'gmail-api'
+  }, [localPassword, oauthStatus.signedIn, wantsGmailOAuth])
   const canGoLive = readyForAuth && readyForVerify
   const isVerified = testState.status === 'success' || (config.enabled && connectionState.status === 'connected')
 
   useEffect(() => {
     setLocalProvider(config.provider)
+    setLocalGmailAuthMode(config.gmailAuthMode)
     setLocalEmail(config.emailAddress)
     setLocalAccountName(config.accountName)
     setLocalUserName(config.userName)
@@ -155,6 +159,9 @@ export function EmailSettingsPanel() {
 
   const applyProvider = (provider: EmailProvider) => {
     setLocalProvider(provider)
+    if (provider === 'gmail-api') {
+      setLocalGmailAuthMode('app-password')
+    }
     const preset = PROVIDER_PRESETS[provider]
     setLocalImapHost(preset.imapHost)
     setLocalImapPort(preset.imapPort)
@@ -168,6 +175,7 @@ export function EmailSettingsPanel() {
     const accountName = localAccountName.trim() || 'default'
 
     setProvider(localProvider)
+    setGmailAuthMode(localGmailAuthMode)
     setConnectionSettings({
       accountName,
       emailAddress,
@@ -212,39 +220,32 @@ export function EmailSettingsPanel() {
     const userName = localUserName.trim() || emailAddress
     const accountName = localAccountName.trim() || 'default'
 
-    return {
+    return buildEmailRuntimeConfig({
       provider: localProvider,
-      command: 'uvx',
-      args: ['mcp-email-server==0.6.2', 'stdio'],
-      pollingIntervalSeconds: Math.max(30, localPollingInterval),
+      gmailAuthMode: localGmailAuthMode,
+      oauthSignedIn: oauthStatus.signedIn,
+      emailAddress,
+      userName,
       accountName,
+      imapHost: localImapHost.trim(),
+      imapPort: localImapPort,
+      smtpHost: localSmtpHost.trim(),
+      smtpPort: localSmtpPort,
+      imapTls: true,
+      smtpTls: localSmtpPort === 587,
+      pollingIntervalSeconds: Math.max(30, localPollingInterval),
+      password: localPassword.trim(),
       unreadOnly: false,
       maxEmailsPerPoll: 5,
-      env: {
-        MCP_EMAIL_SERVER_ACCOUNT_NAME: accountName,
-        MCP_EMAIL_SERVER_FULL_NAME: emailAddress.split('@')[0] || 'support',
-        MCP_EMAIL_SERVER_EMAIL_ADDRESS: emailAddress,
-        MCP_EMAIL_SERVER_USER_NAME: userName,
-        MCP_EMAIL_SERVER_PASSWORD: localPassword.trim(),
-        MCP_EMAIL_SERVER_IMAP_HOST: localImapHost.trim(),
-        MCP_EMAIL_SERVER_IMAP_PORT: String(localImapPort),
-        MCP_EMAIL_SERVER_IMAP_SSL: 'true',
-        MCP_EMAIL_SERVER_SMTP_HOST: localSmtpHost.trim(),
-        MCP_EMAIL_SERVER_SMTP_PORT: String(localSmtpPort),
-        MCP_EMAIL_SERVER_SMTP_START_SSL: localSmtpPort === 587 ? 'true' : 'false',
-        MCP_EMAIL_SERVER_SMTP_SSL: localSmtpPort === 465 ? 'true' : 'false',
-        MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD: 'false',
-        MCP_EMAIL_SERVER_SAVE_TO_SENT: 'true',
-      },
-    }
+    })
   }
 
   const handleTestConnection = async () => {
     if (!readyForAuth || !readyForVerify) {
       setTestState({
         status: 'error',
-        message: localProvider === 'gmail-api'
-          ? 'Please sign in with Google OAuth before testing.'
+        message: wantsGmailOAuth
+          ? 'Please sign in with Google before testing.'
           : 'Please complete email and app password before testing.'
       })
       return
@@ -313,8 +314,8 @@ export function EmailSettingsPanel() {
       <div className="bg-[var(--color-brand-teal)]/10 border border-[var(--color-brand-teal)]/30 rounded-xl p-4 flex gap-3">
         <Sparkles size={18} className="text-[var(--color-brand-teal)] shrink-0 mt-0.5" />
         <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed">
-          <strong>Easy setup:</strong> choose provider, enter your email + app password, test connection, then go live.
-          Advanced SMTP/IMAP settings are optional.
+          <strong>Client-side setup:</strong> choose a mailbox preset, use an app password by default, test the local IMAP/SMTP bridge, then go live.
+          Keep Draft Mode on and Auto-Reply off until verification is complete.
         </p>
       </div>
 
@@ -369,7 +370,11 @@ export function EmailSettingsPanel() {
                   <span className="text-sm font-semibold text-[var(--color-text-primary)]">{label}</span>
                 </div>
                 <p className="mt-1 text-xs text-[var(--color-text-dim)]">
-                  {provider === 'imap-smtp' ? 'Generic provider with quick preset fallback' : 'Quick preset with safe defaults'}
+                  {provider === 'gmail-api'
+                    ? 'Recommended: local Gmail app-password flow'
+                    : provider === 'imap-smtp'
+                      ? 'Generic provider with manual server settings'
+                      : 'Preset server values with safe defaults'}
                 </p>
               </button>
             )
@@ -387,7 +392,7 @@ export function EmailSettingsPanel() {
               placeholder="you@company.com"
             />
           </div>
-          {!isGmailProvider && (
+          {!wantsGmailOAuth && (
             <div>
               <label className="block text-[var(--color-text-primary)] text-sm font-bold mb-2">App Password / Token</label>
               <input
@@ -405,11 +410,41 @@ export function EmailSettingsPanel() {
         {localProvider === 'gmail-api' && (
           <div className="space-y-3 pt-2 border-t border-[var(--color-border)]">
             <p className="text-xs text-[var(--color-text-dim)]">
-              Google OAuth (recommended): one-click sign-in, no IMAP/app-password setup required.
+              Gmail stays client-side here. The recommended path is an app password over IMAP/SMTP.
             </p>
             <p className="text-xs text-[var(--color-text-dim)]">
-              OAuth is managed by the app. End users only need to click <span className="font-semibold text-[var(--color-text-primary)]">Sign in with Google</span>.
+              Google sign-in remains optional if runtime OAuth is configured, but it is not required for the local bridge.
             </p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <button
+                onClick={() => setLocalGmailAuthMode('app-password')}
+                className={`text-left p-3 rounded-lg border transition-colors ${
+                  localGmailAuthMode === 'app-password'
+                    ? 'border-[var(--color-brand-teal)] bg-[var(--color-brand-teal)]/10'
+                    : 'border-[var(--color-border)] bg-[var(--color-surface)] hover:border-[var(--color-brand-teal)]/60'
+                }`}
+              >
+                <p className="text-sm font-semibold text-[var(--color-text-primary)]">App Password</p>
+                <p className="mt-1 text-xs text-[var(--color-text-dim)]">Recommended for client-side QA and production bring-up.</p>
+              </button>
+              <button
+                onClick={() => setLocalGmailAuthMode('google-oauth')}
+                className={`text-left p-3 rounded-lg border transition-colors ${
+                  localGmailAuthMode === 'google-oauth'
+                    ? 'border-[var(--color-brand-teal)] bg-[var(--color-brand-teal)]/10'
+                    : 'border-[var(--color-border)] bg-[var(--color-surface)] hover:border-[var(--color-brand-teal)]/60'
+                }`}
+              >
+                <p className="text-sm font-semibold text-[var(--color-text-primary)]">Google Sign-In</p>
+                <p className="mt-1 text-xs text-[var(--color-text-dim)]">Only use this when app-managed Gmail OAuth is configured.</p>
+              </button>
+            </div>
+            {localGmailAuthMode === 'app-password' && (
+              <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg p-3 text-xs text-[var(--color-text-dim)]">
+                Gmail preset values are already loaded. Use a Gmail app password and keep Draft Mode on for the first end-to-end run.
+              </div>
+            )}
+            {localGmailAuthMode === 'google-oauth' && (
             <div className="flex items-center gap-3">
               {!oauthStatus.signedIn ? (
                 <button
@@ -434,91 +469,88 @@ export function EmailSettingsPanel() {
                 {oauthStatus.signedIn ? `Connected as ${oauthStatus.email || 'Google account'}` : 'Not connected'}
               </span>
             </div>
-          </div>
-        )}
-
-        {!isGmailProvider && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-[var(--color-text-primary)] text-sm font-bold mb-2">Account Name</label>
-              <input
-                type="text"
-                value={localAccountName}
-                onChange={(e) => setLocalAccountName(e.target.value)}
-                className="w-full bg-[var(--color-bg-dark)] border border-[var(--color-border)] rounded-lg px-4 py-2 text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-brand-teal)]"
-                placeholder="default"
-              />
-            </div>
-            <div>
-              <label className="block text-[var(--color-text-primary)] text-sm font-bold mb-2">Login Username (Optional)</label>
-              <input
-                type="text"
-                value={localUserName}
-                onChange={(e) => setLocalUserName(e.target.value)}
-                className="w-full bg-[var(--color-bg-dark)] border border-[var(--color-border)] rounded-lg px-4 py-2 text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-brand-teal)]"
-                placeholder="Uses email by default"
-              />
-            </div>
-          </div>
-        )}
-
-        {!isGmailProvider && (
-          <div className="pt-2 border-t border-[var(--color-border)]">
-            <button
-              onClick={() => setShowAdvanced(!showAdvanced)}
-              className="flex items-center gap-2 text-xs font-semibold text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]"
-            >
-              <Wrench size={13} />
-              {showAdvanced ? 'Hide advanced server settings' : 'Show advanced server settings'}
-            </button>
-
-            {showAdvanced && (
-              <div className="mt-3 space-y-4">
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-[var(--color-text-muted)] text-xs mb-1">IMAP Host</label>
-                    <input
-                      type="text"
-                      value={localImapHost}
-                      onChange={(e) => setLocalImapHost(e.target.value)}
-                      className="w-full bg-[var(--color-bg-dark)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-[var(--color-text-primary)] text-sm focus:outline-none focus:border-[var(--color-brand-teal)]"
-                      placeholder="imap.example.com"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[var(--color-text-muted)] text-xs mb-1">IMAP Port</label>
-                    <input
-                      type="number"
-                      value={localImapPort}
-                      onChange={(e) => setLocalImapPort(parseInt(e.target.value) || 993)}
-                      className="w-full bg-[var(--color-bg-dark)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-[var(--color-text-primary)] text-sm focus:outline-none focus:border-[var(--color-brand-teal)]"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[var(--color-text-muted)] text-xs mb-1">SMTP Host</label>
-                    <input
-                      type="text"
-                      value={localSmtpHost}
-                      onChange={(e) => setLocalSmtpHost(e.target.value)}
-                      className="w-full bg-[var(--color-bg-dark)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-[var(--color-text-primary)] text-sm focus:outline-none focus:border-[var(--color-brand-teal)]"
-                      placeholder="smtp.example.com"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[var(--color-text-muted)] text-xs mb-1">SMTP Port</label>
-                    <input
-                      type="number"
-                      value={localSmtpPort}
-                      onChange={(e) => setLocalSmtpPort(parseInt(e.target.value) || 587)}
-                      className="w-full bg-[var(--color-bg-dark)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-[var(--color-text-primary)] text-sm focus:outline-none focus:border-[var(--color-brand-teal)]"
-                    />
-                  </div>
-                </div>
-                <p className="text-xs text-[var(--color-text-dim)] flex items-center gap-1"><Server size={12} />Use this only if your provider needs custom server values.</p>
-              </div>
             )}
           </div>
         )}
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className="block text-[var(--color-text-primary)] text-sm font-bold mb-2">Account Name</label>
+            <input
+              type="text"
+              value={localAccountName}
+              onChange={(e) => setLocalAccountName(e.target.value)}
+              className="w-full bg-[var(--color-bg-dark)] border border-[var(--color-border)] rounded-lg px-4 py-2 text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-brand-teal)]"
+              placeholder="default"
+            />
+          </div>
+          <div>
+            <label className="block text-[var(--color-text-primary)] text-sm font-bold mb-2">Login Username (Optional)</label>
+            <input
+              type="text"
+              value={localUserName}
+              onChange={(e) => setLocalUserName(e.target.value)}
+              className="w-full bg-[var(--color-bg-dark)] border border-[var(--color-border)] rounded-lg px-4 py-2 text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-brand-teal)]"
+              placeholder="Uses email by default"
+            />
+          </div>
+        </div>
+
+        <div className="pt-2 border-t border-[var(--color-border)]">
+          <button
+            onClick={() => setShowAdvanced(!showAdvanced)}
+            className="flex items-center gap-2 text-xs font-semibold text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]"
+          >
+            <Wrench size={13} />
+            {showAdvanced ? 'Hide server settings' : 'Show server settings'}
+          </button>
+
+          {showAdvanced && (
+            <div className="mt-3 space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-[var(--color-text-muted)] text-xs mb-1">IMAP Host</label>
+                  <input
+                    type="text"
+                    value={localImapHost}
+                    onChange={(e) => setLocalImapHost(e.target.value)}
+                    className="w-full bg-[var(--color-bg-dark)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-[var(--color-text-primary)] text-sm focus:outline-none focus:border-[var(--color-brand-teal)]"
+                    placeholder="imap.example.com"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[var(--color-text-muted)] text-xs mb-1">IMAP Port</label>
+                  <input
+                    type="number"
+                    value={localImapPort}
+                    onChange={(e) => setLocalImapPort(parseInt(e.target.value) || 993)}
+                    className="w-full bg-[var(--color-bg-dark)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-[var(--color-text-primary)] text-sm focus:outline-none focus:border-[var(--color-brand-teal)]"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[var(--color-text-muted)] text-xs mb-1">SMTP Host</label>
+                  <input
+                    type="text"
+                    value={localSmtpHost}
+                    onChange={(e) => setLocalSmtpHost(e.target.value)}
+                    className="w-full bg-[var(--color-bg-dark)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-[var(--color-text-primary)] text-sm focus:outline-none focus:border-[var(--color-brand-teal)]"
+                    placeholder="smtp.example.com"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[var(--color-text-muted)] text-xs mb-1">SMTP Port</label>
+                  <input
+                    type="number"
+                    value={localSmtpPort}
+                    onChange={(e) => setLocalSmtpPort(parseInt(e.target.value) || 587)}
+                    className="w-full bg-[var(--color-bg-dark)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-[var(--color-text-primary)] text-sm focus:outline-none focus:border-[var(--color-brand-teal)]"
+                  />
+                </div>
+              </div>
+              <p className="text-xs text-[var(--color-text-dim)] flex items-center gap-1"><Server size={12} />Gmail preset loads `imap.gmail.com:993` and `smtp.gmail.com:587` automatically. Override only if needed.</p>
+            </div>
+          )}
+        </div>
 
         <div className="pt-2 border-t border-[var(--color-border)]">
           <label className="block text-[var(--color-text-primary)] text-sm font-bold mb-2 flex items-center gap-2">
@@ -618,7 +650,7 @@ export function EmailSettingsPanel() {
 
         <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg p-3 text-xs text-[var(--color-text-dim)] flex gap-2">
           <Info size={14} className="shrink-0 mt-0.5" />
-          OAuth-based one-click sign-in for Gmail/Outlook is planned. For now, use app passwords/tokens.
+          This email channel runs as a local client connector. No hosted mail server is required for Gmail, Outlook, or other IMAP/SMTP providers.
         </div>
       </Card>
     </div>

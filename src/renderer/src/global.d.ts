@@ -118,6 +118,7 @@ interface ElectronAPI {
         listDeliveryHistory: (limit?: number) => Promise<any>
         listDecisionEvidence: (limit?: number) => Promise<any>
         reviewDecision: (inboundId: string, label: string, notes?: string) => Promise<any>
+        recordConversationOutcome: (jid: string, revision: number, outcome: string, evidence: string) => Promise<any>
         usageHistory: (days?: number) => Promise<any>
         channelUsage: (days?: number) => Promise<any>
         approveDraft: (inboundId: string) => Promise<any>

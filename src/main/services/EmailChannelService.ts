@@ -2,6 +2,7 @@ import { EventEmitter } from 'events'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import Store from 'electron-store'
+import { buildGmailQuery, toInboundGmailMessage } from './email-gmail'
 import { gmailOAuthService } from './GmailOAuthService'
 import { ChannelAttachment, normalizeEmailMessage } from '../packages/omnichannel'
 import { isEmailDeliveryBounce, isGmailAuthFailure, normalizeEmailAttachmentMetadata, shouldProcessEmailInbound } from './EmailInboundPolicy'
@@ -19,7 +20,10 @@ const emailSyncStore = new Store<EmailSyncState>({
     seenMessageIds: [],
     gmailLastSyncTimestamp: 0
   }
-}) as Store<EmailSyncState> & { get: <K extends keyof EmailSyncState>(key: K) => EmailSyncState[K] | undefined; set: <K extends keyof EmailSyncState>(key: K, value: EmailSyncState[K]) => void }
+}) as Store<EmailSyncState> & {
+  get: <K extends keyof EmailSyncState>(key: K) => EmailSyncState[K] | undefined
+  set: <K extends keyof EmailSyncState>(key: K, value: EmailSyncState[K]) => void
+}
 
 export interface EmailConnectionState {
   status: 'disconnected' | 'connecting' | 'connected' | 'error'
@@ -235,7 +239,7 @@ export class EmailChannelService extends EventEmitter {
 
   constructor() {
     super()
-    this.seenMessageIds = new Set<string>(emailSyncStore.get('seenMessageIds') || [])
+    this.seenMessageIds = new Set<string>(emailSyncStore.get('seenMessageIds') ?? [])
   }
 
   configure(config: EmailPollingConfig): void {
@@ -379,14 +383,17 @@ export class EmailChannelService extends EventEmitter {
         if (!response.ok) {
           const text = await response.text()
           const error = isGmailAuthFailure(response.status) ? 'Gmail OAuth authorization expired or was revoked; sign in again' : `Gmail send failed: ${text}`
-          markEmailFailed(dedupeKey, error); return { success: false, error }
+          markEmailFailed(dedupeKey, error)
+          return { success: false, error }
         }
         const sent = await response.json().catch(() => ({})) as { id?: string }
         markEmailSent(dedupeKey, sent.id)
         if (sent.id) this.emit('deliveryStatus', { providerMessageId: sent.id, to: payload.to, subject: payload.subject, status: 'sent', at: Date.now() })
         return { success: true, providerMessageId: sent.id }
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error); markEmailFailed(dedupeKey, message); return { success: false, error: message }
+        const message = error instanceof Error ? error.message : String(error)
+        markEmailFailed(dedupeKey, message)
+        return { success: false, error: message }
       }
     }
 
@@ -405,11 +412,13 @@ export class EmailChannelService extends EventEmitter {
         references: payload.references
       }
 
-      const sendResult = await this.client.callTool({
+      const result = await this.client.callTool({
         name: 'send_email',
         arguments: args
       })
-      const structured = extractStructured(sendResult)
+      const toolError = extractToolError(result)
+      if (toolError) throw new Error(toolError)
+      const structured = extractStructured(result)
       const providerMessageId = typeof structured.id === 'string' ? structured.id : typeof structured.message_id === 'string' ? structured.message_id : undefined
 
       this.emit('deliveryStatus', {
@@ -419,7 +428,7 @@ export class EmailChannelService extends EventEmitter {
         status: 'sent',
         at: Date.now()
       })
-      markEmailSent(dedupeKey)
+      markEmailSent(dedupeKey, providerMessageId)
       return { success: true, providerMessageId }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -445,21 +454,6 @@ export class EmailChannelService extends EventEmitter {
       await this.pollOnce()
       this.schedulePoll()
     }, this.config.pollingIntervalSeconds * 1000)
-  }
-
-  private async renewGmailWatch(): Promise<void> {
-    const topic = process.env.GMAIL_PUBSUB_TOPIC
-    if (!topic || this.config?.provider !== 'gmail-api' || !this.running) return
-    try {
-      const watch = await gmailOAuthService.renewWatch(topic)
-      const delay = Math.max(60 * 60 * 1000, Math.min((watch.expiration || Date.now() + 6 * 24 * 60 * 60 * 1000) - Date.now() - 60 * 60 * 1000, 7 * 24 * 60 * 60 * 1000))
-      this.watchTimer = setTimeout(() => void this.renewGmailWatch(), delay)
-      console.log('[EmailChannelService] Gmail watch renewed', { expiration: watch.expiration, historyId: watch.historyId })
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      this.setState({ ...this.state, status: 'error', error: message })
-      console.error('[EmailChannelService] Gmail watch renewal failed; polling remains active:', message)
-    }
   }
 
   private async pollOnce(): Promise<void> {
@@ -565,6 +559,21 @@ export class EmailChannelService extends EventEmitter {
     }
   }
 
+  private async renewGmailWatch(): Promise<void> {
+    const topic = process.env.GMAIL_PUBSUB_TOPIC
+    if (!topic || this.config?.provider !== 'gmail-api' || !this.running) return
+    try {
+      const watch = await gmailOAuthService.renewWatch(topic)
+      const delay = Math.max(60 * 60 * 1000, Math.min((watch.expiration || Date.now() + 6 * 24 * 60 * 60 * 1000) - Date.now() - 60 * 60 * 1000, 7 * 24 * 60 * 60 * 1000))
+      this.watchTimer = setTimeout(() => void this.renewGmailWatch(), delay)
+      console.log('[EmailChannelService] Gmail watch renewed', { expiration: watch.expiration, historyId: watch.historyId })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      this.setState({ ...this.state, status: 'error', error: message })
+      console.error('[EmailChannelService] Gmail watch renewal failed; polling remains active:', message)
+    }
+  }
+
   private async pollViaGmailApi(): Promise<void> {
     const accessToken = await gmailOAuthService.getAccessToken()
     if (!accessToken) {
@@ -572,36 +581,35 @@ export class EmailChannelService extends EventEmitter {
       return
     }
 
-    const lastSyncSecs = emailSyncStore.get('gmailLastSyncTimestamp') || 0
-    const queryParam = lastSyncSecs > 0 ? `after:${lastSyncSecs}` : `newer_than:1h`
+    const lastSyncSecs = emailSyncStore.get('gmailLastSyncTimestamp') ?? 0
+    const queryParam = buildGmailQuery(lastSyncSecs, this.config?.unreadOnly === true)
+    const listUrl = new URL('https://gmail.googleapis.com/gmail/v1/users/me/messages')
+    listUrl.searchParams.set('maxResults', String(this.config?.maxEmailsPerPoll || 10))
+    listUrl.searchParams.set('q', queryParam)
+    listUrl.searchParams.append('labelIds', 'INBOX')
+    const ownerEmail = parseEmailAddress(gmailOAuthService.getStatus().email || '')
 
     const response = await fetch(
-      `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=${this.config?.maxEmailsPerPoll || 10}&q=${queryParam}`,
+      listUrl.toString(),
       { headers: { Authorization: `Bearer ${accessToken}` } }
     )
     if (!response.ok) {
       const text = await response.text()
-      this.setState({ ...this.state, status: 'error', error: isGmailAuthFailure(response.status) ? 'Gmail OAuth authorization expired or was revoked; sign in again' : `Gmail list failed: ${text}` })
+      this.setState({ ...this.state, status: 'error', error: `Gmail list failed: ${text}` })
       return
     }
 
     const listData = await response.json() as { messages?: Array<{ id: string }> }
     const messages = listData.messages || []
     let processed = 0
-    let complete = true
     for (const m of messages) {
       const detailResp = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${m.id}?format=full`, {
         headers: { Authorization: `Bearer ${accessToken}` }
       })
-      if (!detailResp.ok) {
-        if (isGmailAuthFailure(detailResp.status)) this.setState({ ...this.state, status: 'error', error: 'Gmail OAuth authorization expired or was revoked; sign in again' })
-        complete = false
-        continue
-      }
+      if (!detailResp.ok) continue
       const detail = await detailResp.json() as Record<string, unknown>
-      const email = this.fromGmailMessage(detail)
-      if (!email) continue
-      if (!shouldProcessEmailInbound(email, detail, Date.now())) continue
+      const email = toInboundGmailMessage(detail, ownerEmail)
+      if (!email || !this.shouldProcessInbound(email, detail)) continue
       const dedupeId = email.messageId || email.id
       if (dedupeId && this.seenMessageIds.has(dedupeId)) continue
       if (dedupeId) this.seenMessageIds.add(dedupeId)
@@ -612,8 +620,7 @@ export class EmailChannelService extends EventEmitter {
     this.setState({ ...this.state, status: 'connected', error: null, lastSyncAt: Date.now(), unreadCount: messages.length })
     
     // Save state overlap for 5 mins
-    // Keep the overlap cursor when any detail fetch failed, so a transient failure is retried.
-    if (complete) emailSyncStore.set('gmailLastSyncTimestamp', Math.floor(Date.now() / 1000) - 300)
+    emailSyncStore.set('gmailLastSyncTimestamp', Math.floor(Date.now() / 1000) - 300)
     
     const seenArray = Array.from(this.seenMessageIds);
     if (seenArray.length > 2000) {
@@ -622,66 +629,6 @@ export class EmailChannelService extends EventEmitter {
     emailSyncStore.set('seenMessageIds', Array.from(this.seenMessageIds));
 
     if (processed > 0) console.log(`[EmailChannelService] Gmail API processed ${processed} message(s)`)
-  }
-
-  private fromGmailMessage(item: Record<string, unknown>): InboundEmailMessage | null {
-    const payload = (item.payload && typeof item.payload === 'object') ? item.payload as Record<string, unknown> : null
-    const headers = Array.isArray(payload?.headers) ? payload!.headers as Array<Record<string, unknown>> : []
-    const getHeader = (name: string): string => {
-      const found = headers.find((h) => String(h.name || '').toLowerCase() === name.toLowerCase())
-      return typeof found?.value === 'string' ? found.value : ''
-    }
-    const bodyData = this.extractGmailBody(payload)
-    return {
-      id: String(item.id || `gmail_${Date.now()}`),
-      from: parseEmailAddress(getHeader('From')) || 'unknown-sender',
-      to: parseEmailAddress(getHeader('To')) || '',
-      subject: getHeader('Subject') || '(No Subject)',
-      body: bodyData || '',
-      bodyType: 'text',
-      timestamp: Date.now(),
-      messageId: getHeader('Message-Id') || getHeader('Message-ID'),
-      inReplyTo: getHeader('In-Reply-To'),
-      references: getHeader('References'),
-      isFromMe: false,
-      attachments: this.extractGmailAttachments(payload)
-    }
-  }
-
-  private extractGmailAttachments(payload: Record<string, unknown> | null): ChannelAttachment[] {
-    const attachments: ChannelAttachment[] = []
-    const visit = (part: Record<string, unknown>): void => {
-      const body = part.body as Record<string, unknown> | undefined
-      const filename = typeof part.filename === 'string' ? part.filename : ''
-      const attachmentId = typeof body?.attachmentId === 'string' ? body.attachmentId : undefined
-      const size = typeof body?.size === 'number' ? body.size : undefined
-      if (filename || attachmentId) attachments.push({ id: attachmentId, name: filename || undefined, mimeType: typeof part.mimeType === 'string' ? part.mimeType : undefined, size })
-      if (Array.isArray(part.parts)) for (const child of part.parts) if (child && typeof child === 'object') visit(child as Record<string, unknown>)
-    }
-    if (payload) visit(payload)
-    return attachments
-  }
-
-  private extractGmailBody(payload: Record<string, unknown> | null): string {
-    if (!payload) return ''
-    const body = payload.body as Record<string, unknown> | undefined
-    if (body?.data && typeof body.data === 'string') {
-      return Buffer.from(body.data, 'base64').toString('utf8')
-    }
-    const parts = Array.isArray(payload.parts) ? payload.parts as Array<Record<string, unknown>> : []
-    for (const part of parts) {
-      if (String(part.mimeType || '').toLowerCase() === 'text/plain') {
-        const partBody = part.body as Record<string, unknown> | undefined
-        if (partBody?.data && typeof partBody.data === 'string') {
-          try {
-            return Buffer.from(partBody.data.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8')
-          } catch {
-            return ''
-          }
-        }
-      }
-    }
-    return ''
   }
 
   private async fetchMetadata(

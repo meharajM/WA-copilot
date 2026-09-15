@@ -6,7 +6,7 @@ Cost and architecture rationale reviewed: September 13, 2026. See sections 2 and
 
 Status: Selected architectural direction; implementation proposal, not a statement of shipped capabilities.
 
-Decision: Use a Tauri 2 native shell around the existing React owner console and package the Node runtime as an `agentd` sidecar. Tauri owns narrow native integrations and sidecar supervision; `agentd` owns LangGraph, durable work, channels and local-model execution. Begin with WhatsApp Cloud API and the existing email integration; extend to Instagram messaging, Facebook Messenger, Meta advertising lead events, and X.
+Decision: Make `agentd`, an independently managed plain Node service, the authoritative local runtime. Serve the existing React console on loopback; Electron is an optional transition client/installer and is not required for V1. This September 14 decision supersedes the Tauri sidecar proposal. Keep LangGraph, RAG and channel workflows; extract lifecycle and a typed API before changing UI or workflow.
 
 This document is the target architecture for this work. `architecture.md`, `email-integration.md`, and `docs/autonomous-agent.md` describe earlier designs or partial implementation and must not be treated as evidence that the requirements below already work.
 
@@ -26,47 +26,37 @@ The product is a business support system. A customer message is not permission t
 
 ### Version 1 deployment decision
 
-Version 1 is a single-business, single-owner local deployment. A Tauri 2 process provides the native application shell, tray and brokered OS access. It starts and supervises a packaged Node service (`agentd`) that owns durable storage, model connections, queues, policy and channel adapters. The existing React owner console runs inside the operating system's WebView. Electron is a temporary migration client, not the target shell or the worker's required lifecycle owner. Webhook listeners bind to localhost only. A small authenticated HTTPS relay is a future production deployment option, not part of the current desktop pilot, and there is no automatic local/hosted failover in v1.
+V1 targets a single-business, single-owner installation. `agentd` owns SQLite, credential access, model connectors, queues, LangGraph, policy/outbox and channel adapters. Run it independently through an OS user-service manager (launchd on macOS, an equivalent supervised user service on Windows/Linux), not as an Electron or browser child whose lifetime follows the UI. A per-install runtime lock and persisted lease prevent a second sender. Explicit Stop Agent stops processing; Pause All immediately revokes dispatch permission. Closing a browser or quitting an optional client does neither. Device sleep, shutdown or loss of connectivity still prevents responses; user-service availability across logout is platform-dependent and must be tested.
 
-The hosted worker is a later deployment target, not a second active sender. Moving ownership between runtimes is an explicit operator action with a persisted ownership generation. Both runtimes must never dispatch for the same business account at once.
+Serve the built existing React UI from `http://127.0.0.1:<ephemeral-port>` on the same listener as its typed API. Discover the port through a private owner-readable runtime descriptor containing no credentials. The installer/start command opens the console. Extract service initialization/shutdown and host dependencies first; prove a single draft-only WhatsApp path through the browser before any UI redesign or workflow migration.
 
-### Selected hybrid: Tauri shell plus Node `agentd`
+Current code remains an Electron pilot: `src/main/index.ts` initializes autonomous services in `app.whenReady()` and stops them in `before-quit`. Window closing differs by platform; explicit app quit ends this runtime. The independent daemon, browser security boundary and public relay below are required implementation gates, not shipped features.
 
-The target is a lightweight native shell, not a public website and not a Rust rewrite of the agent. Tauri uses the operating system WebView instead of bundling Chromium, while the existing TypeScript/Node services continue in a packaged sidecar. This preserves the code most closely coupled to LangGraph and local models while freeing memory and GPU pressure where the selected system WebView is materially lighter. A WebView still consumes resources, so this is a benchmarked expectation rather than a zero-cost claim. [Tauri architecture](https://v2.tauri.app/concept/architecture/), [Node sidecars](https://v2.tauri.app/learn/sidecar-nodejs/), [external binaries](https://v2.tauri.app/develop/sidecar/).
+### Runtime and browser trust boundary
 
-```mermaid
-flowchart LR
-    R[React UI in system WebView] -->|scoped commands and events| T[Tauri 2 Rust core]
-    T -->|private stdio or local socket| A[Node agentd sidecar]
-    T --> N[OS keychain, dialogs, tray, notifications, startup and updates]
-    A --> L[LangGraph, queues, SQLite, RAG, channels and local model]
-```
+- `agentd` is the only database and credential authority. Generate a cryptographically random per-install bearer secret, store it in the OS keychain and fail closed if that store is unavailable. Electron and native helpers use only narrow authenticated commands; they do not open competing database writers.
+- Do not expose the long-lived bearer secret to React. Bootstrap browser access with a short-lived, single-use pairing code displayed by a local owner command/helper and submitted by POST. After local verification, issue a short-lived HttpOnly, SameSite=Strict session cookie and a session-bound CSRF token kept in memory. Never put bearer/provider credentials or pairing codes in URLs, browser storage or logs. Rate-limit pairing, expire unused codes and revoke sessions on secret rotation.
+- Bind exactly to IPv4 loopback, validate Host against the actual bound address/port, and allow only the exact console Origin (including its ephemeral port). No wildcard CORS, null-origin allowance or arbitrary localhost origins. Check Origin and CSRF on every browser mutation; reject cross-site reads and authenticate sensitive reads. Handle safe initial document navigation separately from protected API access.
+- Require JSON content types, bounded bodies, schema validation, deadlines and rate limits. Validate Origin/authentication on any streaming or WebSocket upgrade; use no GET mutations. Set CSP and frame-ancestors restrictions, avoid remote scripts, and prevent secret-bearing responses from being cached. Browser local-network permission prompts are additional browser behavior, not our authorization mechanism.
+- Retain explicit adapters for OS keychain, owner-selected file import and notifications. A picker grants only that chosen file operation; never accept arbitrary filesystem paths or unrestricted shell/browser execution from React. If a browser lacks a native capability, display it as unavailable or use the installed narrow helper.
+- Test cross-origin requests, forged Host, CSRF, expired/replayed pairing, unauthenticated API/stream access, secret redaction and client exit while draft work continues before enabling the browser pilot.
 
-| Option | Resource profile | Native access | Migration cost and risk | Decision |
-| --- | --- | --- | --- | --- |
-| Tauri 2 + Node `agentd` sidecar | System WebView plus a small Rust core and the existing Node worker; avoids a bundled Chromium runtime | Strong, allowlisted commands and official plugins; OS credential store can be reached from Rust | Keep React and Node services; replace Electron IPC and packaging | **Selected** |
-| Electron + detached `agentd` | Bundled Chromium remains, even after worker separation | Mature native ecosystem and current code path | Lowest initial migration effort, but retains the main UI resource concern | Temporary migration client only |
-| Pure browser + local daemon | No application shell; reuses an installed browser, but an open tab still has a renderer cost | Every native feature needs a secured daemon endpoint or helper | Adds loopback authentication, CSRF/origin controls, browser support and separate lifecycle/install work | Useful for optional remote administration later, not the v1 desktop shell |
-| Wails v2 + Go backend | System WebView and small native shell | Good native binding path | Introduces Go and either duplicates or still supervises the Node runtime; Wails v3 is currently beta | Reconsider if the backend is intentionally migrated to Go |
-| Neutralinojs + Node `agentd` | Very small shell using the system WebView | Basic native APIs; sensitive integrations need extensions or another privileged helper | Small shell, but weaker fit for keychain, capability isolation, signing and update requirements | Not selected for the security-sensitive owner console |
+Electron's Chromium process tree and lifecycle explain the coupling, but a browser also consumes resources. Removing Electron is not evidence of a model-capacity gain. [Electron process model](https://www.electronjs.org/docs/latest/tutorial/process-model), [Electron performance](https://www.electronjs.org/docs/latest/tutorial/performance), [Chrome Local Network Access](https://developer.chrome.com/blog/local-network-access).
 
-#### Process and lifecycle boundaries
+### Capacity decision and measurement gate
 
-- The Tauri Rust core owns window/tray lifecycle, starts the packaged sidecar, monitors its health and terminates or restarts it according to an explicit policy. `agentd` remains the authoritative long-running worker while the shell is running.
-- Closing the main window destroys the WebView after warning about unsaved UI-only state. The tray recreates it on demand. Merely hiding a window does not meet the resource goal because its renderer may remain allocated.
-- `agentd` owns LangGraph execution, persistence, channels, RAG, business tools and local-model connections. It does not receive general OS access through the renderer.
-- The renderer calls a small typed `NativeBridge`; Tauri translates only allowlisted commands. Tauri and `agentd` communicate over private standard I/O or a per-install authenticated local socket, never a permissive public HTTP API.
-- The initial implementation keeps Tauri and `agentd` in one application lifecycle. Running `agentd` after the user explicitly quits requires a later, separately designed OS service with clear controls and update ownership.
+Measure the same target hardware, model/version/quantization, context size, prompt set and power mode for all four states. Repeat warm runs and report median/p95 plus idle and peak values. Compare optional Electron and browser clients against the same daemon.
 
-#### Native access and secret storage
+| UI | Model | Required evidence |
+| --- | --- | --- |
+| Closed | Unloaded | Daemon and helper idle/peak whole-process-tree RSS, CPU and GPU/VRAM |
+| Open | Unloaded | Above plus browser/Electron process-tree cost and UI responsiveness |
+| Closed | Loaded | Above plus model time-to-first-token, total inference time and queued-message latency |
+| Open | Loaded | Same measurements at concurrency 1 and 2; check model/UI contention |
 
-Tauri owns keychain access, file/folder pickers, notifications, tray, autostart and signed updates. Store provider refresh tokens and API secrets in the platform credential store from the Rust process using a maintained cross-platform credential library such as `keyring`, whose supported backends include macOS Keychain, Windows Credential Manager and Linux Secret Service. Tauri Stronghold is an optional encrypted application vault, not a claim of OS-keychain storage. [Rust `keyring`](https://docs.rs/keyring/latest/keyring/), [Tauri tray](https://v2.tauri.app/learn/system-tray/), [autostart](https://v2.tauri.app/plugin/autostart/), [updater](https://v2.tauri.app/plugin/updater/).
+Include independently running model-server processes, renderer/GPU/helper processes and relay-client overhead. Record whole-browser totals and the pre-existing browser baseline separately; summing RSS can double-count shared pages, so retain per-process figures and OS memory-pressure/swap evidence. Node `process.memoryUsage().rss` is only one component. On unified-memory hardware, do not add GPU allocations to RAM as though they were separate pools.
 
-The renderer must never receive stored secret values. Its interface is limited to operations such as set, replace, delete and `hasCredential`, plus narrowly scoped provider actions executed by the trusted process. File-dialog results are explicit user-selected paths, not arbitrary filesystem capability. Notifications and shell-opening behavior are similarly bounded. [Tauri capabilities](https://v2.tauri.app/security/), [dialog plugin](https://v2.tauri.app/plugin/dialog/), [notification plugin](https://v2.tauri.app/plugin/notification/).
-
-Before enabling the Tauri renderer, remove the current browser fallback that persists secrets in `localStorage`. Do not carry forward Electron's `sandbox: false` or `webSecurity: false` posture. Set a restrictive content security policy, load packaged application assets by default, allowlist every command and plugin capability, validate command inputs in Rust, redact sidecar logs and keep update signing keys out of the application bundle.
-
-Validate this decision on representative macOS, Windows and Linux machines before removing Electron. Measure whole process-tree RSS, CPU and GPU/VRAM in four states—UI closed/open with local model unloaded/loaded—plus cold-start time, UI responsiveness, model latency and concurrent-message latency. `process.memoryUsage()` from one Node process is insufficient. The Tauri migration passes only if native-feature parity and security tests pass and the measured resource improvement materially increases the selected local-model or concurrency budget.
+Provisional acceptance budget: reserve at least 25% of physical RAM and 20% of dedicated VRAM, require no sustained swap growth, idle runtime CPU below 5% of one core, and no more than 10% p95 inference degradation with UI open. Start with one active model generation; enable concurrency two only if peak memory fits and p95 end-to-end draft latency remains within the existing 30-second job budget. These are proposed thresholds, not measured results. If a target cannot pass, choose a smaller supported model or cloud inference rather than asserting that shell removal solves it. Record actual hardware/results before retiring Electron on capacity grounds.
 
 ### Deferred capabilities
 
@@ -140,7 +130,7 @@ flowchart TD
     P --> O[Durable outbound intent]
     O --> D[Dispatch authorization and adapter]
     D --> C
-    U[Tauri React owner console] --> W
+    U[React loopback owner console] --> W
     U --> H
     U --> P
 ```
@@ -149,8 +139,8 @@ flowchart TD
 
 | Component | Owns | Must not own |
 | --- | --- | --- |
-| React owner console in the system WebView | Display, operator inputs, draft editing | Authoritative permissions, autonomous execution, raw secrets or arbitrary native access |
-| Tauri native broker | Window/tray lifecycle, OS credential store, dialogs, notifications, updates, scoped commands and sidecar supervision | Workflow decisions, broad shell/filesystem access or returning stored secrets to the renderer |
+| React owner console in browser | Display, operator inputs, draft editing | Authoritative permissions, autonomous execution, raw secrets or arbitrary native access |
+| Optional native helper / Electron client | Installer, owner-selected files and notifications through typed commands | Runtime lifecycle ownership, workflow decisions or returning stored secrets |
 | Local agent service (`agentd`) | LangGraph lifecycle, authenticated commands, pause controls, durable work and worker health | A second parallel customer-response pipeline or unrestricted OS access |
 | Shared Node runtime | LangGraph workflow, channel-independent decisions | Renderer globals or direct UI-store dependencies |
 | Channel adapter | Provider authentication, normalization, sending and delivery mapping | Model-chosen destinations or business policy overrides |
@@ -160,15 +150,19 @@ flowchart TD
 
 ### Deployment A: owner-machine worker
 
-Run the workflow under the packaged `agentd` sidecar with durable local storage. Move expensive parsing/inference into an isolated worker where required to keep controls responsive. Closing the Tauri window destroys the WebView but leaves the Tauri core and supervised sidecar running in the tray. Explicitly quitting the application stops both in v1. Power-off and network outages stop local responses. During migration, Electron may launch or connect to `agentd`, but it must not remain the only lifecycle path.
+Run the plain Node service independently of UI lifetime, with durable local storage and OS supervision. Extract Electron-specific paths, credentials, events and native operations behind injected host adapters. Explicit daemon shutdown drains/cancels work and records recovery state; client disconnect never calls shutdown.
 
-Official webhook integrations need reachable HTTPS ingress. The current desktop pilot therefore supports controlled localhost testing only; it does not ship a public listener or implicit tunnel. A future production relay may durably buffer events and connect to the desktop over an authenticated outbound channel, but that relay is not implemented and cannot be treated as part of v1 availability.
+Official webhooks require public HTTPS. Select one minimal Node HTTPS relay with SQLite on a persistent single-host deployment before the real Cloud API pilot. The current localhost listeners are test adapters only. The relay is a required dependency of phase 2, not an optional post-pilot enhancement.
 
-The relay handles customer event data. Document its retention and encryption; do not market this configuration as zero-cloud processing. Provider and selected LLM data flows remain additional boundaries. If the machine is offline, the system records the event and reports that no response was generated; the relay does not become an autonomous agent.
+Verify provider signatures against raw request bytes, map the account to its enrolled business and commit the event to durable storage before returning success. Return a retryable failure if persistence fails. Deduplicate by provider/account/event ID. `agentd` initiates authenticated outbound HTTPS long-poll requests, commits received events locally before acknowledging them to the relay, and tolerates replay if either acknowledgment is lost. The relay holds no agent workflow or send credentials and never generates or dispatches customer replies.
+
+Use per-install scoped relay credentials, TLS, encrypted payload storage and redacted logs. Default queued payload TTL to 24 hours; expire rather than process overdue payloads, retain a minimal expiry audit, and notify the owner of lost availability. Delete payloads after durable local acknowledgment; expire encrypted backup copies under a documented seven-day backup policy. Bound bytes/events per business, surface oldest-event age and storage exhaustion, and recheck response windows after recovery. A single relay host is not high availability. Test signature failure, duplicate delivery, crash before/after commit, lost acknowledgments, offline agent, expiry and backup restore before live ingress.
+
+The relay handles customer event data. Document its retention and encryption; do not market this configuration as zero-cloud processing. Provider and selected LLM data flows remain additional boundaries. If the machine is offline, the implemented relay must retain the event only until its TTL and report that no response was generated; the relay does not become an autonomous agent.
 
 ### Deployment B: hosted worker
 
-Deploy the same Node runtime with HTTPS ingress on an always-on host. The Tauri console may connect through an authenticated remote control plane; a browser console can be added later for remote administration. Cloud execution requires approved knowledge and credentials accessible to that host; local-only tools remain unavailable when the desktop is offline. Do not silently reroute those tools or upload all local files.
+Deploy the same Node runtime with HTTPS ingress on an always-on host. Remote administration requires its own authenticated control plane; never expose the loopback console directly. Cloud execution requires approved knowledge and credentials accessible to that host; local-only tools remain unavailable when the desktop is offline. Do not silently reroute those tools or upload all local files.
 
 Only one runtime may own a conversation at a time. Switching local/hosted execution requires a persisted ownership generation or lease and a controlled transfer. Never have both runtimes send for the same job. A single small server is an initial deployment, not high availability.
 
@@ -303,6 +297,12 @@ Define an escalation SLA and fallback contact path before enabling unattended op
 
 ## 10. Cost model and controls
 
+### Definition of a resolved conversation
+
+A resolution is an explicit owner-confirmed outcome for a scoped conversation at its current revision, with evidence that the support request was completed. Persist `resolved_agent` or `resolved_human`, revision, confirmation evidence and timestamp. Persist `escalated`, `closed_unresolved` and `open` separately; none is a resolution. A sent/read message, generated answer, silence or escalation never closes a conversation automatically. The current operator API records these outcomes; a dedicated outcome-review UI remains to be added.
+
+Count each conversation once, not each inbound message or repeated confirmation. New inbound revisions invalidate the previous current-resolution classification until confirmed again. Historical messages receive no inferred resolution backfill. The existing pilot metric is an operational period ratio: all estimated model cost in the selected period divided by conversations currently resolved at a confirmation time in that period. Zero denominator returns null and displays N/A. Escalated inbound messages remain a separate message-level count. This ratio is not lifetime attributed cost per resolution: per-case cost allocation, resolution episodes and provider-reconciled charges are required before using it for pricing or customer profitability.
+
 Monthly cash operating cost = hosting + model usage + channel usage + storage/backups + monitoring + optional provider fees. Monthly total ownership cost adds maintenance, onboarding/support and human-review labor, plus amortized remaining development. Advertising spend is a separate owner budget. USD estimates below exclude tax, hardware purchase and exchange-rate changes; labor is included only where explicitly calculated. These are planning examples, not measured production costs or a customer subscription price.
 
 LangChain/LangGraph libraries have no usage subscription. LangSmith services are optional and separately priced. Direct Cloud API integration avoids adding a mandatory support-inbox subscription; any onboarding/intermediary fees must be checked for the selected route. [LangSmith pricing](https://www.langchain.com/pricing).
@@ -419,9 +419,9 @@ The current supervisor is a prototype. Its build passing is not evidence of corr
 
 | Existing area | Migration action |
 | --- | --- |
-| `src/renderer/src/lib/electron.ts` and renderer bridge callers | Introduce a typed `NativeBridge`; support Electron and Tauri implementations during migration, then remove the Electron implementation after parity and resource gates pass |
-| Browser fallback in `src/renderer/src/lib/electron.ts` | Remove secret persistence in `localStorage` before any browser or Tauri renderer can use the bridge |
-| Electron bootstrap and preload | Move keychain, dialogs, tray, notifications, startup and update behavior into narrow Tauri commands/capabilities; do not port permissive web-security settings |
+| `src/renderer/src/lib/electron.ts` and renderer bridge callers | Extract a typed service API and browser transport; reuse React components and retain an optional Electron adapter |
+| Browser fallback in `src/renderer/src/lib/electron.ts` | Remove secret persistence in `localStorage`; implement pairing/session/CSRF before enabling browser access |
+| Electron bootstrap and preload | Extract start/stop into Node service lifecycle and inject paths, keychain and event/native adapters; client quit must not stop the daemon |
 | `src/main/services/AutonomousSupervisor.ts` | Extract lifecycle/control responsibilities into `agentd`; replace in-memory execution with durable jobs and LangGraph integration |
 | `src/main/whatsapp/WhatsAppService.ts` | Keep Baileys as an experimental adapter; introduce Cloud API independently |
 | `src/main/services/EmailChannelService.ts` | Reuse supported Gmail/mailbox transport; normalize inbound and outbound events |
@@ -429,10 +429,10 @@ The current supervisor is a prototype. Its build passing is not evidence of corr
 | `src/main/packages/rag-engine/index.ts` | Reuse retrieval behind tenant/business-scoped evidence contracts |
 | Memory and chat persistence services | Reuse context and sessions with explicit ownership and migration rules |
 | Renderer agent runtime and `useWhatsAppBridge` | Remove automatic duplicate customer execution when a conversation is owned by the new runtime |
-| `AutonomyPanel` and local-service API | Add typed `NativeBridge` contracts and authoritative host controls; remove contradictory toggles |
+| `AutonomyPanel` and local-service API | Add typed service API contracts and authoritative host controls; remove contradictory toggles |
 | Playwright and MCP services | Keep owner tools separate; expose only narrow approved business capabilities to the graph |
 
-Package `agentd` as a Tauri sidecar for each supported target triple. The build must verify sidecar integrity and application signatures. Add parity tests for keychain set/replace/delete/existence, file selection, tray/window lifecycle, notifications, autostart, updates, deep links if retained, sidecar crash/restart, explicit quit and redacted diagnostics. Run Electron and Tauri against the same React interface and `agentd` contracts during the transition; do not maintain two business-logic implementations.
+Package a supported Node runtime and independent OS user-service registration. Verify package integrity and signed installer/update behavior. Test daemon start/stop/restart, exclusive storage ownership, credential operations, browser pairing, file selection, notifications and client closure. First exit evidence is one persisted draft-only WhatsApp job visible in the existing browser UI after the client closes/reopens. Do not enable automatic sends or claim daemon availability until this slice passes.
 
 Known repairs: reconstruct queued work after restart; make draft mode generate without sending permission; enforce pause after generation and before dispatch; handle ambiguous sends; persist opt-outs/takeover; replace hardcoded confidence; store provider IDs; prevent renderer and main-process duplicate responses. Also review persona instructions that conceal AI identity and replace them with the requested disclosure behavior.
 
@@ -445,15 +445,15 @@ Do not migrate customer data destructively. Back up existing databases, version 
 | Phase | Deliverable | Exit evidence |
 | --- | --- | --- |
 | 0: Baseline and containment | Document existing gaps; establish test baseline; block unsafe new auto-send path during migration; remove renderer secret persistence; benchmark Electron; verify distribution model, Meta assets, Cloud API eligibility, OAuth scopes, data regions and retention obligations | No dual sender, no secrets in browser storage, verified control contracts, access decision and reproducible performance baseline |
-| 1: Durable agent core and shell spike | Node-compatible LangGraph, selected model adapter, persistent jobs/checkpoints and draft decisions; Tauri shell starts `agentd` and proves keychain, dialog, tray and WebView-destroy lifecycle | Restart recovers jobs/approval; no message sent in draft or observe mode; graph migration fixture, native parity/security tests and resource gate pass |
-| 2: WhatsApp production path | Cloud API onboarding, webhook validation, outbox, delivery events and policy checks | Duplicate webhook, pause race, opt-out, window expiry and ambiguous-send tests pass |
+| 1: Independent runtime and draft browser slice | Extract service lifecycle, injected host adapters and typed API; secure loopback UI; run existing LangGraph with persistent storage | One draft-only WhatsApp job recovers and is visible after browser/client exit; no auto-send; auth/CSRF, daemon ownership and restart tests pass |
+| 2: WhatsApp production path | Deploy the selected durable authenticated HTTPS relay, then Cloud API onboarding, outbox, delivery events and policy checks | Relay commit-before-ack, offline/expiry/replay and signature tests; authorized live webhook-to-draft proof; duplicate, pause, opt-out, window and ambiguous-send tests |
 | 3: Email parity | Shared workflow with preserved mail threading and loop suppression | Gmail/mailbox restart, token expiry, threading and bounce/auto-reply tests pass |
 | 4: Instagram and Messenger | Independent approved adapters and human ownership | Real authorized account tests, permission failure and owner-echo handling verified |
 | 5: Advertising context | Lead-form events and supported referral attribution | Correct attribution; no unsolicited cross-channel send; no spend-changing operations |
 | 6: X | DM support with separate budget and access validation | Metering, limits, takeover and supported delivery behavior verified |
 | 7: Hosted operation | Same runtime deployed with secure owner control and ownership transfer | Owner-device-off operation, failover boundaries, backup restore and isolation tests pass |
 
-Infrastructure/access discovery for hosted operation begins in phase 2 even though the full hosted worker ships later. Platform review proceeds in parallel and may dominate elapsed delivery time. Do not promise a delivery date until account access and the core migration spike are measured.
+Relay implementation and public HTTPS provisioning must finish before the phase 2 live pilot. Hosted execution remains a separate later phase. Platform review proceeds in parallel and may dominate elapsed delivery time. Do not promise a delivery date until account access and the core migration spike are measured.
 
 ### Mandatory failure tests
 
@@ -473,10 +473,10 @@ Build a representative evaluation set before auto-reply: common intents, missing
 
 ## 13. Decisions settled and remaining checks
 
-Settled: a Tauri 2 shell, the existing React UI in the system WebView and a packaged Node `agentd` sidecar form the target local deployment. Tauri brokers narrow native capabilities and destroys/recreates the UI WebView on close/open; `agentd` owns durable agent work and local-model execution. Electron is a temporary client during migration, and a pure loopback browser console is deferred to optional remote administration. LangGraph plus selected LangChain integrations powers the shared support workflow; official APIs are the production route; RAG/memory are reused; sending remains host-authorized; X is optional and separately budgeted; ad management is deferred.
+Settled: plain Node `agentd` is the independent local authority; the existing React UI is served at an authenticated loopback origin. Electron is optional for transition/installation; Tauri is deferred. Official HTTPS ingress is required before a live Cloud API pilot. LangGraph and selected LangChain integrations, RAG/memory and host-authorized sending remain. X is separately budgeted; ad management is deferred.
 
 Before deployment, verify the owner's Meta assets and Coexistence eligibility, required reviews/scopes, first email provider, Gmail restricted-scope applicability, approved model/data region, initial traffic and spending caps, knowledge-sharing rules, retention period, and local execution choice. Also make the distribution model explicit: our own account, a locally installed product where each customer connects their own accounts, or a hosted service operating customer accounts. OAuth review, support and cost estimates depend on this decision.
 
-Next implementation slice: a restart-safe draft-only LangGraph workflow using our existing RAG and session data, with one authoritative job store and tests for pause, duplicate input and approval recovery. Follow it with the Cloud API adapter and the single outbound gate. This gives us a reviewable foundation before adding more channels.
+Next implementation slice: extract lifecycle and typed service API, then one restart-safe, draft-only WhatsApp workflow through the existing browser UI. Implement and test the selected public relay before live Cloud API ingress. Capacity measurements and terminal conversation outcomes are explicit acceptance gates; no checkbox is closed solely by this architecture decision.
 
-The implementation order is: freeze the v1 deployment and distribution model; contain legacy senders and make host-owned persistence authoritative; build the draft-only LangGraph workflow and evaluation set; add control-event priority, stale-revision handling, approval recovery and the outbox; pilot WhatsApp Cloud API; then add email, Instagram/Messenger, ad attribution and X according to measured demand.
+The implementation order is: freeze the v1 deployment and distribution model; extract agentd lifecycle/API and contain legacy senders; prove browser draft-only execution with authoritative persistence; build the draft-only LangGraph workflow and evaluation set; add control-event priority, stale-revision handling, approval recovery and the outbox; implement durable public ingress and pilot WhatsApp Cloud API; then add email, Instagram/Messenger, ad attribution and X according to measured demand.

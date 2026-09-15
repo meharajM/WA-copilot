@@ -78,12 +78,12 @@ The renderer process houses the React UI and the autonomous agent logic.
 
 #### UI Layer (`/components`)
 *   **Dashboard (`EmptyState.tsx`)**: Displays real-time metrics and conversation topics.
-*   **Settings (`SettingsPanel.tsx`)**: Manages LLM providers, WhatsApp connectivity, and theme preferences.
-*   **Conversations (`ChatView.tsx`)**: Manual intervention interface for live WhatsApp sessions.
+*   **Settings (`SettingsPanel.tsx`)**: Manages LLM providers, WhatsApp controls, email channel setup, memory, and theme preferences.
+*   **Conversations (`ChatView.tsx`)**: Manual intervention interface for omnichannel sessions including WhatsApp and email.
 
 #### State Management (`/stores`)
-*   **`useChatStore`**: Manages chat histories mapping to WhatsApp JIDs (phone numbers).
-*   **`useWhatsAppStore`**: Tracks connection status, QR codes, and the master "Bot Mode" switch.
+*   **`useChatStore`**: Manages omnichannel chat sessions, messages, and channel/contact metadata.
+*   **`useWhatsAppStore`**: Tracks connection status, QR codes, response permission, and autonomous bot mode.
 *   **`useMcpStore`**: Maintains the registry of connected **Model Context Protocol** servers.
 
 #### Agent Subsystem (`/lib`)
@@ -102,7 +102,7 @@ This is the "brain" of the application, orchestrating the LLM reasoning loop.
 2.  **Ingestion**: If the message contains a document, it is automatically converted via `markitdown` and indexed into the **RAG Engine**.
 3.  **IPC Dispatch**: The message is emitted via IPC to the Renderer.
 4.  **Session Mapping**: `useWhatsAppBridge` identifies the sender's JID and assigns the message to a specific `ChatSession`.
-5.  **Agent Trigger**: If "Bot Mode" is enabled, the `AgentRuntime` starts the reasoning loop.
+5.  **Agent Trigger**: If inbound WhatsApp handling is enabled through response permission or autonomous bot mode, the `AgentRuntime` starts the reasoning loop.
 6.  **RAG Lookup**: The agent performs a `rag_search` to find business-specific answers.
 7.  **Proactive Monitoring**: If execution exceeds 60 seconds, `useAgent` dispatches a courtesy "Still working..." message to the customer.
 8.  **Escalation (Optional)**: If the query is unresolved (no RAG match), the agent calls `whatsapp_notify_admin`.
