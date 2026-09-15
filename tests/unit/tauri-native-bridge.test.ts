@@ -88,18 +88,21 @@ describe('tauri native bridge', () => {
     const onError = vi.fn()
     const bridge = createTauriNativeBridge({ invoke: vi.fn(), listen })
 
-    bridge.onAgentdHealth(vi.fn(), onError)
+    const subscription = bridge.onAgentdHealth(vi.fn(), onError)
+    await subscription.ready
     await vi.waitFor(() => expect(onError).toHaveBeenCalledWith('Agentd health event subscription unavailable'))
   })
 
   it('does not report a listener registration failure after unsubscribe', async () => {
-    const listen = vi.fn(async () => { throw new Error('registration failed') })
+    let rejectListen: ((error: Error) => void) | undefined
+    const listen = vi.fn(() => new Promise<() => void>((_resolve, reject) => { rejectListen = reject }))
     const onError = vi.fn()
     const bridge = createTauriNativeBridge({ invoke: vi.fn(), listen })
 
-    const unsubscribe = bridge.onAgentdHealth(vi.fn(), onError)
-    unsubscribe()
-    await new Promise((resolve) => setTimeout(resolve, 0))
+    const subscription = bridge.onAgentdHealth(vi.fn(), onError)
+    subscription.unsubscribe()
+    rejectListen?.(new Error('registration failed'))
+    await subscription.ready
 
     expect(onError).not.toHaveBeenCalled()
   })
@@ -111,13 +114,37 @@ describe('tauri native bridge', () => {
     const bridge = createTauriNativeBridge({ invoke: vi.fn(), listen })
     const listener = vi.fn()
 
-    const unsubscribe = bridge.onAgentdHealth(listener)
-    unsubscribe()
+    const subscription = bridge.onAgentdHealth(listener)
+    subscription.unsubscribe()
     resolveListen?.(cleanup)
-    await Promise.resolve()
+    await subscription.ready
 
     expect(cleanup).toHaveBeenCalledOnce()
     expect(listener).not.toHaveBeenCalled()
     expect(listen).toHaveBeenCalledWith(TAURI_EVENTS.agentdHealth, expect.any(Function))
+  })
+
+  it('exposes readiness only after native event registration settles', async () => {
+    let resolveListen: ((cleanup: () => void) => void) | undefined
+    const listen = vi.fn(() => new Promise<() => void>((resolve) => { resolveListen = resolve }))
+    const invoke = vi.fn(async () => ({ status: 'ready' }))
+    const bridge = createTauriNativeBridge({ invoke, listen })
+    const subscription = bridge.onAgentdHealth(vi.fn())
+    let ready = false
+    const snapshot = subscription.ready.then(() => {
+      ready = true
+      return bridge.health()
+    })
+
+    await Promise.resolve()
+    expect(ready).toBe(false)
+    expect(invoke).not.toHaveBeenCalled()
+    resolveListen?.(vi.fn())
+    await subscription.ready
+
+    expect(ready).toBe(true)
+    await expect(snapshot).resolves.toMatchObject({ status: 'ready' })
+    expect(invoke).toHaveBeenCalledWith(TAURI_COMMANDS.agentdHealth, undefined)
+    subscription.unsubscribe()
   })
 })

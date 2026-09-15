@@ -33,6 +33,10 @@ export interface TauriBridgeDependencies {
 
 export type HealthListener = (health: NativeHealth) => void
 export type Unsubscribe = () => void
+export interface HealthSubscription {
+  ready: Promise<void>
+  unsubscribe: Unsubscribe
+}
 
 const defaultDependencies: TauriBridgeDependencies = {
   invoke: tauriInvoke,
@@ -104,7 +108,7 @@ export const createTauriNativeBridge = (
   dependencies: TauriBridgeDependencies = defaultDependencies,
 ): NativeBridge & {
   appVersion: () => Promise<string>
-  onAgentdHealth: (listener: HealthListener, onError?: (error: string) => void) => Unsubscribe
+  onAgentdHealth: (listener: HealthListener, onError?: (error: string) => void) => HealthSubscription
 } => {
   const invoke = async <T>(command: string, args?: Record<string, unknown>): Promise<T> => (
     dependencies.invoke<T>(command, args)
@@ -168,11 +172,11 @@ export const createTauriNativeBridge = (
     }
   }
 
-  const onAgentdHealth = (listener: HealthListener, onError?: (error: string) => void): Unsubscribe => {
+  const onAgentdHealth = (listener: HealthListener, onError?: (error: string) => void): HealthSubscription => {
     let active = true
     let unlisten: UnlistenFn | undefined
 
-    void dependencies.listen<unknown>(TAURI_EVENTS.agentdHealth, (event) => {
+    const ready = dependencies.listen<unknown>(TAURI_EVENTS.agentdHealth, (event) => {
       if (active) listener(readHealth(event.payload))
     }).then((cleanup) => {
       if (active) unlisten = cleanup
@@ -181,10 +185,13 @@ export const createTauriNativeBridge = (
       if (active) onError?.('Agentd health event subscription unavailable')
     })
 
-    return () => {
-      active = false
-      unlisten?.()
-      unlisten = undefined
+    return {
+      ready,
+      unsubscribe: () => {
+        active = false
+        unlisten?.()
+        unlisten = undefined
+      },
     }
   }
 

@@ -30,10 +30,7 @@ export default function TauriPilot() {
         setError(messageFrom(reason, 'App version unavailable'))
       }
     })
-    void tauriNativeBridge.health().then((value) => {
-      if (!disposed && !receivedHealthEvent) setHealth(value)
-    })
-    const unsubscribe = tauriNativeBridge.onAgentdHealth((value) => {
+    const healthSubscription = tauriNativeBridge.onAgentdHealth((value) => {
       if (!disposed) {
         receivedHealthEvent = true
         setHealth(value)
@@ -41,9 +38,15 @@ export default function TauriPilot() {
     }, (subscriptionError) => {
       if (!disposed) setError(subscriptionError)
     })
+    void healthSubscription.ready.then(() => {
+      if (disposed) return
+      return tauriNativeBridge.health().then((value) => {
+        if (!disposed && !receivedHealthEvent) setHealth(value)
+      })
+    })
     return () => {
       disposed = true
-      unsubscribe()
+      healthSubscription.unsubscribe()
     }
   }, [])
 
