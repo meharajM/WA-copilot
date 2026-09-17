@@ -115,8 +115,14 @@ export const createTauriChatStorage = (chatClient: ChatClient): StateStorage => 
                     }
                     for (const session of sessions) {
                         if (!knownSessions.has(session.id)) {
-                            if (session.workspacePath) await chatClient.createSession(session.id, session.title, session.workspacePath)
-                            else await chatClient.createSession(session.id, session.title)
+                            const metadata = {
+                                ...(session.status ? { status: session.status } : {}),
+                                ...(session.channel ? { channel: session.channel } : {}),
+                                ...(session.contact_id ? { contactId: session.contact_id } : {}),
+                                ...(session.thread_id ? { threadId: session.thread_id } : {}),
+                            }
+                            if (session.workspacePath) await chatClient.createSession(session.id, session.title, session.workspacePath, metadata)
+                            else await chatClient.createSession(session.id, session.title, undefined, metadata)
                             knownSessions.add(session.id)
                             knownWorkspaces.set(session.id, session.workspacePath || null)
                         } else if (knownWorkspaces.get(session.id) !== (session.workspacePath || null)) {

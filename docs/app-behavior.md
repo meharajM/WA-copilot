@@ -94,6 +94,7 @@ Pass evidence:
   - title
   - messages
   - active/resolved status
+  - channel, contact identifier, and optional thread identifier for omnichannel sessions
   - optional workspace path
   - optional topic classification
 - Agent execution is isolated per session. Switching sessions while one is running must not move output into the wrong session.
@@ -302,6 +303,8 @@ Pass evidence:
 - `memento-mcp` is not selectable until its adapter is implemented. Persisted legacy selections fall back to SQLite.
 - A memory inspector is available.
 - In the browser product, memory stats, bounded graph tool calls, and raw JSON export use authenticated agentd routes. The browser does not expose the daemon's native database path; opening the file location remains a desktop-only capability.
+
+Browser session channel/contact metadata is also persisted by authenticated `agentd` session routes, so Lead Directory entries survive browser reload and daemon restart without renderer-local storage.
 
 Pass evidence:
 

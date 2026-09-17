@@ -43,7 +43,7 @@ describe('Tauri chat-store persistence', () => {
     })
     await storage.setItem('aica-chat-v3', JSON.stringify({ state: { sessions: [loaded, next], activeSessionId: next.id } }))
 
-    expect(chat.createSession).toHaveBeenCalledWith('chat_2', 'New chat')
+    expect(chat.createSession).toHaveBeenCalledWith('chat_2', 'New chat', undefined, { status: 'active' })
     expect(chat.appendMessage).toHaveBeenCalledWith('chat_2', next.messages[0])
     expect(chat.appendMessage).not.toHaveBeenCalledWith('chat_1', loaded.messages[0])
   })

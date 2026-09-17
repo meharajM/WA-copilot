@@ -411,8 +411,14 @@ export function useAgent(): UseAgentReturn {
                     // Zustand persistence is intentionally asynchronous. Ensure the
                     // daemon owns the session/message before generation instead of
                     // racing the persistence middleware after a fresh browser chat.
-                    if (daemonSession?.workspacePath) await client.createSession(originSessionId, daemonSession.title || 'New Chat', daemonSession.workspacePath);
-                    else await client.createSession(originSessionId, daemonSession?.title || 'New Chat');
+                    const sessionMetadata = daemonSession ? {
+                        ...(daemonSession.status ? { status: daemonSession.status } : {}),
+                        ...(daemonSession.channel ? { channel: daemonSession.channel } : {}),
+                        ...(daemonSession.contact_id ? { contactId: daemonSession.contact_id } : {}),
+                        ...(daemonSession.thread_id ? { threadId: daemonSession.thread_id } : {}),
+                    } : undefined;
+                    if (daemonSession?.workspacePath) await client.createSession(originSessionId, daemonSession.title || 'New Chat', daemonSession.workspacePath, sessionMetadata);
+                    else await client.createSession(originSessionId, daemonSession?.title || 'New Chat', undefined, sessionMetadata);
                     await client.appendMessage(originSessionId, {
                         id: requestId,
                         role: 'user',

@@ -6,6 +6,7 @@ import type {
   ChatGenerationRequest,
   ChatHealth,
   ChatMessage,
+  ChatSessionMetadata,
   ChatSession,
 } from '../../../shared/chat-protocol'
 import { tauriNativeBridge } from './tauri-native-bridge'
@@ -71,7 +72,10 @@ export const readSession = (value: unknown): ChatSession => {
     title: value.title,
     createdAt: value.createdAt as number,
     updatedAt: value.updatedAt as number,
-    status: 'active',
+    status: value.status === 'resolved' ? 'resolved' : 'active',
+    ...(typeof value.channel === 'string' && value.channel ? { channel: value.channel as ChatSession['channel'] } : {}),
+    ...(typeof value.contactId === 'string' && value.contactId ? { contact_id: value.contactId } : {}),
+    ...(typeof value.threadId === 'string' && value.threadId ? { thread_id: value.threadId } : {}),
     ...(typeof value.workspacePath === 'string' && value.workspacePath ? { workspacePath: value.workspacePath } : {}),
     messages: value.messages.map(readMessage),
   }
@@ -110,7 +114,7 @@ export function createTauriChatClient(
     return value.map(readSession)
   }
 
-  const createSession = async (sessionId: string, title: string, workspacePath?: string): Promise<void> => {
+  const createSession = async (sessionId: string, title: string, workspacePath?: string, _metadata?: ChatSessionMetadata): Promise<void> => {
     await dependencies.invoke('chat_create_session', { id: sessionId, title, ...(workspacePath ? { workspacePath } : {}) })
   }
 

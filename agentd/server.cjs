@@ -16,6 +16,9 @@ const MAX_DRAFT_TEXT_LENGTH = 4096
 const MAX_CHAT_MESSAGES_PER_SESSION = 10_000
 const MAX_CHAT_ID_LENGTH = 128
 const MAX_CHAT_TITLE_LENGTH = 200
+const MAX_CHAT_CHANNEL_LENGTH = 32
+const MAX_CHAT_CONTACT_LENGTH = 512
+const MAX_CHAT_THREAD_LENGTH = 256
 const MAX_CHAT_CONTENT_LENGTH = 32 * 1024
 const MAX_ATTACHMENTS_PER_MESSAGE = 8
 const MAX_ATTACHMENT_NAME_LENGTH = 256
@@ -206,6 +209,10 @@ class AgentdServer {
           id TEXT PRIMARY KEY,
           title TEXT NOT NULL,
           workspace_path TEXT,
+          status TEXT NOT NULL DEFAULT 'active',
+          channel TEXT,
+          contact_id TEXT,
+          thread_id TEXT,
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL
         );
@@ -280,6 +287,10 @@ class AgentdServer {
       if (!chatColumns.some((column) => column.name === 'attachments')) this.db.exec('ALTER TABLE chat_messages ADD COLUMN attachments TEXT')
       const sessionColumns = this.db.prepare('PRAGMA table_info(chat_sessions)').all()
       if (!sessionColumns.some((column) => column.name === 'workspace_path')) this.db.exec('ALTER TABLE chat_sessions ADD COLUMN workspace_path TEXT')
+      if (!sessionColumns.some((column) => column.name === 'status')) this.db.exec("ALTER TABLE chat_sessions ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+      if (!sessionColumns.some((column) => column.name === 'channel')) this.db.exec('ALTER TABLE chat_sessions ADD COLUMN channel TEXT')
+      if (!sessionColumns.some((column) => column.name === 'contact_id')) this.db.exec('ALTER TABLE chat_sessions ADD COLUMN contact_id TEXT')
+      if (!sessionColumns.some((column) => column.name === 'thread_id')) this.db.exec('ALTER TABLE chat_sessions ADD COLUMN thread_id TEXT')
       this.db.prepare('INSERT INTO agent_state(key,value,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO NOTHING').run('paused', 'false', Date.now())
       await new Promise((resolve, reject) => {
         this.server = http.createServer((req, res) => this.handle(req, res).catch(error => {
@@ -894,6 +905,10 @@ class AgentdServer {
       title: row.title,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
+      status: row.status === 'resolved' ? 'resolved' : 'active',
+      ...(typeof row.channel === 'string' && row.channel ? { channel: row.channel } : {}),
+      ...(typeof row.contact_id === 'string' && row.contact_id ? { contactId: row.contact_id } : {}),
+      ...(typeof row.thread_id === 'string' && row.thread_id ? { threadId: row.thread_id } : {}),
       ...(typeof row.workspace_path === 'string' && row.workspace_path ? { workspacePath: row.workspace_path } : {}),
     }
   }
@@ -971,14 +986,23 @@ class AgentdServer {
     const body = await readBody(req, 16 * 1024)
     if (!body || typeof body !== 'object' || Array.isArray(body)) return json(res, 400, { error: 'Invalid session' })
     const keys = Object.keys(body).sort()
-    if (keys.some(key => !['id', 'title', 'workspacePath'].includes(key))) return json(res, 400, { error: 'Invalid session fields' })
+    if (keys.some(key => !['channel', 'contactId', 'id', 'status', 'threadId', 'title', 'workspacePath'].includes(key))) return json(res, 400, { error: 'Invalid session fields' })
     const id = body.id === undefined ? crypto.randomUUID() : body.id
     const title = body.title === undefined ? 'New chat' : body.title
     const workspacePath = body.workspacePath === undefined || body.workspacePath === null ? null : body.workspacePath
-    if (!this.validChatId(id) || !this.validChatTitle(title) || (workspacePath !== null && !validBoundedText(workspacePath, 1024))) return json(res, 400, { error: 'Invalid session' })
+    const status = body.status === undefined ? 'active' : body.status
+    const channel = body.channel === undefined || body.channel === null ? null : body.channel
+    const contactId = body.contactId === undefined || body.contactId === null ? null : body.contactId
+    const threadId = body.threadId === undefined || body.threadId === null ? null : body.threadId
+    if (!this.validChatId(id) || !this.validChatTitle(title)
+      || (workspacePath !== null && !validBoundedText(workspacePath, 1024))
+      || !['active', 'resolved'].includes(status)
+      || (channel !== null && (!validBoundedText(channel, MAX_CHAT_CHANNEL_LENGTH) || !['whatsapp', 'email', 'telegram', 'instagram', 'twitter', 'messenger', 'web'].includes(channel)))
+      || (contactId !== null && !validBoundedText(contactId, MAX_CHAT_CONTACT_LENGTH))
+      || (threadId !== null && !validBoundedText(threadId, MAX_CHAT_THREAD_LENGTH))) return json(res, 400, { error: 'Invalid session' })
     const now = Date.now()
     const result = this.db.transaction(() => {
-      const inserted = this.db.prepare('INSERT INTO chat_sessions(id,title,workspace_path,created_at,updated_at) VALUES (?,?,?,?,?) ON CONFLICT(id) DO NOTHING').run(id, title, workspacePath, now, now)
+      const inserted = this.db.prepare('INSERT INTO chat_sessions(id,title,workspace_path,status,channel,contact_id,thread_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING').run(id, title, workspacePath, status, channel, contactId, threadId, now, now)
       const session = this.db.prepare('SELECT * FROM chat_sessions WHERE id = ?').get(id)
       return { session, duplicate: inserted.changes === 0 }
     })()

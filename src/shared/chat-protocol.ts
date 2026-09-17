@@ -22,7 +22,15 @@ export interface ChatSessionSummary {
   status: 'active' | 'resolved'
   channel?: string
   contactId?: string
+  threadId?: string
   workspacePath?: string
+}
+
+export interface ChatSessionMetadata {
+  status?: 'active' | 'resolved'
+  channel?: string
+  contactId?: string
+  threadId?: string
 }
 
 export interface ChatSession extends ChatSessionSummary {
@@ -51,7 +59,7 @@ export interface ChatHealth {
 export interface ChatClient {
   health(): Promise<ChatHealth>
   loadSessions(): Promise<ChatSession[]>
-  createSession(sessionId: string, title: string, workspacePath?: string): Promise<void>
+  createSession(sessionId: string, title: string, workspacePath?: string, metadata?: ChatSessionMetadata): Promise<void>
   updateSessionWorkspace(sessionId: string, workspacePath: string | null): Promise<void>
   deleteSession(sessionId: string): Promise<void>
   appendMessage(sessionId: string, message: ChatMessage): Promise<void>

@@ -3,6 +3,7 @@ import type {
   ChatGenerationRequest,
   ChatHealth,
   ChatMessage,
+  ChatSessionMetadata,
   ChatSession,
 } from '../../../shared/chat-protocol'
 import type {
@@ -311,8 +312,19 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     return sessions
   }
 
-  const createSession = async (sessionId: string, title: string, workspacePath?: string): Promise<void> => {
-    await request('/api/v1/sessions', { method: 'POST', body: JSON.stringify({ id: sessionId, title, ...(workspacePath ? { workspacePath } : {}) }) }, true)
+  const createSession = async (sessionId: string, title: string, workspacePath?: string, metadata?: ChatSessionMetadata): Promise<void> => {
+    await request('/api/v1/sessions', {
+      method: 'POST',
+      body: JSON.stringify({
+        id: sessionId,
+        title,
+        ...(workspacePath ? { workspacePath } : {}),
+        ...(metadata?.status ? { status: metadata.status } : {}),
+        ...(metadata?.channel ? { channel: metadata.channel } : {}),
+        ...(metadata?.contactId ? { contactId: metadata.contactId } : {}),
+        ...(metadata?.threadId ? { threadId: metadata.threadId } : {}),
+      }),
+    }, true)
   }
 
   const updateSessionWorkspace = async (sessionId: string, workspacePath: string | null): Promise<void> => {

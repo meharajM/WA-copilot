@@ -4,6 +4,7 @@ import type {
   ChatGenerationRequest,
   ChatHealth,
   ChatMessage,
+  ChatSessionMetadata,
   ChatSession,
 } from '../../../shared/chat-protocol'
 
@@ -27,7 +28,7 @@ export function createFakeChatClient(enabled = false): ChatClient {
     .sort((a, b) => b.updatedAt - a.updatedAt)
     .map((session) => ({ ...session, messages: session.messages.map((message) => ({ ...message })) }))
 
-  const createSession = async (sessionId: string, title: string, workspacePath?: string): Promise<void> => {
+  const createSession = async (sessionId: string, title: string, workspacePath?: string, _metadata?: ChatSessionMetadata): Promise<void> => {
     if (!enabled) throw new Error('Tauri chat preview is disabled')
     if (!sessionId || !title) throw new Error('Chat session is invalid')
     if (sessions.has(sessionId)) return
