@@ -1,20 +1,27 @@
 import { Brain, Search, Trash2, FileText, Calendar, Plus, ExternalLink, Zap } from 'lucide-react'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef, type ChangeEvent } from 'react'
 import electron from '../../lib/electron'
 import { executeToolCall } from '../../lib/mcp'
+import { getBrowserAgentdClient } from '../../lib/browser-agentd-client'
+import { isTauriRuntime } from '../../lib/tauri-native-bridge'
 
 interface Document {
     id: number
     file_path: string
     file_name: string
     created_at: string
+    file_type?: string
+    size?: number
 }
+
+const isBrowserProduct = (): boolean => typeof window !== 'undefined' && !window.electron && !isTauriRuntime()
 
 export function KnowledgeBrowser() {
     const [docs, setDocs] = useState<Document[]>([])
     const [search, setSearch] = useState('')
     const [loading, setLoading] = useState(true)
     const [uploading, setUploading] = useState(false)
+    const fileInputRef = useRef<HTMLInputElement>(null)
 
     useEffect(() => {
         fetchDocs()
@@ -43,6 +50,10 @@ export function KnowledgeBrowser() {
     }
 
     const handleAddKnowledge = async () => {
+        if (isBrowserProduct()) {
+            fileInputRef.current?.click()
+            return
+        }
         try {
             const filePath = await electron.app.selectFile({
                 title: 'Select Knowledge Resource',
@@ -91,6 +102,36 @@ export function KnowledgeBrowser() {
         }
     }
 
+    const handleBrowserFile = async (event: ChangeEvent<HTMLInputElement>) => {
+        const file = event.target.files?.[0]
+        event.target.value = ''
+        if (!file) return
+        const extension = file.name.split('.').pop()?.toLowerCase() || ''
+        const isText = file.type.startsWith('text/') || ['txt', 'md', 'csv', 'json', 'xml', 'html', 'log'].includes(extension)
+        if (!isText) {
+            alert('Browser knowledge import currently supports text, Markdown, CSV, JSON, XML, HTML, and log files. Use the desktop fallback for binary document conversion.')
+            return
+        }
+        setUploading(true)
+        try {
+            const content = await file.text()
+            await getBrowserAgentdClient().ingestKnowledge({
+                fileName: file.name,
+                filePath: `browser://knowledge/${encodeURIComponent(file.name)}`,
+                fileType: file.type || 'text/plain',
+                content,
+                size: file.size,
+            })
+            await fetchDocs()
+            alert(`Successfully ingested: ${file.name}`)
+        } catch (error) {
+            console.error('Failed to add browser knowledge:', error)
+            alert(`Failed to index: ${error instanceof Error ? error.message : String(error)}`)
+        } finally {
+            setUploading(false)
+        }
+    }
+
     const filteredDocs = docs.filter(d => 
         d.file_name.toLowerCase().includes(search.toLowerCase())
     )
@@ -121,6 +162,7 @@ export function KnowledgeBrowser() {
                         )}
                         <span>{uploading ? 'Injecting...' : 'Add Knowledge'}</span>
                     </button>
+                    {isBrowserProduct() && <input ref={fileInputRef} type="file" hidden accept=".txt,.md,.csv,.json,.xml,.html,.log,text/*" onChange={handleBrowserFile} />}
                 </div>
 
                 {/* Stats Bar */}
@@ -175,13 +217,13 @@ export function KnowledgeBrowser() {
                                         <FileText className="w-5 h-5 text-gray-400 group-hover:text-blue-400" />
                                     </div>
                                     <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                        <button 
+                                        {!isBrowserProduct() && <button
                                             onClick={() => electron.openExternal(`file://${doc.file_path}`)}
                                             title="Open file location"
                                             className="p-2 rounded-lg hover:bg-white/10 transition-colors text-gray-400 hover:text-white"
                                         >
                                             <ExternalLink className="w-4 h-4" />
-                                        </button>
+                                        </button>}
                                         <button 
                                             onClick={() => handleDelete(doc.id)}
                                             className="p-2 rounded-lg hover:bg-red-500/20 text-gray-400 hover:text-red-400 transition-colors"

@@ -139,6 +139,28 @@ export interface BrowserDraft {
   updatedAt: number
 }
 
+export interface BrowserKnowledgeDocument {
+  id: number
+  file_path: string
+  file_name: string
+  created_at: string
+  file_type?: string
+  size?: number
+}
+
+export interface BrowserKnowledgeResult extends BrowserKnowledgeDocument {
+  content: string
+  rank?: number
+}
+
+export interface BrowserIntelligenceLog {
+  id: number
+  type: string
+  event: string
+  details?: string | null
+  timestamp: string
+}
+
 const normaliseOrigin = (origin: string): string => {
   const url = new URL(origin)
   if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('Agentd origin must use HTTP(S)')
@@ -164,6 +186,13 @@ export interface BrowserAgentdClient extends ChatClient {
   resumeAll(): Promise<{ paused: boolean }>
   listDrafts(limit?: number, status?: BrowserDraft['status']): Promise<BrowserDraft[]>
   updateDraftStatus(id: number, status: BrowserDraft['status']): Promise<BrowserDraft>
+  listKnowledge(limit?: number): Promise<BrowserKnowledgeDocument[]>
+  ingestKnowledge(input: { fileName: string; filePath: string; fileType: string; content: string; size: number }): Promise<BrowserKnowledgeDocument>
+  deleteKnowledge(id: number): Promise<boolean>
+  searchKnowledge(query: string, limit?: number): Promise<BrowserKnowledgeResult[]>
+  getIntelligenceStats(): Promise<{ totalQueries: number; resolvedQueries: number; autonomyRate: number; trainingCount: number; learningCount: number }>
+  listIntelligenceLogs(limit?: number): Promise<BrowserIntelligenceLog[]>
+  logAccuracy(entry: { event: string; details?: string }): Promise<void>
   setCredential(key: CredentialKey, value: string): Promise<NativeResult>
   hasCredential(key: CredentialKey): Promise<NativeResult & { exists: boolean }>
   deleteCredential(key: CredentialKey): Promise<NativeResult>
@@ -341,6 +370,56 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     const value = await request<unknown>(`/api/v1/drafts/${id}`, { method: 'PATCH', body: JSON.stringify({ status }) }, true)
     return readDraft(value)
   }
+  const readKnowledgeDocument = (value: unknown): BrowserKnowledgeDocument => {
+    if (!isRecord(value) || !Number.isSafeInteger(value.id) || typeof value.file_path !== 'string' || typeof value.file_name !== 'string' || typeof value.created_at !== 'string') throw new Error('Invalid agentd knowledge document')
+    return {
+      id: value.id as number,
+      file_path: value.file_path as string,
+      file_name: value.file_name as string,
+      created_at: value.created_at as string,
+      ...(typeof value.file_type === 'string' ? { file_type: value.file_type } : {}),
+      ...(Number.isSafeInteger(value.size) ? { size: value.size as number } : {}),
+    }
+  }
+  const listKnowledge = async (limit = 100): Promise<BrowserKnowledgeDocument[]> => {
+    const value = await request<unknown>(`/api/v1/knowledge?limit=${encodeURIComponent(String(limit))}`)
+    if (!isRecord(value) || !Array.isArray(value.documents)) throw new Error('Invalid agentd knowledge response')
+    return value.documents.map(readKnowledgeDocument)
+  }
+  const ingestKnowledge = async (input: { fileName: string; filePath: string; fileType: string; content: string; size: number }): Promise<BrowserKnowledgeDocument> => {
+    const value = await request<unknown>('/api/v1/knowledge', { method: 'POST', body: JSON.stringify(input) }, true)
+    if (!isRecord(value) || value.success !== true) throw new Error('Knowledge ingestion failed')
+    return readKnowledgeDocument(value.document)
+  }
+  const deleteKnowledge = async (id: number): Promise<boolean> => {
+    const value = await request<unknown>(`/api/v1/knowledge/${encodeURIComponent(String(id))}`, { method: 'DELETE' }, true)
+    if (!isRecord(value) || typeof value.deleted !== 'boolean') throw new Error('Invalid knowledge delete response')
+    return value.deleted
+  }
+  const searchKnowledge = async (query: string, limit = 5): Promise<BrowserKnowledgeResult[]> => {
+    const value = await request<unknown>(`/api/v1/knowledge/search?query=${encodeURIComponent(query)}&limit=${encodeURIComponent(String(limit))}`)
+    if (!isRecord(value) || !Array.isArray(value.results)) throw new Error('Invalid knowledge search response')
+    return value.results.map((item) => {
+      const document = readKnowledgeDocument(item)
+      if (!isRecord(item) || typeof item.content !== 'string') throw new Error('Invalid knowledge result')
+      return { ...document, content: item.content, ...(typeof item.rank === 'number' ? { rank: item.rank } : {}) }
+    })
+  }
+  const getIntelligenceStats = async () => {
+    const value = await request<unknown>('/api/v1/intelligence/stats')
+    if (!isRecord(value) || value.success !== true || !isRecord(value.stats)) throw new Error('Invalid intelligence stats response')
+    const stats = value.stats
+    if (![stats.totalQueries, stats.resolvedQueries, stats.autonomyRate, stats.trainingCount, stats.learningCount].every(item => typeof item === 'number')) throw new Error('Invalid intelligence stats response')
+    return stats as { totalQueries: number; resolvedQueries: number; autonomyRate: number; trainingCount: number; learningCount: number }
+  }
+  const listIntelligenceLogs = async (limit = 20): Promise<BrowserIntelligenceLog[]> => {
+    const value = await request<unknown>(`/api/v1/intelligence/logs?limit=${encodeURIComponent(String(limit))}`)
+    if (!isRecord(value) || !Array.isArray(value.logs)) throw new Error('Invalid intelligence logs response')
+    return value.logs.filter((item): item is BrowserIntelligenceLog => isRecord(item) && Number.isSafeInteger(item.id) && typeof item.type === 'string' && typeof item.event === 'string' && typeof item.timestamp === 'string')
+  }
+  const logAccuracy = async (entry: { event: string; details?: string }): Promise<void> => {
+    await request('/api/v1/intelligence/accuracy', { method: 'POST', body: JSON.stringify(entry) }, true)
+  }
   const setCredential = async (key: CredentialKey, value: string) => readResult(await request(`/api/v1/credentials/${encodeURIComponent(key)}`, { method: 'POST', body: JSON.stringify({ value }) }, true))
   const hasCredential = async (key: CredentialKey) => readCredentialPresence(await request(`/api/v1/credentials/${encodeURIComponent(key)}`))
   const deleteCredential = async (key: CredentialKey) => readResult(await request(`/api/v1/credentials/${encodeURIComponent(key)}`, { method: 'DELETE' }, true))
@@ -375,6 +454,13 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     resumeAll,
     listDrafts,
     updateDraftStatus,
+    listKnowledge,
+    ingestKnowledge,
+    deleteKnowledge,
+    searchKnowledge,
+    getIntelligenceStats,
+    listIntelligenceLogs,
+    logAccuracy,
     setCredential,
     hasCredential,
     deleteCredential,

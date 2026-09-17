@@ -22,6 +22,12 @@ const MAX_ATTACHMENT_NAME_LENGTH = 256
 const MAX_ATTACHMENT_TYPE_LENGTH = 128
 const MAX_ATTACHMENT_TEXT_LENGTH = 64 * 1024
 const MAX_ATTACHMENT_DATA_URL_LENGTH = 384 * 1024
+const MAX_KNOWLEDGE_NAME_LENGTH = 256
+const MAX_KNOWLEDGE_PATH_LENGTH = 1024
+const MAX_KNOWLEDGE_TYPE_LENGTH = 128
+const MAX_KNOWLEDGE_CONTENT_LENGTH = 512 * 1024
+const MAX_KNOWLEDGE_BODY_BYTES = MAX_KNOWLEDGE_CONTENT_LENGTH + 32 * 1024
+const MAX_INTELLIGENCE_DETAILS_LENGTH = 4096
 const MAX_PROVIDER_RESPONSE_BYTES = 1024 * 1024
 const MAX_PROVIDER_REQUEST_BYTES = 512 * 1024
 const MAX_CHAT_REQUEST_BYTES = MAX_PROVIDER_REQUEST_BYTES + 64 * 1024
@@ -221,6 +227,23 @@ class AgentdServer {
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           timestamp TEXT NOT NULL,
           payload TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS knowledge_documents (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          file_path TEXT NOT NULL,
+          file_name TEXT NOT NULL,
+          file_type TEXT NOT NULL,
+          content TEXT NOT NULL,
+          size INTEGER NOT NULL,
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS knowledge_documents_created_idx ON knowledge_documents(created_at DESC, id DESC);
+        CREATE TABLE IF NOT EXISTS intelligence_logs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          type TEXT NOT NULL,
+          event TEXT NOT NULL,
+          details TEXT,
+          timestamp TEXT NOT NULL
         );
       `)
       const chatColumns = this.db.prepare('PRAGMA table_info(chat_messages)').all()
@@ -424,6 +447,13 @@ class AgentdServer {
       return json(res, 200, { runtime: 'agentd', paused: this.getState('paused', 'true') === 'true', queueDepth: this.db.prepare("SELECT COUNT(*) AS count FROM inbound_events WHERE status IN ('queued','processing')").get().count, events: this.db.prepare('SELECT COUNT(*) AS count FROM inbound_events').get().count })
     }
     if (url.pathname === '/api/v1/logs' && ['GET', 'POST'].includes(req.method)) return this.auditLogs(req, res, url)
+    if (url.pathname === '/api/v1/knowledge' && ['GET', 'POST'].includes(req.method)) return this.knowledge(req, res, url)
+    const knowledgeMatch = /^\/api\/v1\/knowledge\/(\d+)$/.exec(url.pathname)
+    if (knowledgeMatch && req.method === 'DELETE') return this.deleteKnowledge(req, res, Number(knowledgeMatch[1]))
+    if (url.pathname === '/api/v1/knowledge/search' && req.method === 'GET') return this.searchKnowledge(req, res, url)
+    if (url.pathname === '/api/v1/intelligence/logs' && req.method === 'GET') return this.intelligenceLogs(req, res, url)
+    if (url.pathname === '/api/v1/intelligence/stats' && req.method === 'GET') return this.intelligenceStats(req, res)
+    if (url.pathname === '/api/v1/intelligence/accuracy' && req.method === 'POST') return this.logIntelligenceAccuracy(req, res)
     if (url.pathname === '/api/v1/sessions' && ['GET', 'POST'].includes(req.method)) return this.chatSessions(req, res)
     const sessionMatch = /^\/api\/v1\/sessions\/([^/]+)$/.exec(url.pathname)
     if (sessionMatch && req.method === 'PATCH') return this.updateChatSession(req, res, sessionMatch[1])
@@ -536,6 +566,104 @@ class AgentdServer {
     const limit = Number.isSafeInteger(requested) ? Math.min(Math.max(requested, 1), 500) : 100
     const rows = this.db.prepare('SELECT timestamp,payload FROM audit_logs ORDER BY id DESC LIMIT ?').all(limit)
     return json(res, 200, { entries: rows.reverse().map((row) => ({ timestamp: row.timestamp, ...JSON.parse(row.payload) })) })
+  }
+
+  knowledgeView(row) {
+    return {
+      id: row.id,
+      file_path: row.file_path,
+      file_name: row.file_name,
+      created_at: row.created_at,
+      ...(typeof row.file_type === 'string' ? { file_type: row.file_type } : {}),
+      ...(Number.isSafeInteger(row.size) ? { size: row.size } : {}),
+    }
+  }
+
+  async knowledge(req, res, url) {
+    this.authorize(req, { mutation: req.method === 'POST' })
+    if (req.method === 'GET') {
+      const requested = Number.parseInt(url.searchParams.get('limit') || '100', 10)
+      const limit = Number.isSafeInteger(requested) ? Math.min(Math.max(requested, 1), 500) : 100
+      const rows = this.db.prepare('SELECT id,file_path,file_name,file_type,size,created_at FROM knowledge_documents ORDER BY created_at DESC, id DESC LIMIT ?').all(limit)
+      return json(res, 200, { documents: rows.map(row => this.knowledgeView(row)) })
+    }
+    if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
+    const body = await readBody(req, MAX_KNOWLEDGE_BODY_BYTES)
+    const keys = Object.keys(body || {}).sort()
+    if (!body || typeof body !== 'object' || Array.isArray(body)
+      || keys.some(key => !['content', 'fileName', 'filePath', 'fileType', 'size'].includes(key))
+      || !validBoundedText(body.fileName, MAX_KNOWLEDGE_NAME_LENGTH)
+      || !validBoundedText(body.filePath, MAX_KNOWLEDGE_PATH_LENGTH)
+      || !validBoundedText(body.fileType, MAX_KNOWLEDGE_TYPE_LENGTH, true)
+      || typeof body.content !== 'string' || !body.content.trim()
+      || body.content.length > MAX_KNOWLEDGE_CONTENT_LENGTH
+      || Buffer.byteLength(body.content, 'utf8') > MAX_KNOWLEDGE_CONTENT_LENGTH
+      || !Number.isSafeInteger(body.size) || body.size < 0 || body.size > 16 * 1024 * 1024) {
+      return json(res, 400, { error: 'Invalid knowledge document' })
+    }
+    const now = new Date().toISOString()
+    const result = this.db.transaction(() => {
+      this.db.prepare('DELETE FROM knowledge_documents WHERE file_path = ?').run(body.filePath)
+      const inserted = this.db.prepare('INSERT INTO knowledge_documents(file_path,file_name,file_type,content,size,created_at) VALUES (?,?,?,?,?,?)')
+        .run(body.filePath, body.fileName.trim(), body.fileType, body.content, body.size, now)
+      this.db.prepare('INSERT INTO intelligence_logs(type,event,details,timestamp) VALUES (?,?,?,?)')
+        .run('training', 'completed', `Successfully indexed ${body.fileName.trim()}`, now)
+      return this.db.prepare('SELECT id,file_path,file_name,file_type,size,created_at FROM knowledge_documents WHERE id = ?').get(inserted.lastInsertRowid)
+    })()
+    return json(res, 201, { success: true, document: this.knowledgeView(result) })
+  }
+
+  async deleteKnowledge(req, res, id) {
+    this.authorize(req, { mutation: true })
+    const result = this.db.prepare('DELETE FROM knowledge_documents WHERE id = ?').run(id)
+    return json(res, 200, { success: true, deleted: result.changes > 0 })
+  }
+
+  async searchKnowledge(req, res, url) {
+    this.authorize(req)
+    const query = url.searchParams.get('query') || ''
+    const requested = Number.parseInt(url.searchParams.get('limit') || '5', 10)
+    const limit = Number.isSafeInteger(requested) ? Math.min(Math.max(requested, 1), 20) : 5
+    if (!query.trim() || query.length > 512) return json(res, 400, { error: 'Invalid knowledge query' })
+    const terms = query.normalize('NFKC').toLowerCase().split(/[^\p{L}\p{M}\p{N}_]+/u).filter(Boolean).slice(0, 24)
+    if (!terms.length) return json(res, 200, { results: [] })
+    const rows = this.db.prepare('SELECT id,file_path,file_name,content FROM knowledge_documents ORDER BY created_at DESC, id DESC').all()
+    const ranked = rows.map(row => {
+      const haystack = row.content.toLowerCase()
+      const score = terms.reduce((total, term) => total + (haystack.split(term).length - 1), 0)
+      return { row, score }
+    }).filter(item => item.score > 0).sort((a, b) => b.score - a.score || b.row.id - a.row.id).slice(0, limit)
+    return json(res, 200, { results: ranked.map(({ row, score }) => ({ id: row.id, file_path: row.file_path, file_name: row.file_name, content: row.content, rank: -score })) })
+  }
+
+  async intelligenceLogs(req, res, url) {
+    this.authorize(req)
+    const requested = Number.parseInt(url.searchParams.get('limit') || '20', 10)
+    const limit = Number.isSafeInteger(requested) ? Math.min(Math.max(requested, 1), 200) : 20
+    const rows = this.db.prepare('SELECT id,type,event,details,timestamp FROM intelligence_logs ORDER BY id DESC LIMIT ?').all(limit)
+    return json(res, 200, { logs: rows.reverse() })
+  }
+
+  async intelligenceStats(req, res) {
+    this.authorize(req)
+    const total = this.db.prepare("SELECT COUNT(*) AS count FROM intelligence_logs WHERE type = 'accuracy'").get().count
+    const resolved = this.db.prepare("SELECT COUNT(*) AS count FROM intelligence_logs WHERE type = 'accuracy' AND event = 'resolved'").get().count
+    const training = this.db.prepare("SELECT COUNT(*) AS count FROM intelligence_logs WHERE type = 'training'").get().count
+    const learning = this.db.prepare("SELECT COUNT(*) AS count FROM intelligence_logs WHERE type = 'learning'").get().count
+    return json(res, 200, { success: true, stats: { totalQueries: total, resolvedQueries: resolved, autonomyRate: total > 0 ? (resolved / total) * 100 : 100, trainingCount: training, learningCount: learning } })
+  }
+
+  async logIntelligenceAccuracy(req, res) {
+    this.authorize(req, { mutation: true })
+    if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
+    const body = await readBody(req, MAX_INTELLIGENCE_DETAILS_LENGTH + 1024)
+    if (!body || typeof body !== 'object' || Array.isArray(body)
+      || typeof body.event !== 'string' || !/^[\x21-\x7e]{1,64}$/.test(body.event)
+      || (body.details !== undefined && (typeof body.details !== 'string' || body.details.length > MAX_INTELLIGENCE_DETAILS_LENGTH))) {
+      return json(res, 400, { error: 'Invalid intelligence event' })
+    }
+    this.db.prepare('INSERT INTO intelligence_logs(type,event,details,timestamp) VALUES (?,?,?,?)').run('accuracy', body.event, body.details || null, new Date().toISOString())
+    return json(res, 200, { success: true })
   }
 
   async whatsappSettings(req, res) {

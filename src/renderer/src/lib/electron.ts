@@ -70,6 +70,8 @@ const browserAutonomyHealth = async () => {
     } catch (error) {
         return { executionLocation: 'agentd', transport: 'unavailable', channel: { status: 'unavailable', error: error instanceof Error ? error.message : 'agentd unavailable' }, leaseHeld: false }
     }
+    let knowledgeDocuments = 0
+    try { knowledgeDocuments = (await getBrowserAgentdClient().listKnowledge()).length } catch { /* status remains useful if the optional slice is unavailable */ }
     return {
         executionLocation: 'agentd',
         transport: 'authenticated loopback HTTP',
@@ -77,7 +79,7 @@ const browserAutonomyHealth = async () => {
         queues: { whatsapp: status.queueDepth || 0, email: 0, meta: 0 },
         leaseHeld: true,
         memory: { status: 'not migrated', backend: null },
-        rag: { status: 'not migrated', documents: 0 },
+        rag: { status: 'bounded-text', documents: knowledgeDocuments },
     }
 }
 
@@ -296,6 +298,12 @@ export const electron = {
             if (isElectron() && window.electron?.memory) {
                 return await window.electron.memory.getStats()
             }
+            if (isBrowserProduct()) {
+                return {
+                    success: true,
+                    stats: { entityCount: 0, relationCount: 0, storageSize: 0, avgSearchLatency: 0, backend: 'not-migrated' },
+                }
+            }
             return {
                 success: true,
                 stats: { entityCount: 0, relationCount: 0, storageSize: 0, avgSearchLatency: 0, backend: 'mock' },
@@ -312,12 +320,14 @@ export const electron = {
             if (isElectron() && window.electron?.intelligence) {
                 return await window.electron.intelligence.getKnowledge()
             }
+            if (isBrowserProduct()) return await getBrowserAgentdClient().listKnowledge()
             return []
         },
         deleteKnowledge: async (id: number) => {
             if (isElectron() && window.electron?.intelligence) {
                 return await window.electron.intelligence.deleteKnowledge(id)
             }
+            if (isBrowserProduct()) return await getBrowserAgentdClient().deleteKnowledge(id)
             return false
         },
         getPersona: async () => {
@@ -336,12 +346,14 @@ export const electron = {
             if (isElectron() && window.electron?.intelligence) {
                 return await window.electron.intelligence.getLogs(limit)
             }
+            if (isBrowserProduct()) return { success: true, logs: await getBrowserAgentdClient().listIntelligenceLogs(limit) }
             return { success: true, logs: [] }
         },
         getStats: async () => {
             if (isElectron() && window.electron?.intelligence) {
                 return await window.electron.intelligence.getStats()
             }
+            if (isBrowserProduct()) return { success: true, stats: await getBrowserAgentdClient().getIntelligenceStats() }
             return {
                 success: true,
                 stats: { totalQueries: 0, resolvedQueries: 0, autonomyRate: 100, trainingCount: 0, learningCount: 0 },
@@ -350,6 +362,10 @@ export const electron = {
         logAccuracy: async (payload: { event: string; details?: string }) => {
             if (isElectron() && window.electron?.intelligence) {
                 return await window.electron.intelligence.logAccuracy(payload)
+            }
+            if (isBrowserProduct()) {
+                await getBrowserAgentdClient().logAccuracy(payload)
+                return { success: true }
             }
             return { success: true }
         },

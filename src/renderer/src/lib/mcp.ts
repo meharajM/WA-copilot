@@ -3,6 +3,8 @@ import electron from "./electron";
 import { useDraftStore } from "../stores/draftStore";
 import { createDraftResponse } from "./email-policy";
 import { enforceToolCallPolicy } from "./tool-policy";
+import { getBrowserAgentdClient } from "./browser-agentd-client";
+import { isTauriRuntime } from "./tauri-native-bridge";
 
 /// <reference path="../env.d.ts" />
 
@@ -106,6 +108,8 @@ function sanitizeArgsForLogging(
 function ensureRecord(args: Record<string, unknown> | null | undefined): Record<string, unknown> {
   return args || {};
 }
+
+const isBrowserProduct = (): boolean => typeof window !== 'undefined' && !window.electron && !isTauriRuntime()
 
 // Execute a tool call with retry logic for connection errors
 
@@ -246,7 +250,9 @@ export async function executeToolCall(
     safeArgs = policy.args;
   }
 
-  const server = findServerForTool(toolName);
+  // Built-in knowledge routes are daemon-owned in the browser even if a stale
+  // Electron MCP schema is still present in persisted renderer state.
+  const server = isBrowserProduct() && toolName.startsWith('rag_') ? null : findServerForTool(toolName);
   if (!server) {
     // FALLBACK: Check if it's an internal memory tool
     if (toolName.startsWith('memory_')) {
@@ -308,6 +314,34 @@ export async function executeToolCall(
      if (toolName.startsWith('rag_')) {
        logMcpRenderer("info", "Executing RAG tool via direct IPC fallback", { tool: toolName });
        try {
+         if (isBrowserProduct()) {
+           const client = getBrowserAgentdClient()
+           if (toolName === 'rag_search') {
+             if (typeof safeArgs.query !== 'string' || !safeArgs.query.trim()) return { result: [], error: "Missing 'query' parameter." }
+             return { result: await client.searchKnowledge(safeArgs.query, typeof safeArgs.limit === 'number' ? safeArgs.limit : 5) }
+           }
+           if (toolName === 'rag_get_stats') {
+             const documents = await client.listKnowledge()
+             const fileTypes: Record<string, number> = {}
+             let totalSize = 0
+             for (const document of documents) {
+               const extension = document.file_name.split('.').pop()?.toLowerCase() || 'unknown'
+               fileTypes[extension] = (fileTypes[extension] || 0) + 1
+               totalSize += document.size || 0
+             }
+             return { result: { count: documents.length, fileTypes, totalSize } }
+           }
+           if (toolName === 'rag_save_correction') {
+             const question = typeof safeArgs.question === 'string' ? safeArgs.question.trim() : ''
+             const answer = typeof safeArgs.answer === 'string' ? safeArgs.answer.trim() : ''
+             if (!question || !answer) return { result: null, error: "Missing 'question' or 'answer' parameter." }
+             const content = `Question: ${question}\nCorrect Answer: ${answer}`
+             const now = Date.now()
+             await client.ingestKnowledge({ fileName: `correction_${now}.txt`, filePath: `browser://correction/${now}`, fileType: 'text/plain', content, size: new TextEncoder().encode(content).byteLength })
+             return { result: { success: true } }
+           }
+           return { result: null, error: `Browser knowledge tool '${toolName}' requires a file selected through the Knowledge UI.` }
+         }
          // Find if we have an internal-rag server ID in the store to use, otherwise use default
          const result = await electron.mcp.callTool('internal-rag', toolName, safeArgs) as { result: unknown; error?: string };
          return result;

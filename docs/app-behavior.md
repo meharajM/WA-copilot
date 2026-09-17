@@ -110,7 +110,7 @@ Pass evidence:
   - knowledge upload
   - knowledge test drive
   - topic analysis of sessions
-- Knowledge upload accepts documents and images.
+- Knowledge upload accepts documents and images in the legacy Electron flow. In the browser product, the authenticated agentd adapter currently accepts bounded text/Markdown/CSV/JSON/XML/HTML/log files through the browser file picker; binary conversion remains an explicit unsupported state until a native parser capability is migrated.
 - Knowledge test drive runs a RAG search and then asks the selected LLM to answer only from retrieved context.
 
 Pass evidence:
@@ -282,7 +282,7 @@ Pass evidence:
   - search documents by name
   - open the original file
   - delete indexed knowledge
-- Ingestion uses the internal RAG tool path.
+- Electron ingestion uses the internal RAG tool path. Browser ingestion uses the authenticated agentd knowledge route and stores bounded text content in the daemon-owned SQLite database; the browser never sends an arbitrary native path.
 
 Pass evidence:
 
