@@ -43,6 +43,21 @@ test('agentd chat sessions require auth, persist across restart, and isolate mes
     contactId: created.body.session.contactId,
     threadId: created.body.session.threadId,
   }, { status: 'resolved', channel: 'email', contactId: 'alice@example.com', threadId: 'thread-1' })
+  const updated = await request(origin, 'PATCH', '/api/v1/sessions/one', {
+    workspacePath: 'browser://workspace/Support',
+    status: 'active',
+    channel: 'whatsapp',
+    contactId: '123@s.whatsapp.net',
+    threadId: 'thread-2',
+  }, bearer)
+  assert.equal(updated.status, 200)
+  assert.deepEqual({
+    status: updated.body.session.status,
+    channel: updated.body.session.channel,
+    contactId: updated.body.session.contactId,
+    threadId: updated.body.session.threadId,
+    workspacePath: updated.body.session.workspacePath,
+  }, { status: 'active', channel: 'whatsapp', contactId: '123@s.whatsapp.net', threadId: 'thread-2', workspacePath: 'browser://workspace/Support' })
   assert.equal((await request(origin, 'POST', '/api/v1/sessions/one/messages', { id: 'm1', role: 'user', content: 'hello' }, bearer)).status, 201)
   assert.equal((await request(origin, 'POST', '/api/v1/sessions/two/messages', { id: 'm1', role: 'user', content: 'wrong session' }, bearer)).status, 404)
   assert.equal((await request(origin, 'GET', '/api/v1/sessions/one', undefined, bearer)).body.messages[0].content, 'hello')
@@ -59,7 +74,8 @@ test('agentd chat sessions require auth, persist across restart, and isolate mes
     channel: session.body.session.channel,
     contactId: session.body.session.contactId,
     threadId: session.body.session.threadId,
-  }, { status: 'resolved', channel: 'email', contactId: 'alice@example.com', threadId: 'thread-1' })
+    workspacePath: session.body.session.workspacePath,
+  }, { status: 'active', channel: 'whatsapp', contactId: '123@s.whatsapp.net', threadId: 'thread-2', workspacePath: 'browser://workspace/Support' })
   await recovered.stop()
   fs.rmSync(dataDir, { recursive: true, force: true })
 })

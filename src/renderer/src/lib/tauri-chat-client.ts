@@ -118,7 +118,7 @@ export function createTauriChatClient(
     await dependencies.invoke('chat_create_session', { id: sessionId, title, ...(workspacePath ? { workspacePath } : {}) })
   }
 
-  const updateSessionWorkspace = async (sessionId: string, workspacePath: string | null): Promise<void> => {
+  const updateSessionWorkspace = async (sessionId: string, workspacePath: string | null, _metadata?: ChatSessionMetadata): Promise<void> => {
     await dependencies.invoke('chat_update_session_workspace', { sessionId, workspacePath })
   }
 

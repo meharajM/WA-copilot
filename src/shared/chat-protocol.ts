@@ -60,7 +60,7 @@ export interface ChatClient {
   health(): Promise<ChatHealth>
   loadSessions(): Promise<ChatSession[]>
   createSession(sessionId: string, title: string, workspacePath?: string, metadata?: ChatSessionMetadata): Promise<void>
-  updateSessionWorkspace(sessionId: string, workspacePath: string | null): Promise<void>
+  updateSessionWorkspace(sessionId: string, workspacePath: string | null, metadata?: ChatSessionMetadata): Promise<void>
   deleteSession(sessionId: string): Promise<void>
   appendMessage(sessionId: string, message: ChatMessage): Promise<void>
   generate(request: ChatGenerationRequest, onEvent: (event: ChatGenerationEvent) => void, signal?: AbortSignal): Promise<void>

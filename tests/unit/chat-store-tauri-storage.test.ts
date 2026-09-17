@@ -69,4 +69,23 @@ describe('Tauri chat-store persistence', () => {
     await storage.setItem('aica-chat-v3', JSON.stringify({ state: { sessions: [], activeSessionId: null } }))
     expect(chat.deleteSession).toHaveBeenCalledWith('chat_1')
   })
+
+  it('persists session status and channel metadata updates', async () => {
+    const updateSessionWorkspace = vi.fn(async () => {})
+    const chat = client({ loadSessions: vi.fn(async () => [session()]), updateSessionWorkspace })
+    const storage = createTauriChatStorage(chat)
+    await storage.getItem('aica-chat-v3')
+    await storage.setItem('aica-chat-v3', JSON.stringify({
+      state: {
+        sessions: [session({ status: 'resolved', channel: 'email', contact_id: 'alice@example.com', thread_id: 'thread-1' })],
+        activeSessionId: 'chat_1',
+      },
+    }))
+    expect(updateSessionWorkspace).toHaveBeenCalledWith('chat_1', null, {
+      status: 'resolved',
+      channel: 'email',
+      contactId: 'alice@example.com',
+      threadId: 'thread-1',
+    })
+  })
 })

@@ -1016,10 +1016,29 @@ class AgentdServer {
     if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
     const body = await readBody(req, 8 * 1024)
     const keys = Object.keys(body || {}).sort()
-    const workspacePath = body?.workspacePath === undefined || body.workspacePath === null ? null : body.workspacePath
-    if (!body || typeof body !== 'object' || Array.isArray(body) || keys.some((key) => key !== 'workspacePath') || (workspacePath !== null && !validBoundedText(workspacePath, 1024))) return json(res, 400, { error: 'Invalid workspace' })
+    if (!body || typeof body !== 'object' || Array.isArray(body) || keys.some((key) => !['channel', 'contactId', 'status', 'threadId', 'workspacePath'].includes(key))) return json(res, 400, { error: 'Invalid session update' })
+    if (!keys.length) return json(res, 400, { error: 'Invalid session update' })
+    const workspacePath = body.workspacePath === undefined || body.workspacePath === null ? null : body.workspacePath
+    const status = body.status === undefined ? undefined : body.status
+    const channel = body.channel === undefined || body.channel === null ? null : body.channel
+    const contactId = body.contactId === undefined || body.contactId === null ? null : body.contactId
+    const threadId = body.threadId === undefined || body.threadId === null ? null : body.threadId
+    if ((keys.includes('workspacePath') && workspacePath !== null && !validBoundedText(workspacePath, 1024))
+      || (keys.includes('status') && !['active', 'resolved'].includes(status))
+      || (keys.includes('channel') && channel !== null && (!validBoundedText(channel, MAX_CHAT_CHANNEL_LENGTH) || !['whatsapp', 'email', 'telegram', 'instagram', 'twitter', 'messenger', 'web'].includes(channel)))
+      || (keys.includes('contactId') && contactId !== null && !validBoundedText(contactId, MAX_CHAT_CONTACT_LENGTH))
+      || (keys.includes('threadId') && threadId !== null && !validBoundedText(threadId, MAX_CHAT_THREAD_LENGTH))) return json(res, 400, { error: 'Invalid session update' })
     const now = Date.now()
-    const result = this.db.prepare('UPDATE chat_sessions SET workspace_path = ?, updated_at = ? WHERE id = ?').run(workspacePath, now, rawId)
+    const assignments = []
+    const values = []
+    if (keys.includes('workspacePath')) { assignments.push('workspace_path = ?'); values.push(workspacePath) }
+    if (keys.includes('status')) { assignments.push('status = ?'); values.push(status) }
+    if (keys.includes('channel')) { assignments.push('channel = ?'); values.push(channel) }
+    if (keys.includes('contactId')) { assignments.push('contact_id = ?'); values.push(contactId) }
+    if (keys.includes('threadId')) { assignments.push('thread_id = ?'); values.push(threadId) }
+    assignments.push('updated_at = ?')
+    values.push(now, rawId)
+    const result = this.db.prepare(`UPDATE chat_sessions SET ${assignments.join(', ')} WHERE id = ?`).run(...values)
     if (!result.changes) return json(res, 404, { error: 'Session not found' })
     return json(res, 200, { session: this.chatSessionView(this.db.prepare('SELECT * FROM chat_sessions WHERE id = ?').get(rawId)) })
   }

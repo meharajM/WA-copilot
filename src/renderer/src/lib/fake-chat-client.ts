@@ -36,7 +36,7 @@ export function createFakeChatClient(enabled = false): ChatClient {
     sessions.set(sessionId, { id: sessionId, title, createdAt: now, updatedAt: now, status: 'active', messages: [], ...(workspacePath ? { workspacePath } : {}) })
   }
 
-  const updateSessionWorkspace = async (sessionId: string, workspacePath: string | null): Promise<void> => {
+  const updateSessionWorkspace = async (sessionId: string, workspacePath: string | null, _metadata?: ChatSessionMetadata): Promise<void> => {
     if (!enabled) throw new Error('Tauri chat preview is disabled')
     const session = sessions.get(sessionId)
     if (!session) throw new Error('Chat session not found')

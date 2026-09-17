@@ -327,8 +327,17 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     }, true)
   }
 
-  const updateSessionWorkspace = async (sessionId: string, workspacePath: string | null): Promise<void> => {
-    await request(`/api/v1/sessions/${encodeURIComponent(sessionId)}`, { method: 'PATCH', body: JSON.stringify({ workspacePath }) }, true)
+  const updateSessionWorkspace = async (sessionId: string, workspacePath: string | null, metadata?: ChatSessionMetadata): Promise<void> => {
+    await request(`/api/v1/sessions/${encodeURIComponent(sessionId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        workspacePath,
+        ...(metadata?.status ? { status: metadata.status } : {}),
+        ...(metadata?.channel ? { channel: metadata.channel } : {}),
+        ...(metadata?.contactId ? { contactId: metadata.contactId } : {}),
+        ...(metadata?.threadId ? { threadId: metadata.threadId } : {}),
+      }),
+    }, true)
   }
 
   const deleteSession = async (sessionId: string): Promise<void> => {

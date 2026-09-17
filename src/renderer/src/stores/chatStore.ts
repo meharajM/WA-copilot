@@ -55,6 +55,7 @@ export const createTauriChatStorage = (chatClient: ChatClient): StateStorage => 
   const knownSessions = new Set<string>()
   const knownMessages = new Set<string>()
   const knownWorkspaces = new Map<string, string | null>()
+  const knownMetadata = new Map<string, string>()
   let activeSessionId: string | null = null
   let writeQueue = Promise.resolve()
 
@@ -71,6 +72,12 @@ export const createTauriChatStorage = (chatClient: ChatClient): StateStorage => 
             for (const session of sessions) {
                 knownSessions.add(session.id)
                 knownWorkspaces.set(session.id, session.workspacePath || null)
+                knownMetadata.set(session.id, JSON.stringify({
+                    status: session.status || 'active',
+                    channel: session.channel || null,
+                    contactId: session.contactId || null,
+                    threadId: session.threadId || null,
+                }))
                 for (const message of session.messages) knownMessages.add(message.id)
             }
             const rendererSessions = sessions.map((session) => ({
@@ -111,6 +118,7 @@ export const createTauriChatStorage = (chatClient: ChatClient): StateStorage => 
                             await chatClient.deleteSession(sessionId)
                             knownSessions.delete(sessionId)
                             knownWorkspaces.delete(sessionId)
+                            knownMetadata.delete(sessionId)
                         }
                     }
                     for (const session of sessions) {
@@ -125,9 +133,31 @@ export const createTauriChatStorage = (chatClient: ChatClient): StateStorage => 
                             else await chatClient.createSession(session.id, session.title, undefined, metadata)
                             knownSessions.add(session.id)
                             knownWorkspaces.set(session.id, session.workspacePath || null)
-                        } else if (knownWorkspaces.get(session.id) !== (session.workspacePath || null)) {
-                            await chatClient.updateSessionWorkspace(session.id, session.workspacePath || null)
-                            knownWorkspaces.set(session.id, session.workspacePath || null)
+                            knownMetadata.set(session.id, JSON.stringify({
+                                status: session.status || 'active',
+                                channel: session.channel || null,
+                                contactId: session.contact_id || null,
+                                threadId: session.thread_id || null,
+                            }))
+                        } else {
+                            const metadata = {
+                                ...(session.status ? { status: session.status } : {}),
+                                ...(session.channel ? { channel: session.channel } : {}),
+                                ...(session.contact_id ? { contactId: session.contact_id } : {}),
+                                ...(session.thread_id ? { threadId: session.thread_id } : {}),
+                            }
+                            const metadataKey = JSON.stringify({
+                                status: session.status || 'active',
+                                channel: session.channel || null,
+                                contactId: session.contact_id || null,
+                                threadId: session.thread_id || null,
+                            })
+                            const workspaceChanged = knownWorkspaces.get(session.id) !== (session.workspacePath || null)
+                            if (workspaceChanged || knownMetadata.get(session.id) !== metadataKey) {
+                                await chatClient.updateSessionWorkspace(session.id, session.workspacePath || null, metadata)
+                                knownWorkspaces.set(session.id, session.workspacePath || null)
+                                knownMetadata.set(session.id, metadataKey)
+                            }
                         }
                         for (const message of session.messages) {
                             if (knownMessages.has(message.id)) continue
