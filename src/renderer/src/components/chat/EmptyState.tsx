@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useCallback } from 'react'
+import React, { useMemo, useState, useCallback, useRef, type ChangeEvent } from 'react'
 import { useWhatsAppStore } from '../../stores/whatsappStore'
 import { useChatStore } from '../../stores/chatStore'
 import { executeToolCall } from '../../lib/mcp'
@@ -8,6 +8,10 @@ import { StatusBadge } from '../primitives/StatusDot'
 import { clsx } from 'clsx'
 import { KnowledgeTest } from './KnowledgeTest'
 import { ViewMode } from '../Sidebar'
+import { getBrowserAgentdClient } from '../../lib/browser-agentd-client'
+import { isTauriRuntime } from '../../lib/tauri-native-bridge'
+
+const isBrowserProduct = (): boolean => typeof window !== 'undefined' && !window.electron && !isTauriRuntime()
 
 
 /**
@@ -26,6 +30,7 @@ export function EmptyState({ onNavigate }: { onNavigate?: (view: ViewMode) => vo
   const [intelligenceStats, setIntelligenceStats] = useState<{ totalQueries: number; resolvedQueries: number; autonomyRate: number; trainingCount: number; learningCount: number }>({ totalQueries: 0, resolvedQueries: 0, autonomyRate: 100, trainingCount: 0, learningCount: 0 })
   interface EvolutionLog { id: number; type: string; event: string; details?: string; timestamp?: string }
   const [evolutionLogs, setEvolutionLogs] = useState<EvolutionLog[]>([])
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   // Load real Intelligence stats on mount
   React.useEffect(() => {
@@ -176,6 +181,10 @@ export function EmptyState({ onNavigate }: { onNavigate?: (view: ViewMode) => vo
   }
 
   const handleFileUpload = async () => {
+      if (isBrowserProduct()) {
+          fileInputRef.current?.click()
+          return
+      }
       try {
           const filePaths = await electron.app.selectFiles({
               title: 'Select Knowledge Resource',
@@ -232,6 +241,45 @@ export function EmptyState({ onNavigate }: { onNavigate?: (view: ViewMode) => vo
           }
       } catch (err) {
           alert("RAG Ingest Fatal Error: " + err)
+          setUploadStatus('idle')
+      }
+  }
+
+  const handleBrowserFileUpload = async (event: ChangeEvent<HTMLInputElement>) => {
+      const files = Array.from(event.target.files || [])
+      event.target.value = ''
+      if (!files.length) return
+      setUploadStatus('uploading')
+      const errors: string[] = []
+      let successCount = 0
+      for (const file of files) {
+          const extension = file.name.split('.').pop()?.toLowerCase() || ''
+          const isText = file.type.startsWith('text/') || ['txt', 'md', 'csv', 'json', 'xml', 'html', 'log'].includes(extension)
+          if (!isText) {
+              errors.push(`${file.name}: browser import supports text, Markdown, CSV, JSON, XML, HTML, and log files`)
+              continue
+          }
+          try {
+              const content = await file.text()
+              await getBrowserAgentdClient().ingestKnowledge({
+                  fileName: file.name,
+                  filePath: `browser://knowledge/${encodeURIComponent(file.name)}`,
+                  fileType: file.type || 'text/plain',
+                  content,
+                  size: file.size,
+              })
+              successCount += 1
+          } catch (error) {
+              errors.push(`${file.name}: ${error instanceof Error ? error.message : String(error)}`)
+          }
+      }
+      if (successCount > 0) {
+          setUploadStatus('done')
+          const statsRes = await executeToolCall('rag_get_stats', {})
+          if (statsRes.result && typeof statsRes.result === 'object') setRagStats(statsRes.result as typeof ragStats)
+          setTimeout(() => setUploadStatus('idle'), 5000)
+      } else {
+          alert(`Upload failed: ${errors.join(' | ')}`)
           setUploadStatus('idle')
       }
   }
@@ -526,6 +574,7 @@ export function EmptyState({ onNavigate }: { onNavigate?: (view: ViewMode) => vo
                     )}
                   </div>
               </button>
+              {isBrowserProduct() && <input ref={fileInputRef} type="file" hidden multiple accept=".txt,.md,.csv,.json,.xml,.html,.log,text/*" onChange={handleBrowserFileUpload} />}
 
               {/* Show Knowledge Test after successful upload */}
               {ragStats.count > 0 && <KnowledgeTest />}
