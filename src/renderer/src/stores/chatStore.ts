@@ -292,6 +292,7 @@ interface ChatState {
     addSessionMessage: (sessionId: string, message: Omit<Message, 'id' | 'timestamp'> & Partial<Pick<Message, 'id' | 'timestamp'>>) => Message
     updateMessage: (id: string, updates: Partial<Message>) => void
     updateSessionMessage: (sessionId: string, messageId: string, updates: Partial<Message>) => void
+    removeSessionMessage: (sessionId: string, messageId: string) => void
     removeMessage: (id: string) => void
     clearMessages: () => void
 
@@ -628,6 +629,20 @@ export const useChatStore = create<ChatState>()(
                                     }
                                     return updatedMsg;
                                 }),
+                                updatedAt: Date.now(),
+                            }
+                            : s
+                    ),
+                }))
+            },
+
+            removeSessionMessage: (sessionId: string, messageId: string) => {
+                set((state) => ({
+                    sessions: state.sessions.map((s) =>
+                        s.id === sessionId
+                            ? {
+                                ...s,
+                                messages: s.messages.filter((msg) => msg.id !== messageId),
                                 updatedAt: Date.now(),
                             }
                             : s

@@ -422,26 +422,66 @@ export function useAgent(): UseAgentReturn {
                     });
                     let assistantContent = '';
                     let assistantAdded = false;
-                    await client.generate(
-                        {
-                            sessionId: originSessionId,
-                            requestId,
-                            content,
-                        },
-                        (event) => {
-                            if (event.type === 'error') throw new Error(event.message);
-                            if (event.type === 'assistant.delta') assistantContent += event.delta;
-                            if (event.type === 'assistant.done' && !assistantAdded) {
-                                assistantAdded = true;
-                                useChatStore.getState().addSessionMessage(originSessionId, {
-                                    id: `assistant_${requestId}`,
-                                    role: 'assistant',
-                                    content: assistantContent,
-                                });
-                            }
-                        },
-                        abortSignal,
-                    );
+                    let assistantCompleted = false;
+                    let assistantMessageId: string | null = null;
+                    const appendAssistantDelta = (delta: string) => {
+                        if (!delta) return;
+                        assistantContent += delta;
+                        const store = useChatStore.getState();
+                        if (!assistantAdded) {
+                            const message = store.addSessionMessage(originSessionId, {
+                                id: `assistant_${requestId}`,
+                                role: 'assistant',
+                                content: assistantContent,
+                            });
+                            assistantAdded = true;
+                            assistantMessageId = message.id;
+                            return;
+                        }
+                        if (assistantMessageId) {
+                            store.updateSessionMessage(originSessionId, assistantMessageId, {
+                                content: assistantContent,
+                            });
+                        }
+                    };
+                    try {
+                        await client.generate(
+                            {
+                                sessionId: originSessionId,
+                                requestId,
+                                content,
+                            },
+                            (event) => {
+                                if (event.type === 'error') throw new Error(event.message);
+                                if (event.type === 'assistant.delta') appendAssistantDelta(event.delta);
+                                if (event.type === 'assistant.done') {
+                                    assistantCompleted = true;
+                                    if (!assistantAdded) {
+                                        // A provider may legally emit an empty stream. Keep
+                                        // the invariant that a completed generation creates
+                                        // one assistant message, while normal SSE chunks are
+                                        // already visible incrementally via appendAssistantDelta.
+                                        const message = useChatStore.getState().addSessionMessage(originSessionId, {
+                                            id: `assistant_${requestId}`,
+                                            role: 'assistant',
+                                            content: assistantContent,
+                                        });
+                                        assistantAdded = true;
+                                        assistantMessageId = message.id;
+                                    }
+                                }
+                            },
+                            abortSignal,
+                        );
+                    } catch (error) {
+                        // Deltas are optimistic UI only. Do not leave a partial
+                        // assistant bubble after cancel/provider failure; agentd
+                        // persists only completed generations and a retry must be clean.
+                        if (!assistantCompleted && assistantMessageId) {
+                            useChatStore.getState().removeSessionMessage(originSessionId, assistantMessageId);
+                        }
+                        throw error;
+                    }
                     if (!assistantAdded) throw new Error('Agentd returned no assistant response');
                     return;
                 }
