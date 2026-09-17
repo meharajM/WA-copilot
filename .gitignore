@@ -26,7 +26,10 @@ out/
 src-tauri/target/
 src-tauri/gen/
 src-tauri/binaries/
-src-tauri/sidecar/
+src-tauri/sidecar/*
+!src-tauri/sidecar/agentd-http/
+src-tauri/sidecar/agentd-http/*
+!src-tauri/sidecar/agentd-http/.gitkeep
 src-tauri/icons/icon.png
 
 # TypeScript
