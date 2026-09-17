@@ -624,7 +624,9 @@ export function SettingsPanel({ onClose, initialSection = 'whatsapp' }: Settings
                                 </p>
                                 <div className="mt-[var(--space-6)] pt-[var(--space-4)] border-t border-[var(--color-border)]">
                                     <p className="text-[var(--text-xs)] text-[var(--color-text-dim)]">
-                                        Built with Electron, React, and TypeScript
+                                        {browserRuntime
+                                            ? 'Browser workspace powered by React, local agentd, and the Tauri native companion'
+                                            : 'Built with Electron, React, and TypeScript'}
                                     </p>
                                 </div>
                             </Card>
