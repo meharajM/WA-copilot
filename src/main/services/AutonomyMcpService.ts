@@ -17,8 +17,14 @@ const tools = [
 
 function stringArg(args: unknown, key: string): string {
   const value = args && typeof args === 'object' ? (args as Record<string, unknown>)[key] : undefined
-  if (typeof value !== 'string' || !value || value.length > 200) throw new Error(`Invalid ${key}`)
+  if (typeof value !== 'string' || !value.trim() || value.length > 200) throw new Error(`Invalid ${key}`)
   return value
+}
+function optionalBoolean(args: unknown, key: string): boolean {
+  if (!args || typeof args !== 'object') return false
+  const value = (args as Record<string, unknown>)[key]
+  if (value !== undefined && typeof value !== 'boolean') throw new Error(`Invalid ${key}`)
+  return value === true
 }
 
 export class AutonomyMcpService {
@@ -34,7 +40,7 @@ export class AutonomyMcpService {
         case 'get_recent_failures': return { result: { lastError: autonomousSupervisor.getState().lastError, notifications: autonomousSupervisor.listRecentFailures(), unresolvedOutbound: autonomousSupervisor.listUnresolvedOutbound() } }
         case 'capture_diagnostics': return { result: { health: autonomousSupervisor.getHealth(), state: autonomousSupervisor.getState(), failures: autonomousSupervisor.listRecentFailures(), unresolvedOutbound: autonomousSupervisor.listUnresolvedOutbound(), deliveryHistory: autonomousSupervisor.listDeliveryHistory(50) } }
         case 'surface_browser': return await PlaywrightService.getInstance().callTool('request_human_intervention', { reason: 'Autonomy MCP operator requested browser surface' })
-        case 'pause_agent': return { result: autonomousSupervisor.pause(Boolean(args && typeof args === 'object' && (args as Record<string, unknown>).emergency)) }
+        case 'pause_agent': return { result: autonomousSupervisor.pause(optionalBoolean(args, 'emergency')) }
         case 'resume_agent': return { result: autonomousSupervisor.resume() }
         case 'retry_job': return { result: autonomousSupervisor.retryJob(stringArg(args, 'inboundId')) }
         case 'reconnect_channel': return { result: await autonomousSupervisor.reconnectChannel() }

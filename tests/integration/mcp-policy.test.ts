@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isMcpToolAllowed, validateMcpServerConfig, validateMcpToolCall } from '../../src/main/services/McpPolicy'
+import { isMcpToolAllowed, validateMcpRequestId, validateMcpServerConfig, validateMcpToolCall } from '../../src/main/services/McpPolicy'
 
 describe('MCP host policy', () => {
   it('rejects shell and eval launches', () => {
@@ -24,5 +24,12 @@ describe('MCP host policy', () => {
     expect(isMcpToolAllowed(undefined, 'browser_navigate')).toBe(false)
     expect(isMcpToolAllowed(['convert_to_markdown'], 'convert_to_markdown')).toBe(true)
     expect(validateMcpServerConfig({ id: 'x', type: 'sse', url: 'https://example.test', allowedTools: ['tool'] })).toMatchObject({ valid: true })
+  })
+
+  it('validates cancellable request IDs before dispatch', () => {
+    expect(validateMcpRequestId(undefined)).toBeNull()
+    expect(validateMcpRequestId('request-1')).toBeNull()
+    expect(validateMcpRequestId(42)).toBe('Invalid MCP request ID')
+    expect(validateMcpRequestId('x'.repeat(101))).toBe('Invalid MCP request ID')
   })
 })

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { allowsBaileysDirectSend } from '../../src/main/services/WhatsAppTransportPolicy'
+import { allowsBaileysDirectSend, allowsBaileysInbound } from '../../src/main/services/WhatsAppTransportPolicy'
 import { WhatsAppCloudApiTransport } from '../../src/main/services/WhatsAppCloudApiTransport'
 
 describe('WhatsApp outbound transport contract', () => {
@@ -14,5 +14,11 @@ describe('WhatsApp outbound transport contract', () => {
     expect(allowsBaileysDirectSend('baileys')).toBe(true)
     expect(allowsBaileysDirectSend('cloud')).toBe(false)
     expect(allowsBaileysDirectSend('web')).toBe(false)
+  })
+
+  it('blocks Baileys inbound autonomy when another transport is selected', () => {
+    expect(allowsBaileysInbound('baileys')).toBe(true)
+    expect(allowsBaileysInbound('cloud')).toBe(false)
+    expect(allowsBaileysInbound('web')).toBe(false)
   })
 })

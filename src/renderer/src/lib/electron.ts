@@ -469,6 +469,8 @@ export const electron = {
         listTakeovers: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listTakeovers() : [],
         listUnresolvedOutbound: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listUnresolvedOutbound() : [],
         listDeliveryHistory: async (limit = 50) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listDeliveryHistory(limit) : [],
+        listEmailAttachments: async (limit = 20) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listEmailAttachments(limit) : [],
+        retrieveGmailAttachment: async (messageId: string, attachmentId: string, metadata?: { mimeType?: string; name?: string }) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.retrieveGmailAttachment(messageId, attachmentId, metadata) : null,
         listDecisionEvidence: async (limit = 50) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listDecisionEvidence(limit) : [],
         reviewDecision: async (inboundId: string, label: string, notes = '') => isElectron() && window.electron?.autonomy ? window.electron.autonomy.reviewDecision(inboundId, label, notes) : null,
         recordConversationOutcome: async (jid: string, revision: number, outcome: string, evidence: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.recordConversationOutcome(jid, revision, outcome, evidence) : null,

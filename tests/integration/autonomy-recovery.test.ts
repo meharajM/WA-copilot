@@ -3,7 +3,7 @@ import path from 'node:path'
 import Database from 'better-sqlite3'
 import { beforeAll, describe, expect, it, vi } from 'vitest'
 
-const dataDir = '/tmp/aica-autonomy-recovery-test'
+const dataDir = path.join('/tmp', `aica-autonomy-recovery-${process.pid}`)
 vi.mock('electron', () => ({
   app: { getPath: () => dataDir, getName: () => 'aica', getVersion: () => '1.0.0' },
   safeStorage: { isEncryptionAvailable: () => false },
@@ -95,10 +95,25 @@ describe('autonomy recovery', () => {
     db.close()
   })
 
+  it('persists local LLM provider, model, and latency telemetry separately from estimated cost', () => {
+    const internal = supervisor as unknown as { recordUsage: (kind: string, tokens: number, channel?: string, metadata?: { provider?: string; model?: string; latencyMs?: number }) => void }
+    internal.recordUsage('llm', 24, undefined, { provider: 'google', model: 'gemini-2.0-flash', latencyMs: 321 })
+    const db = new Database(path.join(dataDir, 'autonomy.db'), { readonly: true })
+    expect(db.prepare("SELECT estimated_tokens, provider, model, latency_ms FROM usage_events WHERE kind = 'llm' ORDER BY id DESC LIMIT 1").get()).toEqual({ estimated_tokens: 24, provider: 'google', model: 'gemini-2.0-flash', latency_ms: 321 })
+    db.close()
+  })
+
+  it('derives measured LLM latency for the owner metrics view', () => {
+    const metrics = supervisor.getMetrics(14) as { llmCalls: number; averageLlmLatencyMs: number }
+    expect(metrics.llmCalls).toBeGreaterThanOrEqual(1)
+    expect(metrics.averageLlmLatencyMs).toBeGreaterThanOrEqual(321)
+  })
+
   it('reports bounded provider configuration and per-channel queue health', () => {
     expect(supervisor.getHealth()).toMatchObject({
       providers: { meta: { configured: false }, x: { configured: false } },
-      queues: { whatsapp: 0, email: 0, meta: 0 }
+      queues: { whatsapp: 0, email: 0, meta: 0 },
+      llm: { provider: 'google', model: 'gemini-2.0-flash', configured: false }
     })
   })
 
@@ -119,6 +134,8 @@ describe('autonomy recovery', () => {
     expect(autonomyMcpService.listTools().tools.map(tool => tool.name)).toEqual(expect.arrayContaining(['get_machine_health', 'get_agent_status', 'get_queue_status', 'get_channel_status', 'get_recent_failures', 'capture_diagnostics', 'surface_browser', 'pause_agent', 'resume_agent', 'retry_job', 'reconnect_channel']))
     expect((await autonomyMcpService.callTool('get_agent_status', {})).result).toMatchObject({ mode: 'observe' })
     expect((await autonomyMcpService.callTool('retry_job', {})).error).toBe('Invalid inboundId')
+    expect((await autonomyMcpService.callTool('retry_job', { inboundId: '   ' })).error).toBe('Invalid inboundId')
+    expect((await autonomyMcpService.callTool('pause_agent', { emergency: 'true' })).error).toBe('Invalid emergency')
   })
 
   it('lists bounded recent failure notifications for diagnostics', () => {
@@ -129,6 +146,34 @@ describe('autonomy recovery', () => {
     expect(supervisor.listRecentFailures(10)).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'failure', details: '{"error":"test"}' })]))
     expect(supervisor.listRecentFailures(10)).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'escalation_sla_overdue', details: '{"inboundId":"sla-1"}' })]))
     expect(supervisor.listRecentFailures(0).length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('lists sanitized bounded email attachment metadata for owner inspection', () => {
+    const db = new Database(path.join(dataDir, 'autonomy.db'))
+    db.prepare('INSERT INTO inbound_events (id,jid,content,received_at,status,channel,payload) VALUES (?,?,?,?,?,?,?)').run(
+      'attachment-inventory-1', 'email:attachment-inventory', 'See invoice', Date.now(), 'escalated', 'email',
+      JSON.stringify({ id: 'gmail-message-1', attachments: [{ id: 'gmail-attachment-1', name: 'invoice.pdf', mimeType: 'application/pdf', size: 42, path: '/private/path', data: 'raw-bytes' }] })
+    )
+    db.prepare('INSERT INTO inbound_events (id,jid,content,received_at,status,channel,payload) VALUES (?,?,?,?,?,?,?)').run(
+      'attachment-inventory-malformed', 'email:attachment-inventory', 'Malformed', Date.now() + 1, 'escalated', 'email', '{not-json'
+    )
+    db.close()
+
+    expect(supervisor.listEmailAttachments(10)).toEqual([expect.objectContaining({ inboundId: 'attachment-inventory-1', messageId: 'gmail-message-1', id: 'gmail-attachment-1', name: 'invoice.pdf', mimeType: 'application/pdf', size: 42 })])
+    expect(JSON.stringify(supervisor.listEmailAttachments(10))).not.toContain('raw-bytes')
+    expect(JSON.stringify(supervisor.listEmailAttachments(10))).not.toContain('/private/path')
+  })
+
+  it('audits attachment retrieval failures without persisting customer content', async () => {
+    const { emailChannelService } = await import('../../src/main/services/EmailChannelService')
+    emailChannelService.configure({ command: 'unused', args: [], provider: 'mcp', pollingIntervalSeconds: 60 })
+    await expect(supervisor.retrieveGmailAttachment('message-failure', 'attachment-failure', { mimeType: 'application/pdf', name: 'private.pdf' })).rejects.toThrow('requires the Gmail API provider')
+    const db = new Database(path.join(dataDir, 'autonomy.db'), { readonly: true })
+    const audit = db.prepare("SELECT details FROM operator_actions WHERE action = 'retrieve_gmail_attachment_failed' ORDER BY id DESC LIMIT 1").get() as { details: string }
+    db.close()
+    expect(audit.details).toContain('message-failure')
+    expect(audit.details).toContain('private.pdf')
+    expect(audit.details).not.toContain('customer content')
   })
 
   it('audits notification acknowledgment', () => {
@@ -376,7 +421,7 @@ describe('autonomy recovery', () => {
   })
 
   it('surfaces bounded escalation contact and SLA configuration', () => {
-    expect(supervisor.getHealth()).toMatchObject({ llmDataPolicyApproved: false, browser: { status: 'disconnected', profile: 'whatsapp-web-profile' }, escalation: { contactConfigured: false, contact: null, slaMinutes: 60 } })
+    expect(supervisor.getHealth()).toMatchObject({ llmDataPolicyApproved: false, browser: { status: 'disconnected', profile: 'whatsapp-web-profile' }, extension: { status: 'disabled', port: 8790, lastStatus: null, error: null }, escalation: { contactConfigured: false, contact: null, slaMinutes: 60 } })
     supervisor.setMode('draft', false)
     expect(() => supervisor.setMode('auto', true)).toThrow('AICA_ESCALATION_CONTACT')
     supervisor.setMode('observe', false)
@@ -689,6 +734,29 @@ describe('autonomy recovery', () => {
     expect(reloaded.getState().paused).toBe(true)
     reloaded.stop()
     ;(reloaded as unknown as { db: Database.Database }).db.close()
+  })
+
+  it('honors persisted retry backoff during queue restoration', async () => {
+    const id = 'restore-retry-backoff-1'
+    const nextAt = Date.now() + 60
+    const db = new Database(path.join(dataDir, 'autonomy.db'))
+    db.prepare('INSERT INTO inbound_events (id,jid,content,received_at,status,channel,payload) VALUES (?,?,?,?,?,?,?)').run(id, 'customer-retry-backoff', 'Retry me', Date.now(), 'retrying', 'whatsapp', JSON.stringify({ id, from: 'customer-retry-backoff', to: 'owner', content: 'Retry me', timestamp: Date.now(), type: 'text', isFromMe: false }))
+    db.prepare('INSERT INTO retries (inbound_id,attempt,error,next_at) VALUES (?,?,?,?)').run(id, 1, 'HTTP 429 rate limit', nextAt)
+    db.close()
+    vi.resetModules()
+    const activeSupervisor = (await import('../../src/main/services/AutonomousSupervisor')).autonomousSupervisor
+    const internal = activeSupervisor as unknown as { restoreQueuedMessages: () => void; queues: Map<string, Array<{ id: string }>> }
+    internal.restoreQueuedMessages()
+    expect([...internal.queues.values()].flat().some(message => message.id === id)).toBe(false)
+    await new Promise(resolve => setTimeout(resolve, 100))
+    expect([...internal.queues.values()].flat().some(message => message.id === id)).toBe(true)
+    internal.queues.delete('customer-retry-backoff')
+    const cleanup = new Database(path.join(dataDir, 'autonomy.db'))
+    cleanup.prepare('DELETE FROM retries WHERE inbound_id = ?').run(id)
+    cleanup.prepare('DELETE FROM inbound_events WHERE id = ?').run(id)
+    cleanup.close()
+    activeSupervisor.stop()
+    ;(activeSupervisor as unknown as { db: Database.Database }).db.close()
   })
 
   it('restarts drains for external-channel queues too', async () => {

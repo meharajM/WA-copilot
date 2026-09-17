@@ -17,30 +17,42 @@ const SAFE_TIMEOUT_DECISION: ResponseDecision = {
 
 const WorkflowState = Annotation.Root({
   message: Annotation<WorkflowMessage>(),
-  decision: Annotation<ResponseDecision | null>()
+  decision: Annotation<ResponseDecision | null>(),
+  guardPassed: Annotation<boolean>()
 })
 
+export interface AutonomyWorkflowCallbacks {
+  guard: (message: WorkflowMessage) => Promise<ResponseDecision | null>
+  decide: (message: WorkflowMessage) => Promise<ResponseDecision>
+}
+
 export function createAutonomyWorkflow(
-  decide: (message: WorkflowMessage) => Promise<ResponseDecision>,
+  callbacks: AutonomyWorkflowCallbacks | ((message: WorkflowMessage) => Promise<ResponseDecision>),
   checkpointer?: BaseCheckpointSaver,
   timeoutMs = 30_000
 ) {
+  const handlers: AutonomyWorkflowCallbacks = typeof callbacks === 'function' ? { guard: async () => null, decide: callbacks } : callbacks
+  const bounded = async <T>(work: () => Promise<T>): Promise<T> => {
+    let timer: NodeJS.Timeout | undefined
+    try {
+      return await Promise.race([work(), new Promise<T>((_, reject) => { timer = setTimeout(() => reject(new Error('workflow timeout')), timeoutMs) })])
+    } finally { if (timer) clearTimeout(timer) }
+  }
   return new StateGraph(WorkflowState)
-    .addNode('decide', async (state) => {
-      let timer: NodeJS.Timeout | undefined
+    .addNode('guard', async (state) => {
       try {
-        const decision = await Promise.race([
-          decide(state.message),
-          new Promise<ResponseDecision>((_, reject) => { timer = setTimeout(() => reject(new Error('workflow timeout')), timeoutMs) })
-        ])
-        return { decision }
-      } catch {
-        return { decision: SAFE_TIMEOUT_DECISION }
-      } finally {
-        if (timer) clearTimeout(timer)
-      }
+        const decision = await bounded(() => handlers.guard(state.message))
+        return { decision, guardPassed: decision === null }
+      } catch { return { decision: SAFE_TIMEOUT_DECISION, guardPassed: false } }
     })
-    .addEdge(START, 'decide')
+    .addNode('decide', async (state) => {
+      if (!state.guardPassed) return {}
+      try {
+        return { decision: await bounded(() => handlers.decide(state.message)) }
+      } catch { return { decision: SAFE_TIMEOUT_DECISION } }
+    })
+    .addEdge(START, 'guard')
+    .addConditionalEdges('guard', state => state.guardPassed ? 'decide' : END)
     .addEdge('decide', END)
     .compile({ checkpointer })
 }

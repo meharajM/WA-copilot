@@ -4,7 +4,7 @@ Date: September 9, 2026
 
 Cost and architecture rationale reviewed: September 13, 2026. See sections 2 and 10 for alternatives, operating assumptions and pricing sources.
 
-Status: Selected architectural direction; implementation proposal, not a statement of shipped capabilities.
+Status: Selected target architecture. The current branch implements a bounded single-business desktop pilot; this document is not evidence that its deferred hosted, live-provider, legal, or operational gates are complete.
 
 Decision: Make `agentd`, an independently managed plain Node service, the authoritative local runtime. Serve the existing React console on loopback; Electron is an optional transition client/installer and is not required for V1. This September 14 decision supersedes the Tauri sidecar proposal. Keep LangGraph, RAG and channel workflows; extract lifecycle and a typed API before changing UI or workflow.
 
@@ -58,11 +58,13 @@ Include independently running model-server processes, renderer/GPU/helper proces
 
 Provisional acceptance budget: reserve at least 25% of physical RAM and 20% of dedicated VRAM, require no sustained swap growth, idle runtime CPU below 5% of one core, and no more than 10% p95 inference degradation with UI open. Start with one active model generation; enable concurrency two only if peak memory fits and p95 end-to-end draft latency remains within the existing 30-second job budget. These are proposed thresholds, not measured results. If a target cannot pass, choose a smaller supported model or cloud inference rather than asserting that shell removal solves it. Record actual hardware/results before retiring Electron on capacity grounds.
 
+Customer-owned Meta, Instagram, Messenger, WhatsApp and X accounts must use the customer connection flow in `docs/customer-connection-onboarding.md`. OAuth and guided asset selection replace developer-only environment-variable setup; provider credentials remain outside the renderer and are stored in the OS secure store for the desktop pilot or an encrypted hosted vault for multi-customer operation.
+
 ### Deferred capabilities
 
 - Autonomous ad creation, spend changes, audience changes, public posting, and bulk outreach.
 - Automatic cross-channel customer identity matching from names or model guesses.
-- A WhatsApp Web automation connector or browser extension unless an unmet requirement justifies one.
+- WhatsApp Web autonomous outbound automation; the repository includes an optional restricted browser-extension/manual-takeover inbound pilot, while live session validation and autonomous outbound control remain deferred.
 - A mandatory Chatwoot deployment, mandatory LangSmith subscription, vector database, or distributed queue.
 - Multi-tenant hosted SaaS in the first deployment. Include business/account IDs in contracts now, but do not claim tenant isolation is proven until tested.
 

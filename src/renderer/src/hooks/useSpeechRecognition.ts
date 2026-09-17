@@ -353,7 +353,7 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
                 const modelName = targetModel.modelName // Use modelName (slug) instead of human-readable name
 
                 // 1. Ensure Model is Downloaded
-                const check = await electron.speech.checkSupport(modelName)
+                const check = await electron.speech.checkSupport(modelId)
 
                 if (!shouldListenRef.current) return
 
@@ -364,9 +364,7 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
                     addLog({ eventType: 'SYSTEM_INIT', sessionId, component: 'useSpeechRecognition', details: { metadata: { action: 'download_model_start', model: modelName } } })
 
                     const result = await electron.speech.downloadModel({
-                        modelId: modelId,
-                        modelName: modelName,
-                        url: targetModel.url
+                        modelId: modelId
                     })
 
                     if (!result.success) throw new Error(result.error)
@@ -386,7 +384,7 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
                 // 2. Load Model into WASM (if not ready)
                 if (!voskService.isReady()) {
                     // Get the correct model path from main process
-                    const modelPath = await electron.speech.getModelPath(modelName)
+                    const modelPath = await electron.speech.getModelPath(modelId)
                     if (!modelPath) {
                         throw new Error('Model path not available')
                     }

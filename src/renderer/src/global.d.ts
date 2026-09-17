@@ -47,7 +47,7 @@ interface ElectronAPI {
             modelsPath: string
             error: string | null
         }>
-        initialize: (options?: { modelName?: string }) => Promise<{ success: boolean; error?: string }>
+        initialize: () => Promise<{ success: boolean; error?: string }>
         startListening: () => Promise<{ success: boolean; error?: string; message?: string }>
         stopListening: () => Promise<{ success: boolean; error?: string; message?: string }>
         processAudio: (audioData: ArrayBuffer) => Promise<{
@@ -57,12 +57,12 @@ interface ElectronAPI {
             error?: string
         }>
         getFinalResult: () => Promise<{ success: boolean; transcript?: string; error?: string }>
-        downloadModel: (options: { modelId: string; url: string; modelName: string }) => Promise<{
+        downloadModel: (options: { modelId: string }) => Promise<{
             success: boolean
             error?: string
         }>
-        getPreferredModel: () => Promise<{ id: string; name: string; url: string; lang: string }>
-        getModelPath: (modelName: string) => Promise<string | null>
+        getPreferredModel: () => Promise<{ id: string; name: string; modelName: string; lang: string }>
+        getModelPath: (modelId: string) => Promise<string | null>
         getStatus: (modelId?: string) => Promise<{
             isInitialized: boolean
             isListening: boolean
@@ -116,6 +116,8 @@ interface ElectronAPI {
         listDrafts: () => Promise<any>
         listUnresolvedOutbound: () => Promise<any>
         listDeliveryHistory: (limit?: number) => Promise<any>
+        listEmailAttachments: (limit?: number) => Promise<any>
+        retrieveGmailAttachment: (messageId: string, attachmentId: string, metadata?: { mimeType?: string; name?: string }) => Promise<any>
         listDecisionEvidence: (limit?: number) => Promise<any>
         reviewDecision: (inboundId: string, label: string, notes?: string) => Promise<any>
         recordConversationOutcome: (jid: string, revision: number, outcome: string, evidence: string) => Promise<any>

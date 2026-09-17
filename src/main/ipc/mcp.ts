@@ -8,7 +8,7 @@ import { MemoryService } from '../services/MemoryService'
 import { RAGService } from '../rag/RAGService'
 import { FileSystemService } from '../services/FileSystemService'
 import { McpProcessManager } from '../services/McpProcessManager'
-import { isMcpToolAllowed, validateMcpServerConfig, validateMcpToolCall } from '../services/McpPolicy'
+import { isMcpToolAllowed, validateMcpRequestId, validateMcpServerConfig, validateMcpToolCall } from '../services/McpPolicy'
 import { recordMcpAudit } from '../services/McpAudit'
 import { autonomyMcpService } from '../services/AutonomyMcpService'
 
@@ -333,6 +333,8 @@ export function registerMcpHandlers(): void {
     ipcMain.handle('mcp:call-tool', async (event, id, toolName, args, requestId?: unknown, token?: unknown) => {
         if (!authorizedRenderer(event, token)) return { result: null, error: 'Unauthorized MCP session' }
         const startTime = Date.now()
+        const requestIdError = validateMcpRequestId(requestId)
+        if (requestIdError) { recordMcpAudit('call-tool', typeof id === 'string' ? id : null, typeof toolName === 'string' ? toolName : null, 'denied', { error: requestIdError }); return { result: null, error: requestIdError } }
         const validationError = validateMcpToolCall(id, toolName, args)
         if (validationError) { recordMcpAudit('call-tool', typeof id === 'string' ? id : null, typeof toolName === 'string' ? toolName : null, 'denied', { error: validationError }); return { result: null, error: validationError } }
         const bucketKey = `${id}:${toolName}`

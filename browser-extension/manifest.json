@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "AICA WhatsApp Inbound Bridge",
+  "version": "0.1.0",
+  "description": "Forwards bounded WhatsApp Web inbound text events to the local AICA supervisor.",
+  "permissions": ["storage"],
+  "host_permissions": ["https://web.whatsapp.com/*", "http://127.0.0.1:8790/*"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [{
+    "matches": ["https://web.whatsapp.com/*"],
+    "js": ["content.js"],
+    "run_at": "document_idle"
+  }],
+  "options_page": "options.html"
+}
