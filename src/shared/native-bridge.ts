@@ -24,6 +24,30 @@ export interface NativeHealth {
   status: 'ready' | 'unavailable'
   version?: string
   error?: string
+  paused?: boolean
+  queueDepth?: number
+  events?: number
+}
+
+export type LlmProvider = 'auto' | 'openai' | 'openrouter'
+export type SupportedLlmProvider = Exclude<LlmProvider, 'auto'>
+
+export interface LlmSettings {
+  preferredProvider: LlmProvider
+  openaiModel: string
+  openrouterModel: string
+}
+
+export type WhatsAppTransport = 'baileys' | 'cloud' | 'web'
+
+export interface WhatsAppSettings {
+  whatsapp_transport: WhatsAppTransport
+  whatsapp_cloud_phone_number_id: string
+  whatsapp_cloud_api_version: string
+}
+
+export interface ProviderTestResult extends NativeResult {
+  modelCount?: number
 }
 
 export interface FileSelectionOptions {

@@ -36,8 +36,13 @@ import { BotIdentityPanel } from './settings/BotIdentityPanel'
 import { EmailSettingsPanel } from './settings/EmailSettingsPanel'
 import { Mail } from 'lucide-react'
 import electron from '../lib/electron'
+import { isTauriRuntime, tauriNativeBridge } from '../lib/tauri-native-bridge'
+import { getBrowserAgentdClient } from '../lib/browser-agentd-client'
+import type { WhatsAppSettings } from '../../../shared/native-bridge'
 
 type SettingsSection = 'whatsapp' | 'email' | 'tools' | 'identity' | 'llm' | 'memory' | 'browser' | 'appearance' | 'logs' | 'about'
+type CloudCredentialKey = 'whatsapp_cloud_access_token' | 'whatsapp_cloud_app_secret' | 'whatsapp_cloud_verify_token'
+type CloudCredentialPresence = Record<CloudCredentialKey, boolean>
 
 interface SettingsPanelProps {
     onClose: () => void;
@@ -56,7 +61,16 @@ export function SettingsPanel({ onClose, initialSection = 'whatsapp' }: Settings
     const [cloudToken, setCloudToken] = useState('')
     const [cloudSecret, setCloudSecret] = useState('')
     const [cloudVerifyToken, setCloudVerifyToken] = useState('')
-    const [cloudSecretsConfigured, setCloudSecretsConfigured] = useState(false)
+    const [cloudCredentialPresence, setCloudCredentialPresence] = useState<CloudCredentialPresence>({
+        whatsapp_cloud_access_token: false,
+        whatsapp_cloud_app_secret: false,
+        whatsapp_cloud_verify_token: false,
+    })
+    const [cloudSaveState, setCloudSaveState] = useState<'idle' | 'saving' | 'success' | 'error'>('idle')
+    const [cloudSaveMessage, setCloudSaveMessage] = useState('')
+    const tauriRuntime = isTauriRuntime()
+    const browserRuntime = typeof window !== 'undefined' && !window.electron && !tauriRuntime
+    const nativeApi = tauriRuntime ? tauriNativeBridge : browserRuntime ? getBrowserAgentdClient() : null
 
     // MCP Tools State
     const mcp = useMcpStore()
@@ -74,6 +88,27 @@ export function SettingsPanel({ onClose, initialSection = 'whatsapp' }: Settings
     }, [getLogPath])
 
     useEffect(() => {
+        if (nativeApi) {
+            void Promise.all([
+                nativeApi.getWhatsAppSettings(),
+                nativeApi.hasCredential('whatsapp_cloud_access_token'),
+                nativeApi.hasCredential('whatsapp_cloud_app_secret'),
+                nativeApi.hasCredential('whatsapp_cloud_verify_token'),
+            ]).then(([saved, token, secret, verifyToken]) => {
+                setWaTransport(saved.whatsapp_transport)
+                setCloudPhoneId(saved.whatsapp_cloud_phone_number_id)
+                setCloudApiVersion(saved.whatsapp_cloud_api_version)
+                setCloudCredentialPresence({
+                    whatsapp_cloud_access_token: token.success && token.exists,
+                    whatsapp_cloud_app_secret: secret.success && secret.exists,
+                    whatsapp_cloud_verify_token: verifyToken.success && verifyToken.exists,
+                })
+            }).catch((error) => {
+                setCloudSaveState('error')
+                setCloudSaveMessage(error instanceof Error ? error.message : 'Unable to load WhatsApp settings')
+            })
+            return
+        }
         void Promise.all([
             electron.store.get<'baileys' | 'cloud' | 'web'>('whatsapp_transport', 'baileys'),
             electron.store.get<string>('whatsapp_cloud_phone_number_id', ''),
@@ -83,18 +118,75 @@ export function SettingsPanel({ onClose, initialSection = 'whatsapp' }: Settings
             setWaTransport(transport || 'baileys')
             setCloudPhoneId(phoneId || '')
             setCloudApiVersion(apiVersion || 'v23.0')
-            setCloudSecretsConfigured((keys as { success?: boolean; keys?: string[] })?.keys?.includes('whatsapp_cloud_access_token') === true)
+            const configured = (keys as { success?: boolean; keys?: string[] })?.keys || []
+            setCloudCredentialPresence({
+                whatsapp_cloud_access_token: configured.includes('whatsapp_cloud_access_token'),
+                whatsapp_cloud_app_secret: configured.includes('whatsapp_cloud_app_secret'),
+                whatsapp_cloud_verify_token: configured.includes('whatsapp_cloud_verify_token'),
+            })
         }).catch(console.error)
-    }, [])
+    }, [nativeApi, tauriRuntime])
 
     const saveCloudSettings = async () => {
-        await electron.store.set('whatsapp_transport', waTransport)
-        await electron.store.set('whatsapp_cloud_phone_number_id', cloudPhoneId.trim())
-        await electron.store.set('whatsapp_cloud_api_version', cloudApiVersion.trim())
-        if (cloudToken.trim()) await electron.secure.set('whatsapp_cloud_access_token', cloudToken.trim())
-        if (cloudSecret.trim()) await electron.secure.set('whatsapp_cloud_app_secret', cloudSecret.trim())
-        if (cloudVerifyToken.trim()) await electron.secure.set('whatsapp_cloud_verify_token', cloudVerifyToken.trim())
-        setCloudToken(''); setCloudSecret(''); setCloudVerifyToken(''); setCloudSecretsConfigured(true)
+        setCloudSaveState('saving')
+        setCloudSaveMessage('')
+        if (nativeApi) {
+            const settings: WhatsAppSettings = {
+                whatsapp_transport: waTransport,
+                whatsapp_cloud_phone_number_id: cloudPhoneId.trim(),
+                whatsapp_cloud_api_version: cloudApiVersion.trim(),
+            }
+            try {
+                await nativeApi.saveWhatsAppSettings(settings)
+            } catch (error) {
+                setCloudSaveState('error')
+                setCloudSaveMessage(error instanceof Error ? error.message : 'WhatsApp settings could not be saved')
+                return
+            }
+            const credentials: Array<[CloudCredentialKey, string]> = [
+                ['whatsapp_cloud_access_token', cloudToken],
+                ['whatsapp_cloud_app_secret', cloudSecret],
+                ['whatsapp_cloud_verify_token', cloudVerifyToken],
+            ]
+            const failures: string[] = []
+            for (const [key, value] of credentials) {
+                if (!value.trim()) continue
+                const result = await nativeApi.setCredential(key, value.trim())
+                if (result.success) {
+                    if (key === 'whatsapp_cloud_access_token') setCloudToken('')
+                    if (key === 'whatsapp_cloud_app_secret') setCloudSecret('')
+                    if (key === 'whatsapp_cloud_verify_token') setCloudVerifyToken('')
+                    setCloudCredentialPresence((current) => ({ ...current, [key]: true }))
+                } else {
+                    failures.push(`${key.replace('whatsapp_cloud_', '').replaceAll('_', ' ')}: ${result.error || 'write failed'}`)
+                }
+            }
+            const presence = await Promise.all(credentials.map(async ([key]) => [key, await nativeApi.hasCredential(key)] as const))
+            setCloudCredentialPresence(Object.fromEntries(presence.map(([key, result]) => [key, result.success && result.exists])) as CloudCredentialPresence)
+            for (const [key, result] of presence) {
+                if (!result.success) failures.push(`${key.replace('whatsapp_cloud_', '').replaceAll('_', ' ')} status: ${result.error || 'check failed'}`)
+            }
+            if (failures.length) {
+                setCloudSaveState('error')
+                setCloudSaveMessage(`Settings saved, but credential writes failed: ${failures.join('; ')}`)
+            } else {
+                setCloudSaveState('success')
+                setCloudSaveMessage('WhatsApp settings saved securely.')
+            }
+            return
+        }
+        try {
+            await electron.store.set('whatsapp_transport', waTransport)
+            await electron.store.set('whatsapp_cloud_phone_number_id', cloudPhoneId.trim())
+            await electron.store.set('whatsapp_cloud_api_version', cloudApiVersion.trim())
+            if (cloudToken.trim()) await electron.secure.set('whatsapp_cloud_access_token', cloudToken.trim())
+            if (cloudSecret.trim()) await electron.secure.set('whatsapp_cloud_app_secret', cloudSecret.trim())
+            if (cloudVerifyToken.trim()) await electron.secure.set('whatsapp_cloud_verify_token', cloudVerifyToken.trim())
+            setCloudToken(''); setCloudSecret(''); setCloudVerifyToken(''); setCloudSaveState('success'); setCloudSaveMessage('WhatsApp settings saved.')
+        } catch (error) {
+            setCloudSaveState('error')
+            setCloudSaveMessage(error instanceof Error ? error.message : 'WhatsApp settings could not be saved')
+        }
     }
 
 
@@ -241,11 +333,17 @@ export function SettingsPanel({ onClose, initialSection = 'whatsapp' }: Settings
                             {waTransport === 'cloud' && <div className="space-y-3">
                                 <input value={cloudPhoneId} onChange={e => setCloudPhoneId(e.target.value)} placeholder="Cloud phone number ID" className="w-full rounded-lg bg-white/5 border border-[var(--color-border)] px-3 py-2 text-sm" />
                                 <input value={cloudApiVersion} onChange={e => setCloudApiVersion(e.target.value)} placeholder="Graph API version (e.g. v23.0)" className="w-full rounded-lg bg-white/5 border border-[var(--color-border)] px-3 py-2 text-sm" />
-                                <input type="password" value={cloudToken} onChange={e => setCloudToken(e.target.value)} placeholder={cloudSecretsConfigured ? 'Access token saved (leave blank to keep)' : 'Cloud access token'} className="w-full rounded-lg bg-white/5 border border-[var(--color-border)] px-3 py-2 text-sm" />
-                                <input type="password" value={cloudSecret} onChange={e => setCloudSecret(e.target.value)} placeholder="App secret (write-only)" className="w-full rounded-lg bg-white/5 border border-[var(--color-border)] px-3 py-2 text-sm" />
-                                <input type="password" value={cloudVerifyToken} onChange={e => setCloudVerifyToken(e.target.value)} placeholder="Webhook verify token (write-only)" className="w-full rounded-lg bg-white/5 border border-[var(--color-border)] px-3 py-2 text-sm" />
+                                <input type="password" value={cloudToken} onChange={e => setCloudToken(e.target.value)} placeholder={cloudCredentialPresence.whatsapp_cloud_access_token ? 'Access token saved (leave blank to keep)' : 'Cloud access token'} className="w-full rounded-lg bg-white/5 border border-[var(--color-border)] px-3 py-2 text-sm" />
+                                <input type="password" value={cloudSecret} onChange={e => setCloudSecret(e.target.value)} placeholder={cloudCredentialPresence.whatsapp_cloud_app_secret ? 'App secret saved (leave blank to keep)' : 'App secret (write-only)'} className="w-full rounded-lg bg-white/5 border border-[var(--color-border)] px-3 py-2 text-sm" />
+                                <input type="password" value={cloudVerifyToken} onChange={e => setCloudVerifyToken(e.target.value)} placeholder={cloudCredentialPresence.whatsapp_cloud_verify_token ? 'Webhook verify token saved (leave blank to keep)' : 'Webhook verify token (write-only)'} className="w-full rounded-lg bg-white/5 border border-[var(--color-border)] px-3 py-2 text-sm" />
                             </div>}
-                            <button onClick={() => void saveCloudSettings()} className="px-3 py-2 rounded-lg bg-white/10 text-xs text-[var(--color-text-primary)]">Save transport settings</button>
+                            {waTransport === 'cloud' && <p className="text-xs text-[var(--color-text-muted)]">
+                                Credentials: {cloudCredentialPresence.whatsapp_cloud_access_token ? 'access token saved' : 'access token missing'} · {cloudCredentialPresence.whatsapp_cloud_app_secret ? 'app secret saved' : 'app secret missing'} · {cloudCredentialPresence.whatsapp_cloud_verify_token ? 'verify token saved' : 'verify token missing'}
+                            </p>}
+                            <div className="flex items-center gap-3">
+                                <button disabled={cloudSaveState === 'saving'} onClick={() => void saveCloudSettings()} className="px-3 py-2 rounded-lg bg-white/10 text-xs text-[var(--color-text-primary)] disabled:opacity-50">{cloudSaveState === 'saving' ? 'Saving…' : 'Save transport settings'}</button>
+                                {cloudSaveMessage && <p role="status" className={`text-xs ${cloudSaveState === 'error' ? 'text-red-300' : 'text-green-300'}`}>{cloudSaveMessage}</p>}
+                            </div>
                         </div>
                     </div>
                 )}

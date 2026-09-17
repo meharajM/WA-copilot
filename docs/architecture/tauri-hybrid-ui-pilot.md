@@ -1,8 +1,8 @@
-# Tauri hybrid UI pilot: operator guide
+# Tauri hybrid UI pilot: operator guide (historical)
 
-Status: native host and pilot implementation are integrated on `codex/tauri-hybrid-ui`. A macOS Apple Silicon package smoke pass completed on 2026-09-15; tray Open/Quit, positive path selection, code signing/notarization, and whole-process resource benchmarks remain pending.
+Status: Historical native-boundary pilot. The current browser-first migration is tracked in [`tauri-full-migration-plan.md`](./tauri-full-migration-plan.md). On the current branch, Edge/Chrome is the only product workspace; Tauri is a native companion for OS capabilities and agentd supervision.
 
-This guide covers the opt-in Tauri proving ground only. Electron remains the supported application path. The pilot does not switch the default `dev` or `build` scripts and is not a replacement for the existing app.
+This guide covers the original Tauri proving ground only. It is not a product UI specification and must not be used as the browser migration runbook. Electron remains available as a transition fallback while browser/API parity is completed; the current browser runbook is in `tauri-full-migration-plan.md`.
 
 ## Prerequisites
 
@@ -44,14 +44,14 @@ The sidecar preparation script compiles `src/agentd/index.ts`, copies the curren
 
 ## Pilot capabilities
 
-The pilot has a separate React entry point (`tauri.html` / `tauri-main.tsx`) and deliberately does not mount the product `App.tsx`. Its UI exercises:
+The original pilot had a separate React entry point (`tauri.html` / `tauri-main.tsx`) and deliberately did not mount the product `App.tsx`. Its UI exercised:
 
 - Tauri runtime/version reporting and `agentd` health status/events over protocol v1 JSONL.
 - Native file and folder selection; the selected path is displayed by the pilot.
 - Credential set, existence check, and delete for the typed allowlist in `src/shared/native-bridge.ts`.
 - A small renderer/WebView that can be closed/recreated independently of the intended host-owned `agentd` lifecycle.
 
-The web UI and Node sidecar protocol have focused automated coverage, and Rust host commands have unit coverage. The macOS smoke pass below verified release startup, `agentd` readiness, native picker open/cancel behavior, and a disposable Keychain set/check/delete/absence round trip. Closing the release window left its host and sidecar running. Tray Open/Quit, positive path selection, health-failure rendering, and cross-platform behavior still need desktop verification. Tauri's native file-dialog API does not expose a custom confirmation-button label; a Tauri request that supplies `buttonLabel` fails explicitly instead of silently ignoring it. Electron continues to honor its existing picker option. This smoke pass is not production release sign-off.
+The web UI and Node sidecar protocol have focused automated coverage, and Rust host commands have unit coverage. The macOS smoke pass below verified release startup, `agentd` readiness, native picker open/cancel behavior, and a disposable Keychain set/check/delete/absence round trip. Closing the release window left its host and sidecar running. Tray Open/Quit, positive path selection, health-failure rendering, and cross-platform behavior still need desktop verification. Tauri's native file-dialog API does not expose a custom confirmation-button label; a Tauri request that supplies `buttonLabel` fails explicitly instead of silently ignoring it. Electron continues to honor its existing picker option. This smoke pass is not production release sign-off. For current behavior, browser product routes use the authenticated `agentd` API and Tauri remains native-only.
 
 ## Security and data boundaries
 

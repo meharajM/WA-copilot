@@ -1,5 +1,13 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
+type BusinessPersonaProfile = {
+    name: string
+    industry: string
+    tone: 'professional' | 'casual' | 'enthusiastic' | 'concise'
+    coreKnowledge: string[]
+    customRules?: string
+}
+
 let mcpSessionToken: Promise<string> | null = null
 function getMcpSessionToken(): Promise<string> {
     return mcpSessionToken ??= ipcRenderer.invoke('mcp:authorize').then((result: { success: boolean; token?: string; error?: string }) => {
@@ -40,6 +48,25 @@ const electronAPI = {
         get: (key: string) => ipcRenderer.invoke('store:get', key),
         set: (key: string, value: unknown) => ipcRenderer.invoke('store:set', key, value),
         delete: (key: string) => ipcRenderer.invoke('store:delete', key),
+    },
+
+    // Chat persistence operations (never expose generic ipcRenderer)
+    chat: {
+        loadSessions: () => ipcRenderer.invoke('chat:load-sessions') as Promise<{
+            success: boolean
+            sessions?: unknown[]
+            error?: string
+        }>,
+        saveSessionsWithMirror: (sessions: unknown[]) =>
+            ipcRenderer.invoke('chat:save-sessions-with-mirror', sessions) as Promise<{
+                success: boolean
+                error?: string
+            }>,
+        deleteSession: (id: string) =>
+            ipcRenderer.invoke('chat:delete-session', id) as Promise<{
+                success: boolean
+                error?: string
+            }>,
     },
 
     // Shell operations
@@ -128,8 +155,9 @@ const electronAPI = {
     intelligence: {
         getKnowledge: () => ipcRenderer.invoke('intelligence:get-knowledge'),
         deleteKnowledge: (id: number) => ipcRenderer.invoke('intelligence:delete-knowledge', id),
-        getPersona: () => ipcRenderer.invoke('intelligence:get-persona'),
-        updatePersona: (updates: Record<string, unknown>) => ipcRenderer.invoke('intelligence:update-persona', updates),
+        getPersona: () => ipcRenderer.invoke('intelligence:get-persona') as Promise<BusinessPersonaProfile>,
+        updatePersona: (updates: Partial<BusinessPersonaProfile>) =>
+            ipcRenderer.invoke('intelligence:update-persona', updates) as Promise<void>,
         getLogs: (limit = 20) => ipcRenderer.invoke('intelligence:get-logs', limit),
         getStats: () => ipcRenderer.invoke('intelligence:get-stats'),
         logAccuracy: (payload: { event: string; details?: string }) => ipcRenderer.invoke('intelligence:log-accuracy', payload),

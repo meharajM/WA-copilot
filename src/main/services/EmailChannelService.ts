@@ -697,66 +697,6 @@ export class EmailChannelService extends EventEmitter {
     if (processed > 0) console.log(`[EmailChannelService] Gmail API processed ${processed} message(s)`)
   }
 
-  private fromGmailMessage(item: Record<string, unknown>): InboundEmailMessage | null {
-    const payload = (item.payload && typeof item.payload === 'object') ? item.payload as Record<string, unknown> : null
-    const headers = Array.isArray(payload?.headers) ? payload!.headers as Array<Record<string, unknown>> : []
-    const getHeader = (name: string): string => {
-      const found = headers.find((h) => String(h.name || '').toLowerCase() === name.toLowerCase())
-      return typeof found?.value === 'string' ? found.value : ''
-    }
-    const bodyData = this.extractGmailBody(payload)
-    return {
-      id: String(item.id || `gmail_${Date.now()}`),
-      from: parseEmailAddress(getHeader('From')) || 'unknown-sender',
-      to: parseEmailAddress(getHeader('To')) || '',
-      subject: getHeader('Subject') || '(No Subject)',
-      body: bodyData || '',
-      bodyType: 'text',
-      timestamp: parseTimestampMs(item),
-      messageId: getHeader('Message-Id') || getHeader('Message-ID'),
-      inReplyTo: getHeader('In-Reply-To'),
-      references: getHeader('References'),
-      isFromMe: false,
-      attachments: this.extractGmailAttachments(payload)
-    }
-  }
-
-  private extractGmailAttachments(payload: Record<string, unknown> | null): ChannelAttachment[] {
-    const attachments: ChannelAttachment[] = []
-    const visit = (part: Record<string, unknown>): void => {
-      const body = part.body as Record<string, unknown> | undefined
-      const filename = typeof part.filename === 'string' ? part.filename : ''
-      const attachmentId = typeof body?.attachmentId === 'string' ? body.attachmentId : undefined
-      const size = typeof body?.size === 'number' ? body.size : undefined
-      if (filename || attachmentId) attachments.push({ id: attachmentId, name: filename || undefined, mimeType: typeof part.mimeType === 'string' ? part.mimeType : undefined, size })
-      if (Array.isArray(part.parts)) for (const child of part.parts) if (child && typeof child === 'object') visit(child as Record<string, unknown>)
-    }
-    if (payload) visit(payload)
-    return attachments
-  }
-
-  private extractGmailBody(payload: Record<string, unknown> | null): string {
-    if (!payload) return ''
-    const body = payload.body as Record<string, unknown> | undefined
-    if (body?.data && typeof body.data === 'string') {
-      return Buffer.from(body.data, 'base64').toString('utf8')
-    }
-    const parts = Array.isArray(payload.parts) ? payload.parts as Array<Record<string, unknown>> : []
-    for (const part of parts) {
-      if (String(part.mimeType || '').toLowerCase() === 'text/plain') {
-        const partBody = part.body as Record<string, unknown> | undefined
-        if (partBody?.data && typeof partBody.data === 'string') {
-          try {
-            return Buffer.from(partBody.data.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8')
-          } catch {
-            return ''
-          }
-        }
-      }
-    }
-    return ''
-  }
-
   private async fetchMetadata(
     accountName: string,
     limit: number,

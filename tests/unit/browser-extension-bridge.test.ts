@@ -1,9 +1,10 @@
 import http from 'node:http'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { BrowserExtensionBridge, normalizeExtensionMessage } from '../../src/main/services/BrowserExtensionBridge'
+import { allowsBrowserExtensionMessage, BrowserExtensionBridge, normalizeExtensionMessage } from '../../src/main/services/BrowserExtensionBridge'
 
 const originalToken = process.env.AICA_EXTENSION_BRIDGE_TOKEN
 const originalPort = process.env.AICA_EXTENSION_BRIDGE_PORT
+const originalTransport = process.env.WHATSAPP_TRANSPORT
 const bridges: BrowserExtensionBridge[] = []
 
 afterEach(async () => {
@@ -12,6 +13,8 @@ afterEach(async () => {
   else process.env.AICA_EXTENSION_BRIDGE_TOKEN = originalToken
   if (originalPort === undefined) delete process.env.AICA_EXTENSION_BRIDGE_PORT
   else process.env.AICA_EXTENSION_BRIDGE_PORT = originalPort
+  if (originalTransport === undefined) delete process.env.WHATSAPP_TRANSPORT
+  else process.env.WHATSAPP_TRANSPORT = originalTransport
 })
 
 function request(port: number, token: string, path: string, body?: unknown, declaredLength?: number): Promise<{ status: number; json: unknown }> {
@@ -37,8 +40,9 @@ describe('BrowserExtensionBridge', () => {
     expect((await bridge.start()).status).toBe('disabled')
 
     process.env.AICA_EXTENSION_BRIDGE_TOKEN = 'bridge-secret-1234'
+    process.env.WHATSAPP_TRANSPORT = 'web'
     process.env.AICA_EXTENSION_BRIDGE_PORT = String(18_000 + Math.floor(Math.random() * 1_000))
-    const running = new BrowserExtensionBridge(onMessage)
+    const running = new BrowserExtensionBridge(onMessage, () => true)
     bridges.push(running)
     expect((await running.start()).status).toBe('connected')
     const response = await request(Number(process.env.AICA_EXTENSION_BRIDGE_PORT), 'wrong', '/health')
@@ -47,9 +51,10 @@ describe('BrowserExtensionBridge', () => {
 
   it('forwards only bounded authenticated text messages and reports status', async () => {
     process.env.AICA_EXTENSION_BRIDGE_TOKEN = 'bridge-secret-1234'
+    process.env.WHATSAPP_TRANSPORT = 'web'
     process.env.AICA_EXTENSION_BRIDGE_PORT = String(18_000 + Math.floor(Math.random() * 1_000))
     const onMessage = vi.fn()
-    const bridge = new BrowserExtensionBridge(onMessage)
+    const bridge = new BrowserExtensionBridge(onMessage, () => true)
     bridges.push(bridge)
     await bridge.start()
     const port = Number(process.env.AICA_EXTENSION_BRIDGE_PORT)
@@ -81,5 +86,27 @@ describe('BrowserExtensionBridge', () => {
     expect(normalizeExtensionMessage({ id: 'x', from: 'y', content: ' ' })).toBeNull()
     expect(normalizeExtensionMessage({ id: 'x', from: 'y', content: 'ok', timestamp: 0 })).toBeNull()
     expect(normalizeExtensionMessage({ id: 'x', from: 'y', content: 'ok', timestamp: Date.now() })).toMatchObject({ type: 'text', isFromMe: false })
+  })
+
+  it('fails closed when extension transport is not explicitly selected', async () => {
+    process.env.AICA_EXTENSION_BRIDGE_TOKEN = 'bridge-secret-1234'
+    delete process.env.WHATSAPP_TRANSPORT
+    process.env.AICA_EXTENSION_BRIDGE_PORT = String(18_000 + Math.floor(Math.random() * 1_000))
+    const onMessage = vi.fn()
+    const bridge = new BrowserExtensionBridge(onMessage, () => false)
+    bridges.push(bridge)
+    await bridge.start()
+    const response = await request(Number(process.env.AICA_EXTENSION_BRIDGE_PORT), 'bridge-secret-1234', '/messages', { message: { id: 'disabled', from: 'customer-1', content: 'Hello', timestamp: Date.now() } })
+    expect(response).toEqual({ status: 403, json: { accepted: false, error: 'extension_transport_not_enabled' } })
+    expect(onMessage).not.toHaveBeenCalled()
+  })
+
+  it('requires a known WhatsApp identity and rejects owner/foreign recipients', () => {
+    const message = normalizeExtensionMessage({ id: 'm', from: '15550000001', content: 'Hello', timestamp: Date.now() })!
+    expect(allowsBrowserExtensionMessage(message, { selectedTransport: 'baileys', phoneNumber: '15550000002' })).toBe(false)
+    expect(allowsBrowserExtensionMessage(message, { selectedTransport: 'web' })).toBe(false)
+    expect(allowsBrowserExtensionMessage(message, { selectedTransport: 'web', phoneNumber: '15550000001' })).toBe(false)
+    expect(allowsBrowserExtensionMessage({ ...message, from: '15550000003', to: '15550000002' }, { selectedTransport: 'web', phoneNumber: '15550000001' })).toBe(false)
+    expect(allowsBrowserExtensionMessage({ ...message, from: '15550000003', to: '15550000001' }, { selectedTransport: 'web', phoneNumber: '15550000001' })).toBe(true)
   })
 })

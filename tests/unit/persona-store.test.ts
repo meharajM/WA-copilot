@@ -1,12 +1,13 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest'
 
-// Mock Electron IPC before importing the store
-const invokeMock = vi.fn()
+// Mock the scoped preload API before importing the store
+const getPersonaMock = vi.fn()
+const updatePersonaMock = vi.fn()
 global.window = {
-    // @ts-expect-error - mock
     electron: {
-        ipcRenderer: {
-            invoke: invokeMock
+        intelligence: {
+            getPersona: getPersonaMock,
+            updatePersona: updatePersonaMock,
         }
     }
 }
@@ -17,6 +18,8 @@ describe('Persona Zustand Store', () => {
 
     beforeEach(() => {
         vi.clearAllMocks()
+        getPersonaMock.mockResolvedValue(undefined)
+        updatePersonaMock.mockResolvedValue(undefined)
         // Reset Zustand store state
         usePersonaStore.setState({
             profile: null,
@@ -25,8 +28,8 @@ describe('Persona Zustand Store', () => {
         })
     })
 
-    it('fetches profile successfully via IPC', async () => {
-        invokeMock.mockResolvedValueOnce({
+    it('fetches profile through the scoped preload API', async () => {
+        getPersonaMock.mockResolvedValueOnce({
             name: 'StoreBot',
             industry: 'Retail',
             tone: 'professional',
@@ -38,7 +41,7 @@ describe('Persona Zustand Store', () => {
         await store.fetchProfile()
 
         const state = usePersonaStore.getState()
-        expect(invokeMock).toHaveBeenCalledWith('intelligence:get-persona')
+        expect(getPersonaMock).toHaveBeenCalledOnce()
         expect(state.isLoading).toBe(false)
         expect(state.error).toBeNull()
         expect(state.profile?.name).toBe('StoreBot')
@@ -46,7 +49,7 @@ describe('Persona Zustand Store', () => {
     })
 
     it('falls back to default profile if IPC fails', async () => {
-        invokeMock.mockRejectedValueOnce(new Error('IPC Error'))
+        getPersonaMock.mockRejectedValueOnce(new Error('IPC Error'))
 
         const store = usePersonaStore.getState()
         await store.fetchProfile()
@@ -59,7 +62,7 @@ describe('Persona Zustand Store', () => {
         expect(state.profile?.tone).toBe('professional')
     })
 
-    it('performs optimistic updates and flushes to IPC', async () => {
+    it('performs optimistic updates through the scoped preload API', async () => {
         // Seed initial state
         usePersonaStore.setState({
             profile: {
@@ -79,7 +82,7 @@ describe('Persona Zustand Store', () => {
         expect(state.profile?.tone).toBe('enthusiastic')
 
         // Check if it triggered IPC update
-        expect(invokeMock).toHaveBeenCalledWith('intelligence:update-persona', {
+        expect(updatePersonaMock).toHaveBeenCalledWith({
             name: 'Optimistic Bot',
             tone: 'enthusiastic'
         })

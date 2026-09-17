@@ -15,6 +15,24 @@ export function validateModelArchiveEntries(entries: string[], expectedRoot?: st
     }
 }
 
+/** Reject links and non-regular filesystem entries before a model is promoted. */
+export function validateExtractedModelTree(rootDir: string): void {
+    const walk = (directory: string): void => {
+        for (const entry of fs.readdirSync(directory)) {
+            const entryPath = path.join(directory, entry)
+            const stats = fs.lstatSync(entryPath)
+            if (stats.isSymbolicLink() || (!stats.isDirectory() && !stats.isFile())) {
+                throw new Error('Model archive contains a symlink or special entry')
+            }
+            if (stats.isDirectory()) walk(entryPath)
+        }
+    }
+
+    const rootStats = fs.lstatSync(rootDir)
+    if (!rootStats.isDirectory() || rootStats.isSymbolicLink()) throw new Error('Model archive root is not a directory')
+    walk(rootDir)
+}
+
 export function isSha256Digest(value: string): boolean {
     return /^[a-f0-9]{64}$/i.test(value)
 }
@@ -52,6 +70,45 @@ export class ModelManager {
             .map(entry => entry.trim())
             .filter(Boolean)
         validateModelArchiveEntries(entries, modelName)
+    }
+
+    private extractValidatedArchive(zipPath: string, modelName: string): void {
+        const targetDir = this.getModelDirPath(modelName)
+        const stagingDir = fs.mkdtempSync(path.join(this.modelsDir, `.${modelName}.staging-`))
+        const backupDir = fs.mkdtempSync(path.join(this.modelsDir, `.${modelName}.backup-`))
+        const stagedTarget = path.join(stagingDir, modelName)
+        const previousTarget = path.join(backupDir, modelName)
+        let previousTargetMoved = false
+        try {
+            try {
+                execFileSync('unzip', ['-o', zipPath, '-d', stagingDir], { stdio: 'ignore' })
+            } catch (error) {
+                if (process.platform !== 'win32') throw error
+                execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'Expand-Archive -LiteralPath $args[0] -DestinationPath $args[1] -Force', zipPath, stagingDir], { stdio: 'ignore' })
+            }
+            validateExtractedModelTree(stagedTarget)
+            try {
+                fs.lstatSync(targetDir)
+                fs.renameSync(targetDir, previousTarget)
+                previousTargetMoved = true
+            } catch (error) {
+                if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+            }
+            try {
+                fs.renameSync(stagedTarget, targetDir)
+            } catch (error) {
+                if (previousTargetMoved) {
+                    try {
+                        if (fs.existsSync(targetDir)) fs.rmSync(targetDir, { recursive: true, force: true })
+                        fs.renameSync(previousTarget, targetDir)
+                    } catch { /* preserve original failure; recovery remains explicit */ }
+                }
+                throw error
+            }
+        } finally {
+            fs.rmSync(stagingDir, { recursive: true, force: true })
+            fs.rmSync(backupDir, { recursive: true, force: true })
+        }
     }
 
     public getModelsDir(): string {
@@ -179,36 +236,16 @@ export class ModelManager {
                                 return
                             }
                             this.validateArchive(zipPath, modelName)
-                            // Extract to modelsDir
-                            try {
-                                // Critical Fix: Correct unzip command "unzip -o"
-                                execFileSync('unzip', ['-o', zipPath, '-d', this.modelsDir], { stdio: 'ignore' })
-                            } catch (e) {
-                                if (process.platform === 'win32') {
-                                    execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'Expand-Archive -LiteralPath $args[0] -DestinationPath $args[1] -Force', zipPath, this.modelsDir], { stdio: 'ignore' })
-                                } else {
-                                    throw e
-                                }
-                            }
+                            // Extract into quarantine and promote only after lstat verification.
+                            this.extractValidatedArchive(zipPath, modelName)
+                            console.log(`[Speech] Model ready at ${targetDir}`)
 
-                            // Check extraction
-                            if (fs.existsSync(targetDir)) {
-                                console.log(`[Speech] Model ready at ${targetDir}`)
+                            // Cleanup conflicting files
+                            const tarGzPath = path.join(this.modelsDir, `${modelName}.tar.gz`)
+                            if (fs.existsSync(tarGzPath)) fs.unlinkSync(tarGzPath)
 
-                                // Cleanup conflicting files
-                                const tarGzPath = path.join(this.modelsDir, `${modelName}.tar.gz`)
-                                if (fs.existsSync(tarGzPath)) {
-                                    fs.unlinkSync(tarGzPath)
-                                }
-
-                                settled = true
-                                resolve({ success: true })
-                            } else {
-                                // Cleanup failed extraction
-                                if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath)
-                                settled = true
-                                resolve({ success: true })
-                            }
+                            settled = true
+                            resolve({ success: true })
                         } catch (e) {
                             console.error(`[Speech] Extraction failed: `, e)
                             if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath)

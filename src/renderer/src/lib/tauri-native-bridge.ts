@@ -1,64 +1,62 @@
 import { invoke as tauriInvoke } from '@tauri-apps/api/core'
-import { listen as tauriListen, type Event, type UnlistenFn } from '@tauri-apps/api/event'
 import {
   credentialKeys,
   type CredentialKey,
   type FileSelectionOptions,
+  type LlmSettings,
   type NativeBridge,
   type NativeHealth,
   type NativeResult,
+  type ProviderTestResult,
+  type SupportedLlmProvider,
+  type WhatsAppSettings,
 } from '../../../shared/native-bridge'
 
 export const TAURI_COMMANDS = {
   appVersion: 'app_version',
   agentdHealth: 'agentd_health',
-  selectFile: 'select_file',
-  selectFolder: 'select_folder',
+  agentdOrigin: 'agentd_origin',
+  getLlmSettings: 'get_llm_settings',
+  saveLlmSettings: 'save_llm_settings',
+  getWhatsAppSettings: 'get_whatsapp_settings',
+  saveWhatsAppSettings: 'save_whatsapp_settings',
   credentialSet: 'credential_set',
   credentialExists: 'credential_exists',
   credentialDelete: 'credential_delete',
-} as const
-
-export const TAURI_EVENTS = {
-  agentdHealth: 'agentd-health',
+  providerTest: 'provider_test',
+  selectFile: 'select_file',
+  selectFolder: 'select_folder',
 } as const
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>
-type Listen = <T>(event: string, handler: (event: Event<T>) => void) => Promise<UnlistenFn>
 
 export interface TauriBridgeDependencies {
   invoke: Invoke
-  listen: Listen
 }
 
-export type HealthListener = (health: NativeHealth) => void
-export type Unsubscribe = () => void
-export interface HealthSubscription {
-  ready: Promise<void>
-  unsubscribe: Unsubscribe
+const hasTauriRuntime = (): boolean => (
+  typeof window !== 'undefined'
+  && typeof (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ === 'object'
+  && (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ !== null
+)
+
+const defaultInvoke: Invoke = async <T>(command: string, args?: Record<string, unknown>): Promise<T> => {
+  if (!hasTauriRuntime()) throw new Error('Native host unavailable; open the Tauri app')
+  return tauriInvoke<T>(command, args)
 }
 
-export const createHealthUpdateHandler = (listener: HealthListener) => {
-  let receivedEvent = false
+const defaultDependencies: TauriBridgeDependencies = { invoke: defaultInvoke }
 
-  return {
-    onEvent: (health: NativeHealth) => {
-      receivedEvent = true
-      listener(health)
-    },
-    onSnapshot: (health: NativeHealth) => {
-      if (!receivedEvent) listener(health)
-    },
-  }
-}
-
-const defaultDependencies: TauriBridgeDependencies = {
-  invoke: tauriInvoke,
-  listen: tauriListen,
-}
+const SUPPORTED_CREDENTIAL_KEYS = [
+  'openai_api_key',
+  'openrouter_api_key',
+  'whatsapp_cloud_access_token',
+  'whatsapp_cloud_app_secret',
+  'whatsapp_cloud_verify_token',
+] as const
 
 const isRecord = (value: unknown): value is Record<string, unknown> => (
-  typeof value === 'object' && value !== null
+  typeof value === 'object' && value !== null && !Array.isArray(value)
 )
 
 const errorText = (value: unknown, fallback: string): string => (
@@ -76,18 +74,22 @@ const failed = (value: unknown, fallback: string): NativeResult => ({
 })
 
 const isCredentialKey = (key: string): key is CredentialKey => (
-  (credentialKeys as readonly string[]).includes(key)
+  (SUPPORTED_CREDENTIAL_KEYS as readonly string[]).includes(key)
+    && (credentialKeys as readonly string[]).includes(key)
 )
 
 const readHealth = (value: unknown): NativeHealth => {
   if (!isRecord(value) || (value.status !== 'ready' && value.status !== 'unavailable')) {
-    return { status: 'unavailable', error: 'Invalid agentd health response' }
+    return { status: 'unavailable', error: 'Invalid agentd status response' }
   }
 
   return {
     status: value.status,
     ...(typeof value.version === 'string' ? { version: value.version } : {}),
     ...(typeof value.error === 'string' ? { error: value.error } : {}),
+    ...(typeof value.paused === 'boolean' ? { paused: value.paused } : {}),
+    ...(typeof value.queueDepth === 'number' ? { queueDepth: value.queueDepth } : {}),
+    ...(typeof value.events === 'number' ? { events: value.events } : {}),
   }
 }
 
@@ -105,11 +107,55 @@ const readCredentialExists = (value: unknown): NativeResult & { exists: boolean 
   if (!isRecord(value) || typeof value.exists !== 'boolean') {
     return { success: false, error: 'Invalid credential existence response', exists: false }
   }
-  const result = readResult(value)
-  return {
-    ...result,
-    exists: value.exists,
+  return { ...readResult(value), exists: value.exists }
+}
+
+const readLlmSettings = (value: unknown): LlmSettings => {
+  if (!isRecord(value)
+    || Object.keys(value).sort().join(',') !== 'openaiModel,openrouterModel,preferredProvider'
+    || !['auto', 'openai', 'openrouter'].includes(value.preferredProvider as string)
+    || typeof value.openaiModel !== 'string'
+    || !value.openaiModel.trim()
+    || [...value.openaiModel].length > 128
+    || typeof value.openrouterModel !== 'string'
+    || !value.openrouterModel.trim()
+    || [...value.openrouterModel].length > 128) {
+    throw new Error('Invalid LLM settings response')
   }
+  return {
+    preferredProvider: value.preferredProvider as LlmSettings['preferredProvider'],
+    openaiModel: value.openaiModel,
+    openrouterModel: value.openrouterModel,
+  }
+}
+
+const readWhatsAppSettings = (value: unknown): WhatsAppSettings => {
+  if (!isRecord(value)
+    || Object.keys(value).sort().join(',') !== 'whatsapp_cloud_api_version,whatsapp_cloud_phone_number_id,whatsapp_transport'
+    || !['baileys', 'cloud', 'web'].includes(value.whatsapp_transport as string)
+    || typeof value.whatsapp_cloud_phone_number_id !== 'string'
+    || [...value.whatsapp_cloud_phone_number_id].length > 128
+    || typeof value.whatsapp_cloud_api_version !== 'string'
+    || !value.whatsapp_cloud_api_version.trim()
+    || [...value.whatsapp_cloud_api_version].length > 32) {
+    throw new Error('Invalid WhatsApp settings response')
+  }
+  return {
+    whatsapp_transport: value.whatsapp_transport as WhatsAppSettings['whatsapp_transport'],
+    whatsapp_cloud_phone_number_id: value.whatsapp_cloud_phone_number_id,
+    whatsapp_cloud_api_version: value.whatsapp_cloud_api_version,
+  }
+}
+
+const readProviderTest = (value: unknown): ProviderTestResult => {
+  if (!isRecord(value) || typeof value.success !== 'boolean') {
+    return { success: false, error: 'Invalid provider test response' }
+  }
+  if (!value.success) return { success: false, error: errorText(value.error, 'Provider test failed') }
+  if (!Number.isSafeInteger(value.modelCount) || (value.modelCount as number) < 0) {
+    return { success: false, error: 'Invalid provider test response' }
+  }
+  return { success: true, modelCount: value.modelCount as number }
 }
 
 const readSelection = (value: unknown): string | null => {
@@ -122,7 +168,12 @@ export const createTauriNativeBridge = (
   dependencies: TauriBridgeDependencies = defaultDependencies,
 ): NativeBridge & {
   appVersion: () => Promise<string>
-  onAgentdHealth: (listener: HealthListener, onError?: (error: string) => void) => HealthSubscription
+  agentdOrigin: () => Promise<string>
+  getLlmSettings: () => Promise<LlmSettings>
+  saveLlmSettings: (settings: LlmSettings) => Promise<LlmSettings>
+  getWhatsAppSettings: () => Promise<WhatsAppSettings>
+  saveWhatsAppSettings: (settings: WhatsAppSettings) => Promise<WhatsAppSettings>
+  testProvider: (provider: SupportedLlmProvider) => Promise<ProviderTestResult>
 } => {
   const invoke = async <T>(command: string, args?: Record<string, unknown>): Promise<T> => (
     dependencies.invoke<T>(command, args)
@@ -138,8 +189,14 @@ export const createTauriNativeBridge = (
     try {
       return readHealth(await invoke<unknown>(TAURI_COMMANDS.agentdHealth))
     } catch (error) {
-      return { status: 'unavailable', error: errorText(error instanceof Error ? error.message : error, 'Agentd health unavailable') }
+      return { status: 'unavailable', error: errorText(error instanceof Error ? error.message : error, 'agentd is stopped or unavailable') }
     }
+  }
+
+  const agentdOrigin = async (): Promise<string> => {
+    const value = await invoke<unknown>(TAURI_COMMANDS.agentdOrigin)
+    if (typeof value !== 'string' || !/^http:\/\/127\.0\.0\.1:\d+$/.test(value)) throw new Error('Invalid agentd origin response')
+    return value
   }
 
   const selectFile = async (options?: FileSelectionOptions): Promise<string | null> => {
@@ -157,6 +214,22 @@ export const createTauriNativeBridge = (
       throw new Error(errorText(error instanceof Error ? error.message : error, 'Folder picker unavailable'))
     }
   }
+
+  const getLlmSettings = async (): Promise<LlmSettings> => readLlmSettings(
+    await invoke<unknown>(TAURI_COMMANDS.getLlmSettings),
+  )
+
+  const saveLlmSettings = async (settings: LlmSettings): Promise<LlmSettings> => readLlmSettings(
+    await invoke<unknown>(TAURI_COMMANDS.saveLlmSettings, { settings }),
+  )
+
+  const getWhatsAppSettings = async (): Promise<WhatsAppSettings> => readWhatsAppSettings(
+    await invoke<unknown>(TAURI_COMMANDS.getWhatsAppSettings),
+  )
+
+  const saveWhatsAppSettings = async (settings: WhatsAppSettings): Promise<WhatsAppSettings> => readWhatsAppSettings(
+    await invoke<unknown>(TAURI_COMMANDS.saveWhatsAppSettings, { settings }),
+  )
 
   const setCredential = async (key: CredentialKey, value: string): Promise<NativeResult> => {
     if (!isCredentialKey(key)) return unsupported('Credential key')
@@ -186,26 +259,12 @@ export const createTauriNativeBridge = (
     }
   }
 
-  const onAgentdHealth = (listener: HealthListener, onError?: (error: string) => void): HealthSubscription => {
-    let active = true
-    let unlisten: UnlistenFn | undefined
-
-    const ready = dependencies.listen<unknown>(TAURI_EVENTS.agentdHealth, (event) => {
-      if (active) listener(readHealth(event.payload))
-    }).then((cleanup) => {
-      if (active) unlisten = cleanup
-      else cleanup()
-    }).catch(() => {
-      if (active) onError?.('Agentd health event subscription unavailable')
-    })
-
-    return {
-      ready,
-      unsubscribe: () => {
-        active = false
-        unlisten?.()
-        unlisten = undefined
-      },
+  const testProvider = async (provider: SupportedLlmProvider): Promise<ProviderTestResult> => {
+    if (provider !== 'openai' && provider !== 'openrouter') return unsupported('Provider')
+    try {
+      return readProviderTest(await invoke<unknown>(TAURI_COMMANDS.providerTest, { provider }))
+    } catch (error) {
+      return { success: false, error: errorText(error instanceof Error ? error.message : error, 'Provider test failed') }
     }
   }
 
@@ -218,8 +277,15 @@ export const createTauriNativeBridge = (
     hasCredential,
     deleteCredential,
     appVersion,
-    onAgentdHealth,
+    agentdOrigin,
+    getLlmSettings,
+    saveLlmSettings,
+    getWhatsAppSettings,
+    saveWhatsAppSettings,
+    testProvider,
   }
 }
 
 export const tauriNativeBridge = createTauriNativeBridge()
+
+export const isTauriRuntime = hasTauriRuntime

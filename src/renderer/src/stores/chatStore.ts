@@ -1,6 +1,10 @@
 import { create } from 'zustand'
-import { persist, createJSONStorage } from 'zustand/middleware'
+import { persist, createJSONStorage, type StateStorage } from 'zustand/middleware'
 import type { ExecutionPlan } from '../lib/agent-protocol'
+import type { ChatClient, ChatMessage } from '../../../shared/chat-protocol'
+import { createTauriChatClient } from '../lib/tauri-chat-client'
+import { getBrowserAgentdClient } from '../lib/browser-agentd-client'
+import { isTauriRuntime } from '../lib/tauri-native-bridge'
 
 export interface MessageAction {
     type: 'continue' | 'cancel' | 'custom';
@@ -33,6 +37,142 @@ export interface ToolCall {
     finding?: string         // The summarised finding text for this specific tool call
     startedAt?: number       // Unix ms timestamp when execution began
     completedAt?: number     // Unix ms timestamp when execution finished
+}
+
+type PersistedChatState = {
+    sessions: ChatSession[]
+    activeSessionId: string | null
+    offlineSpeech: boolean
+    sidebarOpen: boolean
+}
+
+/**
+ * Tauri persistence adapter. Electron keeps its existing SQLite/mirror path;
+ * Tauri writes through the typed daemon client so the renderer never reaches
+ * `window.electron` in the native shell.
+ */
+export const createTauriChatStorage = (chatClient: ChatClient): StateStorage => {
+  const knownSessions = new Set<string>()
+  const knownMessages = new Set<string>()
+  let activeSessionId: string | null = null
+  let writeQueue = Promise.resolve()
+
+    const toDaemonMessage = (message: Message): ChatMessage => ({
+        id: message.id,
+        role: message.role,
+        content: message.content,
+        timestamp: message.timestamp,
+    })
+
+    return {
+        getItem: async (name: string) => {
+            const sessions = await chatClient.loadSessions()
+            for (const session of sessions) {
+                knownSessions.add(session.id)
+                for (const message of session.messages) knownMessages.add(message.id)
+            }
+            return JSON.stringify({
+                state: {
+                    sessions: sessions as ChatSession[],
+                    activeSessionId,
+                    offlineSpeech: false,
+                    sidebarOpen: true,
+                },
+                version: 0,
+            })
+        },
+        removeItem: async (_name: string) => {},
+        setItem: (name: string, value: string) => {
+            const parsed = JSON.parse(value) as { state?: Partial<PersistedChatState> }
+            const sessions = Array.isArray(parsed.state?.sessions) ? parsed.state.sessions : []
+            const activeId = parsed.state?.activeSessionId || null
+            activeSessionId = activeId
+
+            const sync = async (): Promise<void> => {
+                try {
+                    const currentSessionIds = new Set(sessions.map((session) => session.id))
+                    for (const sessionId of [...knownSessions]) {
+                        if (!currentSessionIds.has(sessionId)) {
+                            await chatClient.deleteSession(sessionId)
+                            knownSessions.delete(sessionId)
+                        }
+                    }
+                    for (const session of sessions) {
+                        if (!knownSessions.has(session.id)) {
+                            await chatClient.createSession(session.id, session.title)
+                            knownSessions.add(session.id)
+                        }
+                        for (const message of session.messages) {
+                            if (knownMessages.has(message.id)) continue
+                            await chatClient.appendMessage(session.id, toDaemonMessage(message))
+                            knownMessages.add(message.id)
+                        }
+                    }
+                } catch (error) {
+                    // Keep failed IDs unknown so next state write retries persistence.
+                    console.error('[ChatStore] Failed to sync Tauri chat to agentd:', error)
+                }
+            }
+
+            writeQueue = writeQueue.then(sync, sync)
+            return writeQueue
+        },
+    }
+}
+
+const createElectronChatStorage = (): StateStorage => ({
+    getItem: async (name: string) => {
+        try {
+            const chat = window.electron?.chat
+            if (!chat) {
+                console.warn('[ChatStore] Electron bridge not ready for getItem')
+                return null
+            }
+
+            const result = await chat.loadSessions()
+            if (result.success && result.sessions) {
+                return JSON.stringify({
+                    state: {
+                        sessions: result.sessions as ChatSession[],
+                        activeSessionId: window.localStorage.getItem(`${name}-active-id`) || null,
+                        offlineSpeech: false,
+                        sidebarOpen: true,
+                    },
+                    version: 0,
+                })
+            }
+        } catch (error) {
+            console.error('[ChatStore] Failed to load from SQLite:', error)
+        }
+        return null
+    },
+    removeItem: async (_name: string) => {},
+    setItem: async (name: string, value: string) => {
+        const parsed = JSON.parse(value)
+        const sessions = parsed.state.sessions
+        const activeId = parsed.state.activeSessionId
+        window.localStorage.setItem(`${name}-active-id`, activeId)
+
+        try {
+            const chat = window.electron?.chat
+            if (chat) await chat.saveSessionsWithMirror(sessions)
+            else console.warn('[ChatStore] Electron bridge not ready for setItem')
+        } catch (error) {
+            console.error('[ChatStore] Failed to sync to backend:', error)
+        }
+    },
+})
+
+export const createChatStorage = (chatClient?: ChatClient): StateStorage => {
+    if (chatClient || isTauriRuntime()) return createTauriChatStorage(chatClient || createTauriChatClient())
+    const browserStorage = createTauriChatStorage(getBrowserAgentdClient())
+    const electronStorage = createElectronChatStorage()
+    const activeStorage = (): StateStorage => (typeof window !== 'undefined' && !window.electron) ? browserStorage : electronStorage
+    return {
+        getItem: (name) => activeStorage().getItem(name),
+        setItem: (name, value) => activeStorage().setItem(name, value),
+        removeItem: (name) => activeStorage().removeItem(name),
+    }
 }
 
 export interface ChatSession {
@@ -74,6 +214,7 @@ interface SessionProcessingEntry {
 interface ChatState {
     sessions: ChatSession[]
     activeSessionId: string | null
+    activeSelectionRevision: number
 
     /**
      * Per-session processing state.
@@ -127,7 +268,7 @@ interface ChatState {
     resolveSession: (id: string, status: 'active' | 'resolved') => void
     updateSessionActivity: (id: string) => void
     addMessage: (message: Omit<Message, 'id' | 'timestamp'>) => Message
-    addSessionMessage: (sessionId: string, message: Omit<Message, 'id' | 'timestamp'>) => Message
+    addSessionMessage: (sessionId: string, message: Omit<Message, 'id' | 'timestamp'> & Partial<Pick<Message, 'id' | 'timestamp'>>) => Message
     updateMessage: (id: string, updates: Partial<Message>) => void
     updateSessionMessage: (sessionId: string, messageId: string, updates: Partial<Message>) => void
     removeMessage: (id: string) => void
@@ -146,6 +287,7 @@ export const useChatStore = create<ChatState>()(
         (set, get) => ({
             sessions: [],
             activeSessionId: null,
+            activeSelectionRevision: 0,
             _processingSessions: new Map<string, SessionProcessingEntry>(),
 
             // ── Legacy derived scalars ─────────────────────────────────────────
@@ -254,6 +396,7 @@ export const useChatStore = create<ChatState>()(
                 set((state) => ({
                     sessions: [newSession, ...state.sessions],
                     activeSessionId: newSession.id,
+                    activeSelectionRevision: state.activeSelectionRevision + 1,
                 }))
                 return newSession.id
             },
@@ -261,6 +404,9 @@ export const useChatStore = create<ChatState>()(
             deleteSession: (id: string) => {
                 // Abort processing for this session before removing it
                 const currentState = get();
+                const deletedSession = currentState.sessions.find((session) => session.id === id)
+                const wasActiveSession = currentState.activeSessionId === id
+                const selectionRevision = currentState.activeSelectionRevision
                 if (currentState._processingSessions.has(id)) {
                     currentState.abortSession(id);
                 }
@@ -276,10 +422,33 @@ export const useChatStore = create<ChatState>()(
                         activeSessionId: newActiveId,
                     }
                 })
+
+                const deleteFromBackend = window.electron?.chat?.deleteSession
+                if (deleteFromBackend && deletedSession) {
+                    const restoreAfterDeleteFailure = () => set((state) => ({
+                        sessions: state.sessions.some((session) => session.id === id)
+                            ? state.sessions
+                            : [deletedSession, ...state.sessions],
+                        ...(wasActiveSession && state.activeSelectionRevision === selectionRevision
+                            ? { activeSessionId: id }
+                            : {}),
+                    }))
+                    void deleteFromBackend(id).then((result) => {
+                        if (result.success) return
+                        console.error('[ChatStore] Failed to delete session from backend:', result.error)
+                        restoreAfterDeleteFailure()
+                    }).catch((error: unknown) => {
+                        console.error('[ChatStore] Failed to delete session from backend:', error)
+                        restoreAfterDeleteFailure()
+                    })
+                }
             },
 
             setActiveSession: (id: string) => {
-                set({ activeSessionId: id })
+                set((state) => ({
+                    activeSessionId: id,
+                    activeSelectionRevision: state.activeSelectionRevision + 1,
+                }))
             },
 
             updateSessionTitle: (id: string, title: string) => {
@@ -374,6 +543,9 @@ export const useChatStore = create<ChatState>()(
                                 : s
                         ),
                         activeSessionId: activeId,
+                        ...(activeId !== state.activeSessionId
+                            ? { activeSelectionRevision: state.activeSelectionRevision + 1 }
+                            : {}),
                     }
                 })
                 return newMessage
@@ -382,8 +554,8 @@ export const useChatStore = create<ChatState>()(
             addSessionMessage: (sessionId: string, message) => {
                 const newMessage: Message = {
                     ...message,
-                    id: `msg_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`,
-                    timestamp: Date.now(),
+                    id: message.id || `msg_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`,
+                    timestamp: message.timestamp || Date.now(),
                 }
 
                 set((state) => {
@@ -495,7 +667,11 @@ export const useChatStore = create<ChatState>()(
                         whatsapp_jid: data.whatsapp_jid,
                         status: 'active'
                     }
-                    return { sessions: [newSession, ...state.sessions], activeSessionId: id }
+                    return {
+                        sessions: [newSession, ...state.sessions],
+                        activeSessionId: id,
+                        activeSelectionRevision: state.activeSelectionRevision + 1,
+                    }
                 }),
 
             resolveSession: (id, status) =>
@@ -519,55 +695,7 @@ export const useChatStore = create<ChatState>()(
             // are now derived from _processingSessions (a Map). Old persisted state with the
             // flat fields is incompatible and would hydrate incorrectly.
             name: 'aica-chat-v3',
-            // ── SQLite + Filesystem storage adapter ────────────────────────────
-            // WHY: Provides 100% persistence in SQLite (main process) and 
-            // mirrors each session as individual JSON/MD files.
-            storage: createJSONStorage(() => ({
-                getItem: async (name: string) => {
-                  try {
-                    const electron = (window as any).electron;
-                    if (!electron?.ipcRenderer) {
-                      console.warn('[ChatStore] Electron bridge not ready for getItem');
-                      return null;
-                    }
-
-                    const result = await electron.ipcRenderer.invoke('chat:load-sessions');
-                    if (result.success && result.sessions) {
-                      // We return just the sessions array; persist will wrap it in state
-                      return JSON.stringify({
-                        sessions: result.sessions,
-                        activeSessionId: (window as any).localStorage.getItem(`${name}-active-id`) || null,
-                        offlineSpeech: false,
-                        sidebarOpen: true
-                      });
-                    }
-                  } catch (e) {
-                    console.error('[ChatStore] Failed to load from SQLite:', e);
-                  }
-                  return null;
-                },
-                removeItem: async (_name: string) => {},
-                setItem: async (name: string, value: string) => {
-                    // Zustand gives us a JSON string of the state
-                    const parsed = JSON.parse(value);
-                    const sessions = parsed.state.sessions;
-                    const activeId = parsed.state.activeSessionId;
-                    
-                    (window as any).localStorage.setItem(`${name}-active-id`, activeId);
-                    
-                    try {
-                        const electron = (window as any).electron;
-                        if (electron?.ipcRenderer) {
-                            await electron.ipcRenderer.invoke('chat:save-sessions-with-mirror', sessions);
-                        } else {
-                            // Bridge not ready, sync will happen on next state change
-                            console.warn('[ChatStore] Electron bridge not ready for setItem');
-                        }
-                    } catch (e) {
-                        console.error('[ChatStore] Failed to sync to backend:', e);
-                    }
-                },
-            })),
+            storage: createJSONStorage(() => createChatStorage()),
             partialize: (state) => ({
                 sessions: state.sessions,
                 activeSessionId: state.activeSessionId,

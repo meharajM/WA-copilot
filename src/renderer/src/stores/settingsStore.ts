@@ -300,6 +300,12 @@ export const useSettingsStore = create<SettingsState>()(
         }),
         {
             name: STORAGE_KEYS.SETTINGS,
+            // Provider credentials stay in OS/agentd storage. Never persist them
+            // in renderer state (including browser localStorage).
+            partialize: (state) => {
+                const { openaiApiKey: _openaiApiKey, geminiApiKey: _geminiApiKey, openrouterApiKey: _openrouterApiKey, ...safeState } = state
+                return safeState
+            },
             storage: createJSONStorage(() => ({
                 getItem: async (name: string): Promise<string | null> => {
                     const value = await electron.store.get(name)

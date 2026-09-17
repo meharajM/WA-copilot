@@ -28,28 +28,25 @@ assertNodeHostMatchesRustTarget(process.platform, process.arch, hostTriple)
 const requestedTarget = process.env.TAURI_ENV_TARGET_TRIPLE
 if (requestedTarget && requestedTarget !== hostTriple) {
   throw new Error(
-    `Cross-target sidecar preparation is unsupported: target ${requestedTarget} does not match host ${hostTriple}`,
+    `Cross-target keyring-helper preparation is unsupported: target ${requestedTarget} does not match host ${hostTriple}`,
   )
 }
 
 const targetTriple = requestedTarget || hostTriple
 const executableExtension = targetTriple.includes('windows') ? '.exe' : ''
-const sidecarDirectory = join(tauriRoot, 'binaries')
-const sidecarPath = join(sidecarDirectory, `agentd-runtime-${targetTriple}${executableExtension}`)
+const resourcesDirectory = join(tauriRoot, 'sidecar')
+const keyringHelperPath = join(resourcesDirectory, `aica-keyring-helper${executableExtension}`)
 
-run(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'build:agentd'], {
-  cwd: projectRoot,
-  shell: process.platform === 'win32',
-})
+await mkdir(resourcesDirectory, { recursive: true })
+run(
+  'cargo',
+  ['build', '--release', '--locked', '--bin', 'aica-keyring-helper', '--target', targetTriple],
+  { cwd: tauriRoot },
+)
+await cp(
+  join(tauriRoot, 'target', targetTriple, 'release', `aica-keyring-helper${executableExtension}`),
+  keyringHelperPath,
+)
+if (process.platform !== 'win32') await chmod(keyringHelperPath, 0o755)
 
-await mkdir(sidecarDirectory, { recursive: true })
-await cp(process.execPath, sidecarPath)
-if (process.platform !== 'win32') await chmod(sidecarPath, 0o755)
-
-await mkdir(join(tauriRoot, 'sidecar'), { recursive: true })
-await cp(join(projectRoot, 'out', 'agentd'), join(tauriRoot, 'sidecar'), {
-  recursive: true,
-  force: true,
-})
-
-console.log(`Prepared Tauri sidecar for ${targetTriple}`)
+console.log(`Prepared agentd keyring helper for ${targetTriple}`)

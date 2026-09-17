@@ -1,11 +1,12 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "AICA Native Pilot",
+  "productName": "AICA Native Host",
+  "mainBinaryName": "aica-tauri-pilot",
   "version": "1.0.0",
   "identifier": "com.aica.tauri-pilot",
   "build": {
-    "beforeDevCommand": "npm run prepare:tauri:sidecar && npm run dev:tauri:web",
-    "beforeBuildCommand": "npm run build:tauri:web && npm run prepare:tauri:sidecar",
+    "beforeDevCommand": "npm run prepare:agentd:keyring-helper && npm run prepare:tauri:agentd && npm run dev:tauri:web",
+    "beforeBuildCommand": "npm run build:tauri:web && npm run prepare:agentd:keyring-helper && npm run prepare:tauri:agentd",
     "devUrl": "http://127.0.0.1:5173/tauri.html",
     "frontendDist": "../dist"
   },
@@ -13,7 +14,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "AICA Native Pilot",
+        "title": "AICA Native Host",
         "url": "tauri.html",
         "width": 1000,
         "height": 760,
@@ -30,10 +31,10 @@
     "active": true,
     "icon": ["icons/icon.png"],
     "resources": {
-      "sidecar/": "sidecar/"
-    },
-    "externalBin": [
-      "binaries/agentd-runtime"
-    ]
+      "sidecar/agentd-runtime*": "sidecar/",
+      "sidecar/agentd-http": "sidecar/agentd-http",
+      "sidecar/aica-keyring-helper*": "sidecar/",
+      "../dist/": "ui/"
+    }
   }
 }

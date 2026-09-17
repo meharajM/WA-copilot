@@ -39,6 +39,8 @@ import { useWhatsAppStore } from "../stores/whatsappStore";
 import { useEmailStore } from "../stores/emailStore";
 import { useDraftStore } from "../stores/draftStore";
 import electron from "../lib/electron";
+import { createTauriChatClient } from "../lib/tauri-chat-client";
+import { isTauriRuntime } from "../lib/tauri-native-bridge";
 import { type LLMMessage } from "../lib/types";
 import { resolveWhatsAppTarget, setWhatsAppTyping, setWhatsAppPaused, getWhatsAppSystemPrompt, sendWhatsAppResponse, resolveWhatsAppMessageToLLM } from "../lib/whatsapp-integration";
 import { getEmailSystemPrompt, normalizeSubject, type EmailMessage } from "../lib/email-integration";
@@ -92,6 +94,17 @@ function isHandledEmailSendResult(result: unknown): boolean {
     } catch {
         return /email sent successfully|draft created successfully/i.test(result);
     }
+}
+
+export function readableAgentError(error: unknown): string {
+    if (error instanceof Error && error.message) return error.message
+    if (typeof error === 'string' && error.trim()) return error
+    if (error && typeof error === 'object') {
+        const record = error as Record<string, unknown>
+        if (typeof record.message === 'string' && record.message.trim()) return record.message
+        if (typeof record.error === 'string' && record.error.trim()) return record.error
+    }
+    return 'Unknown error'
 }
 
 export function hasHandledEmailSendToolCall(toolCalls: unknown): boolean {
@@ -268,7 +281,7 @@ export function useAgent(): UseAgentReturn {
 
             // Add the user's message to the store immediately so it appears in the
             // chat UI before the agent starts processing.
-            addMessage({ 
+            const addedUserMessage = addMessage({
                 role: "user", 
                 content: userLLMMessage ? (typeof userLLMMessage.content === 'string' ? userLLMMessage.content : "[Media Message]") : content, 
                 attachments: userLLMMessage?.attachments ?? attachmentData 
@@ -337,6 +350,41 @@ export function useAgent(): UseAgentReturn {
             const abortSignal = startProcessing(originSessionId);
 
             try {
+                // The native shell owns provider credentials and generation. Keep
+                // the full workspace on the same typed daemon path instead of
+                // loading the Electron-only AgentRuntime and its tool graph.
+                // The daemon persists the user message idempotently using the
+                // local message id as request id, so the chat-store write queue
+                // can safely replay the same message after this call.
+                if (isTauriRuntime() && !targetJid && !isEmailFlow && !multimodalWhatsAppMessage) {
+                    const client = createTauriChatClient();
+                    const requestId = addedUserMessage.id;
+                    let assistantContent = '';
+                    let assistantAdded = false;
+                    await client.generate(
+                        {
+                            sessionId: originSessionId,
+                            requestId,
+                            content,
+                        },
+                        (event) => {
+                            if (event.type === 'error') throw new Error(event.message);
+                            if (event.type === 'assistant.delta') assistantContent += event.delta;
+                            if (event.type === 'assistant.done' && !assistantAdded) {
+                                assistantAdded = true;
+                                useChatStore.getState().addSessionMessage(originSessionId, {
+                                    id: `assistant_${requestId}`,
+                                    role: 'assistant',
+                                    content: assistantContent,
+                                });
+                            }
+                        },
+                        abortSignal,
+                    );
+                    if (!assistantAdded) throw new Error('Agentd returned no assistant response');
+                    return;
+                }
+
                 // ── Step 1: Reconstruct LLM message history ────────────────────────
                 // WHY getState() here: We need the freshest messages AFTER addMessage()
                 // has been committed to the store.
@@ -647,7 +695,7 @@ export function useAgent(): UseAgentReturn {
                 const { addSessionMessage: addMsg } = useChatStore.getState();
                 addMsg(originSessionId, {
                     role: "assistant",
-                    content: `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
+                    content: `Error: ${readableAgentError(error)}`,
                 });
             } finally {
                 // Clear the composing state if this was a WhatsApp message.

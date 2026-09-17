@@ -65,17 +65,19 @@ async function waitForClose(agentd: RunningAgentd): Promise<number | null> {
   return code as number | null
 }
 
-beforeAll(async () => {
-  const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm'
-  const build = spawn(npm, ['run', 'build:agentd'], {
-    cwd: process.cwd(),
-    stdio: 'inherit',
+// Historical pilot evidence only. The Tauri product no longer builds or starts
+// this second JSONL runtime; the independently supervised HTTP agentd is canonical.
+describe.skip('retired agentd JSONL pilot protocol', () => {
+  beforeAll(async () => {
+    const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm'
+    const build = spawn(npm, ['run', 'build:agentd'], {
+      cwd: process.cwd(),
+      stdio: 'inherit',
+    })
+    const [code] = await once(build, 'close')
+    expect(code).toBe(0)
   })
-  const [code] = await once(build, 'close')
-  expect(code).toBe(0)
-})
 
-describe('agentd JSONL protocol', () => {
   it('announces readiness once and reports health from the real process', async () => {
     const agentd = startAgentd()
 

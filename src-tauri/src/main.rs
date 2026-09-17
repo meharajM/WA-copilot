@@ -1,426 +1,50 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod agentd_api;
+
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::{
+    fs,
     path::PathBuf,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, Condvar, Mutex,
-    },
-    time::{Duration, Instant},
+    process::{Child, Command, Stdio},
+    sync::Mutex,
 };
 
-use keyring::{Entry, Error as KeyringError};
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
+#[cfg(windows)]
+use std::env;
+
+use agentd_api::{
+    AgentdClient, CredentialExistsResult, LlmSettings, NativeHealth, NativeResult,
+    ProviderTestResult,
+};
+use serde::Deserialize;
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder},
-    path::BaseDirectory,
-    tray::TrayIconBuilder,
-    AppHandle, Emitter, Manager, Runtime, State, WebviewUrl, WebviewWindowBuilder, WindowEvent,
+    AppHandle, Manager, Runtime, State, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
 use tauri_plugin_dialog::DialogExt;
-use tauri_plugin_shell::{
-    process::{CommandChild, CommandEvent},
-    ShellExt,
-};
-use zeroize::Zeroize;
 
-const AGENTD_PROTOCOL_VERSION: u64 = 1;
-const MAX_FRAME_BYTES: usize = 1024 * 1024;
 const MAIN_WINDOW_LABEL: &str = "main";
-const AGENTD_RESOURCE: &str = "sidecar/agentd/index.js";
-const AGENTD_BINARY: &str = "agentd-runtime";
-const HEALTH_REQUEST_ID: &str = "host-health";
-const SHUTDOWN_REQUEST_ID: &str = "host-shutdown";
-const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
-const KEYCHAIN_SERVICE: &str = "com.aica.tauri-pilot";
+#[cfg(windows)]
+const AGENTD_RUNTIME_RESOURCE: &str = "sidecar/agentd-runtime.exe";
+#[cfg(not(windows))]
+const AGENTD_RUNTIME_RESOURCE: &str = "sidecar/agentd-runtime";
+const AGENTD_ENTRY_RESOURCE: &str = "sidecar/agentd-http/index.cjs";
+const AGENTD_HELPER_RESOURCE: &str = "sidecar/aica-keyring-helper";
+const AGENTD_UI_RESOURCE: &str = "ui";
 
-const CREDENTIAL_KEYS: &[&str] = &[
-    "openai_api_key",
-    "gemini_api_key",
-    "openrouter_api_key",
-    "email_mcp_password",
-    "email_imap_password",
-    "email_smtp_password",
-    "gmail_oauth_client_id",
-    "whatsapp_cloud_access_token",
-    "whatsapp_cloud_app_secret",
-    "whatsapp_cloud_verify_token",
-];
+struct AgentdProcess(Mutex<Option<Child>>);
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct NativeHealth {
-    status: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    version: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
-}
-
-impl NativeHealth {
-    fn ready() -> Self {
-        Self {
-            status: "ready".into(),
-            version: Some(format!("agentd protocol v{AGENTD_PROTOCOL_VERSION}")),
-            error: None,
-        }
-    }
-
-    fn unavailable(error: impl Into<String>) -> Self {
-        Self {
-            status: "unavailable".into(),
-            version: None,
-            error: Some(error.into()),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct NativeResult {
-    success: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
-}
-
-impl NativeResult {
-    fn success() -> Self {
-        Self {
-            success: true,
-            error: None,
-        }
-    }
-
-    fn failure(error: impl Into<String>) -> Self {
-        Self {
-            success: false,
-            error: Some(error.into()),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct CredentialExistsResult {
-    success: bool,
-    exists: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
-}
-
-#[derive(Default)]
-struct ProcessState {
-    child: Option<CommandChild>,
-    health: Option<NativeHealth>,
-    protocol: ProtocolHandshake,
-    terminated: bool,
-}
-
-#[derive(Default)]
-struct ProtocolHandshake {
-    ready_identity: Option<AgentdHealth>,
-    health_request_pending: bool,
-    healthy: bool,
-    shutdown_request_pending: bool,
-}
-
-impl ProtocolHandshake {
-    fn accept_ready(&mut self, identity: AgentdHealth) -> Result<(), ()> {
-        if self.ready_identity.is_some() {
-            return Err(());
-        }
-        self.ready_identity = Some(identity);
-        Ok(())
-    }
-
-    fn request_health(&mut self) -> Result<(), ()> {
-        if self.ready_identity.is_none() || self.health_request_pending || self.healthy {
-            return Err(());
-        }
-        self.health_request_pending = true;
-        Ok(())
-    }
-
-    fn accept_health(&mut self, identity: &AgentdHealth) -> Result<(), ()> {
-        if !self.health_request_pending || self.ready_identity.as_ref() != Some(identity) {
-            return Err(());
-        }
-        self.health_request_pending = false;
-        self.healthy = true;
-        Ok(())
-    }
-
-    fn request_shutdown(&mut self) -> Result<(), ()> {
-        if self.shutdown_request_pending {
-            return Err(());
-        }
-        self.shutdown_request_pending = true;
-        Ok(())
-    }
-
-    fn accept_shutdown(&mut self) -> Result<(), ()> {
-        if !self.shutdown_request_pending {
-            return Err(());
-        }
-        self.shutdown_request_pending = false;
-        Ok(())
-    }
-}
-
-#[derive(Default)]
-struct AgentdRuntime {
-    process: Mutex<ProcessState>,
-    stopped: Condvar,
-}
-
-impl AgentdRuntime {
-    fn health(&self) -> NativeHealth {
-        self.process
-            .lock()
-            .map(|process| {
-                process
-                    .health
-                    .clone()
-                    .unwrap_or_else(|| NativeHealth::unavailable("Agentd is starting"))
-            })
-            .unwrap_or_else(|_| NativeHealth::unavailable("Agentd state unavailable"))
-    }
-
-    fn set_child(&self, child: CommandChild) {
-        if let Ok(mut process) = self.process.lock() {
-            process.child = Some(child);
-        }
-    }
-
-    fn request_health(&self) -> Result<(), ()> {
-        let mut process = self.process.lock().map_err(|_| ())?;
-        if process.terminated || process.child.is_none() {
-            return Err(());
-        }
-        process.protocol.request_health()?;
-        let child = process.child.as_mut().ok_or(())?;
-        child
-            .write(
-                format!(
-                    "{{\"version\":{AGENTD_PROTOCOL_VERSION},\"kind\":\"request\",\"id\":\"{HEALTH_REQUEST_ID}\",\"method\":\"health.get\"}}\n"
-                )
-                .as_bytes(),
-            )
-            .map_err(|_| ())
-    }
-
-    fn accept_ready(&self, health: AgentdHealth) -> Result<(), ()> {
-        let mut process = self.process.lock().map_err(|_| ())?;
-        if process.terminated || process.child.is_none() {
-            return Err(());
-        }
-        process.protocol.accept_ready(health)
-    }
-
-    fn accept_health_response(&self, identity: AgentdHealth) -> Result<NativeHealth, ()> {
-        let mut process = self.process.lock().map_err(|_| ())?;
-        if process.terminated {
-            return Err(());
-        }
-        process.protocol.accept_health(&identity)?;
-        let health = NativeHealth::ready();
-        process.health = Some(health.clone());
-        Ok(health)
-    }
-
-    fn request_shutdown(&self) -> bool {
-        let Ok(mut process) = self.process.lock() else {
-            return false;
-        };
-        if process.terminated || process.protocol.shutdown_request_pending {
-            return process.terminated;
-        }
-        if process.child.is_none() {
-            return true;
-        }
-        if process.protocol.request_shutdown().is_err() {
-            return false;
-        }
-        process
-            .child
-            .as_mut()
-            .map(|child| {
-                child.write(
-                format!(
-                    "{{\"version\":{AGENTD_PROTOCOL_VERSION},\"kind\":\"request\",\"id\":\"{SHUTDOWN_REQUEST_ID}\",\"method\":\"shutdown\"}}\n"
-                )
-                .as_bytes(),
-                )
-                .is_ok()
-            })
-            .unwrap_or(false)
-    }
-
-    fn wait_then_kill(&self, grace: Duration) {
-        let deadline = Instant::now() + grace;
-        let Ok(mut process) = self.process.lock() else {
-            return;
-        };
-        while !process.terminated && process.child.is_some() {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                break;
-            }
-            let Ok((next, timed_out)) = self.stopped.wait_timeout(process, remaining) else {
-                return;
-            };
-            process = next;
-            if timed_out.timed_out() {
-                break;
-            }
-        }
-        if !process.terminated {
-            if let Some(child) = process.child.take() {
-                drop(process);
-                let _ = child.kill();
-            }
-        }
-    }
-
-    fn mark_unavailable(&self, message: &str, kill_child: bool) -> NativeHealth {
-        let health = NativeHealth::unavailable(message);
-        if let Ok(mut process) = self.process.lock() {
-            process.health = Some(health.clone());
-            if kill_child {
-                if let Some(child) = process.child.take() {
-                    drop(process);
-                    let _ = child.kill();
-                    return health;
-                }
-            }
-        }
-        health
-    }
-
-    fn mark_terminated(&self) -> NativeHealth {
-        let health = NativeHealth::unavailable("Agentd stopped");
-        if let Ok(mut process) = self.process.lock() {
-            process.child = None;
-            process.terminated = true;
-            process.health = Some(health.clone());
-        }
-        self.stopped.notify_all();
-        health
-    }
-
-    fn kill_now(&self) {
-        let child = self
-            .process
-            .lock()
-            .ok()
-            .and_then(|mut process| process.child.take());
-        if let Some(child) = child {
+impl Drop for AgentdProcess {
+    fn drop(&mut self) {
+        let Ok(mut child) = self.0.lock() else { return };
+        if let Some(mut child) = child.take() {
             let _ = child.kill();
+            let _ = child.wait();
         }
-    }
-}
-
-#[derive(Default)]
-struct FrameDecoder {
-    current: Vec<u8>,
-    dropping_oversized: bool,
-}
-
-impl FrameDecoder {
-    fn push(&mut self, bytes: &[u8]) -> Vec<Result<Vec<u8>, ()>> {
-        let mut frames = Vec::new();
-        for byte in bytes {
-            match byte {
-                b'\n' => {
-                    if !self.dropping_oversized {
-                        if self.current.last() == Some(&b'\r') {
-                            self.current.pop();
-                        }
-                        frames.push(Ok(std::mem::take(&mut self.current)));
-                    }
-                    self.current.clear();
-                    self.dropping_oversized = false;
-                }
-                _ if self.dropping_oversized => {}
-                _ if self.current.len() == MAX_FRAME_BYTES => {
-                    self.current.clear();
-                    self.dropping_oversized = true;
-                    frames.push(Err(()));
-                }
-                _ => self.current.push(*byte),
-            }
-        }
-        frames
-    }
-}
-
-#[derive(Clone, Debug, PartialEq)]
-struct AgentdHealth {
-    pid: u64,
-    started_at: String,
-}
-
-#[derive(Debug, PartialEq)]
-enum AgentdMessage {
-    Ready(AgentdHealth),
-    HealthResponse(AgentdHealth),
-    ShutdownResponse,
-}
-
-fn parse_agentd_health(value: &Value) -> Result<AgentdHealth, ()> {
-    if value.get("status").and_then(Value::as_str) != Some("ready")
-        || value.get("protocolVersion").and_then(Value::as_u64) != Some(AGENTD_PROTOCOL_VERSION)
-    {
-        return Err(());
-    }
-    let pid = value
-        .get("pid")
-        .and_then(Value::as_u64)
-        .filter(|pid| *pid > 0)
-        .ok_or(())?;
-    let started_at = value
-        .get("startedAt")
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty() && value.len() <= 64)
-        .ok_or(())?;
-    Ok(AgentdHealth {
-        pid,
-        started_at: started_at.to_owned(),
-    })
-}
-
-fn parse_agentd_message(frame: &[u8]) -> Result<AgentdMessage, ()> {
-    if frame.is_empty() || frame.len() > MAX_FRAME_BYTES {
-        return Err(());
-    }
-    let text = std::str::from_utf8(frame).map_err(|_| ())?;
-    let value: Value = serde_json::from_str(text).map_err(|_| ())?;
-    if value.get("version").and_then(Value::as_u64) != Some(AGENTD_PROTOCOL_VERSION) {
-        return Err(());
-    }
-    match value.get("kind").and_then(Value::as_str) {
-        Some("event") if value.get("event").and_then(Value::as_str) == Some("ready") => Ok(
-            AgentdMessage::Ready(parse_agentd_health(value.get("data").ok_or(())?)?),
-        ),
-        Some("response") if value.get("ok").and_then(Value::as_bool) == Some(true) => {
-            match value.get("id").and_then(Value::as_str) {
-                Some(HEALTH_REQUEST_ID) => Ok(AgentdMessage::HealthResponse(parse_agentd_health(
-                    value.get("result").ok_or(())?,
-                )?)),
-                Some(SHUTDOWN_REQUEST_ID)
-                    if value
-                        .get("result")
-                        .and_then(|result| result.get("status"))
-                        .and_then(Value::as_str)
-                        == Some("stopping") =>
-                {
-                    Ok(AgentdMessage::ShutdownResponse)
-                }
-                _ => Err(()),
-            }
-        }
-        _ => Err(()),
     }
 }
 
@@ -445,44 +69,170 @@ fn has_unsupported_picker_options(options: &Option<FileSelectionOptions>) -> boo
         .is_some_and(|label| !label.trim().is_empty())
 }
 
-fn credential_key_allowed(key: &str) -> bool {
-    CREDENTIAL_KEYS.contains(&key)
-}
-
-fn credential_entry(key: &str) -> Result<Entry, ()> {
-    if !credential_key_allowed(key) {
-        return Err(());
-    }
-    Entry::new(KEYCHAIN_SERVICE, key).map_err(|_| ())
-}
-
-fn credential_is_present(entry: &Entry) -> Result<bool, ()> {
-    match entry.get_password() {
-        Ok(mut value) => {
-            value.zeroize();
-            Ok(true)
-        }
-        Err(KeyringError::NoEntry) => Ok(false),
-        Err(KeyringError::BadEncoding(mut bytes)) => {
-            bytes.zeroize();
-            Ok(true)
-        }
-        Err(KeyringError::BadDataFormat(mut bytes, _)) => {
-            bytes.zeroize();
-            Ok(true)
-        }
-        Err(_) => Err(()),
-    }
-}
-
 #[tauri::command]
 fn app_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
 #[tauri::command]
-fn agentd_health(runtime: State<'_, Arc<AgentdRuntime>>) -> NativeHealth {
-    runtime.health()
+async fn agentd_health(client: State<'_, AgentdClient>) -> Result<NativeHealth, String> {
+    Ok(client.health().await)
+}
+
+#[tauri::command]
+async fn agentd_origin(client: State<'_, AgentdClient>) -> Result<String, String> {
+    client
+        .origin()
+        .map_err(|_| "Agentd origin unavailable".into())
+}
+
+#[tauri::command]
+async fn get_llm_settings(client: State<'_, AgentdClient>) -> Result<LlmSettings, String> {
+    client
+        .llm_settings()
+        .await
+        .map_err(|_| "LLM settings unavailable; agentd may be stopped".into())
+}
+
+#[tauri::command]
+async fn save_llm_settings(
+    client: State<'_, AgentdClient>,
+    settings: LlmSettings,
+) -> Result<LlmSettings, String> {
+    client
+        .set_llm_settings(settings)
+        .await
+        .map_err(str::to_owned)
+}
+
+#[tauri::command]
+async fn get_whatsapp_settings(
+    client: State<'_, AgentdClient>,
+) -> Result<agentd_api::WhatsAppSettings, String> {
+    client
+        .whatsapp_settings()
+        .await
+        .map_err(|_| "WhatsApp settings unavailable; agentd may be stopped".into())
+}
+
+#[tauri::command]
+async fn save_whatsapp_settings(
+    client: State<'_, AgentdClient>,
+    settings: agentd_api::WhatsAppSettings,
+) -> Result<agentd_api::WhatsAppSettings, String> {
+    client
+        .set_whatsapp_settings(settings)
+        .await
+        .map_err(str::to_owned)
+}
+
+#[tauri::command]
+async fn credential_set(
+    client: State<'_, AgentdClient>,
+    key: String,
+    value: String,
+) -> Result<NativeResult, String> {
+    Ok(client.set_credential(&key, value).await)
+}
+
+#[tauri::command]
+async fn credential_exists(
+    client: State<'_, AgentdClient>,
+    key: String,
+) -> Result<CredentialExistsResult, String> {
+    Ok(client.credential_exists(&key).await)
+}
+
+#[tauri::command]
+async fn credential_delete(
+    client: State<'_, AgentdClient>,
+    key: String,
+) -> Result<NativeResult, String> {
+    Ok(client.delete_credential(&key).await)
+}
+
+#[tauri::command]
+async fn provider_test(
+    client: State<'_, AgentdClient>,
+    provider: String,
+) -> Result<ProviderTestResult, String> {
+    Ok(client.test_provider(&provider).await)
+}
+
+#[tauri::command]
+async fn chat_load_sessions(
+    client: State<'_, AgentdClient>,
+) -> Result<Vec<agentd_api::ChatSession>, String> {
+    let summaries = client
+        .chat_sessions()
+        .await
+        .map_err(|_| "Chat sessions unavailable; agentd may be stopped".to_string())?;
+    let mut sessions = Vec::with_capacity(summaries.sessions.len());
+    for summary in summaries.sessions {
+        let session = client
+            .chat_session(&summary.id)
+            .await
+            .map_err(|_| "Chat session history unavailable".to_string())?;
+        sessions.push(agentd_api::ChatSession {
+            id: session.session.id,
+            title: session.session.title,
+            created_at: session.session.created_at,
+            updated_at: session.session.updated_at,
+            messages: session.messages,
+        });
+    }
+    Ok(sessions)
+}
+
+#[tauri::command]
+async fn chat_create_session(
+    client: State<'_, AgentdClient>,
+    id: Option<String>,
+    title: Option<String>,
+) -> Result<agentd_api::ChatSessionSummary, String> {
+    client
+        .create_chat_session(id.as_deref(), title.as_deref())
+        .await
+        .map_err(|_| "Chat session creation unavailable".to_string())
+}
+
+#[tauri::command]
+async fn chat_append_message(
+    client: State<'_, AgentdClient>,
+    session_id: String,
+    message_id: Option<String>,
+    role: String,
+    content: String,
+) -> Result<agentd_api::ChatMessageResponse, String> {
+    client
+        .append_chat_message(&session_id, message_id.as_deref(), &role, &content)
+        .await
+        .map_err(|_| "Chat message persistence unavailable".to_string())
+}
+
+#[tauri::command]
+async fn chat_delete_session(
+    client: State<'_, AgentdClient>,
+    session_id: String,
+) -> Result<(), String> {
+    client
+        .delete_chat_session(&session_id)
+        .await
+        .map_err(|_| "Chat session deletion unavailable".to_string())
+}
+
+#[tauri::command]
+async fn chat_generate(
+    client: State<'_, AgentdClient>,
+    session_id: String,
+    request_id: String,
+    content: String,
+    model: Option<String>,
+) -> Result<agentd_api::ChatGenerationResponse, String> {
+    client
+        .generate_chat(&session_id, &request_id, &content, model.as_deref())
+        .await
+        .map_err(|_| "Chat generation unavailable; provider may be unavailable".to_string())
 }
 
 #[tauri::command]
@@ -560,218 +310,32 @@ async fn select_folder(app: AppHandle) -> Result<Option<String>, String> {
         .transpose()
 }
 
-#[tauri::command]
-fn credential_set(key: String, mut value: String) -> NativeResult {
-    if value.is_empty() {
-        value.zeroize();
-        return NativeResult::failure("Credential value cannot be empty");
-    }
-    let result =
-        credential_entry(&key).and_then(|entry| entry.set_password(&value).map_err(|_| ()));
-    value.zeroize();
-    match result {
-        Ok(()) => NativeResult::success(),
-        Err(()) => NativeResult::failure("Credential store unavailable or key not allowed"),
-    }
-}
-
-#[tauri::command]
-fn credential_exists(key: String) -> CredentialExistsResult {
-    let result = credential_entry(&key).and_then(|entry| credential_is_present(&entry));
-    match result {
-        Ok(exists) => CredentialExistsResult {
-            success: true,
-            exists,
-            error: None,
-        },
-        _ => CredentialExistsResult {
-            success: false,
-            exists: false,
-            error: Some("Credential store unavailable or key not allowed".into()),
-        },
-    }
-}
-
-#[tauri::command]
-fn credential_delete(key: String) -> NativeResult {
-    match credential_entry(&key).and_then(|entry| entry.delete_credential().map_err(|_| ())) {
-        Ok(()) => NativeResult::success(),
-        Err(()) => NativeResult::failure("Credential store unavailable or key not allowed"),
-    }
-}
-
-fn resolve_agentd_entry<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
-    let packaged = app
-        .path()
-        .resolve(AGENTD_RESOURCE, BaseDirectory::Resource)
-        .map_err(|_| "Agentd resource unavailable".to_string())?;
-    if packaged.is_file() {
-        return Ok(packaged);
-    }
-
-    #[cfg(debug_assertions)]
-    {
-        let development = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(AGENTD_RESOURCE);
-        if development.is_file() {
-            return Ok(development);
-        }
-    }
-    Err("Agentd resource unavailable".into())
-}
-
-fn spawn_agentd<R: Runtime>(
-    app: &AppHandle<R>,
-) -> Result<(tauri::async_runtime::Receiver<CommandEvent>, CommandChild), String> {
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|_| "Pilot data directory unavailable".to_string())?;
-    std::fs::create_dir_all(&data_dir)
-        .map_err(|_| "Pilot data directory unavailable".to_string())?;
-    let entry = resolve_agentd_entry(app)?;
-
-    let command = app
-        .shell()
-        .sidecar(AGENTD_BINARY)
-        .map_err(|_| "Packaged agentd runtime unavailable".to_string())?
-        .args([entry.as_os_str()])
-        .env_clear()
-        .env("AICA_TAURI_DATA_DIR", data_dir.as_os_str())
-        .current_dir(&data_dir)
-        .set_raw_out(true);
-    #[cfg(windows)]
-    let command = match std::env::var_os("SystemRoot") {
-        Some(system_root) => command.env("SystemRoot", system_root),
-        None => command,
-    };
-    command
-        .spawn()
-        .map_err(|_| "Packaged agentd runtime could not start".to_string())
-}
-
-fn consume_frame<R: Runtime>(
-    app: &AppHandle<R>,
-    runtime: &AgentdRuntime,
-    frame: Result<Vec<u8>, ()>,
-) {
-    let message = frame.and_then(|frame| parse_agentd_message(&frame));
-    let result = match message {
-        Ok(AgentdMessage::Ready(health)) => runtime
-            .accept_ready(health)
-            .and_then(|()| runtime.request_health()),
-        Ok(AgentdMessage::HealthResponse(health)) => {
-            runtime.accept_health_response(health).map(|health| {
-                let _ = app.emit("agentd-health", health);
-            })
-        }
-        Ok(AgentdMessage::ShutdownResponse) => runtime
-            .process
-            .lock()
-            .map_err(|_| ())
-            .and_then(|mut process| process.protocol.accept_shutdown()),
-        Err(()) => Err(()),
-    };
-    if result.is_err() {
-        let health = runtime.mark_unavailable("Invalid or unavailable agentd protocol", true);
-        let _ = app.emit("agentd-health", health);
-    }
-}
-
-async fn read_agentd<R: Runtime>(
-    app: AppHandle<R>,
-    runtime: Arc<AgentdRuntime>,
-    mut receiver: tauri::async_runtime::Receiver<CommandEvent>,
-) {
-    let mut decoder = FrameDecoder::default();
-    while let Some(event) = receiver.recv().await {
-        match event {
-            CommandEvent::Stdout(bytes) => {
-                for frame in decoder.push(&bytes) {
-                    consume_frame(&app, &runtime, frame);
-                }
-            }
-            CommandEvent::Terminated(_) => {
-                let health = runtime.mark_terminated();
-                let _ = app.emit("agentd-health", health);
-                return;
-            }
-            CommandEvent::Error(_) => {
-                let health = runtime.mark_unavailable("Agentd pipe unavailable", true);
-                let _ = app.emit("agentd-health", health);
-            }
-            CommandEvent::Stderr(_) => {} // Protocol and secrets never go to host logs.
-            _ => {}
-        }
-    }
-    let health = runtime.mark_terminated();
-    let _ = app.emit("agentd-health", health);
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum OpenAction {
-    FocusExisting,
-    CreateWindow,
-}
-
-fn open_action(has_window: bool) -> OpenAction {
-    if has_window {
-        OpenAction::FocusExisting
-    } else {
-        OpenAction::CreateWindow
-    }
-}
-
-fn should_prevent_windowless_exit(explicit_quit: bool) -> bool {
-    !explicit_quit
-}
-
 fn open_main_window<R: Runtime>(app: &AppHandle<R>) {
-    match open_action(app.get_webview_window(MAIN_WINDOW_LABEL).is_some()) {
-        OpenAction::FocusExisting => {
-            if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-                let _ = window.unminimize();
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
-        }
-        OpenAction::CreateWindow => {
-            let _ = WebviewWindowBuilder::new(
-                app,
-                MAIN_WINDOW_LABEL,
-                WebviewUrl::App("tauri.html".into()),
-            )
-            .title("AICA Native Pilot")
-            .inner_size(1000.0, 760.0)
-            .min_inner_size(800.0, 600.0)
-            .build();
-        }
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    } else {
+        let _ =
+            WebviewWindowBuilder::new(app, MAIN_WINDOW_LABEL, WebviewUrl::App("tauri.html".into()))
+                .title("AICA Native Host")
+                .inner_size(1000.0, 760.0)
+                .min_inner_size(800.0, 600.0)
+                .build();
     }
 }
 
 fn request_quit<R: Runtime>(app: &AppHandle<R>) {
-    let quitting = app.state::<Arc<AtomicBool>>().inner().clone();
-    if quitting.swap(true, Ordering::SeqCst) {
-        return;
-    }
-    let app = app.clone();
-    let runtime = app.state::<Arc<AgentdRuntime>>().inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let request_written = runtime.request_shutdown();
-        if request_written {
-            runtime.wait_then_kill(SHUTDOWN_GRACE);
-        } else {
-            runtime.kill_now();
-        }
-        app.exit(0);
-    });
+    app.state::<Arc<AtomicBool>>().store(true, Ordering::SeqCst);
+    app.exit(0);
 }
 
 fn create_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
-    let open = MenuItemBuilder::with_id("open", "Open AICA Native Pilot").build(app)?;
+    let open = MenuItemBuilder::with_id("open", "Open AICA Native Host").build(app)?;
     let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
     let menu = MenuBuilder::new(app).items(&[&open, &quit]).build()?;
     let icon = tauri::image::Image::new_owned(vec![46, 120, 220, 255].repeat(16 * 16), 16, 16);
-    TrayIconBuilder::with_id("pilot-tray")
+    tauri::tray::TrayIconBuilder::with_id("aica-tray")
         .icon(icon)
         .menu(&menu)
         .on_menu_event(|app, event| match event.id().as_ref() {
@@ -783,37 +347,92 @@ fn create_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     Ok(())
 }
 
+fn resource_file<R: Runtime>(app: &AppHandle<R>, relative: &str) -> Result<PathBuf, String> {
+    let path = app
+        .path()
+        .resolve(relative, tauri::path::BaseDirectory::Resource)
+        .map_err(|_| format!("Packaged resource unavailable: {relative}"))?;
+    let metadata = fs::symlink_metadata(&path)
+        .map_err(|_| format!("Packaged resource unavailable: {relative}"))?;
+    if !metadata.file_type().is_file() {
+        return Err(format!("Packaged resource is not a file: {relative}"));
+    }
+    Ok(path)
+}
+
+fn resource_directory<R: Runtime>(app: &AppHandle<R>, relative: &str) -> Option<PathBuf> {
+    let path = app
+        .path()
+        .resolve(relative, tauri::path::BaseDirectory::Resource)
+        .ok()?;
+    fs::metadata(&path).ok()?.is_dir().then_some(path)
+}
+
+fn spawn_agentd<R: Runtime>(app: &AppHandle<R>, data_dir: &PathBuf) -> Result<Child, String> {
+    fs::create_dir_all(data_dir).map_err(|_| "Agentd data directory unavailable".to_string())?;
+    let runtime = resource_file(app, AGENTD_RUNTIME_RESOURCE)?;
+    let entry = resource_file(app, AGENTD_ENTRY_RESOURCE)?;
+    let helper = resource_file(app, AGENTD_HELPER_RESOURCE)
+        .or_else(|_| resource_file(app, "sidecar/aica-keyring-helper.exe"))?;
+    let mut command = Command::new(runtime);
+    command
+        .arg(entry)
+        .env_clear()
+        .env("AICA_AGENTD_DATA_DIR", data_dir)
+        .env("AICA_AGENTD_KEYRING_HELPER", helper)
+        .current_dir(data_dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if let Some(ui_root) = resource_directory(app, AGENTD_UI_RESOURCE) {
+        command.env("AICA_AGENTD_UI_ROOT", ui_root);
+    }
+    // Keep environment deterministic, but retain Windows system/profile roots
+    // required by Node and Credential Manager after env_clear().
+    #[cfg(windows)]
+    for key in ["SystemRoot", "TEMP", "TMP", "USERPROFILE", "LOCALAPPDATA"] {
+        if let Some(value) = env::var_os(key) {
+            command.env(key, value);
+        }
+    }
+    command
+        .spawn()
+        .map_err(|_| "Packaged agentd runtime could not start".to_string())
+}
+
 fn main() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
             app_version,
             agentd_health,
-            select_file,
-            select_folder,
+            agentd_origin,
+            get_llm_settings,
+            save_llm_settings,
+            get_whatsapp_settings,
+            save_whatsapp_settings,
             credential_set,
             credential_exists,
-            credential_delete
+            credential_delete,
+            provider_test,
+            chat_load_sessions,
+            chat_create_session,
+            chat_append_message,
+            chat_delete_session,
+            chat_generate,
+            select_file,
+            select_folder
         ])
         .setup(|app| {
-            let runtime = Arc::new(AgentdRuntime::default());
-            app.manage(runtime.clone());
+            let data_dir = app
+                .path()
+                .app_data_dir()
+                .map_err(|_| "Agentd data directory unavailable")?;
+            let child = spawn_agentd(app.handle(), &data_dir)?;
+            app.manage(AgentdProcess(Mutex::new(Some(child))));
+            app.manage(AgentdClient::with_data_dir(data_dir));
             app.manage(Arc::new(AtomicBool::new(false)));
             create_tray(app.handle())?;
-            match spawn_agentd(app.handle()) {
-                Ok((receiver, child)) => {
-                    runtime.set_child(child);
-                    tauri::async_runtime::spawn(read_agentd(
-                        app.handle().clone(),
-                        runtime,
-                        receiver,
-                    ));
-                }
-                Err(_) => {
-                    runtime.mark_unavailable("Agentd could not start", false);
-                }
-            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -827,38 +446,19 @@ fn main() {
 
     let app = builder
         .build(tauri::generate_context!())
-        .expect("error while building AICA Tauri pilot");
-    app.run(|app, event| match event {
-        tauri::RunEvent::ExitRequested { api, .. } => {
-            let explicit_quit = app.state::<Arc<AtomicBool>>().load(Ordering::SeqCst);
-            if should_prevent_windowless_exit(explicit_quit) {
+        .expect("error while building AICA Tauri settings");
+    app.run(|app, event| {
+        if let tauri::RunEvent::ExitRequested { api, .. } = event {
+            if !app.state::<Arc<AtomicBool>>().load(Ordering::SeqCst) {
                 api.prevent_exit();
             }
         }
-        tauri::RunEvent::Exit => {
-            app.state::<Arc<AgentdRuntime>>().kill_now();
-        }
-        _ => {}
     });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn ready_message(kind: &str) -> String {
-        format!(
-            "{{\"version\":1,\"kind\":\"{kind}\",\"event\":\"ready\",\"data\":{{\"status\":\"ready\",\"protocolVersion\":1,\"pid\":42,\"startedAt\":\"2026-09-15T00:00:00.000Z\"}}}}"
-        )
-    }
-
-    #[test]
-    fn credential_allowlist_accepts_only_declared_keys() {
-        assert!(credential_key_allowed("openai_api_key"));
-        assert!(credential_key_allowed("whatsapp_cloud_verify_token"));
-        assert!(!credential_key_allowed("unknown"));
-        assert!(!credential_key_allowed(""));
-    }
 
     #[test]
     fn custom_file_picker_button_labels_fail_explicitly() {
@@ -876,73 +476,5 @@ mod tests {
                 filters: None,
             }
         )));
-    }
-
-    #[test]
-    fn decoder_preserves_frames_across_chunks_and_rejects_oversize() {
-        let mut decoder = FrameDecoder::default();
-        assert!(decoder.push(b"{\"kind\":").is_empty());
-        assert_eq!(
-            decoder.push(b"\"event\"}\n"),
-            vec![Ok(b"{\"kind\":\"event\"}".to_vec())]
-        );
-
-        let mut too_large = vec![b'x'; MAX_FRAME_BYTES + 1];
-        too_large.push(b'\n');
-        assert_eq!(decoder.push(&too_large), vec![Err(())]);
-        assert_eq!(decoder.push(b"{}\n"), vec![Ok(b"{}".to_vec())]);
-    }
-
-    #[test]
-    fn ready_and_health_protocol_messages_are_validated() {
-        let ready = parse_agentd_message(ready_message("event").as_bytes()).unwrap();
-        assert!(matches!(
-            ready,
-            AgentdMessage::Ready(AgentdHealth { pid: 42, .. })
-        ));
-
-        let health = r#"{"version":1,"kind":"response","id":"host-health","ok":true,"result":{"status":"ready","protocolVersion":1,"pid":42,"startedAt":"2026-09-15T00:00:00.000Z"}}"#;
-        assert!(matches!(
-            parse_agentd_message(health.as_bytes()),
-            Ok(AgentdMessage::HealthResponse(AgentdHealth { pid: 42, .. }))
-        ));
-        assert!(parse_agentd_message(ready_message("unknown").as_bytes()).is_err());
-        assert!(parse_agentd_message(b"{\"version\":2}").is_err());
-        assert!(parse_agentd_message(b"not-json").is_err());
-    }
-
-    #[test]
-    fn handshake_requires_ready_request_and_matching_health_response() {
-        let identity = AgentdHealth {
-            pid: 42,
-            started_at: "2026-09-15T00:00:00.000Z".into(),
-        };
-        let mut handshake = ProtocolHandshake::default();
-
-        assert!(handshake.accept_health(&identity).is_err());
-        handshake.accept_ready(identity.clone()).unwrap();
-        assert!(handshake.accept_ready(identity.clone()).is_err());
-        assert!(handshake.accept_health(&identity).is_err());
-        handshake.request_health().unwrap();
-        let mismatched = AgentdHealth {
-            pid: 43,
-            ..identity.clone()
-        };
-        assert!(handshake.accept_health(&mismatched).is_err());
-        handshake.accept_health(&identity).unwrap();
-        assert!(handshake.request_health().is_err());
-        assert!(handshake.accept_health(&identity).is_err());
-
-        assert!(handshake.accept_shutdown().is_err());
-        handshake.request_shutdown().unwrap();
-        handshake.accept_shutdown().unwrap();
-    }
-
-    #[test]
-    fn tray_open_is_idempotent_and_close_only_exits_on_explicit_quit() {
-        assert_eq!(open_action(true), OpenAction::FocusExisting);
-        assert_eq!(open_action(false), OpenAction::CreateWindow);
-        assert!(should_prevent_windowless_exit(false));
-        assert!(!should_prevent_windowless_exit(true));
     }
 }

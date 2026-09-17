@@ -1,14 +1,16 @@
-# Tauri hybrid UI execution plan
+# Tauri hybrid UI execution plan (historical pilot)
 
 Date: September 14, 2026
 
-Status: Execution plan for branch `codex/tauri-hybrid-ui`
+Status: Historical pilot record. The current browser-first migration is tracked in [`tauri-full-migration-plan.md`](./tauri-full-migration-plan.md) and supersedes this document's UI ownership wording.
+
+Current boundary: the complete product workspace is rendered in Edge/Chrome. Tauri is retained only as a lightweight native companion for OS capabilities and agentd supervision; it must not become a second product UI.
 
 ## Outcome
 
-Add an opt-in Tauri 2 shell beside the existing Electron application. The first executable checkpoint must prove that the existing React toolchain can run in an operating-system WebView, a packaged Node `agentd` process can remain alive while the WebView is destroyed and recreated, and native capabilities can be exposed without returning credentials to the renderer.
+The original pilot added an opt-in Tauri 2 shell beside the existing Electron application. Its checkpoint proved that the React toolchain could run in an operating-system WebView, that a packaged Node `agentd` process could remain alive while the WebView was destroyed and recreated, and that native capabilities could be exposed without returning credentials to the renderer. Those findings remain useful, but the pilot shell is not the product UI.
 
-Electron remains the supported application path on this branch. No existing channel, model, MCP, RAG, persistence or autonomous-send behavior is removed or redirected. Tauri becomes the default only after later parity, data-migration, signing and resource gates pass.
+Electron remains the transition fallback until the browser and `agentd` reach parity. No existing channel, model, MCP, RAG, persistence or autonomous-send behavior may be removed or redirected without an equivalent browser/API slice and migration evidence. Tauri is native-only, not a competing default UI.
 
 ## Baseline
 
@@ -50,7 +52,7 @@ flowchart LR
     ELECTRON[Existing Electron app] -. unchanged .-> LEGACY[Existing main/preload runtime]
 ```
 
-The Tauri pilot is intentionally separate from the full `App.tsx` entry. Mounting the current app would start Electron-bound WhatsApp, email, MCP and agent hooks or misleading browser fallbacks. The pilot reuses the existing styling/toolchain and exercises only implemented capabilities. Product screens move after their backing services move to `agentd`.
+The original Tauri pilot was intentionally separate from the full `App.tsx` entry. The current migration has a different boundary: a normal browser load pairs with local `agentd` and mounts `App.tsx`; a real Tauri runtime mounts only native diagnostics/onboarding. Product screens move through authenticated `agentd` adapters, not into a Tauri WebView.
 
 ## Task 1: Secure runtime boundary
 
@@ -138,7 +140,7 @@ Files:
 - `vite.tauri.config.ts`
 - `src/renderer/tauri.html`
 - `src/renderer/src/tauri-main.tsx`
-- `src/renderer/src/TauriPilot.tsx`
+- `src/renderer/src/NativeHostDiagnostics.tsx`
 - `src/renderer/src/lib/tauri-native-bridge.ts`
 - `package.json`
 - `package-lock.json`
