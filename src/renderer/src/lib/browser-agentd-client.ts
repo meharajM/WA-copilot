@@ -128,6 +128,17 @@ export interface BrowserAuditLogEntry {
   [key: string]: unknown
 }
 
+export interface BrowserDraft {
+  id: number
+  channel: 'whatsapp'
+  providerEventId: string
+  conversationId: string
+  responseText: string
+  status: 'draft' | 'approved' | 'rejected' | 'sent'
+  createdAt: number
+  updatedAt: number
+}
+
 const normaliseOrigin = (origin: string): string => {
   const url = new URL(origin)
   if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('Agentd origin must use HTTP(S)')
@@ -149,6 +160,10 @@ export interface BrowserAgentdClient extends ChatClient {
   saveProductPreferences(settings: ProductPreferences): Promise<ProductPreferences>
   appendAuditLog(entry: Record<string, unknown>): Promise<void>
   listAuditLogs(limit?: number): Promise<BrowserAuditLogEntry[]>
+  pauseAll(): Promise<{ paused: boolean }>
+  resumeAll(): Promise<{ paused: boolean }>
+  listDrafts(limit?: number, status?: BrowserDraft['status']): Promise<BrowserDraft[]>
+  updateDraftStatus(id: number, status: BrowserDraft['status']): Promise<BrowserDraft>
   setCredential(key: CredentialKey, value: string): Promise<NativeResult>
   hasCredential(key: CredentialKey): Promise<NativeResult & { exists: boolean }>
   deleteCredential(key: CredentialKey): Promise<NativeResult>
@@ -292,6 +307,40 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     if (!isRecord(value) || !Array.isArray(value.entries)) throw new Error('Invalid audit log response')
     return value.entries.filter((entry): entry is BrowserAuditLogEntry => isRecord(entry) && typeof entry.timestamp === 'string') as BrowserAuditLogEntry[]
   }
+  const pauseAll = async (): Promise<{ paused: boolean }> => {
+    const value = await request<unknown>('/api/v1/pause-all', { method: 'POST', body: '{}' }, true)
+    if (!isRecord(value) || typeof value.paused !== 'boolean') throw new Error('Invalid agentd pause response')
+    return { paused: value.paused }
+  }
+  const resumeAll = async (): Promise<{ paused: boolean }> => {
+    const value = await request<unknown>('/api/v1/resume-all', { method: 'POST', body: '{}' }, true)
+    if (!isRecord(value) || typeof value.paused !== 'boolean') throw new Error('Invalid agentd resume response')
+    return { paused: value.paused }
+  }
+  const readDraft = (value: unknown): BrowserDraft => {
+    if (!isRecord(value)
+      || !Number.isSafeInteger(value.id)
+      || value.channel !== 'whatsapp'
+      || typeof value.providerEventId !== 'string'
+      || typeof value.conversationId !== 'string'
+      || typeof value.responseText !== 'string'
+      || !['draft', 'approved', 'rejected', 'sent'].includes(value.status as string)
+      || !Number.isSafeInteger(value.createdAt)
+      || !Number.isSafeInteger(value.updatedAt)) throw new Error('Invalid agentd draft response')
+    return value as unknown as BrowserDraft
+  }
+  const listDrafts = async (limit = 50, status?: BrowserDraft['status']): Promise<BrowserDraft[]> => {
+    const query = new URLSearchParams({ limit: String(Math.max(1, Math.min(100, Math.trunc(limit)))) })
+    if (status) query.set('status', status)
+    const value = await request<unknown>(`/api/v1/drafts?${query.toString()}`)
+    if (!isRecord(value) || !Array.isArray(value.drafts)) throw new Error('Invalid agentd draft list response')
+    return value.drafts.map(readDraft)
+  }
+  const updateDraftStatus = async (id: number, status: BrowserDraft['status']): Promise<BrowserDraft> => {
+    if (!Number.isSafeInteger(id) || id < 1) throw new Error('Invalid draft id')
+    const value = await request<unknown>(`/api/v1/drafts/${id}`, { method: 'PATCH', body: JSON.stringify({ status }) }, true)
+    return readDraft(value)
+  }
   const setCredential = async (key: CredentialKey, value: string) => readResult(await request(`/api/v1/credentials/${encodeURIComponent(key)}`, { method: 'POST', body: JSON.stringify({ value }) }, true))
   const hasCredential = async (key: CredentialKey) => readCredentialPresence(await request(`/api/v1/credentials/${encodeURIComponent(key)}`))
   const deleteCredential = async (key: CredentialKey) => readResult(await request(`/api/v1/credentials/${encodeURIComponent(key)}`, { method: 'DELETE' }, true))
@@ -322,6 +371,10 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     saveProductPreferences,
     appendAuditLog,
     listAuditLogs,
+    pauseAll,
+    resumeAll,
+    listDrafts,
+    updateDraftStatus,
     setCredential,
     hasCredential,
     deleteCredential,

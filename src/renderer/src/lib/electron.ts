@@ -1,4 +1,6 @@
 import '../env.d.ts'
+import { getBrowserAgentdClient } from './browser-agentd-client'
+import { isTauriRuntime } from './tauri-native-bridge'
 // Provides fallbacks for browser environment
 
 export const isElectron = (): boolean => {
@@ -14,6 +16,68 @@ export const getPlatform = (): 'mac' | 'windows' | 'linux' | 'browser' => {
         case 'win32': return 'windows'
         case 'linux': return 'linux'
         default: return 'browser'
+    }
+}
+
+const isBrowserProduct = (): boolean => typeof window !== 'undefined' && !isElectron() && !isTauriRuntime()
+
+const browserAutonomyState = async () => {
+    let status
+    try {
+        status = await getBrowserAgentdClient().status()
+    } catch (error) {
+        return {
+            mode: 'draft' as const,
+            responsePermission: false,
+            paused: true,
+            emergencyPaused: false,
+            recoveryMode: false,
+            status: 'unavailable',
+            queueDepth: 0,
+            activeJob: null,
+            lastProcessedMessage: null,
+            lastError: error instanceof Error ? error.message : 'agentd unavailable',
+            escalations: 0,
+            lastDeliveryStatus: null,
+            lastProviderMessageId: null,
+            lastDeliveryInboundId: null,
+            usageToday: { llmCalls: 0, outboundMessages: 0, estimatedCost: 0 },
+        }
+    }
+    return {
+        mode: 'draft' as const,
+        responsePermission: false,
+        paused: status.paused !== false,
+        emergencyPaused: false,
+        recoveryMode: false,
+        status: status.paused === false ? 'running' : 'paused',
+        queueDepth: status.queueDepth || 0,
+        activeJob: null,
+        lastProcessedMessage: null,
+        lastError: null,
+        escalations: 0,
+        lastDeliveryStatus: null,
+        lastProviderMessageId: null,
+        lastDeliveryInboundId: null,
+        usageToday: { llmCalls: 0, outboundMessages: 0, estimatedCost: 0 },
+    }
+}
+
+const browserAutonomyHealth = async () => {
+    let status
+    try {
+        status = await getBrowserAgentdClient().status()
+    } catch (error) {
+        return { executionLocation: 'agentd', transport: 'unavailable', channel: { status: 'unavailable', error: error instanceof Error ? error.message : 'agentd unavailable' }, leaseHeld: false }
+    }
+    return {
+        executionLocation: 'agentd',
+        transport: 'authenticated loopback HTTP',
+        channel: { status: 'draft-only', error: null },
+        queues: { whatsapp: status.queueDepth || 0, email: 0, meta: 0 },
+        leaseHeld: true,
+        memory: { status: 'not migrated', backend: null },
+        rag: { status: 'not migrated', documents: 0 },
     }
 }
 
@@ -447,14 +511,22 @@ export const electron = {
         },
     },
     autonomy: {
-        getState: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.getState() : { mode: 'observe', responsePermission: false, paused: true, status: 'stopped', queueDepth: 0 },
-        getHealth: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.getHealth() : null,
-        getMetrics: async (days = 14) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.getMetrics(days) : null,
-        reconnectChannel: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.reconnectChannel() : null,
-        start: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.start() : null,
-        stop: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.stop() : null,
-        pause: async (emergency = false) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.pause(emergency) : null,
-        resume: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.resume() : null,
+        getState: async () => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.getState()
+            if (isBrowserProduct()) return browserAutonomyState()
+            return { mode: 'observe', responsePermission: false, paused: true, status: 'stopped', queueDepth: 0 }
+        },
+        getHealth: async () => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.getHealth()
+            if (isBrowserProduct()) return browserAutonomyHealth()
+            return null
+        },
+        getMetrics: async (days = 14) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.getMetrics(days) : (isBrowserProduct() ? { inbound: 0, sent: 0, escalated: 0, drafts: (await getBrowserAgentdClient().listDrafts()).length, failed: 0, averageDecisionLatencyMs: 0, llmCalls: 0, averageLlmLatencyMs: 0, groundedDecisionRate: 0, deliveryUnknown: 0, draftApprovalRate: 0, averageDraftEditingTimeMs: 0, estimatedCostPerResolvedConversation: 0, reviewedDecisions: 0, reviewAccuracy: 0, escalationPrecision: 0, unnecessaryEscalations: 0, missedEscalations: 0, recoveryDrills: 0, averageRecoveryTimeMs: 0 } : null),
+        reconnectChannel: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.reconnectChannel() : (isBrowserProduct() ? browserAutonomyState() : null),
+        start: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.start() : (isBrowserProduct() ? getBrowserAgentdClient().resumeAll().then(browserAutonomyState) : null),
+        stop: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.stop() : (isBrowserProduct() ? getBrowserAgentdClient().pauseAll().then(browserAutonomyState) : null),
+        pause: async (emergency = false) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.pause(emergency) : (isBrowserProduct() ? getBrowserAgentdClient().pauseAll().then(browserAutonomyState) : null),
+        resume: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.resume() : (isBrowserProduct() ? getBrowserAgentdClient().resumeAll().then(browserAutonomyState) : null),
         enterRecoveryMode: async (reason?: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.enterRecoveryMode(reason) : null,
         clearRecoveryMode: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.clearRecoveryMode() : null,
         stageBackup: async (backupPath: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.stageBackup(backupPath) : null,
@@ -474,17 +546,35 @@ export const electron = {
         listDecisionEvidence: async (limit = 50) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listDecisionEvidence(limit) : [],
         reviewDecision: async (inboundId: string, label: string, notes = '') => isElectron() && window.electron?.autonomy ? window.electron.autonomy.reviewDecision(inboundId, label, notes) : null,
         recordConversationOutcome: async (jid: string, revision: number, outcome: string, evidence: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.recordConversationOutcome(jid, revision, outcome, evidence) : null,
-        listDrafts: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listDrafts() : [],
+        listDrafts: async () => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.listDrafts()
+            if (!isBrowserProduct()) return []
+            const drafts = await getBrowserAgentdClient().listDrafts(50, 'draft')
+            return drafts.map(draft => ({ inboundId: draft.providerEventId, jid: draft.conversationId, content: draft.responseText, contentHash: '', expiresAt: draft.updatedAt + 7 * 24 * 60 * 60 * 1000, status: draft.status }))
+        },
         usageHistory: async (days = 30) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.usageHistory(days) : [],
         channelUsage: async (days = 1) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.channelUsage(days) : [],
-        approveDraft: async (inboundId: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.approveDraft(inboundId) : null,
+        approveDraft: async (inboundId: string) => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.approveDraft(inboundId)
+            if (!isBrowserProduct()) return null
+            const draft = (await getBrowserAgentdClient().listDrafts(100)).find(item => item.providerEventId === inboundId)
+            return draft ? getBrowserAgentdClient().updateDraftStatus(draft.id, 'approved').then(() => browserAutonomyState()) : null
+        },
         sendApprovedTemplate: async (inboundId: string, name: string, languageCode: string, parameters: string[] = []) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.sendApprovedTemplate(inboundId, name, languageCode, parameters) : null,
         listNotifications: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listNotifications() : [],
         ackNotification: async (id: number) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.ackNotification(id) : null,
         onNotification: (callback: (data: unknown) => void) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.onNotification(callback) : () => {},
         registerApprovedTemplate: async (name: string, languageCode: string, category: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.registerApprovedTemplate(name, languageCode, category) : null,
         revokeApprovedTemplate: async (name: string, languageCode: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.revokeApprovedTemplate(name, languageCode) : null,
-        setMode: async (mode: string, permission: boolean) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.setMode(mode, permission) : null,
+        setMode: async (mode: string, permission: boolean) => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.setMode(mode, permission)
+            if (!isBrowserProduct()) return null
+            // Browser slice is draft-only: permission never enables direct sends.
+            if (mode === 'draft') return getBrowserAgentdClient().resumeAll().then(browserAutonomyState)
+            // Browser slice supports observe (paused) and draft-only (running).
+            // Auto mode stays paused until a provider-backed outbox exists.
+            return getBrowserAgentdClient().pauseAll().then(browserAutonomyState)
+        },
         onState: (callback: (state: unknown) => void) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.onState(callback) : () => {},
         onDecision: (callback: (data: unknown) => void) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.onDecision(callback) : () => {},
         onFailure: (callback: (data: unknown) => void) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.onFailure(callback) : () => {},
