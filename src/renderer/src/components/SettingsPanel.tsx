@@ -80,7 +80,7 @@ export function SettingsPanel({ onClose, initialSection = 'whatsapp' }: Settings
     const [connectingMcp, setConnectingMcp] = useState<string | null>(null)
 
     const settings = useSettingsStore()
-    const { openLogFolder, getLogPath } = useLogStore()
+    const { openLogFolder, getLogPath, downloadAuditLog } = useLogStore()
     const [logPath, setLogPath] = useState<string>('')
 
     useEffect(() => {
@@ -594,11 +594,11 @@ export function SettingsPanel({ onClose, initialSection = 'whatsapp' }: Settings
                                 </div>
 
                                 <button
-                                    onClick={() => openLogFolder()}
+                                    onClick={() => browserRuntime ? void downloadAuditLog() : void openLogFolder()}
                                     className="flex items-center gap-2 px-4 py-2 bg-[var(--color-surface)] hover:bg-[var(--color-border)] text-[var(--color-text-primary)] rounded-lg transition-colors text-sm"
                                 >
                                     <FolderOpen size={16} />
-                                    Reveal in File Explorer
+                                    {browserRuntime ? 'Download audit log' : 'Reveal in File Explorer'}
                                 </button>
                             </div>
                         </div>
@@ -645,7 +645,7 @@ export function SettingsPanel({ onClose, initialSection = 'whatsapp' }: Settings
                                     </div>
                                     <div>
                                         <p className="text-[var(--text-xs)] text-[var(--color-text-dim)]">Platform</p>
-                                        <p className="text-[var(--text-sm)] font-[var(--font-weight-medium)] text-[var(--color-text-primary)]">Electron</p>
+                                        <p className="text-[var(--text-sm)] font-[var(--font-weight-medium)] text-[var(--color-text-primary)]">{browserRuntime ? 'Browser + agentd' : 'Electron'}</p>
                                     </div>
                                 </Card>
                                 <Card variant="default" padding="md" className="flex items-center gap-3">

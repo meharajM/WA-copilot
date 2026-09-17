@@ -27,12 +27,21 @@ export function createFakeChatClient(enabled = false): ChatClient {
     .sort((a, b) => b.updatedAt - a.updatedAt)
     .map((session) => ({ ...session, messages: session.messages.map((message) => ({ ...message })) }))
 
-  const createSession = async (sessionId: string, title: string): Promise<void> => {
+  const createSession = async (sessionId: string, title: string, workspacePath?: string): Promise<void> => {
     if (!enabled) throw new Error('Tauri chat preview is disabled')
     if (!sessionId || !title) throw new Error('Chat session is invalid')
     if (sessions.has(sessionId)) return
     const now = Date.now()
-    sessions.set(sessionId, { id: sessionId, title, createdAt: now, updatedAt: now, status: 'active', messages: [] })
+    sessions.set(sessionId, { id: sessionId, title, createdAt: now, updatedAt: now, status: 'active', messages: [], ...(workspacePath ? { workspacePath } : {}) })
+  }
+
+  const updateSessionWorkspace = async (sessionId: string, workspacePath: string | null): Promise<void> => {
+    if (!enabled) throw new Error('Tauri chat preview is disabled')
+    const session = sessions.get(sessionId)
+    if (!session) throw new Error('Chat session not found')
+    if (workspacePath) session.workspacePath = workspacePath
+    else delete session.workspacePath
+    session.updatedAt = Date.now()
   }
 
   const deleteSession = async (sessionId: string): Promise<void> => {
@@ -90,7 +99,7 @@ export function createFakeChatClient(enabled = false): ChatClient {
     onEvent({ type: 'assistant.done', sessionId: request.sessionId, requestId: request.requestId, sequence: parts.length + 1 })
   }
 
-  return { health, loadSessions, createSession, deleteSession, appendMessage, generate }
+  return { health, loadSessions, createSession, updateSessionWorkspace, deleteSession, appendMessage, generate }
 }
 
 export const isChatAbortError = (reason: unknown): boolean => reason instanceof DOMException && reason.name === 'AbortError'

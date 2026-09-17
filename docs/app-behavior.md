@@ -20,6 +20,13 @@ Use this document to answer:
 
 If older manuals, screenshots, or marketing copy disagree with the running code, treat this file and the current code as authoritative for QA.
 
+## Runtime boundary
+
+- The supported product workspace is rendered in the user's web browser (Windows Edge or Chrome are the primary targets) and talks to the local authenticated `agentd` service over loopback HTTP.
+- The Tauri companion is a lightweight native host for OS-only capabilities such as keychain access, file/folder dialogs, service lifecycle and diagnostics. It must not render a second product workspace or own business workflows.
+- Closing the browser or companion does not stop `agentd`; explicit agent controls own processing state.
+- Electron remains a transition client until browser plus `agentd` feature/data parity is evidenced.
+
 ## Verification Order
 
 1. Startup and dependency gate
@@ -119,6 +126,7 @@ Pass evidence:
 - `Shift+Enter` keeps a newline.
 - File attachments are supported.
 - If no workspace is set and a file has a native path, the parent folder becomes the session workspace.
+- In the browser, supported text and small image attachments are bounded and persisted through `agentd`; the browser directory picker records a workspace reference without exposing arbitrary native paths to page JavaScript.
 - Voice input is supported through the speech hook.
 - In Electron, offline/native speech is the default path.
 - Agent execution writes user messages immediately, then streams assistant/tool progress into the owning session.

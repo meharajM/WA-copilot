@@ -17,6 +17,7 @@ function client(overrides: Partial<ChatClient> = {}): ChatClient {
     health: vi.fn(async () => ({ status: 'ready', mode: 'daemon' as const })),
     loadSessions: vi.fn(async () => []),
     createSession: vi.fn(async () => {}),
+    updateSessionWorkspace: vi.fn(async () => {}),
     deleteSession: vi.fn(async () => {}),
     appendMessage: vi.fn(async () => {}),
     generate: vi.fn(async () => {}),

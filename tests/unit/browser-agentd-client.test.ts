@@ -57,12 +57,15 @@ describe('browser agentd client', () => {
     await client.pair('123456')
     await expect(client.loadSessions()).resolves.toMatchObject([{ id: 'chat_1', messages: [{ id: 'm1' }] }])
     await client.createSession('chat_2', 'New')
+    await client.createSession('chat_3', 'Workspace', 'browser://workspace/Support')
+    await client.updateSessionWorkspace('chat_3', null)
     await client.appendMessage('chat_1', { id: 'm2', role: 'user', content: 'next', timestamp: 40 })
     const events: string[] = []
     await client.generate({ sessionId: 'chat_1', requestId: 'r1', content: 'hello' }, event => events.push(event.type))
     expect(events).toEqual(['assistant.delta', 'assistant.done'])
     const mutation = calls.find(call => call.url.endsWith('/api/v1/sessions') && call.init?.method === 'POST')!
     expect(new Headers(mutation.init?.headers).get('x-csrf-token')).toBe('csrf-token')
+    expect(calls.some(call => call.url.endsWith('/api/v1/sessions/chat_3') && call.init?.method === 'PATCH')).toBe(true)
     expect(JSON.stringify(calls).includes('agentd_session')).toBe(false)
   })
 
@@ -87,5 +90,33 @@ describe('browser agentd client', () => {
     await expect(client.savePersonaSettings({ name: 'AICA', industry: 'Support', tone: 'concise', coreKnowledge: ['FAQ'] })).resolves.toMatchObject({ tone: 'professional' })
     const mutation = fetcher.mock.calls.find(([input, init]) => String(input).endsWith('/api/v1/settings/persona') && init?.method === 'PUT')
     expect(new Headers(mutation?.[1]?.headers).get('x-csrf-token')).toBe('csrf-token')
+  })
+
+  it('maps durable product preferences and audit logs through agentd', async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
+      if (url.endsWith('/api/v1/settings/preferences')) return response({
+        theme: 'dark', playwrightBrowser: 'auto', playwrightHeadless: false, fileSystemSafeMode: true,
+        memoryBackend: 'sqlite', ttsEnabled: true, ttsRate: 1, ttsPitch: 1, ttsVoice: null,
+        speechLang: 'en-US', offlineSpeech: false, voskModel: 'en-us', browserModel: 'tiny',
+      })
+      if (url.includes('/api/v1/logs?')) return response({ entries: [{ timestamp: '2026-01-01T00:00:00.000Z', eventType: 'DEBUG' }] })
+      return response({ success: true })
+    })
+    const client = createBrowserAgentdClient({ origin: 'http://127.0.0.1:4141', fetch: fetcher })
+    await client.pair('123456')
+    await expect(client.getProductPreferences()).resolves.toMatchObject({ theme: 'dark', memoryBackend: 'sqlite' })
+    await expect(client.saveProductPreferences({
+      theme: 'light', playwrightBrowser: 'msedge', playwrightHeadless: true, fileSystemSafeMode: true,
+      memoryBackend: 'sqlite', ttsEnabled: true, ttsRate: 1, ttsPitch: 1, ttsVoice: null,
+      speechLang: 'en-US', offlineSpeech: false, voskModel: 'en-us', browserModel: 'tiny',
+    })).resolves.toMatchObject({ theme: 'dark' })
+    await client.appendAuditLog({ eventType: 'DEBUG', details: { value: 'x' } })
+    await expect(client.listAuditLogs()).resolves.toMatchObject([{ eventType: 'DEBUG' }])
+    const put = fetcher.mock.calls.find(([input, init]) => String(input).endsWith('/api/v1/settings/preferences') && init?.method === 'PUT')
+    expect(new Headers(put?.[1]?.headers).get('x-csrf-token')).toBe('csrf-token')
+    const post = fetcher.mock.calls.find(([input, init]) => String(input).endsWith('/api/v1/logs') && init?.method === 'POST')
+    expect(new Headers(post?.[1]?.headers).get('x-csrf-token')).toBe('csrf-token')
   })
 })

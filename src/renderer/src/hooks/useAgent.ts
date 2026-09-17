@@ -48,6 +48,7 @@ import { getEmailSystemPrompt, normalizeSubject, type EmailMessage } from "../li
 import { createDraftResponse, evaluateEmailPolicy, getConfidenceGatePrompt } from "../lib/email-policy";
 import { buildAttachmentLLMParts } from "../lib/media-utils";
 import { isSameWhatsAppIdentity, normalizeWhatsAppId } from "../../../shared/whatsappIdentity";
+import type { ChatAttachment } from '../../../shared/chat-protocol';
 
 /**
  * State returned by `useAgent`.
@@ -106,6 +107,41 @@ export function readableAgentError(error: unknown): string {
         if (typeof record.error === 'string' && record.error.trim()) return record.error
     }
     return 'Unknown error'
+}
+
+const MAX_BROWSER_ATTACHMENT_TEXT = 64 * 1024
+const MAX_BROWSER_ATTACHMENT_IMAGE = 256 * 1024
+const TEXT_FILE_EXTENSIONS = new Set(['.txt', '.md', '.csv', '.tsv', '.json', '.xml', '.html', '.htm', '.css', '.js', '.ts', '.yaml', '.yml', '.sql'])
+
+const isTextAttachment = (file: File): boolean => (
+    file.type.startsWith('text/') || TEXT_FILE_EXTENSIONS.has(file.name.slice(file.name.lastIndexOf('.')).toLowerCase())
+)
+
+const toBase64 = (bytes: Uint8Array): string => {
+    let binary = ''
+    const chunkSize = 0x8000
+    for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+        binary += String.fromCharCode(...bytes.subarray(offset, Math.min(offset + chunkSize, bytes.length)))
+    }
+    return btoa(binary)
+}
+
+const prepareBrowserAttachments = async (files: File[]): Promise<ChatAttachment[]> => {
+    const prepared: ChatAttachment[] = []
+    for (const file of files.slice(0, 8)) {
+        const attachment: ChatAttachment = {
+            name: file.name.slice(0, 256),
+            type: file.type || 'application/octet-stream',
+            size: file.size,
+        }
+        if (isTextAttachment(file) && file.size <= MAX_BROWSER_ATTACHMENT_TEXT) {
+            attachment.text = await file.text()
+        } else if (file.type.startsWith('image/') && file.size <= MAX_BROWSER_ATTACHMENT_IMAGE) {
+            attachment.dataUrl = `data:${attachment.type};base64,${toBase64(new Uint8Array(await file.arrayBuffer()))}`
+        }
+        prepared.push(attachment)
+    }
+    return prepared
 }
 
 export function hasHandledEmailSendToolCall(toolCalls: unknown): boolean {
@@ -359,19 +395,26 @@ export function useAgent(): UseAgentReturn {
                 // local message id as request id, so the chat-store write queue
                 // can safely replay the same message after this call.
                 const browserRuntime = typeof window !== 'undefined' && !window.electron && !isTauriRuntime();
-                if ((isTauriRuntime() || browserRuntime) && !targetJid && !isEmailFlow && !multimodalWhatsAppMessage && !(attachments && attachments.length > 0)) {
+                if ((isTauriRuntime() || browserRuntime) && !targetJid && !isEmailFlow && !multimodalWhatsAppMessage) {
                     const client = isTauriRuntime() ? createTauriChatClient() : getBrowserAgentdClient();
                     const requestId = addedUserMessage.id;
+                    const daemonAttachments = attachments?.length
+                        ? browserRuntime
+                            ? await prepareBrowserAttachments(attachments)
+                            : attachmentData?.map((item, index) => ({ ...item, size: attachments[index]?.size || 0 }))
+                        : undefined;
                     const daemonSession = useChatStore.getState().sessions.find((session) => session.id === originSessionId);
                     // Zustand persistence is intentionally asynchronous. Ensure the
                     // daemon owns the session/message before generation instead of
                     // racing the persistence middleware after a fresh browser chat.
-                    await client.createSession(originSessionId, daemonSession?.title || 'New Chat');
+                    if (daemonSession?.workspacePath) await client.createSession(originSessionId, daemonSession.title || 'New Chat', daemonSession.workspacePath);
+                    else await client.createSession(originSessionId, daemonSession?.title || 'New Chat');
                     await client.appendMessage(originSessionId, {
                         id: requestId,
                         role: 'user',
                         content,
                         timestamp: addedUserMessage.timestamp,
+                        ...(daemonAttachments?.length ? { attachments: daemonAttachments } : {}),
                     });
                     let assistantContent = '';
                     let assistantAdded = false;

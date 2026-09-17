@@ -107,3 +107,38 @@ test('agentd generation returns safe errors and never accepts arbitrary provider
   await server.stop()
   fs.rmSync(dataDir, { recursive: true, force: true })
 })
+
+test('agentd persists bounded browser attachments and maps text/images into provider content parts', async () => {
+  const dataDir = fs.mkdtempSync('/tmp/aica-agentd-generation-attachments-')
+  const secret = 'a'.repeat(32)
+  const calls = []
+  const server = new AgentdServer({
+    dataDir,
+    secret,
+    logger: { log() {} },
+    credentials: credentials({ openai_api_key: 'provider-secret' }),
+    providerFetch: async (_url, options) => { calls.push(JSON.parse(options.body)); return providerResponse('attachment answer') },
+  })
+  const { origin } = await server.start()
+  const auth = { authorization: `Bearer ${secret}` }
+  assert.equal((await request(origin, 'POST', '/api/v1/sessions', { id: 's3', title: 'Attachments' }, auth)).status, 201)
+  const attachments = [
+    { name: 'notes.txt', type: 'text/plain', size: 5, text: 'hello' },
+    { name: 'pixel.png', type: 'image/png', size: 4, dataUrl: 'data:image/png;base64,AAAA' },
+  ]
+  const generated = await request(origin, 'POST', '/api/v1/sessions/s3/generations', { requestId: 'r3', content: 'Review these', attachments }, auth)
+  assert.equal(generated.status, 200)
+  const userMessage = calls[0].messages[0]
+  assert.equal(Array.isArray(userMessage.content), true)
+  assert.equal(userMessage.content.some(part => part.type === 'text' && part.text.includes('hello')), true)
+  assert.equal(userMessage.content.some(part => part.type === 'image_url' && part.image_url.url.startsWith('data:image/png')), true)
+  const history = await request(origin, 'GET', '/api/v1/sessions/s3', undefined, auth)
+  assert.deepEqual(history.body.messages[0].attachments, attachments)
+  assert.equal((await request(origin, 'POST', '/api/v1/sessions', { id: 's4', title: 'Workspace', workspacePath: 'browser://workspace/Support' }, auth)).status, 201)
+  assert.equal((await request(origin, 'GET', '/api/v1/sessions/s4', undefined, auth)).body.session.workspacePath, 'browser://workspace/Support')
+  assert.equal((await request(origin, 'PATCH', '/api/v1/sessions/s4', { workspacePath: 'browser://workspace/Updated' }, auth)).body.session.workspacePath, 'browser://workspace/Updated')
+  assert.equal((await request(origin, 'POST', '/api/v1/sessions/s3/generations', { requestId: 'invalid-attachment', content: 'x', attachments: [{ name: 'x.txt', type: 'text/plain', size: 1, dataUrl: 'not-a-data-url' }] }, auth)).status, 400)
+  assert.equal((await request(origin, 'POST', '/api/v1/sessions/s3/generations', { requestId: 'invalid-empty-attachment', content: '', attachments: [{ name: 'x.txt', type: 'text/plain', size: 1, dataUrl: 'not-a-data-url' }] }, auth)).status, 400)
+  await server.stop()
+  fs.rmSync(dataDir, { recursive: true, force: true })
+})

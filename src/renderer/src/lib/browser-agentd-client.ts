@@ -12,6 +12,7 @@ import type {
   NativeResult,
   ProviderTestResult,
   PersonaSettings,
+  ProductPreferences,
   WhatsAppSettings,
 } from '../../../shared/native-bridge'
 import { readGeneration, readMessage, readSession } from './tauri-chat-client'
@@ -104,6 +105,29 @@ const readPersonaSettings = (value: unknown): PersonaSettings => {
   }
 }
 
+const readProductPreferences = (value: unknown): ProductPreferences => {
+  if (!isRecord(value)
+    || !['dark', 'light', 'system'].includes(value.theme as string)
+    || !['auto', 'chrome', 'msedge', 'firefox', 'webkit', 'chromium'].includes(value.playwrightBrowser as string)
+    || typeof value.playwrightHeadless !== 'boolean'
+    || typeof value.fileSystemSafeMode !== 'boolean'
+    || !['sqlite', 'server-memory'].includes(value.memoryBackend as string)
+    || typeof value.ttsEnabled !== 'boolean'
+    || typeof value.ttsRate !== 'number'
+    || typeof value.ttsPitch !== 'number'
+    || (value.ttsVoice !== null && typeof value.ttsVoice !== 'string')
+    || typeof value.speechLang !== 'string'
+    || typeof value.offlineSpeech !== 'boolean'
+    || typeof value.voskModel !== 'string'
+    || typeof value.browserModel !== 'string') throw new Error('Invalid product preferences response')
+  return value as unknown as ProductPreferences
+}
+
+export interface BrowserAuditLogEntry {
+  timestamp: string
+  [key: string]: unknown
+}
+
 const normaliseOrigin = (origin: string): string => {
   const url = new URL(origin)
   if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('Agentd origin must use HTTP(S)')
@@ -121,6 +145,10 @@ export interface BrowserAgentdClient extends ChatClient {
   saveWhatsAppSettings(settings: WhatsAppSettings): Promise<WhatsAppSettings>
   getPersonaSettings(): Promise<PersonaSettings>
   savePersonaSettings(settings: PersonaSettings): Promise<PersonaSettings>
+  getProductPreferences(): Promise<ProductPreferences>
+  saveProductPreferences(settings: ProductPreferences): Promise<ProductPreferences>
+  appendAuditLog(entry: Record<string, unknown>): Promise<void>
+  listAuditLogs(limit?: number): Promise<BrowserAuditLogEntry[]>
   setCredential(key: CredentialKey, value: string): Promise<NativeResult>
   hasCredential(key: CredentialKey): Promise<NativeResult & { exists: boolean }>
   deleteCredential(key: CredentialKey): Promise<NativeResult>
@@ -217,8 +245,12 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     return sessions
   }
 
-  const createSession = async (sessionId: string, title: string): Promise<void> => {
-    await request('/api/v1/sessions', { method: 'POST', body: JSON.stringify({ id: sessionId, title }) }, true)
+  const createSession = async (sessionId: string, title: string, workspacePath?: string): Promise<void> => {
+    await request('/api/v1/sessions', { method: 'POST', body: JSON.stringify({ id: sessionId, title, ...(workspacePath ? { workspacePath } : {}) }) }, true)
+  }
+
+  const updateSessionWorkspace = async (sessionId: string, workspacePath: string | null): Promise<void> => {
+    await request(`/api/v1/sessions/${encodeURIComponent(sessionId)}`, { method: 'PATCH', body: JSON.stringify({ workspacePath }) }, true)
   }
 
   const deleteSession = async (sessionId: string): Promise<void> => {
@@ -228,7 +260,7 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
   const appendMessage = async (sessionId: string, message: ChatMessage): Promise<void> => {
     await request(`/api/v1/sessions/${encodeURIComponent(sessionId)}/messages`, {
       method: 'POST',
-      body: JSON.stringify({ id: message.id, role: message.role, content: message.content }),
+      body: JSON.stringify({ id: message.id, role: message.role, content: message.content, ...(message.attachments ? { attachments: message.attachments } : {}) }),
     }, true)
   }
 
@@ -236,7 +268,7 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     if (signal?.aborted) throw new DOMException('Chat generation canceled', 'AbortError')
     const value = await request<unknown>(`/api/v1/sessions/${encodeURIComponent(requestBody.sessionId)}/generations`, {
       method: 'POST',
-      body: JSON.stringify({ requestId: requestBody.requestId, content: requestBody.content, ...(requestBody.model ? { model: requestBody.model } : {}) }),
+      body: JSON.stringify({ requestId: requestBody.requestId, content: requestBody.content, ...(requestBody.model ? { model: requestBody.model } : {}), ...(requestBody.attachments ? { attachments: requestBody.attachments } : {}) }),
     }, true)
     if (signal?.aborted) throw new DOMException('Chat generation canceled', 'AbortError')
     const message = readGeneration(value, requestBody)
@@ -250,6 +282,16 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
   const saveWhatsAppSettings = async (settings: WhatsAppSettings) => readWhatsAppSettings(await request('/api/v1/settings/whatsapp', { method: 'PUT', body: JSON.stringify(settings) }, true))
   const getPersonaSettings = async () => readPersonaSettings(await request('/api/v1/settings/persona'))
   const savePersonaSettings = async (settings: PersonaSettings) => readPersonaSettings(await request('/api/v1/settings/persona', { method: 'PUT', body: JSON.stringify(settings) }, true))
+  const getProductPreferences = async () => readProductPreferences(await request('/api/v1/settings/preferences'))
+  const saveProductPreferences = async (settings: ProductPreferences) => readProductPreferences(await request('/api/v1/settings/preferences', { method: 'PUT', body: JSON.stringify(settings) }, true))
+  const appendAuditLog = async (entry: Record<string, unknown>) => {
+    await request('/api/v1/logs', { method: 'POST', body: JSON.stringify(entry) }, true)
+  }
+  const listAuditLogs = async (limit = 100): Promise<BrowserAuditLogEntry[]> => {
+    const value = await request<unknown>(`/api/v1/logs?limit=${encodeURIComponent(String(limit))}`)
+    if (!isRecord(value) || !Array.isArray(value.entries)) throw new Error('Invalid audit log response')
+    return value.entries.filter((entry): entry is BrowserAuditLogEntry => isRecord(entry) && typeof entry.timestamp === 'string') as BrowserAuditLogEntry[]
+  }
   const setCredential = async (key: CredentialKey, value: string) => readResult(await request(`/api/v1/credentials/${encodeURIComponent(key)}`, { method: 'POST', body: JSON.stringify({ value }) }, true))
   const hasCredential = async (key: CredentialKey) => readCredentialPresence(await request(`/api/v1/credentials/${encodeURIComponent(key)}`))
   const deleteCredential = async (key: CredentialKey) => readResult(await request(`/api/v1/credentials/${encodeURIComponent(key)}`, { method: 'DELETE' }, true))
@@ -266,6 +308,7 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     health,
     loadSessions,
     createSession,
+    updateSessionWorkspace,
     deleteSession,
     appendMessage,
     generate,
@@ -275,6 +318,10 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     saveWhatsAppSettings,
     getPersonaSettings,
     savePersonaSettings,
+    getProductPreferences,
+    saveProductPreferences,
+    appendAuditLog,
+    listAuditLogs,
     setCredential,
     hasCredential,
     deleteCredential,

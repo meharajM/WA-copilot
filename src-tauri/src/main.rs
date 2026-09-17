@@ -178,6 +178,7 @@ async fn chat_load_sessions(
             title: session.session.title,
             created_at: session.session.created_at,
             updated_at: session.session.updated_at,
+            workspace_path: session.session.workspace_path,
             messages: session.messages,
         });
     }
@@ -189,11 +190,24 @@ async fn chat_create_session(
     client: State<'_, AgentdClient>,
     id: Option<String>,
     title: Option<String>,
+    workspace_path: Option<String>,
 ) -> Result<agentd_api::ChatSessionSummary, String> {
     client
-        .create_chat_session(id.as_deref(), title.as_deref())
+        .create_chat_session(id.as_deref(), title.as_deref(), workspace_path.as_deref())
         .await
         .map_err(|_| "Chat session creation unavailable".to_string())
+}
+
+#[tauri::command]
+async fn chat_update_session_workspace(
+    client: State<'_, AgentdClient>,
+    session_id: String,
+    workspace_path: Option<String>,
+) -> Result<agentd_api::ChatSessionSummary, String> {
+    client
+        .update_chat_session_workspace(&session_id, workspace_path.as_deref())
+        .await
+        .map_err(|_| "Chat workspace update unavailable".to_string())
 }
 
 #[tauri::command]
@@ -417,6 +431,7 @@ fn main() {
             provider_test,
             chat_load_sessions,
             chat_create_session,
+            chat_update_session_workspace,
             chat_append_message,
             chat_delete_session,
             chat_generate,

@@ -54,6 +54,7 @@ type PersistedChatState = {
 export const createTauriChatStorage = (chatClient: ChatClient): StateStorage => {
   const knownSessions = new Set<string>()
   const knownMessages = new Set<string>()
+  const knownWorkspaces = new Map<string, string | null>()
   let activeSessionId: string | null = null
   let writeQueue = Promise.resolve()
 
@@ -69,11 +70,25 @@ export const createTauriChatStorage = (chatClient: ChatClient): StateStorage => 
             const sessions = await chatClient.loadSessions()
             for (const session of sessions) {
                 knownSessions.add(session.id)
+                knownWorkspaces.set(session.id, session.workspacePath || null)
                 for (const message of session.messages) knownMessages.add(message.id)
             }
+            const rendererSessions = sessions.map((session) => ({
+                ...session,
+                messages: session.messages.map((message) => ({
+                    ...message,
+                    ...(message.attachments?.length ? {
+                        attachments: message.attachments.map((attachment) => ({
+                            name: attachment.name,
+                            path: '',
+                            type: attachment.type,
+                        })),
+                    } : {}),
+                })),
+            }))
             return JSON.stringify({
                 state: {
-                    sessions: sessions as ChatSession[],
+                    sessions: rendererSessions as ChatSession[],
                     activeSessionId,
                     offlineSpeech: false,
                     sidebarOpen: true,
@@ -95,12 +110,18 @@ export const createTauriChatStorage = (chatClient: ChatClient): StateStorage => 
                         if (!currentSessionIds.has(sessionId)) {
                             await chatClient.deleteSession(sessionId)
                             knownSessions.delete(sessionId)
+                            knownWorkspaces.delete(sessionId)
                         }
                     }
                     for (const session of sessions) {
                         if (!knownSessions.has(session.id)) {
-                            await chatClient.createSession(session.id, session.title)
+                            if (session.workspacePath) await chatClient.createSession(session.id, session.title, session.workspacePath)
+                            else await chatClient.createSession(session.id, session.title)
                             knownSessions.add(session.id)
+                            knownWorkspaces.set(session.id, session.workspacePath || null)
+                        } else if (knownWorkspaces.get(session.id) !== (session.workspacePath || null)) {
+                            await chatClient.updateSessionWorkspace(session.id, session.workspacePath || null)
+                            knownWorkspaces.set(session.id, session.workspacePath || null)
                         }
                         for (const message of session.messages) {
                             if (knownMessages.has(message.id)) continue

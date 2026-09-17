@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import type {
   ChatClient,
+  ChatAttachment,
   ChatGenerationEvent,
   ChatGenerationRequest,
   ChatHealth,
@@ -33,11 +34,26 @@ export const readMessage = (value: unknown): ChatMessage => {
     || !Number.isSafeInteger(value.createdAt)) {
     throw new Error('Invalid agentd chat message response')
   }
+  const attachments = Array.isArray(value.attachments) ? value.attachments.map(readAttachment) : undefined
   return {
     id: value.id,
     role: value.role as ChatMessage['role'],
     content: value.content,
     timestamp: value.createdAt as number,
+    ...(attachments?.length ? { attachments } : {}),
+  }
+}
+
+const readAttachment = (value: unknown): ChatAttachment => {
+  if (!isRecord(value) || typeof value.name !== 'string' || typeof value.type !== 'string' || !Number.isSafeInteger(value.size)
+    || (value.text !== undefined && typeof value.text !== 'string')
+    || (value.dataUrl !== undefined && typeof value.dataUrl !== 'string')) throw new Error('Invalid agentd attachment response')
+  return {
+    name: value.name,
+    type: value.type,
+    size: value.size as number,
+    ...(typeof value.text === 'string' ? { text: value.text } : {}),
+    ...(typeof value.dataUrl === 'string' ? { dataUrl: value.dataUrl } : {}),
   }
 }
 
@@ -56,6 +72,7 @@ export const readSession = (value: unknown): ChatSession => {
     createdAt: value.createdAt as number,
     updatedAt: value.updatedAt as number,
     status: 'active',
+    ...(typeof value.workspacePath === 'string' && value.workspacePath ? { workspacePath: value.workspacePath } : {}),
     messages: value.messages.map(readMessage),
   }
 }
@@ -93,8 +110,12 @@ export function createTauriChatClient(
     return value.map(readSession)
   }
 
-  const createSession = async (sessionId: string, title: string): Promise<void> => {
-    await dependencies.invoke('chat_create_session', { id: sessionId, title })
+  const createSession = async (sessionId: string, title: string, workspacePath?: string): Promise<void> => {
+    await dependencies.invoke('chat_create_session', { id: sessionId, title, ...(workspacePath ? { workspacePath } : {}) })
+  }
+
+  const updateSessionWorkspace = async (sessionId: string, workspacePath: string | null): Promise<void> => {
+    await dependencies.invoke('chat_update_session_workspace', { sessionId, workspacePath })
   }
 
   const deleteSession = async (sessionId: string): Promise<void> => {
@@ -107,6 +128,7 @@ export function createTauriChatClient(
       messageId: message.id,
       role: message.role,
       content: message.content,
+      ...(message.attachments ? { attachments: message.attachments } : {}),
     })
   }
 
@@ -121,6 +143,7 @@ export function createTauriChatClient(
       requestId: request.requestId,
       content: request.content,
       ...(request.model ? { model: request.model } : {}),
+      ...(request.attachments ? { attachments: request.attachments } : {}),
     })
     if (signal?.aborted) throw abortError()
     const message = readGeneration(value, request)
@@ -139,5 +162,5 @@ export function createTauriChatClient(
     })
   }
 
-  return { health, loadSessions, createSession, deleteSession, appendMessage, generate }
+  return { health, loadSessions, createSession, updateSessionWorkspace, deleteSession, appendMessage, generate }
 }

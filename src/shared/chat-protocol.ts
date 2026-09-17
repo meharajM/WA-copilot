@@ -3,6 +3,15 @@ export interface ChatMessage {
   role: 'user' | 'assistant' | 'system'
   content: string
   timestamp: number
+  attachments?: ChatAttachment[]
+}
+
+export interface ChatAttachment {
+  name: string
+  type: string
+  size: number
+  text?: string
+  dataUrl?: string
 }
 
 export interface ChatSessionSummary {
@@ -13,6 +22,7 @@ export interface ChatSessionSummary {
   status: 'active' | 'resolved'
   channel?: string
   contactId?: string
+  workspacePath?: string
 }
 
 export interface ChatSession extends ChatSessionSummary {
@@ -24,6 +34,7 @@ export interface ChatGenerationRequest {
   requestId: string
   content: string
   model?: string
+  attachments?: ChatAttachment[]
 }
 
 export type ChatGenerationEvent =
@@ -40,7 +51,8 @@ export interface ChatHealth {
 export interface ChatClient {
   health(): Promise<ChatHealth>
   loadSessions(): Promise<ChatSession[]>
-  createSession(sessionId: string, title: string): Promise<void>
+  createSession(sessionId: string, title: string, workspacePath?: string): Promise<void>
+  updateSessionWorkspace(sessionId: string, workspacePath: string | null): Promise<void>
   deleteSession(sessionId: string): Promise<void>
   appendMessage(sessionId: string, message: ChatMessage): Promise<void>
   generate(request: ChatGenerationRequest, onEvent: (event: ChatGenerationEvent) => void, signal?: AbortSignal): Promise<void>

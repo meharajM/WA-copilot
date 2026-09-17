@@ -38,6 +38,22 @@ export interface LlmSettings {
   openrouterModel: string
 }
 
+export interface ProductPreferences {
+  theme: 'dark' | 'light' | 'system'
+  playwrightBrowser: 'auto' | 'chrome' | 'msedge' | 'firefox' | 'webkit' | 'chromium'
+  playwrightHeadless: boolean
+  fileSystemSafeMode: boolean
+  memoryBackend: 'sqlite' | 'server-memory'
+  ttsEnabled: boolean
+  ttsRate: number
+  ttsPitch: number
+  ttsVoice: string | null
+  speechLang: string
+  offlineSpeech: boolean
+  voskModel: string
+  browserModel: string
+}
+
 export interface PersonaSettings {
   name: string
   industry: string

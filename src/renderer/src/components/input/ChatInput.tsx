@@ -19,6 +19,7 @@ import { useLogStore } from '../../stores/logStore'
 import { useChatStore } from '../../stores/chatStore'
 import { useWhatsAppStore } from '../../stores/whatsappStore'
 import electron from '../../lib/electron'
+import { isTauriRuntime } from '../../lib/tauri-native-bridge'
 
 import { VoiceButton } from './VoiceButton'
 import { TextArea } from './TextArea'
@@ -122,7 +123,10 @@ export function ChatInput({ onSubmit, disabled = false, onAbort }: ChatInputProp
   // Handle folder selection
   const handleSelectFolder = useCallback(async () => {
     try {
-      const selectedPath = await electron.app.selectFolder()
+      const browserRuntime = typeof window !== 'undefined' && !window.electron && !isTauriRuntime()
+      const selectedPath = browserRuntime && typeof (window as Window & { showDirectoryPicker?: () => Promise<{ name: string }> }).showDirectoryPicker === 'function'
+        ? `browser://workspace/${encodeURIComponent((await (window as unknown as { showDirectoryPicker: () => Promise<{ name: string }> }).showDirectoryPicker()).name)}`
+        : await electron.app.selectFolder()
       if (selectedPath) {
         setWorkspacePath(selectedPath)
         const {

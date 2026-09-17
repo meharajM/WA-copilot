@@ -17,10 +17,17 @@ const MAX_CHAT_MESSAGES_PER_SESSION = 10_000
 const MAX_CHAT_ID_LENGTH = 128
 const MAX_CHAT_TITLE_LENGTH = 200
 const MAX_CHAT_CONTENT_LENGTH = 32 * 1024
+const MAX_ATTACHMENTS_PER_MESSAGE = 8
+const MAX_ATTACHMENT_NAME_LENGTH = 256
+const MAX_ATTACHMENT_TYPE_LENGTH = 128
+const MAX_ATTACHMENT_TEXT_LENGTH = 64 * 1024
+const MAX_ATTACHMENT_DATA_URL_LENGTH = 384 * 1024
 const MAX_PROVIDER_RESPONSE_BYTES = 1024 * 1024
 const MAX_PROVIDER_REQUEST_BYTES = 512 * 1024
+const MAX_CHAT_REQUEST_BYTES = MAX_PROVIDER_REQUEST_BYTES + 64 * 1024
 const MAX_GENERATION_REQUEST_ID_LENGTH = 128
 const MAX_PROVIDER_CONTEXT_MESSAGES = 50
+const MAX_LOG_BYTES = 32 * 1024
 const REQUEST_TIMEOUT_MS = 30 * 1000
 const HEADERS_TIMEOUT_MS = 10 * 1000
 const KEEP_ALIVE_TIMEOUT_MS = 5 * 1000
@@ -42,6 +49,21 @@ const PERSONA_DEFAULTS = Object.freeze({
   industry: 'Tech Support',
   tone: 'professional',
   coreKnowledge: [],
+})
+const PRODUCT_PREFERENCES_DEFAULTS = Object.freeze({
+  theme: 'dark',
+  playwrightBrowser: 'auto',
+  playwrightHeadless: false,
+  fileSystemSafeMode: true,
+  memoryBackend: 'sqlite',
+  ttsEnabled: true,
+  ttsRate: 1,
+  ttsPitch: 1,
+  ttsVoice: null,
+  speechLang: 'en-US',
+  offlineSpeech: false,
+  voskModel: 'en-us',
+  browserModel: 'Qwen2.5-1.5B-Instruct-q4f16_1-MLC',
 })
 const WHATSAPP_SETTINGS_DEFAULTS = Object.freeze({
   whatsapp_transport: 'baileys',
@@ -79,17 +101,20 @@ function json(res, status, body, headers = {}) {
 function readBody(req, maxBytes = MAX_BODY_BYTES) {
   return new Promise((resolve, reject) => {
     let size = 0
+    let tooLarge = false
     const chunks = []
     req.on('data', chunk => {
+      if (tooLarge) return
       size += chunk.length
       if (size > maxBytes) {
-        reject(Object.assign(new Error('Request body too large'), { statusCode: 413 }))
-        req.destroy()
+        tooLarge = true
+        req.resume()
         return
       }
       chunks.push(chunk)
     })
     req.on('end', () => {
+      if (tooLarge) return reject(Object.assign(new Error('Request body too large'), { statusCode: 413 }))
       try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')) }
       catch { reject(Object.assign(new Error('Invalid JSON'), { statusCode: 400 })) }
     })
@@ -166,6 +191,7 @@ class AgentdServer {
         CREATE TABLE IF NOT EXISTS chat_sessions (
           id TEXT PRIMARY KEY,
           title TEXT NOT NULL,
+          workspace_path TEXT,
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL
         );
@@ -174,6 +200,7 @@ class AgentdServer {
           message_id TEXT NOT NULL,
           role TEXT NOT NULL CHECK(role IN ('user','assistant','system')),
           content TEXT NOT NULL,
+          attachments TEXT,
           created_at INTEGER NOT NULL,
           PRIMARY KEY(session_id, message_id)
         );
@@ -190,7 +217,16 @@ class AgentdServer {
           updated_at INTEGER NOT NULL
         );
         CREATE TABLE IF NOT EXISTS operator_actions (id INTEGER PRIMARY KEY AUTOINCREMENT, action TEXT NOT NULL, created_at INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS audit_logs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          timestamp TEXT NOT NULL,
+          payload TEXT NOT NULL
+        );
       `)
+      const chatColumns = this.db.prepare('PRAGMA table_info(chat_messages)').all()
+      if (!chatColumns.some((column) => column.name === 'attachments')) this.db.exec('ALTER TABLE chat_messages ADD COLUMN attachments TEXT')
+      const sessionColumns = this.db.prepare('PRAGMA table_info(chat_sessions)').all()
+      if (!sessionColumns.some((column) => column.name === 'workspace_path')) this.db.exec('ALTER TABLE chat_sessions ADD COLUMN workspace_path TEXT')
       this.db.prepare('INSERT INTO agent_state(key,value,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO NOTHING').run('paused', 'false', Date.now())
       await new Promise((resolve, reject) => {
         this.server = http.createServer((req, res) => this.handle(req, res).catch(error => {
@@ -379,6 +415,7 @@ class AgentdServer {
     if (credentialMatch && ['GET', 'POST', 'DELETE'].includes(req.method)) return this.credential(req, res, credentialMatch[1])
     if (url.pathname === '/api/v1/settings/llm' && ['GET', 'PUT'].includes(req.method)) return this.llmSettings(req, res)
     if (url.pathname === '/api/v1/settings/persona' && ['GET', 'PUT'].includes(req.method)) return this.personaSettings(req, res)
+    if (url.pathname === '/api/v1/settings/preferences' && ['GET', 'PUT'].includes(req.method)) return this.productPreferences(req, res)
     if (url.pathname === '/api/v1/settings/whatsapp' && ['GET', 'PUT'].includes(req.method)) return this.whatsappSettings(req, res)
     const providerTestMatch = /^\/api\/v1\/providers\/(openai|openrouter)\/test$/.exec(url.pathname)
     if (providerTestMatch && req.method === 'POST') return this.testProvider(req, res, providerTestMatch[1])
@@ -386,8 +423,10 @@ class AgentdServer {
       this.authorize(req)
       return json(res, 200, { runtime: 'agentd', paused: this.getState('paused', 'true') === 'true', queueDepth: this.db.prepare("SELECT COUNT(*) AS count FROM inbound_events WHERE status IN ('queued','processing')").get().count, events: this.db.prepare('SELECT COUNT(*) AS count FROM inbound_events').get().count })
     }
+    if (url.pathname === '/api/v1/logs' && ['GET', 'POST'].includes(req.method)) return this.auditLogs(req, res, url)
     if (url.pathname === '/api/v1/sessions' && ['GET', 'POST'].includes(req.method)) return this.chatSessions(req, res)
     const sessionMatch = /^\/api\/v1\/sessions\/([^/]+)$/.exec(url.pathname)
+    if (sessionMatch && req.method === 'PATCH') return this.updateChatSession(req, res, sessionMatch[1])
     if (sessionMatch && req.method === 'DELETE') return this.deleteChatSession(req, res, sessionMatch[1])
     if (sessionMatch && req.method === 'GET') return this.getChatSession(req, res, sessionMatch[1])
     const sessionMessagesMatch = /^\/api\/v1\/sessions\/([^/]+)\/messages$/.exec(url.pathname)
@@ -465,6 +504,40 @@ class AgentdServer {
     return json(res, 200, settings)
   }
 
+  async productPreferences(req, res) {
+    this.authorize(req, { mutation: req.method === 'PUT' })
+    if (req.method === 'GET') {
+      let stored = null
+      try { stored = JSON.parse(this.getState('product_preferences', 'null')) } catch {}
+      return json(res, 200, parseProductPreferences(stored) || PRODUCT_PREFERENCES_DEFAULTS)
+    }
+    if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
+    const body = await readBody(req, 16 * 1024)
+    const preferences = parseProductPreferences(body)
+    if (!preferences) return json(res, 400, { error: 'Invalid product preferences' })
+    this.setState('product_preferences', JSON.stringify(preferences))
+    return json(res, 200, preferences)
+  }
+
+  async auditLogs(req, res, url) {
+    this.authorize(req, { mutation: req.method === 'POST' })
+    if (req.method === 'POST') {
+      if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
+      const body = await readBody(req, MAX_LOG_BYTES)
+      if (!body || typeof body !== 'object' || Array.isArray(body)) return json(res, 400, { error: 'Log entry must be an object' })
+      const safe = redactPayload(body)
+      const payload = JSON.stringify(safe)
+      if (Buffer.byteLength(payload, 'utf8') > MAX_LOG_BYTES) return json(res, 413, { error: 'Log entry too large' })
+      const timestamp = new Date().toISOString()
+      this.db.prepare('INSERT INTO audit_logs(timestamp,payload) VALUES (?,?)').run(timestamp, payload)
+      return json(res, 201, { success: true })
+    }
+    const requested = Number.parseInt(url.searchParams.get('limit') || '100', 10)
+    const limit = Number.isSafeInteger(requested) ? Math.min(Math.max(requested, 1), 500) : 100
+    const rows = this.db.prepare('SELECT timestamp,payload FROM audit_logs ORDER BY id DESC LIMIT ?').all(limit)
+    return json(res, 200, { entries: rows.reverse().map((row) => ({ timestamp: row.timestamp, ...JSON.parse(row.payload) })) })
+  }
+
   async whatsappSettings(req, res) {
     this.authorize(req, { mutation: req.method === 'PUT' })
     if (req.method === 'GET') {
@@ -512,15 +585,22 @@ class AgentdServer {
       title: row.title,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
+      ...(typeof row.workspace_path === 'string' && row.workspace_path ? { workspacePath: row.workspace_path } : {}),
     }
   }
 
   chatMessageView(row) {
+    let attachments
+    try {
+      const parsed = row.attachments ? JSON.parse(row.attachments) : null
+      if (Array.isArray(parsed) && parsed.length) attachments = parsed
+    } catch {}
     return {
       id: row.message_id,
       role: row.role,
       content: row.content,
       createdAt: row.created_at,
+      ...(attachments ? { attachments } : {}),
     }
   }
 
@@ -530,6 +610,45 @@ class AgentdServer {
 
   validChatTitle(value) {
     return typeof value === 'string' && value.length >= 1 && value.length <= MAX_CHAT_TITLE_LENGTH && Buffer.byteLength(value, 'utf8') <= MAX_CHAT_TITLE_LENGTH * 4
+  }
+
+  parseChatAttachments(value) {
+    if (value === undefined) return []
+    if (!Array.isArray(value) || value.length > MAX_ATTACHMENTS_PER_MESSAGE) return null
+    const attachments = []
+    for (const item of value) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return null
+      const keys = Object.keys(item).sort()
+      if (keys.some((key) => !['dataUrl', 'name', 'size', 'text', 'type'].includes(key))) return null
+      if (!validBoundedText(item.name, MAX_ATTACHMENT_NAME_LENGTH)
+        || !validBoundedText(item.type, MAX_ATTACHMENT_TYPE_LENGTH, true)
+        || !Number.isSafeInteger(item.size) || item.size < 0 || item.size > 16 * 1024 * 1024
+        || (item.text !== undefined && (!validBoundedText(item.text, MAX_ATTACHMENT_TEXT_LENGTH, true) || Buffer.byteLength(item.text, 'utf8') > MAX_ATTACHMENT_TEXT_LENGTH))
+        || (item.dataUrl !== undefined && (typeof item.dataUrl !== 'string' || item.dataUrl.length > MAX_ATTACHMENT_DATA_URL_LENGTH || !/^data:[^,]{1,128};base64,[A-Za-z0-9+/=]+$/.test(item.dataUrl)))) return null
+      if (item.text === undefined && item.dataUrl === undefined) {
+        // Metadata-only attachment is valid for formats the browser cannot parse.
+      }
+      attachments.push({
+        name: item.name.trim(),
+        type: item.type,
+        size: item.size,
+        ...(typeof item.text === 'string' && item.text ? { text: item.text } : {}),
+        ...(typeof item.dataUrl === 'string' && item.dataUrl ? { dataUrl: item.dataUrl } : {}),
+      })
+    }
+    return attachments
+  }
+
+  providerMessage(row) {
+    let attachments = []
+    try { attachments = row.attachments ? JSON.parse(row.attachments) : [] } catch {}
+    const parts = [{ type: 'text', text: row.content || '' }]
+    for (const attachment of Array.isArray(attachments) ? attachments : []) {
+      if (attachment.text) parts.push({ type: 'text', text: `\n[Attached file: ${attachment.name}]\n${attachment.text}` })
+      if (attachment.dataUrl && /^data:image\//.test(attachment.dataUrl)) parts.push({ type: 'image_url', image_url: { url: attachment.dataUrl } })
+      if (!attachment.text && !attachment.dataUrl) parts.push({ type: 'text', text: `\n[Attached file: ${attachment.name} (${attachment.type || 'unknown type'})]` })
+    }
+    return { role: row.role, content: parts.length === 1 ? row.content : parts }
   }
 
   async chatSessions(req, res) {
@@ -543,18 +662,33 @@ class AgentdServer {
     const body = await readBody(req, 16 * 1024)
     if (!body || typeof body !== 'object' || Array.isArray(body)) return json(res, 400, { error: 'Invalid session' })
     const keys = Object.keys(body).sort()
-    if (keys.some(key => !['id', 'title'].includes(key))) return json(res, 400, { error: 'Invalid session fields' })
+    if (keys.some(key => !['id', 'title', 'workspacePath'].includes(key))) return json(res, 400, { error: 'Invalid session fields' })
     const id = body.id === undefined ? crypto.randomUUID() : body.id
     const title = body.title === undefined ? 'New chat' : body.title
-    if (!this.validChatId(id) || !this.validChatTitle(title)) return json(res, 400, { error: 'Invalid session' })
+    const workspacePath = body.workspacePath === undefined || body.workspacePath === null ? null : body.workspacePath
+    if (!this.validChatId(id) || !this.validChatTitle(title) || (workspacePath !== null && !validBoundedText(workspacePath, 1024))) return json(res, 400, { error: 'Invalid session' })
     const now = Date.now()
     const result = this.db.transaction(() => {
-      const inserted = this.db.prepare('INSERT INTO chat_sessions(id,title,created_at,updated_at) VALUES (?,?,?,?) ON CONFLICT(id) DO NOTHING').run(id, title, now, now)
+      const inserted = this.db.prepare('INSERT INTO chat_sessions(id,title,workspace_path,created_at,updated_at) VALUES (?,?,?,?,?) ON CONFLICT(id) DO NOTHING').run(id, title, workspacePath, now, now)
       const session = this.db.prepare('SELECT * FROM chat_sessions WHERE id = ?').get(id)
       return { session, duplicate: inserted.changes === 0 }
     })()
     if (result.duplicate && result.session.title !== title) return json(res, 409, { error: 'Session already exists' })
     return json(res, result.duplicate ? 200 : 201, { session: this.chatSessionView(result.session), duplicate: result.duplicate })
+  }
+
+  async updateChatSession(req, res, rawId) {
+    this.authorize(req, { mutation: true })
+    if (!this.validChatId(rawId)) return json(res, 400, { error: 'Invalid session id' })
+    if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
+    const body = await readBody(req, 8 * 1024)
+    const keys = Object.keys(body || {}).sort()
+    const workspacePath = body?.workspacePath === undefined || body.workspacePath === null ? null : body.workspacePath
+    if (!body || typeof body !== 'object' || Array.isArray(body) || keys.some((key) => key !== 'workspacePath') || (workspacePath !== null && !validBoundedText(workspacePath, 1024))) return json(res, 400, { error: 'Invalid workspace' })
+    const now = Date.now()
+    const result = this.db.prepare('UPDATE chat_sessions SET workspace_path = ?, updated_at = ? WHERE id = ?').run(workspacePath, now, rawId)
+    if (!result.changes) return json(res, 404, { error: 'Session not found' })
+    return json(res, 200, { session: this.chatSessionView(this.db.prepare('SELECT * FROM chat_sessions WHERE id = ?').get(rawId)) })
   }
 
   async getChatSession(req, res, rawId) {
@@ -580,10 +714,11 @@ class AgentdServer {
     this.authorize(req, { mutation: true })
     if (!this.validChatId(rawId)) return json(res, 400, { error: 'Invalid session id' })
     if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
-    const body = await readBody(req, MAX_CHAT_CONTENT_LENGTH + 16 * 1024)
+    const body = await readBody(req, MAX_CHAT_REQUEST_BYTES)
     if (!body || typeof body !== 'object' || Array.isArray(body)) return json(res, 400, { error: 'Invalid message' })
     const keys = Object.keys(body).sort()
-    if (keys.some(key => !['id', 'role', 'content'].includes(key)) || typeof body.role !== 'string' || !['user', 'assistant', 'system'].includes(body.role) || typeof body.content !== 'string' || !body.content || body.content.length > MAX_CHAT_CONTENT_LENGTH || Buffer.byteLength(body.content, 'utf8') > MAX_CHAT_CONTENT_LENGTH) {
+    const attachments = this.parseChatAttachments(body.attachments)
+    if (keys.some(key => !['attachments', 'id', 'role', 'content'].includes(key)) || attachments === null || typeof body.role !== 'string' || !['user', 'assistant', 'system'].includes(body.role) || typeof body.content !== 'string' || (!body.content && attachments.length === 0) || body.content.length > MAX_CHAT_CONTENT_LENGTH || Buffer.byteLength(body.content, 'utf8') > MAX_CHAT_CONTENT_LENGTH) {
       return json(res, 400, { error: 'Invalid message' })
     }
     const messageId = body.id === undefined ? crypto.randomUUID() : body.id
@@ -594,12 +729,12 @@ class AgentdServer {
       if (!session) return { missing: true }
       const existing = this.db.prepare('SELECT * FROM chat_messages WHERE session_id = ? AND message_id = ?').get(rawId, messageId)
       if (existing) {
-        if (existing.role !== body.role || existing.content !== body.content) return { conflict: true }
+        if (existing.role !== body.role || existing.content !== body.content || (existing.attachments || null) !== (attachments.length ? JSON.stringify(attachments) : null)) return { conflict: true }
         return { duplicate: true, row: existing }
       }
       const count = this.db.prepare('SELECT COUNT(*) AS count FROM chat_messages WHERE session_id = ?').get(rawId).count
       if (count >= MAX_CHAT_MESSAGES_PER_SESSION) return { full: true }
-      this.db.prepare('INSERT INTO chat_messages(session_id,message_id,role,content,created_at) VALUES (?,?,?,?,?)').run(rawId, messageId, body.role, body.content, now)
+      this.db.prepare('INSERT INTO chat_messages(session_id,message_id,role,content,attachments,created_at) VALUES (?,?,?,?,?,?)').run(rawId, messageId, body.role, body.content, attachments.length ? JSON.stringify(attachments) : null, now)
       this.db.prepare('UPDATE chat_sessions SET updated_at = ? WHERE id = ?').run(now, rawId)
       return { duplicate: false, row: this.db.prepare('SELECT * FROM chat_messages WHERE session_id = ? AND message_id = ?').get(rawId, messageId) }
     })()
@@ -613,21 +748,25 @@ class AgentdServer {
     this.authorize(req, { mutation: true })
     if (!this.validChatId(rawId)) return json(res, 400, { error: 'Invalid session id' })
     if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
-    const body = await readBody(req, MAX_CHAT_CONTENT_LENGTH + 16 * 1024)
+    const body = await readBody(req, MAX_CHAT_REQUEST_BYTES)
     if (!body || typeof body !== 'object' || Array.isArray(body)) return json(res, 400, { error: 'Invalid generation request' })
     const keys = Object.keys(body).sort()
-    if (keys.some(key => !['requestId', 'content', 'model'].includes(key))
+    const attachments = this.parseChatAttachments(body.attachments)
+    if (keys.some(key => !['attachments', 'requestId', 'content', 'model'].includes(key))
       || typeof body.requestId !== 'string'
       || body.requestId.length < 1
       || body.requestId.length > MAX_GENERATION_REQUEST_ID_LENGTH
       || !/^[A-Za-z0-9_-]+$/.test(body.requestId)
       || typeof body.content !== 'string'
-      || !body.content
       || body.content.length > MAX_CHAT_CONTENT_LENGTH
       || Buffer.byteLength(body.content, 'utf8') > MAX_CHAT_CONTENT_LENGTH
+      || attachments === null
+      || (!body.content && attachments.length === 0)
       || (body.model !== undefined && !validModelName(body.model))) {
       return json(res, 400, { error: 'Invalid generation request' })
     }
+
+    const attachmentsJson = attachments.length ? JSON.stringify(attachments) : null
 
     const requestKey = `${rawId}:${body.requestId}`
     if (this.generations.has(requestKey)) return json(res, 409, { error: 'Generation already in progress' })
@@ -639,8 +778,8 @@ class AgentdServer {
     const priorGeneration = this.db.prepare('SELECT * FROM chat_generations WHERE request_id = ?').get(body.requestId)
     if (priorGeneration) {
       if (priorGeneration.session_id !== rawId) return json(res, 409, { error: 'Request id already exists' })
-      const priorMessage = this.db.prepare('SELECT role, content FROM chat_messages WHERE session_id = ? AND message_id = ?').get(rawId, body.requestId)
-      if (priorMessage && (priorMessage.role !== 'user' || priorMessage.content !== body.content)) return json(res, 409, { error: 'Request id already exists' })
+      const priorMessage = this.db.prepare('SELECT role, content, attachments FROM chat_messages WHERE session_id = ? AND message_id = ?').get(rawId, body.requestId)
+      if (priorMessage && (priorMessage.role !== 'user' || priorMessage.content !== body.content || (priorMessage.attachments || null) !== attachmentsJson)) return json(res, 409, { error: 'Request id already exists' })
       if (priorGeneration.status === 'completed') {
         if (body.model !== undefined && body.model !== priorGeneration.model) return json(res, 409, { error: 'Request id already exists' })
         return json(res, 200, this.generationView(priorGeneration, true))
@@ -674,7 +813,7 @@ class AgentdServer {
       if (!session) return { missing: true }
       const existingMessage = this.db.prepare('SELECT * FROM chat_messages WHERE session_id = ? AND message_id = ?').get(rawId, body.requestId)
       if (existingMessage) {
-        if (existingMessage.role !== 'user' || existingMessage.content !== body.content) return { messageConflict: true }
+        if (existingMessage.role !== 'user' || existingMessage.content !== body.content || (existingMessage.attachments || null) !== attachmentsJson) return { messageConflict: true }
       }
       const existingGeneration = this.db.prepare('SELECT * FROM chat_generations WHERE request_id = ?').get(body.requestId)
       if (existingGeneration) {
@@ -693,10 +832,10 @@ class AgentdServer {
       if (existingMessage && count >= MAX_CHAT_MESSAGES_PER_SESSION) return { full: true }
       if (!existingMessage && count >= MAX_CHAT_MESSAGES_PER_SESSION - 1) return { full: true }
       if (!existingMessage) {
-        this.db.prepare('INSERT INTO chat_messages(session_id,message_id,role,content,created_at) VALUES (?,?,?,?,?)').run(rawId, body.requestId, 'user', body.content, now)
+        this.db.prepare('INSERT INTO chat_messages(session_id,message_id,role,content,attachments,created_at) VALUES (?,?,?,?,?,?)').run(rawId, body.requestId, 'user', body.content, attachmentsJson, now)
         this.db.prepare('UPDATE chat_sessions SET updated_at = ? WHERE id = ?').run(now, rawId)
       }
-      const messages = this.db.prepare('SELECT role,content FROM chat_messages WHERE session_id = ? ORDER BY created_at ASC, rowid ASC LIMIT ?').all(rawId, MAX_PROVIDER_CONTEXT_MESSAGES)
+      const messages = this.db.prepare('SELECT role,content,attachments FROM chat_messages WHERE session_id = ? ORDER BY created_at ASC, rowid ASC LIMIT ?').all(rawId, MAX_PROVIDER_CONTEXT_MESSAGES)
       return { messages }
     })()
     if (prepared.missing) return json(res, 404, { error: 'Session not found' })
@@ -711,7 +850,7 @@ class AgentdServer {
     if (prepared.processing) return json(res, 409, { error: 'Generation already in progress' })
     if (prepared.completed) return json(res, 200, this.generationView(prepared.completed, true))
 
-    const providerBody = JSON.stringify({ model, messages: prepared.messages, stream: false, max_tokens: 1024 })
+    const providerBody = JSON.stringify({ model, messages: prepared.messages.map((message) => this.providerMessage(message)), stream: false, max_tokens: 1024 })
     if (Buffer.byteLength(providerBody, 'utf8') > MAX_PROVIDER_REQUEST_BYTES) {
       this.db.prepare('DELETE FROM chat_generations WHERE request_id = ? AND status = \'processing\'').run(body.requestId)
       return json(res, 413, { error: 'Conversation context too large' })
@@ -947,6 +1086,41 @@ function parsePersonaSettings(value) {
   }
 }
 
+function parseProductPreferences(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const keys = Object.keys(value).sort()
+  const expected = Object.keys(PRODUCT_PREFERENCES_DEFAULTS).sort()
+  if (keys.length !== expected.length || keys.some((key, index) => key !== expected[index])) return null
+  if (!['dark', 'light', 'system'].includes(value.theme)
+    || !['auto', 'chrome', 'msedge', 'firefox', 'webkit', 'chromium'].includes(value.playwrightBrowser)
+    || typeof value.playwrightHeadless !== 'boolean'
+    || typeof value.fileSystemSafeMode !== 'boolean'
+    || !['sqlite', 'server-memory'].includes(value.memoryBackend)
+    || typeof value.ttsEnabled !== 'boolean'
+    || typeof value.ttsRate !== 'number' || !Number.isFinite(value.ttsRate) || value.ttsRate < 0.25 || value.ttsRate > 4
+    || typeof value.ttsPitch !== 'number' || !Number.isFinite(value.ttsPitch) || value.ttsPitch < 0 || value.ttsPitch > 2
+    || (value.ttsVoice !== null && !validBoundedText(value.ttsVoice, 256, true))
+    || !validBoundedText(value.speechLang, 32)
+    || typeof value.offlineSpeech !== 'boolean'
+    || !validBoundedText(value.voskModel, 128)
+    || !validBoundedText(value.browserModel, 128)) return null
+  return {
+    theme: value.theme,
+    playwrightBrowser: value.playwrightBrowser,
+    playwrightHeadless: value.playwrightHeadless,
+    fileSystemSafeMode: value.fileSystemSafeMode,
+    memoryBackend: value.memoryBackend,
+    ttsEnabled: value.ttsEnabled,
+    ttsRate: value.ttsRate,
+    ttsPitch: value.ttsPitch,
+    ttsVoice: value.ttsVoice,
+    speechLang: value.speechLang,
+    offlineSpeech: value.offlineSpeech,
+    voskModel: value.voskModel,
+    browserModel: value.browserModel,
+  }
+}
+
 function validBoundedText(value, max, allowEmpty = false) {
   return typeof value === 'string'
     && (allowEmpty || value.trim().length > 0)
@@ -987,4 +1161,4 @@ async function readProviderResponse(response) {
   return JSON.parse(Buffer.concat(chunks, size).toString('utf8'))
 }
 
-module.exports = { AgentdServer, PAIRING_TTL_MS, resolveDataDir, parseWhatsAppSettings, WHATSAPP_SETTINGS_DEFAULTS }
+module.exports = { AgentdServer, PAIRING_TTL_MS, resolveDataDir, parseWhatsAppSettings, WHATSAPP_SETTINGS_DEFAULTS, parseProductPreferences, PRODUCT_PREFERENCES_DEFAULTS }

@@ -258,6 +258,39 @@ test('agentd persists allowlisted persona settings without accepting unknown fie
   fs.rmSync(dataDir, { recursive: true, force: true })
 })
 
+test('agentd persists bounded product preferences and redacts browser audit logs', async () => {
+  const dataDir = fs.mkdtempSync('/tmp/aica-agentd-preferences-')
+  const server = new AgentdServer({ dataDir, secret: 's'.repeat(32), logger: { log() {} } })
+  const { origin } = await server.start()
+  const auth = { authorization: `Bearer ${'s'.repeat(32)}` }
+  const defaults = await request(origin, 'GET', '/api/v1/settings/preferences', undefined, auth)
+  assert.equal(defaults.status, 200)
+  assert.equal(defaults.body.theme, 'dark')
+  assert.equal(defaults.body.memoryBackend, 'sqlite')
+  const preferences = {
+    ...defaults.body,
+    theme: 'light',
+    playwrightBrowser: 'msedge',
+    playwrightHeadless: true,
+    ttsRate: 1.25,
+    ttsVoice: 'Microsoft Jenny',
+  }
+  assert.deepEqual((await request(origin, 'PUT', '/api/v1/settings/preferences', preferences, auth)).body, preferences)
+  assert.deepEqual((await request(origin, 'GET', '/api/v1/settings/preferences', undefined, auth)).body, preferences)
+  assert.equal((await request(origin, 'PUT', '/api/v1/settings/preferences', { ...preferences, unknown: true }, auth)).status, 400)
+  assert.equal((await request(origin, 'PUT', '/api/v1/settings/preferences', { ...preferences, ttsRate: 99 }, auth)).status, 400)
+
+  const log = await request(origin, 'POST', '/api/v1/logs', { eventType: 'LLM_REQUEST', details: { apiKey: 'never-return', prompt: 'hello' } }, auth)
+  assert.equal(log.status, 201)
+  const logs = await request(origin, 'GET', '/api/v1/logs?limit=10', undefined, auth)
+  assert.equal(logs.status, 200)
+  assert.equal(logs.body.entries.length, 1)
+  assert.equal(logs.body.entries[0].details.apiKey, '[REDACTED]')
+  assert.equal(JSON.stringify(logs.body).includes('never-return'), false)
+  await server.stop()
+  fs.rmSync(dataDir, { recursive: true, force: true })
+})
+
 test('agentd persists bounded WhatsApp transport settings and never returns Cloud secrets', async () => {
   const dataDir = fs.mkdtempSync('/tmp/aica-agentd-whatsapp-settings-')
   const records = new Map()

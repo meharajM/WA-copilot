@@ -27,6 +27,7 @@ const MAX_CREDENTIAL_BYTES: usize = 64 * 1024;
 const MAX_CHAT_ID_BYTES: usize = 128;
 const MAX_CHAT_TITLE_CHARS: usize = 256;
 const MAX_CHAT_CONTENT_BYTES: usize = 32 * 1024;
+const MAX_WORKSPACE_PATH_BYTES: usize = 1024;
 const KEYCHAIN_SERVICE: &str = "com.aica.wacopilot";
 const BEARER_KEY: &str = "agentd_bearer_secret";
 
@@ -46,6 +47,10 @@ fn valid_chat_title(value: &str) -> bool {
 
 fn valid_chat_content(value: &str) -> bool {
     !value.is_empty() && value.len() <= MAX_CHAT_CONTENT_BYTES
+}
+
+fn valid_workspace_path(value: &str) -> bool {
+    !value.is_empty() && value.len() <= MAX_WORKSPACE_PATH_BYTES
 }
 
 fn valid_model_name(value: &str) -> bool {
@@ -583,6 +588,8 @@ pub struct ChatSessionSummary {
     pub title: String,
     pub created_at: i64,
     pub updated_at: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_path: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -601,6 +608,8 @@ pub struct ChatSession {
     pub title: String,
     pub created_at: i64,
     pub updated_at: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_path: Option<String>,
     pub messages: Vec<ChatMessage>,
 }
 
@@ -704,6 +713,7 @@ enum Route {
     ChatSessions,
     ChatSessionsCreate,
     ChatSession(String),
+    ChatSessionUpdate(String),
     ChatSessionDelete(String),
     ChatMessages(String),
     ChatGenerations(String),
@@ -719,6 +729,7 @@ impl Route {
             | Self::ChatSessions
             | Self::ChatSession(_) => Method::GET,
             Self::LlmSettingsPut | Self::WhatsAppSettingsPut => Method::PUT,
+            Self::ChatSessionUpdate(_) => Method::PATCH,
             Self::CredentialSet(_)
             | Self::ProviderTest(_)
             | Self::ChatSessionsCreate
@@ -743,6 +754,7 @@ impl Route {
             Self::ChatSessions => "/api/v1/sessions".into(),
             Self::ChatSessionsCreate => "/api/v1/sessions".into(),
             Self::ChatSession(id) => format!("/api/v1/sessions/{id}"),
+            Self::ChatSessionUpdate(id) => format!("/api/v1/sessions/{id}"),
             Self::ChatSessionDelete(id) => format!("/api/v1/sessions/{id}"),
             Self::ChatMessages(id) => format!("/api/v1/sessions/{id}/messages"),
             Self::ChatGenerations(id) => format!("/api/v1/sessions/{id}/generations"),
@@ -955,9 +967,11 @@ impl AgentdClient {
         &self,
         id: Option<&str>,
         title: Option<&str>,
+        workspace_path: Option<&str>,
     ) -> Result<ChatSessionSummary, ()> {
         if id.is_some_and(|value| !valid_chat_id(value))
             || title.is_some_and(|value| !valid_chat_title(value))
+            || workspace_path.is_some_and(|value| !valid_workspace_path(value))
         {
             return Err(());
         }
@@ -968,6 +982,12 @@ impl AgentdClient {
         if let Some(title) = title {
             body.insert("title".into(), serde_json::Value::String(title.into()));
         }
+        if let Some(workspace_path) = workspace_path {
+            body.insert(
+                "workspacePath".into(),
+                serde_json::Value::String(workspace_path.into()),
+            );
+        }
         let body = serde_json::to_vec(&body).map_err(|_| ())?;
         #[derive(Deserialize)]
         struct Response {
@@ -975,6 +995,35 @@ impl AgentdClient {
         }
         Ok(self
             .request::<Response>(Route::ChatSessionsCreate, Some(body.as_slice()))
+            .await?
+            .session)
+    }
+
+    pub async fn update_chat_session_workspace(
+        &self,
+        id: &str,
+        workspace_path: Option<&str>,
+    ) -> Result<ChatSessionSummary, ()> {
+        if !valid_chat_id(id) || workspace_path.is_some_and(|value| !valid_workspace_path(value)) {
+            return Err(());
+        }
+        let mut body = serde_json::Map::new();
+        body.insert(
+            "workspacePath".into(),
+            workspace_path.map_or(serde_json::Value::Null, |value| {
+                serde_json::Value::String(value.into())
+            }),
+        );
+        let body = serde_json::to_vec(&body).map_err(|_| ())?;
+        #[derive(Deserialize)]
+        struct Response {
+            session: ChatSessionSummary,
+        }
+        Ok(self
+            .request::<Response>(
+                Route::ChatSessionUpdate(id.to_owned()),
+                Some(body.as_slice()),
+            )
             .await?
             .session)
     }

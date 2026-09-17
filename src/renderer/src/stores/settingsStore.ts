@@ -5,6 +5,7 @@ import electron from '../lib/electron'
 import { getUserProfile } from '../lib/firebase'
 import { getBrowserAgentdClient } from '../lib/browser-agentd-client'
 import { isTauriRuntime } from '../lib/tauri-native-bridge'
+import type { ProductPreferences } from '../../../shared/native-bridge'
 
 export type Theme = 'dark' | 'light' | 'system'
 export type LLMProviderType = 'auto' | 'ollama' | 'openai' | 'gemini' | 'openrouter' | 'browser' | 'anthropic' | 'groq'
@@ -136,6 +137,57 @@ const syncBrowserLlmSettings = (state: Pick<SettingsState, 'preferredProvider' |
     }).catch((error) => console.warn('[Settings] Failed to persist browser LLM settings:', error))
 }
 
+const browserPreferencesFrom = (state: Pick<SettingsState, keyof ProductPreferences>): ProductPreferences => ({
+    theme: state.theme,
+    playwrightBrowser: state.playwrightBrowser,
+    playwrightHeadless: state.playwrightHeadless,
+    fileSystemSafeMode: state.fileSystemSafeMode,
+    memoryBackend: state.memoryBackend,
+    ttsEnabled: state.ttsEnabled,
+    ttsRate: state.ttsRate,
+    ttsPitch: state.ttsPitch,
+    ttsVoice: state.ttsVoice,
+    speechLang: state.speechLang,
+    offlineSpeech: state.offlineSpeech,
+    voskModel: state.voskModel,
+    browserModel: state.browserModel,
+})
+
+const syncBrowserPreferences = (state: SettingsState): void => {
+    if (!isBrowserProduct()) return
+    void getBrowserAgentdClient().saveProductPreferences(browserPreferencesFrom(state)).catch((error) => {
+        console.warn('[Settings] Failed to persist browser preferences:', error)
+    })
+}
+
+const createSettingsStorage = () => ({
+    getItem: async (name: string): Promise<string | null> => {
+        if (isBrowserProduct()) {
+            try {
+                const preferences = await getBrowserAgentdClient().getProductPreferences()
+                return JSON.stringify({ state: preferences, version: 0 })
+            } catch (error) {
+                console.warn('[Settings] Browser preferences unavailable:', error)
+                return null
+            }
+        }
+        const value = await electron.store.get(name)
+        return value ? JSON.stringify(value) : null
+    },
+    setItem: async (name: string, value: string): Promise<void> => {
+        if (isBrowserProduct()) {
+            const parsed = JSON.parse(value) as { state?: SettingsState }
+            if (parsed.state) await getBrowserAgentdClient().saveProductPreferences(browserPreferencesFrom(parsed.state))
+            return
+        }
+        await electron.store.set(name, JSON.parse(value))
+    },
+    removeItem: async (name: string): Promise<void> => {
+        if (isBrowserProduct()) return
+        await electron.store.delete(name)
+    },
+})
+
 // ... existing migration code ...
 
 export const useSettingsStore = create<SettingsState>()(
@@ -144,13 +196,13 @@ export const useSettingsStore = create<SettingsState>()(
             ...defaultSettings,
 
 
-            setTtsEnabled: (enabled) => set({ ttsEnabled: enabled }),
-            setTtsRate: (rate) => set({ ttsRate: rate }),
-            setTtsPitch: (pitch) => set({ ttsPitch: pitch }),
-            setTtsVoice: (voice) => set({ ttsVoice: voice }),
-            setSpeechLang: (lang) => set({ speechLang: lang }),
-            setOfflineSpeech: (enabled) => set({ offlineSpeech: enabled }),
-            setVoskModel: (model: string) => set({ voskModel: model }),
+            setTtsEnabled: (enabled) => { set({ ttsEnabled: enabled }); syncBrowserPreferences({ ...get(), ttsEnabled: enabled }) },
+            setTtsRate: (rate) => { set({ ttsRate: rate }); syncBrowserPreferences({ ...get(), ttsRate: rate }) },
+            setTtsPitch: (pitch) => { set({ ttsPitch: pitch }); syncBrowserPreferences({ ...get(), ttsPitch: pitch }) },
+            setTtsVoice: (voice) => { set({ ttsVoice: voice }); syncBrowserPreferences({ ...get(), ttsVoice: voice }) },
+            setSpeechLang: (lang) => { set({ speechLang: lang }); syncBrowserPreferences({ ...get(), speechLang: lang }) },
+            setOfflineSpeech: (enabled) => { set({ offlineSpeech: enabled }); syncBrowserPreferences({ ...get(), offlineSpeech: enabled }) },
+            setVoskModel: (model: string) => { set({ voskModel: model }); syncBrowserPreferences({ ...get(), voskModel: model }) },
             setPreferredProvider: (provider) => {
                 set({ preferredProvider: provider })
                 syncBrowserLlmSettings({ ...get(), preferredProvider: provider })
@@ -166,6 +218,7 @@ export const useSettingsStore = create<SettingsState>()(
             },
             setOpenaiBaseUrl: async (url) => {
                 set({ openaiBaseUrl: url })
+                if (isBrowserProduct()) return
                 const uid = get().activeUserId
                 // Base URL is not sensitive, use regular store
                 const storeKey = uid ? `user_${uid}_openai_base_url` : 'openai_base_url'
@@ -194,34 +247,38 @@ export const useSettingsStore = create<SettingsState>()(
                 set({ openrouterModel: model })
                 syncBrowserLlmSettings({ ...get(), openrouterModel: model })
             },
-            setBrowserModel: (model) => set({ browserModel: model }),
-            setTheme: (theme) => set({ theme }),
+            setBrowserModel: (model) => { set({ browserModel: model }); syncBrowserPreferences({ ...get(), browserModel: model }) },
+            setTheme: (theme) => { set({ theme }); syncBrowserPreferences({ ...get(), theme }) },
             setPlaywrightBrowser: async (browser) => {
                 set({ playwrightBrowser: browser })
+                if (isBrowserProduct()) { syncBrowserPreferences({ ...get(), playwrightBrowser: browser }); return }
                 // Also save to main process store for PlaywrightService to read
                 const browserValue = browser === 'auto' ? undefined : browser
                 await electron.store.set('mcpPlaywright', { browser: browserValue })
             },
             setPlaywrightHeadless: async (headless) => {
                 set({ playwrightHeadless: headless })
+                if (isBrowserProduct()) { syncBrowserPreferences({ ...get(), playwrightHeadless: headless }); return }
                 // Also save to main process store for PlaywrightService to read
                 const current = await electron.store.get<Record<string, unknown>>('mcpPlaywright') || {}
                 await electron.store.set('mcpPlaywright', { ...current, headless })
             },
             setFileSystemSafeMode: async (enabled) => {
                 set({ fileSystemSafeMode: enabled })
+                if (isBrowserProduct()) { syncBrowserPreferences({ ...get(), fileSystemSafeMode: enabled }); return }
                 // Save to main process store for FileSystemService to read
                 const current = await electron.store.get<Record<string, unknown>>('mcpFileSystem') || {}
                 await electron.store.set('mcpFileSystem', { ...current, safeMode: enabled })
             },
             setMemoryBackend: async (backend) => {
                 set({ memoryBackend: backend })
+                if (isBrowserProduct()) { syncBrowserPreferences({ ...get(), memoryBackend: backend }); return }
                 // Update main process store (triggers migration check if changed via UI, though usually handled by IPC)
                 // We store complete config structure
                 const current = await electron.store.get<Record<string, unknown>>('memory') || {}
                 await electron.store.set('memory', { ...current, backend })
             },
-            resetToDefaults: () => set(defaultSettings),
+            resetToDefaults: () => { set(defaultSettings); syncBrowserPreferences({ ...get(), ...defaultSettings }) },
 
             setActiveUserId: (uid) => set({ activeUserId: uid }),
 
@@ -237,7 +294,7 @@ export const useSettingsStore = create<SettingsState>()(
             loadAgentdSettings: async () => {
                 if (!isBrowserProduct()) return
                 const client = getBrowserAgentdClient()
-                const saved = await client.getLlmSettings()
+                const [saved, preferences] = await Promise.all([client.getLlmSettings(), client.getProductPreferences()])
                 set({
                     preferredProvider: saved.preferredProvider,
                     openaiModel: saved.openaiModel,
@@ -245,6 +302,7 @@ export const useSettingsStore = create<SettingsState>()(
                     // Credential values are intentionally never read back from agentd.
                     openaiApiKey: '',
                     openrouterApiKey: '',
+                    ...preferences,
                 })
             },
 
@@ -352,18 +410,7 @@ export const useSettingsStore = create<SettingsState>()(
                 const { openaiApiKey: _openaiApiKey, geminiApiKey: _geminiApiKey, openrouterApiKey: _openrouterApiKey, ...safeState } = state
                 return safeState
             },
-            storage: createJSONStorage(() => ({
-                getItem: async (name: string): Promise<string | null> => {
-                    const value = await electron.store.get(name)
-                    return value ? JSON.stringify(value) : null
-                },
-                setItem: async (name: string, value: string): Promise<void> => {
-                    await electron.store.set(name, JSON.parse(value))
-                },
-                removeItem: async (name: string): Promise<void> => {
-                    await electron.store.delete(name)
-                },
-            })),
+            storage: createJSONStorage(() => createSettingsStorage()),
             // Force offlineSpeech to true in Electron after rehydration
             onRehydrateStorage: () => (state) => {
                 if (state && window.electron) {
