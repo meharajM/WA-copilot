@@ -61,6 +61,7 @@ const SECRET_KEY = /(?:secret|token|password|passwd|api[_.-]?(?:key|secret|token
 const SECRET_SCHEMA = /(?:^|[^a-z])(secret|token|password|passwd|api[_-]?(?:key|secret|token)|private[_-]?(?:key|secret)|refresh[_-]?token|access[_-]?token|session[_-]?(?:token|secret)|cookie|authorization|credential|bearer|oauth|encryption[_-]?(?:key|secret))(?:$|[^a-z])/i
 const NOFOLLOW = constants.O_NOFOLLOW
 const DIRECTORY = constants.O_DIRECTORY
+const WINDOWS = process.platform === 'win32'
 
 interface FileIdentity {
   dev: number | bigint
@@ -74,7 +75,10 @@ interface FileSnapshot { bytes: Buffer; identity: FileIdentity }
 interface Mutation { entry: MigrationEntry; before: FileSnapshot | undefined; after: FileIdentity }
 
 function requireNoFollow(): void {
-  if (typeof NOFOLLOW !== 'number' || typeof DIRECTORY !== 'number') throw new Error('migration requires platform no-follow directory operations')
+  // Windows does not expose POSIX O_NOFOLLOW/O_DIRECTORY. The fallback below
+  // verifies every path component with lstat/realpath and checks the opened
+  // handle identity before use; Unix keeps descriptor-level no-follow flags.
+  if (!WINDOWS && (typeof NOFOLLOW !== 'number' || typeof DIRECTORY !== 'number')) throw new Error('migration requires platform no-follow directory operations')
 }
 
 function inside(root: string, candidate: string): boolean {
@@ -104,20 +108,44 @@ async function realRoot(root: string): Promise<string> {
   const stat = await lstat(root)
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`unsafe migration root: ${root}`)
   const canonical = await realpath(root)
-  const handle = await open(canonical, constants.O_RDONLY | DIRECTORY | NOFOLLOW)
-  try {
-    const opened = await handle.stat()
-    if (!opened.isDirectory() || !sameIdentity(identity(stat), identity(opened))) throw new Error(`migration root changed: ${root}`)
-  } finally { await handle.close() }
+  if (WINDOWS && canonical !== root) {
+    const canonicalStat = await lstat(canonical)
+    if (canonicalStat.isSymbolicLink() || !canonicalStat.isDirectory() || !sameIdentity(identity(stat), identity(canonicalStat))) throw new Error(`migration root changed: ${root}`)
+  } else {
+    const flags = constants.O_RDONLY | (typeof DIRECTORY === 'number' ? DIRECTORY : 0) | (typeof NOFOLLOW === 'number' ? NOFOLLOW : 0)
+    const handle = await open(canonical, flags)
+    try {
+      const opened = await handle.stat()
+      if (!opened.isDirectory() || !sameIdentity(identity(stat), identity(opened))) throw new Error(`migration root changed: ${root}`)
+    } finally { await handle.close() }
+  }
   return canonical
 }
 
 async function openNoFollow(path: string, flags: number, mode?: number) {
   requireNoFollow()
-  return open(path, flags | NOFOLLOW, mode)
+  const handle = await open(path, flags | (typeof NOFOLLOW === 'number' ? NOFOLLOW : 0), mode)
+  if (!WINDOWS) return handle
+  try {
+    const opened = await handle.stat()
+    const listed = await lstat(path)
+    if (listed.isSymbolicLink() || !sameIdentity(identity(opened), identity(listed))) throw new Error(`unsafe migration path: ${path}`)
+    return handle
+  } catch (error) {
+    await handle.close()
+    throw error
+  }
 }
 
 async function checkDirectory(path: string): Promise<void> {
+  const listed = await lstat(path)
+  if (!listed.isDirectory() || listed.isSymbolicLink()) throw new Error(`unsafe migration directory: ${path}`)
+  if (WINDOWS) {
+    const canonical = await realpath(path)
+    const canonicalStat = await lstat(canonical)
+    if (canonicalStat.isSymbolicLink() || !canonicalStat.isDirectory() || !sameIdentity(identity(listed), identity(canonicalStat))) throw new Error(`unsafe migration directory: ${path}`)
+    return
+  }
   const handle = await openNoFollow(path, constants.O_RDONLY | DIRECTORY)
   try { if (!(await handle.stat()).isDirectory()) throw new Error(`unsafe migration directory: ${path}`) } finally { await handle.close() }
 }
@@ -165,6 +193,10 @@ async function targetSnapshot(path: string): Promise<FileSnapshot | undefined> {
 }
 
 async function syncDirectory(path: string): Promise<void> {
+  // Windows does not support opening directories for fsync. File contents are
+  // synchronised by writeNew/overwriteExisting; the component checks still
+  // prevent reparse-point traversal.
+  if (WINDOWS && typeof DIRECTORY !== 'number') return
   const handle = await openNoFollow(path, constants.O_RDONLY | DIRECTORY)
   try { await handle.sync() } catch (error) {
     if (!['EINVAL', 'ENOTSUP', 'EBADF'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error
