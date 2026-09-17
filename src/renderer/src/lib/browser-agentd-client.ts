@@ -186,6 +186,7 @@ export interface BrowserAgentdClient extends ChatClient {
   pair(code: string): Promise<{ expiresAt: number }>
   readiness(): Promise<'ready' | 'pairing' | 'unavailable'>
   status(): Promise<NativeHealth>
+  cancelGeneration(sessionId: string, requestId: string): Promise<boolean>
   getLlmSettings(): Promise<LlmSettings>
   saveLlmSettings(settings: LlmSettings): Promise<LlmSettings>
   getWhatsAppSettings(): Promise<WhatsAppSettings>
@@ -233,15 +234,19 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
   // token shared when Vite splits the browser entry and lazy App into chunks.
   let csrfToken: string | null = readSharedCsrf()
 
-  const request = async <T = unknown>(path: string, init: RequestInit = {}, mutation = false): Promise<T> => {
+  const requestResponse = async (path: string, init: RequestInit = {}, mutation = false): Promise<Response> => {
     const headers = new Headers(init.headers)
     if (init.body && !headers.has('content-type')) headers.set('content-type', 'application/json')
     if (mutation && csrfToken) headers.set('x-csrf-token', csrfToken)
-    const response = await fetcher(new URL(path, `${baseOrigin}/`).toString(), {
+    return fetcher(new URL(path, `${baseOrigin}/`).toString(), {
       ...init,
       headers,
       credentials: 'include',
     })
+  }
+
+  const request = async <T = unknown>(path: string, init: RequestInit = {}, mutation = false): Promise<T> => {
+    const response = await requestResponse(path, init, mutation)
     const body = await readJson(response)
     if (!response.ok) {
       const message = isRecord(body) ? errorText(body.error, `Agentd request failed (${response.status})`) : `Agentd request failed (${response.status})`
@@ -325,16 +330,105 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     }, true)
   }
 
+  const cancelGeneration = async (sessionId: string, requestId: string): Promise<boolean> => {
+    const value = await request<unknown>(`/api/v1/sessions/${encodeURIComponent(sessionId)}/generations/${encodeURIComponent(requestId)}/cancel`, { method: 'POST', body: '{}' }, true)
+    if (!isRecord(value) || typeof value.cancelled !== 'boolean') throw new Error('Invalid agentd cancellation response')
+    return value.cancelled
+  }
+
   const generate = async (requestBody: ChatGenerationRequest, onEvent: Parameters<ChatClient['generate']>[1], signal?: AbortSignal): Promise<void> => {
     if (signal?.aborted) throw new DOMException('Chat generation canceled', 'AbortError')
-    const value = await request<unknown>(`/api/v1/sessions/${encodeURIComponent(requestBody.sessionId)}/generations`, {
-      method: 'POST',
-      body: JSON.stringify({ requestId: requestBody.requestId, content: requestBody.content, ...(requestBody.model ? { model: requestBody.model } : {}), ...(requestBody.attachments ? { attachments: requestBody.attachments } : {}) }),
-    }, true)
-    if (signal?.aborted) throw new DOMException('Chat generation canceled', 'AbortError')
-    const message = readGeneration(value, requestBody)
-    onEvent({ type: 'assistant.delta', sessionId: requestBody.sessionId, requestId: requestBody.requestId, sequence: 1, delta: message.content })
-    onEvent({ type: 'assistant.done', sessionId: requestBody.sessionId, requestId: requestBody.requestId, sequence: 2 })
+    let cancelPromise: Promise<boolean> | null = null
+    const onAbort = () => { cancelPromise = cancelGeneration(requestBody.sessionId, requestBody.requestId).catch(() => false) }
+    signal?.addEventListener('abort', onAbort, { once: true })
+    try {
+    let response: Response
+    try {
+      response = await requestResponse(`/api/v1/sessions/${encodeURIComponent(requestBody.sessionId)}/generations`, {
+        method: 'POST',
+        headers: { accept: 'text/event-stream' },
+        signal,
+        body: JSON.stringify({ requestId: requestBody.requestId, content: requestBody.content, ...(requestBody.model ? { model: requestBody.model } : {}), ...(requestBody.attachments ? { attachments: requestBody.attachments } : {}) }),
+      }, true)
+    } catch (error) {
+      if (signal?.aborted) throw new DOMException('Chat generation canceled', 'AbortError')
+      throw error
+    }
+    if (!response.ok) {
+      const body = await readJson(response)
+      const message = isRecord(body) ? errorText(body.error, `Agentd request failed (${response.status})`) : `Agentd request failed (${response.status})`
+      throw new BrowserAgentdError(message, response.status || 500)
+    }
+    if (!String(response.headers.get('content-type') || '').toLowerCase().includes('text/event-stream')) {
+      if (signal?.aborted) throw new DOMException('Chat generation canceled', 'AbortError')
+      const message = readGeneration(await readJson(response), requestBody)
+      onEvent({ type: 'assistant.delta', sessionId: requestBody.sessionId, requestId: requestBody.requestId, sequence: 1, delta: message.content })
+      onEvent({ type: 'assistant.done', sessionId: requestBody.sessionId, requestId: requestBody.requestId, sequence: 2 })
+      return
+    }
+    if (!response.body) throw new Error('Agentd generation stream missing')
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    let eventData: string[] = []
+    let completed = false
+    const consume = (raw: string) => {
+      const data = raw.trim()
+      if (!data) return
+      let value: unknown
+      try { value = JSON.parse(data) } catch { throw new Error('Invalid agentd generation event') }
+      if (!isRecord(value) || value.sessionId !== requestBody.sessionId || value.requestId !== requestBody.requestId || typeof value.type !== 'string' || !Number.isSafeInteger(value.sequence)) throw new Error('Invalid agentd generation event')
+      if (value.type === 'assistant.delta') {
+        if (typeof value.delta !== 'string') throw new Error('Invalid agentd generation event')
+        onEvent({ type: 'assistant.delta', sessionId: requestBody.sessionId, requestId: requestBody.requestId, sequence: value.sequence as number, delta: value.delta })
+      } else if (value.type === 'assistant.done') {
+        completed = true
+        onEvent({ type: 'assistant.done', sessionId: requestBody.sessionId, requestId: requestBody.requestId, sequence: value.sequence as number })
+      } else if (value.type === 'error') {
+        throw new Error(errorText(value.message, 'Agentd generation failed'))
+      } else {
+        throw new Error('Invalid agentd generation event')
+      }
+    }
+    const flush = () => {
+      if (!eventData.length) return
+      const data = eventData.join('\n')
+      eventData = []
+      consume(data)
+    }
+    try {
+      while (!completed) {
+        if (signal?.aborted) throw new DOMException('Chat generation canceled', 'AbortError')
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split(/\r?\n/)
+        buffer = lines.pop() || ''
+        for (const line of lines) {
+          if (!line) flush()
+          else if (line.startsWith('data:')) eventData.push(line.slice(5).trimStart())
+        }
+      }
+      buffer += decoder.decode()
+      for (const line of buffer.split(/\r?\n/)) {
+        if (!line) flush()
+        else if (line.startsWith('data:')) eventData.push(line.slice(5).trimStart())
+      }
+      flush()
+      if (!completed) throw new Error('Agentd generation stream ended before completion')
+    } catch (error) {
+      if (signal?.aborted) throw new DOMException('Chat generation canceled', 'AbortError')
+      throw error
+    }
+    } catch (error) {
+      if (signal?.aborted) {
+        await cancelPromise
+        throw new DOMException('Chat generation canceled', 'AbortError')
+      }
+      throw error
+    } finally {
+      signal?.removeEventListener('abort', onAbort)
+    }
   }
 
   const getLlmSettings = async () => readLlmSettings(await request('/api/v1/settings/llm'))
@@ -474,6 +568,7 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     updateSessionWorkspace,
     deleteSession,
     appendMessage,
+    cancelGeneration,
     generate,
     getLlmSettings,
     saveLlmSettings,

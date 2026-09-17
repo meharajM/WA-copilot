@@ -109,6 +109,10 @@ export function readableAgentError(error: unknown): string {
     return 'Unknown error'
 }
 
+const isAbortError = (error: unknown): boolean => (
+    !!error && typeof error === 'object' && (error as { name?: unknown }).name === 'AbortError'
+)
+
 const MAX_BROWSER_ATTACHMENT_TEXT = 64 * 1024
 const MAX_BROWSER_ATTACHMENT_IMAGE = 256 * 1024
 const TEXT_FILE_EXTENSIONS = new Set(['.txt', '.md', '.csv', '.tsv', '.json', '.xml', '.html', '.htm', '.css', '.js', '.ts', '.yaml', '.yml', '.sql'])
@@ -747,6 +751,7 @@ export function useAgent(): UseAgentReturn {
                 }
 
             } catch (error) {
+                if (isAbortError(error)) return;
                 console.error("[useAgent] Handler error:", error);
                 // Write the error to originSessionId — not whatever is currently active
                 const { addSessionMessage: addMsg } = useChatStore.getState();

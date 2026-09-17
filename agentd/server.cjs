@@ -165,6 +165,7 @@ class AgentdServer {
     this.startedAt = null
     this.sessions = new Map()
     this.generations = new Set()
+    this.generationControllers = new Map()
     this.pairingCode = pairingCode || String(crypto.randomInt(100000, 999999))
     this.pairingExpiresAt = Date.now() + PAIRING_TTL_MS
     this.pairingFailures = 0
@@ -495,6 +496,8 @@ class AgentdServer {
     if (sessionMessagesMatch && req.method === 'POST') return this.addChatMessage(req, res, sessionMessagesMatch[1])
     const sessionGenerationMatch = /^\/api\/v1\/sessions\/([^/]+)\/generations$/.exec(url.pathname)
     if (sessionGenerationMatch && req.method === 'POST') return this.generateChat(req, res, sessionGenerationMatch[1])
+    const cancelGenerationMatch = /^\/api\/v1\/sessions\/([^/]+)\/generations\/([^/]+)\/cancel$/.exec(url.pathname)
+    if (cancelGenerationMatch && req.method === 'POST') return this.cancelGeneration(req, res, cancelGenerationMatch[1], cancelGenerationMatch[2])
     if (url.pathname === '/api/v1/events' && req.method === 'POST') return this.recordEvent(req, res)
     if (['/api/v1/whatsapp/events', '/api/v1/whatsapp/inbound', '/api/v1/events/whatsapp'].includes(url.pathname) && req.method === 'POST') return this.recordWhatsAppEvent(req, res)
     if (['/api/v1/drafts', '/api/v1/whatsapp/drafts'].includes(url.pathname) && req.method === 'GET') return this.listDrafts(req, res, url)
@@ -1016,6 +1019,16 @@ class AgentdServer {
     return json(res, 200, { success: true, deleted })
   }
 
+  async cancelGeneration(req, res, rawId, rawRequestId) {
+    this.authorize(req, { mutation: true })
+    if (!this.validChatId(rawId) || !/^[A-Za-z0-9_-]{1,128}$/.test(rawRequestId)) return json(res, 400, { error: 'Invalid generation id' })
+    const requestKey = `${rawId}:${rawRequestId}`
+    const controller = this.generationControllers.get(requestKey)
+    if (controller) controller.abort()
+    const deleted = this.db.prepare('DELETE FROM chat_generations WHERE request_id = ? AND session_id = ? AND status = \'processing\'').run(rawRequestId, rawId).changes > 0
+    return json(res, 200, { cancelled: Boolean(controller || deleted) })
+  }
+
   async addChatMessage(req, res, rawId) {
     this.authorize(req, { mutation: true })
     if (!this.validChatId(rawId)) return json(res, 400, { error: 'Invalid session id' })
@@ -1156,24 +1169,41 @@ class AgentdServer {
     if (prepared.processing) return json(res, 409, { error: 'Generation already in progress' })
     if (prepared.completed) return json(res, 200, this.generationView(prepared.completed, true))
 
-    const providerBody = JSON.stringify({ model, messages: prepared.messages.map((message) => this.providerMessage(message)), stream: false, max_tokens: 1024 })
+    const wantsStream = /(?:^|,)\s*text\/event-stream\s*(?:;|,|$)/i.test(String(req.headers.accept || ''))
+    const providerBody = JSON.stringify({ model, messages: prepared.messages.map((message) => this.providerMessage(message)), stream: wantsStream, max_tokens: 1024 })
     if (Buffer.byteLength(providerBody, 'utf8') > MAX_PROVIDER_REQUEST_BYTES) {
       this.db.prepare('DELETE FROM chat_generations WHERE request_id = ? AND status = \'processing\'').run(body.requestId)
       return json(res, 413, { error: 'Conversation context too large' })
     }
     this.generations.add(requestKey)
+    const providerController = new AbortController()
+    this.generationControllers.set(requestKey, providerController)
+    const abortProvider = () => providerController.abort()
+    req.once('aborted', abortProvider)
+    res.once('close', abortProvider)
+    const timeout = setTimeout(() => providerController.abort(), REQUEST_TIMEOUT_MS)
+    if (wantsStream) res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-store', connection: 'keep-alive', 'x-accel-buffering': 'no' })
     let response
     try {
       response = await this.providerFetch(PROVIDER_CHAT_ENDPOINTS[provider], {
         method: 'POST',
-        headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
+        headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json', ...(wantsStream ? { accept: 'text/event-stream' } : {}) },
         body: providerBody,
         redirect: 'manual',
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        signal: providerController.signal,
       })
       if (!response.ok || response.redirected) throw new Error('Provider request failed')
-      const payload = await readProviderResponse(response)
-      const content = payload?.choices?.[0]?.message?.content
+      let content
+      const contentType = String(response.headers?.get?.('content-type') || '').toLowerCase()
+      if (wantsStream && contentType.includes('text/event-stream')) {
+        content = await readProviderStream(response, (delta) => {
+          if (!writeSse(res, { type: 'assistant.delta', sessionId: rawId, requestId: body.requestId, sequence: 1, delta })) throw new Error('Client disconnected')
+        })
+      } else {
+        const payload = await readProviderResponse(response)
+        content = payload?.choices?.[0]?.message?.content
+        if (wantsStream && typeof content === 'string' && content && !writeSse(res, { type: 'assistant.delta', sessionId: rawId, requestId: body.requestId, sequence: 1, delta: content })) throw new Error('Client disconnected')
+      }
       if (typeof content !== 'string' || !content || content.length > MAX_CHAT_CONTENT_LENGTH || Buffer.byteLength(content, 'utf8') > MAX_CHAT_CONTENT_LENGTH) throw new Error('Provider response invalid')
       const assistantMessageId = `assistant_${body.requestId}`
       const result = this.db.transaction(() => {
@@ -1184,12 +1214,26 @@ class AgentdServer {
         this.db.prepare('UPDATE chat_sessions SET updated_at = ? WHERE id = ?').run(Date.now(), rawId)
         return this.db.prepare('SELECT * FROM chat_generations WHERE request_id = ?').get(body.requestId)
       })()
+      if (wantsStream) {
+        writeSse(res, { type: 'assistant.done', sessionId: rawId, requestId: body.requestId, sequence: 2 })
+        res.end()
+        return
+      }
       return json(res, 200, this.generationView(result, false))
-    } catch {
+    } catch (error) {
       try { await response?.body?.cancel() } catch {}
       this.db.prepare('DELETE FROM chat_generations WHERE request_id = ? AND session_id = ? AND status = \'processing\'').run(body.requestId, rawId)
-      return json(res, 502, { error: 'Provider generation failed' })
+      if (wantsStream && res.headersSent && !res.destroyed && !res.writableEnded) {
+        writeSse(res, { type: 'error', sessionId: rawId, requestId: body.requestId, sequence: 1, message: 'Provider generation failed' })
+        res.end()
+        return
+      }
+      if (!res.destroyed && !res.writableEnded) return json(res, 502, { error: 'Provider generation failed' })
     } finally {
+      clearTimeout(timeout)
+      req.off('aborted', abortProvider)
+      res.off('close', abortProvider)
+      this.generationControllers.delete(requestKey)
       this.generations.delete(requestKey)
     }
   }
@@ -1465,6 +1509,72 @@ async function readProviderResponse(response) {
     chunks.push(Buffer.from(value))
   }
   return JSON.parse(Buffer.concat(chunks, size).toString('utf8'))
+}
+
+function writeSse(res, payload) {
+  if (res.destroyed || res.writableEnded) return false
+  res.write(`data: ${JSON.stringify(payload)}\n\n`)
+  return true
+}
+
+async function readProviderStream(response, onDelta) {
+  if (!response.body) throw new Error('Provider response missing')
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let eventData = []
+  let size = 0
+  let content = ''
+  let done = false
+
+  const consume = (raw) => {
+    const data = raw.trim()
+    if (!data || data === '[DONE]') {
+      if (data === '[DONE]') done = true
+      return
+    }
+    let payload
+    try { payload = JSON.parse(data) } catch { throw new Error('Provider stream response invalid') }
+    if (payload?.error) throw new Error('Provider stream response invalid')
+    const delta = payload?.choices?.[0]?.delta?.content
+    if (delta === undefined || delta === null) return
+    if (typeof delta !== 'string') throw new Error('Provider stream response invalid')
+    content += delta
+    if (content.length > MAX_CHAT_CONTENT_LENGTH || Buffer.byteLength(content, 'utf8') > MAX_CHAT_CONTENT_LENGTH) throw new Error('Provider response too large')
+    onDelta(delta)
+  }
+
+  const flushEvent = () => {
+    if (!eventData.length) return
+    const data = eventData.join('\n')
+    eventData = []
+    consume(data)
+  }
+
+  while (!done) {
+    const { done: readerDone, value } = await reader.read()
+    if (readerDone) break
+    size += value.byteLength
+    if (size > MAX_PROVIDER_RESPONSE_BYTES) {
+      await reader.cancel()
+      throw new Error('Provider response too large')
+    }
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split(/\r?\n/)
+    buffer = lines.pop() || ''
+    for (const line of lines) {
+      if (!line) flushEvent()
+      else if (line.startsWith('data:')) eventData.push(line.slice(5).trimStart())
+    }
+  }
+  buffer += decoder.decode()
+  for (const line of buffer.split(/\r?\n/)) {
+    if (!line) flushEvent()
+    else if (line.startsWith('data:')) eventData.push(line.slice(5).trimStart())
+  }
+  flushEvent()
+  if (!done) throw new Error('Provider stream ended before completion')
+  return content
 }
 
 module.exports = { AgentdServer, PAIRING_TTL_MS, resolveDataDir, parseWhatsAppSettings, WHATSAPP_SETTINGS_DEFAULTS, parseProductPreferences, PRODUCT_PREFERENCES_DEFAULTS }

@@ -69,6 +69,42 @@ describe('browser agentd client', () => {
     expect(JSON.stringify(calls).includes('agentd_session')).toBe(false)
   })
 
+  it('consumes browser SSE deltas and sends authenticated cancellation on abort', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = []
+    let streamController: ReadableStreamDefaultController<Uint8Array> | undefined
+    const encoder = new TextEncoder()
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      calls.push({ url, init })
+      if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
+      if (url.endsWith('/api/v1/sessions/chat_stream/generations')) {
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            streamController = controller
+            controller.enqueue(encoder.encode('data: {"type":"assistant.delta","sessionId":"chat_stream","requestId":"r-stream","sequence":1,"delta":"hello"}\n\n'))
+            init?.signal?.addEventListener('abort', () => controller.error(new DOMException('aborted', 'AbortError')), { once: true })
+          },
+        })
+        return new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } })
+      }
+      if (url.endsWith('/api/v1/sessions/chat_stream/generations/r-stream/cancel')) return response({ cancelled: true })
+      return response({ success: true })
+    })
+    const client = createBrowserAgentdClient({ origin: 'http://127.0.0.1:4141', fetch: fetcher })
+    await client.pair('123456')
+    const events: string[] = []
+    const controller = new AbortController()
+    const generation = client.generate({ sessionId: 'chat_stream', requestId: 'r-stream', content: 'hello' }, event => events.push(event.type), controller.signal)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    controller.abort()
+    await expect(generation).rejects.toMatchObject({ name: 'AbortError' })
+    expect(streamController).toBeDefined()
+    expect(events).toEqual(['assistant.delta'])
+    const cancel = calls.find(call => call.url.endsWith('/generations/r-stream/cancel'))
+    expect(cancel).toBeDefined()
+    expect(new Headers(cancel?.init?.headers).get('x-csrf-token')).toBe('csrf-token')
+  })
+
   it('rejects malformed origins and pairing codes before network access', async () => {
     const fetcher = vi.fn()
     expect(() => createBrowserAgentdClient({ origin: 'https://user:pass@example.test/path', fetch: fetcher })).toThrow('Invalid agentd origin')

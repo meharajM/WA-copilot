@@ -132,6 +132,7 @@ Pass evidence:
 - Voice input is supported through the speech hook.
 - In Electron, offline/native speech is the default path.
 - Agent execution writes user messages immediately, then streams assistant/tool progress into the owning session.
+- In the browser product, assistant text arrives through authenticated `agentd` SSE events. Canceling a generation aborts daemon/provider work, leaves no partial assistant message, and allows retry with the same request id; cancellation is not shown as an error message.
 - Background memory reflection runs asynchronously after submission.
 
 Pass evidence:

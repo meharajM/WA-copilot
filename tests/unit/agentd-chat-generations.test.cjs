@@ -20,6 +20,22 @@ function request(origin, method, pathname, body, headers = {}) {
   })
 }
 
+function rawRequest(origin, method, pathname, body, headers = {}) {
+  return new Promise((resolve, reject) => {
+    const payload = body === undefined ? '' : JSON.stringify(body)
+    const req = http.request(`${origin}${pathname}`, {
+      method,
+      headers: { ...(payload ? { 'content-type': 'application/json' } : {}), ...headers },
+    }, res => {
+      let text = ''
+      res.on('data', chunk => { text += chunk })
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, text }))
+    })
+    req.on('error', reject)
+    req.end(payload)
+  })
+}
+
 function credentials(values = {}) {
   return {
     async get(key) { return values[key] ?? null },
@@ -52,6 +68,7 @@ test('agentd generation is authenticated, bounded, fixed-endpoint, persisted, an
   const { origin } = await server.start()
   const auth = { authorization: `Bearer ${secret}` }
   assert.equal((await request(origin, 'POST', '/api/v1/sessions/s1/generations', { requestId: 'r1', content: 'hello' })).status, 401)
+  assert.equal((await request(origin, 'POST', '/api/v1/sessions/s1/generations/r1/cancel', {})).status, 401)
   assert.equal((await request(origin, 'POST', '/api/v1/sessions/missing/generations', { requestId: 'r1', content: 'hello' }, auth)).status, 404)
   assert.equal((await request(origin, 'POST', '/api/v1/sessions', { id: 's1', title: 'Chat' }, auth)).status, 201)
   assert.equal((await request(origin, 'POST', '/api/v1/sessions/s1/generations', { requestId: 'r1', content: 'hello', model: ' ' }, auth)).status, 400)
@@ -139,6 +156,85 @@ test('agentd persists bounded browser attachments and maps text/images into prov
   assert.equal((await request(origin, 'PATCH', '/api/v1/sessions/s4', { workspacePath: 'browser://workspace/Updated' }, auth)).body.session.workspacePath, 'browser://workspace/Updated')
   assert.equal((await request(origin, 'POST', '/api/v1/sessions/s3/generations', { requestId: 'invalid-attachment', content: 'x', attachments: [{ name: 'x.txt', type: 'text/plain', size: 1, dataUrl: 'not-a-data-url' }] }, auth)).status, 400)
   assert.equal((await request(origin, 'POST', '/api/v1/sessions/s3/generations', { requestId: 'invalid-empty-attachment', content: '', attachments: [{ name: 'x.txt', type: 'text/plain', size: 1, dataUrl: 'not-a-data-url' }] }, auth)).status, 400)
+  await server.stop()
+  fs.rmSync(dataDir, { recursive: true, force: true })
+})
+
+test('agentd streams provider deltas over authenticated SSE and persists the completed answer', async () => {
+  const dataDir = fs.mkdtempSync('/tmp/aica-agentd-generation-stream-')
+  const secret = 's'.repeat(32)
+  const calls = []
+  const server = new AgentdServer({
+    dataDir,
+    secret,
+    logger: { log() {} },
+    credentials: credentials({ openai_api_key: 'provider-secret' }),
+    providerFetch: async (_url, options) => {
+      calls.push({ options })
+      assert.equal(JSON.parse(options.body).stream, true)
+      return new Response([
+        'data: {"choices":[{"delta":{"content":"part one"}}]}',
+        '',
+        'data: {"choices":[{"delta":{"content":" part two"}}]}',
+        '',
+        'data: [DONE]',
+        '',
+      ].join('\n'), { status: 200, headers: { 'content-type': 'text/event-stream' } })
+    },
+  })
+  const { origin } = await server.start()
+  const auth = { authorization: `Bearer ${secret}`, accept: 'text/event-stream' }
+  assert.equal((await request(origin, 'POST', '/api/v1/sessions', { id: 'stream1', title: 'Stream' }, auth)).status, 201)
+  const streamed = await rawRequest(origin, 'POST', '/api/v1/sessions/stream1/generations', { requestId: 'stream-r1', content: 'hello' }, auth)
+  assert.equal(streamed.status, 200)
+  assert.equal(streamed.headers['content-type'], 'text/event-stream; charset=utf-8')
+  const events = streamed.text.split(/\n\n/).filter(Boolean).map(chunk => JSON.parse(chunk.replace(/^data: /, '')))
+  assert.deepEqual(events.map(event => event.type), ['assistant.delta', 'assistant.delta', 'assistant.done'])
+  assert.deepEqual(events.slice(0, 2).map(event => event.delta), ['part one', ' part two'])
+  assert.equal(calls.length, 1)
+  const history = await request(origin, 'GET', '/api/v1/sessions/stream1', undefined, { authorization: `Bearer ${secret}` })
+  assert.equal(history.body.messages.at(-1).content, 'part one part two')
+  await server.stop()
+  fs.rmSync(dataDir, { recursive: true, force: true })
+})
+
+test('agentd aborts provider work on browser cancellation and allows retry', async () => {
+  const dataDir = fs.mkdtempSync('/tmp/aica-agentd-generation-cancel-')
+  const secret = 'c'.repeat(32)
+  let callCount = 0
+  let providerAborted = false
+  const server = new AgentdServer({
+    dataDir,
+    secret,
+    logger: { log() {} },
+    credentials: credentials({ openai_api_key: 'provider-secret' }),
+    providerFetch: async (_url, options) => {
+      callCount += 1
+      if (callCount === 1) {
+        await new Promise((resolve, reject) => {
+          if (options.signal.aborted) return resolve()
+          options.signal.addEventListener('abort', () => { providerAborted = true; reject(new Error('aborted')) }, { once: true })
+        })
+        throw new Error('aborted')
+      }
+      return new Response('data: {"choices":[{"delta":{"content":"retry answer"}}]}\n\ndata: [DONE]\n\n', { status: 200, headers: { 'content-type': 'text/event-stream' } })
+    },
+  })
+  const { origin } = await server.start()
+  const auth = { authorization: `Bearer ${secret}`, accept: 'text/event-stream' }
+  assert.equal((await request(origin, 'POST', '/api/v1/sessions', { id: 'cancel1', title: 'Cancel' }, auth)).status, 201)
+  const generation = rawRequest(origin, 'POST', '/api/v1/sessions/cancel1/generations', { requestId: 'cancel-r1', content: 'hello' }, auth)
+  await new Promise(resolve => setTimeout(resolve, 25))
+  const cancelled = await request(origin, 'POST', '/api/v1/sessions/cancel1/generations/cancel-r1/cancel', {}, auth)
+  assert.equal(cancelled.status, 200)
+  assert.equal(cancelled.body.cancelled, true)
+  const cancelledResponse = await generation
+  assert.equal(cancelledResponse.status, 200)
+  assert.equal(cancelledResponse.text.includes('Provider generation failed'), true)
+  assert.equal(providerAborted, true)
+  const retry = await rawRequest(origin, 'POST', '/api/v1/sessions/cancel1/generations', { requestId: 'cancel-r1', content: 'hello' }, auth)
+  assert.equal(retry.status, 200)
+  assert.equal(retry.text.includes('retry answer'), true)
   await server.stop()
   fs.rmSync(dataDir, { recursive: true, force: true })
 })
