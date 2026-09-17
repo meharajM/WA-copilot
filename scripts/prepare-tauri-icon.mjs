@@ -64,8 +64,25 @@ function placeholderPng() {
   ])
 }
 
+function pngBackedIco(png) {
+  const directory = Buffer.alloc(22)
+  directory.writeUInt16LE(0, 0) // reserved
+  directory.writeUInt16LE(1, 2) // icon image
+  directory.writeUInt16LE(1, 4) // one PNG-backed image
+  directory[6] = 0 // width 256+ is encoded as 0
+  directory[7] = 0 // height 256+ is encoded as 0
+  directory[8] = 0 // true-color image
+  directory[9] = 0 // reserved
+  directory.writeUInt16LE(1, 10) // color planes
+  directory.writeUInt16LE(32, 12) // RGBA bit depth
+  directory.writeUInt32LE(png.length, 14)
+  directory.writeUInt32LE(directory.length, 18)
+  return Buffer.concat([directory, png])
+}
+
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const iconPath = join(projectRoot, 'src-tauri', 'icons', 'icon.png')
+const icoPath = join(projectRoot, 'src-tauri', 'icons', 'icon.ico')
 await mkdir(dirname(iconPath), { recursive: true })
 const icon = placeholderPng()
 let iconIsCurrent = false
@@ -75,3 +92,11 @@ try {
   if (error.code !== 'ENOENT') throw error
 }
 if (!iconIsCurrent) await writeFile(iconPath, icon)
+const ico = pngBackedIco(icon)
+let icoIsCurrent = false
+try {
+  icoIsCurrent = (await readFile(icoPath)).equals(ico)
+} catch (error) {
+  if (error.code !== 'ENOENT') throw error
+}
+if (!icoIsCurrent) await writeFile(icoPath, ico)

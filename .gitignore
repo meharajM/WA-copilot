@@ -33,6 +33,7 @@ src-tauri/sidecar/agentd-http/*
 !src-tauri/sidecar/agentd-runtime
 !src-tauri/sidecar/aica-keyring-helper
 src-tauri/icons/icon.png
+src-tauri/icons/icon.ico
 
 # TypeScript
 *.tsbuildinfo
