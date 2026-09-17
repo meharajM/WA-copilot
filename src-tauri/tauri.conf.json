@@ -29,7 +29,7 @@
   },
   "bundle": {
     "active": true,
-    "icon": ["icons/icon.png"],
+    "icon": ["icons/icon.png", "icons/icon.ico"],
     "resources": {
       "sidecar/agentd-runtime*": "sidecar/",
       "sidecar/agentd-http": "sidecar/agentd-http",
