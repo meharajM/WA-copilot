@@ -1,0 +1,62 @@
+name: Tauri Windows
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/tauri-windows.yml'
+      - 'agentd/**'
+      - 'scripts/**'
+      - 'src-tauri/**'
+      - 'src/renderer/**'
+      - 'src/shared/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'vite.tauri.config.ts'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install JavaScript dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Typecheck browser renderer
+        run: npm run typecheck:renderer
+
+      - name: Run browser and agentd tests
+        shell: pwsh
+        run: |
+          npx vitest run tests/unit --exclude tests/unit/email-channel-service.test.ts
+          $cjsTests = @(Get-ChildItem -Path tests/unit -Filter '*.test.cjs' | Select-Object -ExpandProperty FullName)
+          node --test $cjsTests
+
+      - name: Build signed-input Windows bundle
+        run: npm run build:tauri:win
+
+      - name: Upload unsigned Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: aica-tauri-windows-${{ github.sha }}
+          if-no-files-found: error
+          path: |
+            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
