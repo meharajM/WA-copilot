@@ -1,0 +1,10 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>AICA bridge settings</title>
+<style>body{font:14px system-ui;max-width:520px;margin:32px auto;padding:0 16px}label{display:block;margin:14px 0 4px}input{box-sizing:border-box;width:100%;padding:8px}button{margin-top:18px;padding:8px 14px}</style>
+<h1>AICA WhatsApp bridge</h1>
+<p>Configure the local bridge manually. The token is never sent anywhere except 127.0.0.1.</p>
+<label for="token">Loopback token</label><input id="token" type="password" autocomplete="off">
+<label for="chatId">Pilot chat ID</label><input id="chatId" placeholder="customer identifier">
+<button id="save">Save</button><span id="message" role="status"></span>
+<script src="options.js"></script>

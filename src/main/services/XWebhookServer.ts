@@ -11,6 +11,9 @@ export class XWebhookServer {
     if (this.server) return
     if (!consumerSecret || !Number.isInteger(port) || port < 0 || port > 65535) throw new Error('Invalid X webhook configuration')
     this.server = createServer((req, res) => void this.handle(req, res, consumerSecret, accountId))
+    this.server.requestTimeout = 30_000
+    this.server.headersTimeout = 35_000
+    this.server.keepAliveTimeout = 5_000
     await new Promise<void>((resolve, reject) => { this.server!.once('listening', resolve); this.server!.once('error', reject); this.server!.listen(port, '127.0.0.1') })
   }
   address(): string | null { const address = this.server?.address(); return address && typeof address === 'object' ? `127.0.0.1:${address.port}` : null }
@@ -18,6 +21,8 @@ export class XWebhookServer {
   private async handle(req: IncomingMessage, res: ServerResponse, secret: string, accountId: string): Promise<void> {
     if (req.method === 'GET') { const token = new URL(req.url || '/', 'http://127.0.0.1').searchParams.get('crc_token'); if (!token) { res.writeHead(400); res.end(); return }; res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(xCrcResponse(token, secret))); return }
     if (req.method !== 'POST') { res.writeHead(405); res.end(); return }
+    const declaredLength = Number(req.headers['content-length'] || 0)
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_BODY_BYTES) { res.writeHead(413); res.end(); return }
     const body = await this.readBody(req)
     const signature = typeof req.headers['x-twitter-webhooks-signature'] === 'string' ? req.headers['x-twitter-webhooks-signature'] : undefined
     if (body === null || !verifyXWebhookSignature(body, signature, secret)) { res.writeHead(401); res.end(); return }

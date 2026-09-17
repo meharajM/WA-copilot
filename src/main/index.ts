@@ -1,3 +1,4 @@
+import './bootstrap-env'
 import { app, shell, BrowserWindow } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
@@ -11,9 +12,13 @@ import { MetaWebhookServer } from './services/MetaWebhookServer'
 import type { MetaMessagingChannel } from './services/MetaMessaging'
 import { XWebhookServer } from './services/XWebhookServer'
 import { shouldAutoResume } from './services/AutonomyPolicy'
+import { BrowserExtensionBridge } from './services/BrowserExtensionBridge'
+import { isSafeExternalUrl } from './utils/external-url'
 
 const metaWebhookServer = new MetaWebhookServer(message => autonomousSupervisor.onMetaMessage(message), lead => autonomousSupervisor.recordMetaLead(lead), update => autonomousSupervisor.onDeliveryUpdate(update))
 const xWebhookServer = new XWebhookServer(message => autonomousSupervisor.onMetaMessage(message))
+const browserExtensionBridge = new BrowserExtensionBridge(message => autonomousSupervisor.onMessage(message))
+autonomousSupervisor.attachExtensionBridge(browserExtensionBridge)
 
 
 // Enable experimental on-device AI features (Gemini Nano / Chrome Prompt API)
@@ -31,7 +36,6 @@ app.commandLine.appendSwitch('optimization-guide-on-device-model-execution', 'pe
 app.commandLine.appendSwitch('enable-speech-dispatcher')  // Linux speech support
 app.commandLine.appendSwitch('enable-speech-input')       // Enable speech input
 app.commandLine.appendSwitch('enable-experimental-web-platform-features')  // Web Speech API
-app.commandLine.appendSwitch('allow-file-access-from-files') // Allow fetch from file:// in Workers
 
 
 // Initialize environment (fix PATH, etc.)
@@ -66,7 +70,8 @@ function createWindow(): void {
             sandbox: false,
             contextIsolation: true,
             nodeIntegration: false,
-            webSecurity: false, // Required for Vosk Worker to fetch local model files (file://)
+            // Keep Chromium's same-origin and mixed-content protections enabled.
+            // Vosk models are served by the loopback-only model server.
         }
     })
 
@@ -99,7 +104,7 @@ function createWindow(): void {
         }
 
         // Open other external links in system browser
-        shell.openExternal(url)
+        if (isSafeExternalUrl(url)) shell.openExternal(url)
         return { action: 'deny' }
     })
 
@@ -132,6 +137,7 @@ app.whenReady().then(async () => {
         console.log('[Autonomy] crash-safe startup resume', { status: resumed.status, paused: resumed.paused, queueDepth: resumed.queueDepth })
     }
     await whatsAppCloudWebhookServer.start()
+    await browserExtensionBridge.start()
     const metaChannel = process.env.META_WEBHOOK_CHANNEL
     const metaVerifyToken = process.env.META_WEBHOOK_VERIFY_TOKEN
     const metaAppSecret = process.env.META_APP_SECRET
@@ -169,6 +175,7 @@ app.on('before-quit', async (event) => {
     await whatsAppCloudWebhookServer.stop()
     await metaWebhookServer.stop()
     await xWebhookServer.stop()
+    await browserExtensionBridge.stop()
     await McpProcessManager.getInstance().teardownAll()
     
     app.quit()

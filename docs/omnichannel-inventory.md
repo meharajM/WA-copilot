@@ -17,12 +17,15 @@ autonomous main-process paths from explicit human/operator paths.
 | Instagram/Messenger | `src/main/services/MetaWebhookServer.ts` verifies and normalizes the signed webhook | `autonomousSupervisor.onMetaMessage(message)` from `src/main/index.ts` |
 | X direct messages | `src/main/services/XWebhookServer.ts` verifies and normalizes the signed webhook | `autonomousSupervisor.onMetaMessage(message)` from `src/main/index.ts` |
 | Meta lead events | `MetaWebhookServer` normalizes leadgen events | `autonomousSupervisor.recordMetaLead(lead)`; attribution storage, not messaging consent |
+| Optional browser extension | `src/main/services/BrowserExtensionBridge.ts` accepts authenticated loopback status/message posts | `autonomousSupervisor.onMessage(message)`; inbound text only |
 
 All autonomous ingress is normalized through `ChannelMessage`, scoped to a
 business and channel account, validated before queue admission, deduplicated by
 provider/message identity, and persisted by `AutonomousSupervisor`.
 
-There is currently no browser-extension bridge. The Web connector is a bounded
+The browser-extension bridge is disabled unless `AICA_EXTENSION_BRIDGE_TOKEN` is
+configured. It binds only to loopback, has bounded JSON input and no outbound
+send or arbitrary browser-control endpoint. The Web connector remains a bounded
 desktop connector with operator-supplied chat monitoring and manual takeover.
 
 ## Outbound senders

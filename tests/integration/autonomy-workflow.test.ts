@@ -35,6 +35,13 @@ describe('autonomy workflow', () => {
     expect(checkpoints.length).toBeGreaterThan(0)
   })
 
+  it('runs the deterministic guard before model decisioning', async () => {
+    const guard = async () => ({ text: null, confidence: 0, grounding: 'unavailable' as const, escalated: true, sensitiveTopic: true, reason: 'guarded' })
+    const decide = async () => { throw new Error('decision node must not run') }
+    const workflow = createAutonomyWorkflow({ guard, decide }, new MemorySaver())
+    await expect(runAutonomyWorkflow(workflow, message)).resolves.toMatchObject({ reason: 'guarded', escalated: true })
+  })
+
   it('fails closed when the decision worker exceeds its timeout', async () => {
     const workflow = createAutonomyWorkflow(() => new Promise(() => {}), new MemorySaver(), 5)
     await expect(runAutonomyWorkflow(workflow, message)).resolves.toMatchObject({

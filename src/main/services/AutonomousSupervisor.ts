@@ -21,6 +21,7 @@ import { MetaMessagingTransport } from './MetaMessaging'
 import { XDirectMessageTransport } from './XDirectMessages'
 import { MemoryService } from './MemoryService'
 import { whatsappWebConnector } from './WhatsAppWebConnector'
+import type { BrowserExtensionBridge } from './BrowserExtensionBridge'
 
 export type AutonomyMode = 'observe' | 'draft' | 'auto'
 export interface SupervisorState {
@@ -99,6 +100,7 @@ export class AutonomousSupervisor extends EventEmitter {
   private readonly metaTransport: MetaMessagingTransport | null
   private readonly xTransport: XDirectMessageTransport | null
   private healthTimer: NodeJS.Timeout | null = null
+  private readonly retryTimers = new Map<string, NodeJS.Timeout>()
   private baileysDispatchBlocked = false
   private baileysWasConnected = false
   private lastRetentionAt = 0
@@ -106,6 +108,7 @@ export class AutonomousSupervisor extends EventEmitter {
   private leaseGeneration = 0
   private networkProbeInFlight = false
   private networkHealth: { status: 'unknown' | 'online' | 'offline'; checkedAt: number; latencyMs?: number; error?: string } = { status: 'unknown', checkedAt: 0 }
+  private extensionBridge: BrowserExtensionBridge | null = null
 
   private constructor() {
     super()
@@ -139,7 +142,7 @@ export class AutonomousSupervisor extends EventEmitter {
       CREATE TABLE IF NOT EXISTS operator_actions (id INTEGER PRIMARY KEY AUTOINCREMENT, action TEXT NOT NULL, details TEXT, created_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS notifications (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, details TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'unread', created_at INTEGER NOT NULL);
-      CREATE TABLE IF NOT EXISTS usage_events (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, amount INTEGER NOT NULL, estimated_tokens INTEGER NOT NULL DEFAULT 0, estimated_cost REAL NOT NULL DEFAULT 0, channel TEXT, created_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS usage_events (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, amount INTEGER NOT NULL, estimated_tokens INTEGER NOT NULL DEFAULT 0, estimated_cost REAL NOT NULL DEFAULT 0, channel TEXT, provider TEXT, model TEXT, latency_ms INTEGER, created_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS takeovers (jid TEXT PRIMARY KEY, source TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, started_at INTEGER NOT NULL, ended_at INTEGER);
       CREATE TABLE IF NOT EXISTS drafts (inbound_id TEXT PRIMARY KEY, jid TEXT NOT NULL, content TEXT NOT NULL, content_hash TEXT NOT NULL, conversation_revision INTEGER NOT NULL, status TEXT NOT NULL, expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS supervisor_lease (id INTEGER PRIMARY KEY CHECK (id = 1), owner TEXT NOT NULL, generation INTEGER NOT NULL DEFAULT 0, heartbeat_at INTEGER NOT NULL);
@@ -172,6 +175,9 @@ export class AutonomousSupervisor extends EventEmitter {
     try { this.db.exec('ALTER TABLE usage_events ADD COLUMN estimated_tokens INTEGER NOT NULL DEFAULT 0') } catch { /* existing column */ }
     try { this.db.exec('ALTER TABLE usage_events ADD COLUMN estimated_cost REAL NOT NULL DEFAULT 0') } catch { /* existing column */ }
     try { this.db.exec('ALTER TABLE usage_events ADD COLUMN channel TEXT') } catch { /* existing column */ }
+    try { this.db.exec('ALTER TABLE usage_events ADD COLUMN provider TEXT') } catch { /* existing column */ }
+    try { this.db.exec('ALTER TABLE usage_events ADD COLUMN model TEXT') } catch { /* existing column */ }
+    try { this.db.exec('ALTER TABLE usage_events ADD COLUMN latency_ms INTEGER') } catch { /* existing column */ }
     try { this.db.exec('ALTER TABLE supervisor_lease ADD COLUMN generation INTEGER NOT NULL DEFAULT 0') } catch { /* existing column */ }
     this.db.prepare('INSERT OR IGNORE INTO jobs (id,inbound_id,queue_key,status,created_at,updated_at) SELECT id,id,jid,status,received_at,received_at FROM inbound_events').run()
     for (const version of [1, 2, AUTONOMY_SCHEMA_VERSION]) this.db.prepare('INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)').run(version, Date.now())
@@ -183,14 +189,15 @@ export class AutonomousSupervisor extends EventEmitter {
     if (process.env.GOOGLE_API_KEY) this.gemini = new GeminiClient(process.env.GOOGLE_API_KEY)
     this.metaTransport = process.env.META_ACCESS_TOKEN && process.env.META_ACCOUNT_ID ? new MetaMessagingTransport({ accessToken: process.env.META_ACCESS_TOKEN, accountId: process.env.META_ACCOUNT_ID, apiVersion: process.env.META_GRAPH_API_VERSION }) : null
     this.xTransport = process.env.X_CONSUMER_KEY && process.env.X_CONSUMER_SECRET && process.env.X_ACCESS_TOKEN && process.env.X_ACCESS_TOKEN_SECRET && process.env.X_ACCOUNT_ID ? new XDirectMessageTransport({ consumerKey: process.env.X_CONSUMER_KEY, consumerSecret: process.env.X_CONSUMER_SECRET, accessToken: process.env.X_ACCESS_TOKEN, accessTokenSecret: process.env.X_ACCESS_TOKEN_SECRET, accountId: process.env.X_ACCOUNT_ID }) : null
-    this.workflow = createAutonomyWorkflow((message) => this.decide(message), new SqliteSaver(this.db))
+    this.workflow = createAutonomyWorkflow({ guard: (message) => this.guardDecision(message), decide: (message) => this.generateDecision(message) }, new SqliteSaver(this.db))
     try { this.outboundTransport = createWhatsAppOutboundTransport() }
     catch (error) { const failure = error instanceof Error ? error.message : String(error); this.outboundTransport = { kind: 'cloud', sendText: async () => ({ success: false, error: failure }), sendTemplate: async () => ({ success: false, error: failure }) }; this.state.status = 'degraded'; this.state.lastError = failure }
   }
 
   static getInstance(): AutonomousSupervisor { return this.instance ??= new AutonomousSupervisor() }
   getState(): SupervisorState { return { ...this.state, queueDepth: [...this.queues.values(), ...this.emailQueues.values(), ...this.metaQueues.values()].reduce((n, q) => n + q.length, 0), usageToday: { llmCalls: this.usageCount('llm'), outboundMessages: this.usageCount('outbound'), estimatedCost: this.usageCost() } } }
-  getHealth() { return { executionLocation: 'electron-main', transport: this.outboundTransport.kind, baileysExperimentalApproval: BAILEYS_EXPERIMENTAL_APPROVED, llmConfigured: this.gemini !== null, llmDataPolicyApproved: LLM_DATA_POLICY_APPROVED, channel: whatsappService.getConnectionState(), browser: whatsappWebConnector.getState(), email: emailChannelService.getConnectionState(), network: this.networkHealth, providers: { meta: { configured: this.metaTransport !== null }, x: { configured: this.xTransport !== null } }, queues: { whatsapp: [...this.queues.values()].reduce((total, queue) => total + queue.length, 0), email: [...this.emailQueues.values()].reduce((total, queue) => total + queue.length, 0), meta: [...this.metaQueues.values()].reduce((total, queue) => total + queue.length, 0) }, rag: RAGEngine.getInstance().health(), memory: MemoryService.getInstance().getHealth(), supervisor: this.getState(), escalation: { contact: ESCALATION_CONTACT || null, contactConfigured: Boolean(ESCALATION_CONTACT), slaMinutes: ESCALATION_SLA_MINUTES, overdue: this.countOverdueEscalations() }, memoryRss: process.memoryUsage().rss, uptime: process.uptime(), leaseHeld: this.hasLease(), checkedAt: Date.now() } }
+  getHealth() { return { executionLocation: 'electron-main', transport: this.outboundTransport.kind, baileysExperimentalApproval: BAILEYS_EXPERIMENTAL_APPROVED, llmConfigured: this.gemini !== null, llm: { provider: 'google', model: 'gemini-2.0-flash', configured: this.gemini !== null }, llmDataPolicyApproved: LLM_DATA_POLICY_APPROVED, channel: whatsappService.getConnectionState(), browser: whatsappWebConnector.getState(), extension: this.extensionBridge?.getState() ?? { status: 'disabled', port: 8790, lastStatus: null, error: null }, email: emailChannelService.getConnectionState(), network: this.networkHealth, providers: { meta: { configured: this.metaTransport !== null }, x: { configured: this.xTransport !== null } }, queues: { whatsapp: [...this.queues.values()].reduce((total, queue) => total + queue.length, 0), email: [...this.emailQueues.values()].reduce((total, queue) => total + queue.length, 0), meta: [...this.metaQueues.values()].reduce((total, queue) => total + queue.length, 0) }, rag: RAGEngine.getInstance().health(), memory: MemoryService.getInstance().getHealth(), supervisor: this.getState(), escalation: { contact: ESCALATION_CONTACT || null, contactConfigured: Boolean(ESCALATION_CONTACT), slaMinutes: ESCALATION_SLA_MINUTES, overdue: this.countOverdueEscalations() }, memoryRss: process.memoryUsage().rss, uptime: process.uptime(), leaseHeld: this.hasLease(), checkedAt: Date.now() } }
+  attachExtensionBridge(bridge: BrowserExtensionBridge): void { this.extensionBridge = bridge }
   getMetrics(days = 14) {
     const safeDays = Number.isInteger(days) && days > 0 && days <= 90 ? days : 14
     const since = Date.now() - safeDays * 24 * 60 * 60 * 1000
@@ -204,6 +211,7 @@ export class AutonomousSupervisor extends EventEmitter {
     const editingTimes = draftRows.filter(row => row.status === 'approved' && approvalTimes.has(row.inboundId)).map(row => (approvalTimes.get(row.inboundId) as number) - row.createdAt)
     const approvedDrafts = draftRows.filter(row => row.status === 'approved').length
     const estimatedCost = (this.db.prepare('SELECT COALESCE(SUM(estimated_cost), 0) AS total FROM usage_events WHERE created_at >= ?').get(since) as { total: number }).total
+    const llmTelemetry = this.db.prepare("SELECT COUNT(*) AS calls, COALESCE(AVG(latency_ms), 0) AS averageLatencyMs FROM usage_events WHERE kind = 'llm' AND created_at >= ?").get(since) as { calls: number; averageLatencyMs: number }
     const deliveryUnknown = (this.db.prepare("SELECT COUNT(*) AS count FROM outbound_sends WHERE status = 'delivery-unknown' AND sent_at >= ?").get(since) as { count: number }).count
     const resolvedConversations = (this.db.prepare("SELECT COUNT(*) AS count FROM conversation_outcomes o JOIN conversations c ON c.jid = o.jid AND c.revision = o.revision WHERE o.outcome IN ('resolved_agent','resolved_human') AND o.recorded_at >= ?").get(since) as { count: number }).count
     const quality = this.db.prepare('SELECT label, COUNT(*) AS count FROM quality_reviews WHERE reviewed_at >= ? GROUP BY label').all(since) as Array<{ label: QualityReviewLabel; count: number }>
@@ -219,7 +227,7 @@ export class AutonomousSupervisor extends EventEmitter {
       if (action.action === 'enter_recovery_mode') recoveryStarts.push(action.createdAt)
       else if (recoveryStarts.length) recoveryDurations.push(Math.max(0, action.createdAt - (recoveryStarts.shift() as number)))
     }
-    return { ...base, groundedDecisions: grounding.grounded, notGroundedDecisions: grounding.notGrounded, unavailableDecisions: grounding.unavailable, groundedDecisionRate: decisions.length ? grounding.grounded / decisions.length : 0, deliveryUnknown, approvedDrafts, draftApprovalRate: draftRows.length ? approvedDrafts / draftRows.length : 0, averageDraftEditingTimeMs: editingTimes.length ? editingTimes.reduce((sum, value) => sum + value, 0) / editingTimes.length : 0, estimatedCost, resolvedConversations, estimatedCostPerResolvedConversation: resolvedConversations ? estimatedCost / resolvedConversations : null, reviewedDecisions, correctDecisions, incorrectDecisions: qualityCounts.incorrect || 0, unnecessaryEscalations: qualityCounts.unnecessary_escalation || 0, missedEscalations: qualityCounts.missed_escalation || 0, reviewAccuracy: reviewedDecisions ? correctDecisions / reviewedDecisions : 0, escalationPrecision, recoveryDrills: recoveryDurations.length, averageRecoveryTimeMs: recoveryDurations.length ? recoveryDurations.reduce((sum, value) => sum + value, 0) / recoveryDurations.length : 0 }
+    return { ...base, llmCalls: Number(llmTelemetry.calls), averageLlmLatencyMs: Number(llmTelemetry.averageLatencyMs), groundedDecisions: grounding.grounded, notGroundedDecisions: grounding.notGrounded, unavailableDecisions: grounding.unavailable, groundedDecisionRate: decisions.length ? grounding.grounded / decisions.length : 0, deliveryUnknown, approvedDrafts, draftApprovalRate: draftRows.length ? approvedDrafts / draftRows.length : 0, averageDraftEditingTimeMs: editingTimes.length ? editingTimes.reduce((sum, value) => sum + value, 0) / editingTimes.length : 0, estimatedCost, resolvedConversations, estimatedCostPerResolvedConversation: resolvedConversations ? estimatedCost / resolvedConversations : 0, reviewedDecisions, correctDecisions, incorrectDecisions: qualityCounts.incorrect || 0, unnecessaryEscalations: qualityCounts.unnecessary_escalation || 0, missedEscalations: qualityCounts.missed_escalation || 0, reviewAccuracy: reviewedDecisions ? correctDecisions / reviewedDecisions : 0, escalationPrecision, recoveryDrills: recoveryDurations.length, averageRecoveryTimeMs: recoveryDurations.length ? recoveryDurations.reduce((sum, value) => sum + value, 0) / recoveryDurations.length : 0 }
   }
   getChannelUsage(days = 1): Array<{ channel: string; amount: number }> {
     const safeDays = Number.isInteger(days) && days > 0 && days <= 90 ? days : 1
@@ -589,6 +597,38 @@ export class AutonomousSupervisor extends EventEmitter {
   listDeliveryHistory(limit = 50): Array<{ providerMessageId: string; channel: string; status: string; eventAt: number; inboundId: string | null }> {
     const safeLimit = Number.isInteger(limit) && limit > 0 && limit <= 100 ? limit : 50
     return this.db.prepare('SELECT provider_message_id AS providerMessageId, channel, status, event_at AS eventAt, inbound_id AS inboundId FROM delivery_events ORDER BY event_at DESC LIMIT ?').all(safeLimit) as Array<{ providerMessageId: string; channel: string; status: string; eventAt: number; inboundId: string | null }>
+  }
+
+  listEmailAttachments(limit = 20): Array<{ inboundId: string; messageId: string; id: string; name?: string; mimeType?: string; size?: number; receivedAt: number }> {
+    const safeLimit = Math.max(1, Math.min(100, Number.isFinite(limit) ? Math.floor(limit) : 20))
+    const rows = this.db.prepare("SELECT id, payload, received_at AS receivedAt FROM inbound_events WHERE channel = 'email' AND payload IS NOT NULL ORDER BY received_at DESC LIMIT 100").all() as Array<{ id: string; payload: string; receivedAt: number }>
+    const attachments: Array<{ inboundId: string; messageId: string; id: string; name?: string; mimeType?: string; size?: number; receivedAt: number }> = []
+    for (const row of rows) {
+      if (attachments.length >= safeLimit) break
+      try {
+        const payload = JSON.parse(row.payload) as { attachments?: unknown[]; id?: unknown }
+        if (!Array.isArray(payload.attachments)) continue
+        for (const value of payload.attachments) {
+          if (attachments.length >= safeLimit || !value || typeof value !== 'object') break
+          const attachment = value as { id?: unknown; name?: unknown; mimeType?: unknown; size?: unknown }
+          if (typeof attachment.id !== 'string' || !attachment.id.trim()) continue
+          attachments.push({ inboundId: row.id, messageId: typeof payload.id === 'string' ? payload.id : row.id, id: attachment.id, name: typeof attachment.name === 'string' ? attachment.name : undefined, mimeType: typeof attachment.mimeType === 'string' ? attachment.mimeType : undefined, size: typeof attachment.size === 'number' && Number.isFinite(attachment.size) ? attachment.size : undefined, receivedAt: row.receivedAt })
+        }
+      } catch { /* Ignore malformed historical payloads. */ }
+    }
+    return attachments
+  }
+
+  async retrieveGmailAttachment(messageId: string, attachmentId: string, metadata: { mimeType?: string; name?: string } = {}) {
+    try {
+      const result = await emailChannelService.retrieveGmailAttachment(messageId, attachmentId, metadata)
+      this.audit('retrieve_gmail_attachment', { messageId, attachmentId, name: metadata.name, mimeType: metadata.mimeType, scan: result.scan })
+      return result
+    } catch (error) {
+      const reason = error instanceof Error ? error.message.slice(0, 240) : String(error).slice(0, 240)
+      this.audit('retrieve_gmail_attachment_failed', { messageId, attachmentId, name: metadata.name, mimeType: metadata.mimeType, reason })
+      throw error
+    }
   }
 
   private recordInitialDelivery(providerMessageId: string | undefined, channel: string, inboundId: string): void {
@@ -1005,7 +1045,7 @@ export class AutonomousSupervisor extends EventEmitter {
     await this.sendWithRetry(message, decision.text!, revision)
   }
 
-  private async decide(message: WhatsAppMessage): Promise<ResponseDecision> {
+  private async guardDecision(message: WhatsAppMessage): Promise<ResponseDecision | null> {
     const content = message.content.trim()
     if (message.type !== 'text') return { text: null, confidence: 0, grounding: 'unavailable', escalated: true, sensitiveTopic: false, reason: 'media_requires_human_review' }
     if (isOptInMessage(content)) return { text: 'You are subscribed to customer support messages again.', confidence: 1, grounding: 'grounded', escalated: false, sensitiveTopic: false, reason: 'opt_in' }
@@ -1017,6 +1057,17 @@ export class AutonomousSupervisor extends EventEmitter {
     if (!isAllowlistedSupportIntent(content)) return { text: null, confidence: 0, grounding: 'unavailable', escalated: true, sensitiveTopic: false, reason: 'intent_not_allowlisted' }
     if (!this.gemini) return { text: null, confidence: 0, grounding: 'unavailable', escalated: true, sensitiveTopic: false, reason: 'no_approved_llm_configured' }
     if (this.usageCount('llm') >= DAILY_LLM_CAP) return { text: null, confidence: 0, grounding: 'unavailable', escalated: true, sensitiveTopic: false, reason: 'daily_llm_budget_cap' }
+    return null
+  }
+
+  async decide(message: WhatsAppMessage): Promise<ResponseDecision> {
+    return (await this.guardDecision(message)) ?? this.generateDecision(message)
+  }
+
+  private async generateDecision(message: WhatsAppMessage): Promise<ResponseDecision> {
+    const content = message.content.trim()
+    const gemini = this.gemini
+    if (!gemini) return { text: null, confidence: 0, grounding: 'unavailable', escalated: true, sensitiveTopic: false, reason: 'no_approved_llm_configured' }
     const chunks = await RAGEngine.getInstance().search(content, 4)
     if (!chunks.length) return { text: null, confidence: 0, grounding: 'not_grounded', escalated: true, sensitiveTopic: false, reason: 'no_knowledge_match' }
     const persona = BusinessPersona.getInstance()
@@ -1033,9 +1084,10 @@ export class AutonomousSupervisor extends EventEmitter {
     const controller = new AbortController()
     this.generationControllers.set(message.id, { jid: message.from, controller })
     const timer = setTimeout(() => controller.abort(), 25_000)
+    const generationStartedAt = Date.now()
     let raw: string
     try {
-      raw = await this.gemini.generateText(
+      raw = await gemini.generateText(
         `${persona.getSystemPrompt()}\nAnswer only from the supplied business context. Return JSON only with keys text, confidence (0..1), and grounding (grounded|not_grounded). If the context does not answer the question, set text to an empty string and grounding to not_grounded.`,
         `Customer: ${content}\nBusiness context:\n${context}`,
         { maxOutputTokens: 512, signal: controller.signal }
@@ -1044,7 +1096,7 @@ export class AutonomousSupervisor extends EventEmitter {
       clearTimeout(timer)
       this.generationControllers.delete(message.id)
     }
-    this.recordUsage('llm', Math.ceil((content.length + raw.length) / 4))
+    this.recordUsage('llm', Math.ceil((content.length + raw.length) / 4), undefined, { provider: 'google', model: 'gemini-2.0-flash', latencyMs: Date.now() - generationStartedAt })
     const parsed = parseAutonomyDecision(raw)
     const evidence = chunks.map(chunk => ({ fileName: chunk.file_name, filePath: chunk.file_path, rank: chunk.rank }))
     if (!parsed || parsed.grounding !== 'grounded' || parsed.confidence < 0.8) {
@@ -1055,17 +1107,32 @@ export class AutonomousSupervisor extends EventEmitter {
 
   private restoreQueuedMessages(): void {
     const rows = this.db.prepare(`
-      SELECT e.id, e.jid, e.content, e.received_at AS timestamp, e.channel, e.payload, c.revision
+      SELECT e.id, e.jid, e.content, e.received_at AS timestamp, e.channel, e.payload, e.status, c.revision,
+        COALESCE((SELECT r.next_at FROM retries r WHERE r.inbound_id = e.id ORDER BY r.attempt DESC, r.id DESC LIMIT 1), 0) AS retry_next_at
       FROM inbound_events e LEFT JOIN conversations c ON c.jid = e.jid
       WHERE status IN ('queued', 'processing', 'retrying')
       ORDER BY received_at ASC
-    `).all() as Array<{ id: string; jid: string; content: string; timestamp: number; channel: string; payload: string | null; revision: number | null }>
+    `).all() as Array<{ id: string; jid: string; content: string; timestamp: number; channel: string; payload: string | null; status: string; revision: number | null; retry_next_at: number }>
     for (const row of rows) {
       let message: ChannelMessage | WhatsAppMessage
       try { message = row.payload ? JSON.parse(row.payload) as ChannelMessage : { id: row.id, from: row.jid, to: whatsappService.getConnectionState().phoneNumber || '', content: row.content || '', timestamp: row.timestamp, type: 'text', isFromMe: false } } catch { message = { id: row.id, from: row.jid, to: whatsappService.getConnectionState().phoneNumber || '', content: row.content || '', timestamp: row.timestamp, type: 'text', isFromMe: false } }
-      if (row.channel === 'email') { const queue = this.emailQueues.get(row.jid) ?? []; queue.push(message as ChannelMessage); this.emailQueues.set(row.jid, queue) }
-      else if (row.channel === 'instagram' || row.channel === 'messenger' || row.channel === 'twitter') { const queue = this.metaQueues.get(row.jid) ?? []; queue.push(message as ChannelMessage); this.metaQueues.set(row.jid, queue) }
-      else { const queue = this.queues.get(row.jid) ?? []; queue.push(message as WhatsAppMessage); this.queues.set(row.jid, queue) }
+      const enqueue = (): void => {
+        if (!this.db.open || (row.status === 'retrying' && (this.db.prepare('SELECT status FROM inbound_events WHERE id = ?').get(row.id) as { status: string } | undefined)?.status !== 'retrying')) return
+        if (row.channel === 'email') { const queue = this.emailQueues.get(row.jid) ?? []; queue.push(message as ChannelMessage); this.emailQueues.set(row.jid, queue) }
+        else if (row.channel === 'instagram' || row.channel === 'messenger' || row.channel === 'twitter') { const queue = this.metaQueues.get(row.jid) ?? []; queue.push(message as ChannelMessage); this.metaQueues.set(row.jid, queue) }
+        else { const queue = this.queues.get(row.jid) ?? []; queue.push(message as WhatsAppMessage); this.queues.set(row.jid, queue) }
+        if (this.state.status === 'running' && !this.state.paused) {
+          if (row.channel === 'email') void this.drainEmail(row.jid)
+          else if (row.channel === 'instagram' || row.channel === 'messenger' || row.channel === 'twitter') void this.drainMeta(row.jid)
+          else void this.drain(row.jid)
+        }
+      }
+      const delay = row.status === 'retrying' ? row.retry_next_at - Date.now() : 0
+      if (delay > 0) {
+        const timer = setTimeout(() => { this.retryTimers.delete(row.id); enqueue() }, delay)
+        timer.unref?.()
+        this.retryTimers.set(row.id, timer)
+      } else enqueue()
       this.messageRevisions.set(row.id, row.revision ?? 0)
     }
   }
@@ -1216,6 +1283,8 @@ export class AutonomousSupervisor extends EventEmitter {
     ipcMain.handle('autonomy:list-drafts', () => this.listDrafts())
     ipcMain.handle('autonomy:list-unresolved-outbound', () => this.listUnresolvedOutbound())
     ipcMain.handle('autonomy:list-delivery-history', (_e: unknown, limit: unknown) => this.listDeliveryHistory(Number(limit)))
+    ipcMain.handle('autonomy:list-email-attachments', (_e: unknown, limit: unknown) => this.listEmailAttachments(Number(limit)))
+    ipcMain.handle('autonomy:retrieve-gmail-attachment', (_e: unknown, messageId: unknown, attachmentId: unknown, metadata: unknown) => this.retrieveGmailAttachment(String(messageId), String(attachmentId), metadata && typeof metadata === 'object' ? metadata as { mimeType?: string; name?: string } : undefined))
     ipcMain.handle('autonomy:list-decision-evidence', (_e: unknown, limit: unknown) => this.listDecisionEvidence(Number(limit)))
     ipcMain.handle('autonomy:review-decision', (_e: unknown, inboundId: unknown, label: unknown, notes: unknown) => this.reviewDecision(String(inboundId), String(label) as QualityReviewLabel, typeof notes === 'string' ? notes : ''))
     ipcMain.handle('autonomy:usage-history', (_e: unknown, days: unknown) => this.usageHistory(Number(days)))
@@ -1282,7 +1351,7 @@ export class AutonomousSupervisor extends EventEmitter {
     })()
     if (removed > 0) this.audit('retention_prune', { removed, retentionDays: RETENTION_DAYS })
   }
-  private recordUsage(kind: string, estimatedTokens = 0, channel?: string): void { this.db.prepare('INSERT INTO usage_events (kind,amount,estimated_tokens,estimated_cost,channel,created_at) VALUES (?,1,?,?,?,?)').run(kind, estimatedTokens, kind === 'llm' ? estimatedTokens / 1000 * COST_PER_1K_TOKENS : 0, channel ?? null, Date.now()) }
+  private recordUsage(kind: string, estimatedTokens = 0, channel?: string, metadata: { provider?: string; model?: string; latencyMs?: number } = {}): void { this.db.prepare('INSERT INTO usage_events (kind,amount,estimated_tokens,estimated_cost,channel,provider,model,latency_ms,created_at) VALUES (?,1,?,?,?,?,?,?,?)').run(kind, estimatedTokens, kind === 'llm' ? estimatedTokens / 1000 * COST_PER_1K_TOKENS : 0, channel ?? null, metadata.provider ?? null, metadata.model ?? null, Number.isFinite(metadata.latencyMs) ? Math.max(0, Math.floor(metadata.latencyMs as number)) : null, Date.now()) }
   private usageCost(): number { const start = new Date(); start.setHours(0, 0, 0, 0); return (this.db.prepare('SELECT COALESCE(SUM(estimated_cost), 0) AS total FROM usage_events WHERE created_at >= ?').get(start.getTime()) as { total: number }).total }
   private publish(): void { this.emit('state', this.getState()); this.broadcast('autonomy:state', this.getState()); fs.writeFileSync(this.storePath, JSON.stringify(this.state)) }
   private broadcast(channel: string, data: unknown): void { for (const win of BrowserWindow.getAllWindows()) if (!win.isDestroyed()) win.webContents.send(channel, data) }

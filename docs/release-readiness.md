@@ -71,6 +71,7 @@ Status: desktop pilot / draft release. This document describes the current imple
 - Observe-only, Draft and Auto-reply modes. Auto-reply requires explicit response permission and host policy approval.
 - RAG/memory evidence, confidence/grounding checks, sensitive/account-specific escalation, opt-out handling, service-window/template checks and AI identity disclosure.
 - Owner-visible queue, channel, health, metrics, drafts, delivery history, unresolved sends, notifications and emergency pause controls.
+- Customer connection onboarding is documented in `docs/customer-connection-onboarding.md`; the production OAuth connection service and HTTPS webhook relay remain deployment work.
 
 ## Guarantees and limits
 

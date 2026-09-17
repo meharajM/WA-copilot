@@ -33,3 +33,9 @@ export function validateMcpToolCall(serverId: unknown, toolName: unknown, args: 
   try { if (Buffer.byteLength(JSON.stringify(args ?? {}), 'utf8') > MCP_ARGS_MAX_BYTES) return 'MCP arguments exceed 64KB' } catch { return 'MCP arguments are not serializable' }
   return null
 }
+
+export function validateMcpRequestId(requestId: unknown): string | null {
+  return requestId === undefined || (typeof requestId === 'string' && requestId.length > 0 && requestId.length <= 100)
+    ? null
+    : 'Invalid MCP request ID'
+}

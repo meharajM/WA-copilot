@@ -1,8 +1,10 @@
 import { app, shell, ipcMain, dialog } from 'electron'
+import { isSafeExternalUrl } from '../utils/external-url'
 
 export function registerAppHandlers(): void {
     // Shell operations
-    ipcMain.handle('shell:open-external', async (_event, url: string) => {
+    ipcMain.handle('shell:open-external', async (_event, url: unknown) => {
+        if (!isSafeExternalUrl(url)) throw new Error('Only http(s) external URLs are allowed')
         await shell.openExternal(url)
     })
 

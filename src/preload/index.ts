@@ -69,16 +69,15 @@ const electronAPI = {
     // Speech recognition operations (native Vosk-based)
     speech: {
         checkSupport: (modelId?: string) => ipcRenderer.invoke('speech:check-support', modelId),
-        initialize: (options?: { modelId?: string }) =>
-            ipcRenderer.invoke('speech:initialize', options),
+        initialize: () => ipcRenderer.invoke('speech:initialize'),
         startListening: () => ipcRenderer.invoke('speech:start-listening'),
         stopListening: () => ipcRenderer.invoke('speech:stop-listening'),
         processAudio: (audioData: ArrayBuffer) =>
             ipcRenderer.send('speech:process-audio', audioData),
-        downloadModel: (options: { modelId: string, url: string, modelName: string }) =>
+        downloadModel: (options: { modelId: string }) =>
             ipcRenderer.invoke('speech:download-model', options),
         getPreferredModel: () => ipcRenderer.invoke('speech:get-preferred-model'), // NEW
-        getModelPath: (modelName: string) => ipcRenderer.invoke('speech:get-model-path', modelName),
+        getModelPath: (modelId: string) => ipcRenderer.invoke('speech:get-model-path', modelId),
         getStatus: (modelId?: string) => ipcRenderer.invoke('speech:get-status', modelId),
         cleanup: () => ipcRenderer.invoke('speech:cleanup'),
         onResult: (callback: (result: { text: string, final: boolean }) => void) => {
@@ -233,6 +232,8 @@ const electronAPI = {
         listDrafts: () => ipcRenderer.invoke('autonomy:list-drafts'),
         listUnresolvedOutbound: () => ipcRenderer.invoke('autonomy:list-unresolved-outbound'),
         listDeliveryHistory: (limit?: number) => ipcRenderer.invoke('autonomy:list-delivery-history', limit ?? 50),
+        listEmailAttachments: (limit?: number) => ipcRenderer.invoke('autonomy:list-email-attachments', limit ?? 20),
+        retrieveGmailAttachment: (messageId: string, attachmentId: string, metadata?: { mimeType?: string; name?: string }) => ipcRenderer.invoke('autonomy:retrieve-gmail-attachment', messageId, attachmentId, metadata ?? {}),
         listDecisionEvidence: (limit?: number) => ipcRenderer.invoke('autonomy:list-decision-evidence', limit ?? 50),
         reviewDecision: (inboundId: string, label: string, notes?: string) => ipcRenderer.invoke('autonomy:review-decision', inboundId, label, notes ?? ''),
         recordConversationOutcome: (jid: string, revision: number, outcome: string, evidence: string) => ipcRenderer.invoke('autonomy:record-conversation-outcome', jid, revision, outcome, evidence),
