@@ -14,6 +14,18 @@ Use Tauri only as a native companion because this product needs selected-file ac
 
 The final product serves React assets through the authenticated local browser console backed by `agentd`. Tauri may be installed as a small tray/native helper and connects to the same daemon through narrow typed commands. Do not expose the daemon bearer secret to either renderer. Native actions use narrow Tauri commands; business actions use authenticated browser API routes. Keep browser UI light, and benchmark browser + Tauri helper + `agentd` + model process tree against the Electron baseline.
 
+### Browser UI ownership invariant
+
+For Windows users, Edge or Chrome is the only product workspace. The URL served by `agentd` is the supported entry point for chat, settings, channels, knowledge, memory, approvals and diagnostics. A real Tauri process may show a compact native-host status surface (or run tray-first/headless), but it must not mount `App.tsx`, expose product navigation, or provide a second chat/settings workspace. The native host is limited to OS capabilities such as Credential Manager/keychain presence checks, owner-selected file/folder dialogs, notifications, tray/lifecycle and process supervision.
+
+This is a hard routing rule, not a deployment preference:
+
+- normal browser runtime → `BrowserProduct` → authenticated `agentd` HTTP API;
+- real Tauri runtime → `NativeHostDiagnostics` → narrow native commands only;
+- Electron → transition/fallback client until the browser and `agentd` pass feature, data, Windows and release gates.
+
+No query parameter, local-storage flag or browser detection may switch a Tauri window into the product workspace. If a browser workflow needs a native capability, the page requests the specific capability through the authenticated daemon/native boundary and receives only the bounded result; business state remains owned by `agentd`.
+
 This document is the target architecture for this work. `architecture.md`, `email-integration.md`, and `docs/autonomous-agent.md` describe earlier designs or partial implementation and must not be treated as evidence that the requirements below already work.
 
 ## 1. Product objective and boundaries
