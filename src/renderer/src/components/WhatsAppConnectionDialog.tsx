@@ -15,7 +15,7 @@ import React, { useState, useEffect, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X, Phone, CheckCircle, AlertCircle, Loader2, MessageCircle, Link, ShieldCheck } from 'lucide-react'
 import { useWhatsAppStore } from '../stores/whatsappStore'
-import electron from '../lib/electron'
+import electron, { isElectron } from '../lib/electron'
 
 type DialogStep = 'idle' | 'connecting' | 'qr' | 'verify' | 'connected' | 'manage' | 'error'
 
@@ -33,6 +33,7 @@ export function WhatsAppConnectionDialog(): React.JSX.Element | null {
     const [step, setStep] = useState<DialogStep>('idle')
     const [errorMessage, setErrorMessage] = useState('')
     const [isVerifying, setIsVerifying] = useState(false)
+    const browserRuntime = !isElectron()
 
     // Sync dialog step with connection state from main process
     useEffect(() => {
@@ -94,6 +95,11 @@ export function WhatsAppConnectionDialog(): React.JSX.Element | null {
 
     // Step 1 -> Step 2
     const handleStartConnection = useCallback(async () => {
+        if (browserRuntime) {
+            setErrorMessage('Live WhatsApp connection is not available in the browser yet. Configure the authenticated Cloud API settings; native session transport remains an Electron transition path until its agentd adapter is migrated.')
+            setStep('error')
+            return
+        }
         setStep('connecting')
         setErrorMessage('')
         try {
@@ -106,7 +112,7 @@ export function WhatsAppConnectionDialog(): React.JSX.Element | null {
             setErrorMessage(err instanceof Error ? err.message : 'Failed to start connection')
             setStep('error')
         }
-    }, [])
+    }, [browserRuntime])
 
     // Step 3 -> Success
     const [handshakeCode, setHandshakeCode] = useState<string | null>(null)
@@ -234,17 +240,19 @@ export function WhatsAppConnectionDialog(): React.JSX.Element | null {
                                 >
                                     <div className="p-3 bg-white/5 border border-white/10 rounded-xl">
                                         <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed">
-                                            Prepare to scan the QR code using a phone you want to use as your <b>Worker Account</b>. 
-                                            This account will act as the AI Agent.
+                                            {browserRuntime
+                                                ? 'The browser workspace does not open a native WhatsApp session. Use the Cloud API settings for the migrated draft-only path; QR/native session transport remains a transition capability.'
+                                                : <>Prepare to scan the QR code using a phone you want to use as your <b>Worker Account</b>. This account will act as the AI Agent.</>}
                                         </p>
                                     </div>
 
                                     <button
                                         onClick={handleStartConnection}
+                                        disabled={browserRuntime}
                                         className="w-full py-3 bg-[#25D366] hover:bg-[#22c55e] text-white text-sm font-semibold rounded-xl shadow-lg shadow-[#25D366]/20 transition-all flex items-center justify-center gap-2"
                                     >
                                         <Link size={16} />
-                                        Start Connection
+                                        {browserRuntime ? 'Native connection unavailable' : 'Start Connection'}
                                     </button>
                                 </motion.div>
                             )}
