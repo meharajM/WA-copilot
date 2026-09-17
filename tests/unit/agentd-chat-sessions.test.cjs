@@ -5,6 +5,7 @@ const path = require('node:path')
 const test = require('node:test')
 const Database = require('better-sqlite3')
 const { AgentdServer } = require('../../agentd/server.cjs')
+const { makeTempDir } = require('./temp-dir.cjs')
 
 function request(origin, method, pathname, body, headers = {}) {
   return new Promise((resolve, reject) => {
@@ -20,7 +21,7 @@ function request(origin, method, pathname, body, headers = {}) {
 }
 
 test('agentd chat sessions require auth, persist across restart, and isolate messages', async () => {
-  const dataDir = fs.mkdtempSync('/tmp/aica-agentd-chat-')
+  const dataDir = makeTempDir('aica-agentd-chat-')
   const secret = 'c'.repeat(32)
   const server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
   const { origin } = await server.start()
@@ -81,7 +82,7 @@ test('agentd chat sessions require auth, persist across restart, and isolate mes
 })
 
 test('agentd chat messages are idempotent and reject conflicting retries', async () => {
-  const dataDir = fs.mkdtempSync('/tmp/aica-agentd-chat-idempotent-')
+  const dataDir = makeTempDir('aica-agentd-chat-idempotent-')
   const secret = 'd'.repeat(32)
   const server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
   const { origin } = await server.start()
@@ -102,7 +103,7 @@ test('agentd chat messages are idempotent and reject conflicting retries', async
 })
 
 test('agentd upgrades legacy chat session tables without losing existing sessions', async () => {
-  const dataDir = fs.mkdtempSync('/tmp/aica-agentd-chat-legacy-')
+  const dataDir = makeTempDir('aica-agentd-chat-legacy-')
   const legacy = new Database(path.join(dataDir, 'agentd.db'))
   legacy.exec(`CREATE TABLE chat_sessions (
     id TEXT PRIMARY KEY,
@@ -134,7 +135,7 @@ test('agentd upgrades legacy chat session tables without losing existing session
 })
 
 test('agentd chat session deletion is authenticated, idempotent, cascades messages, and survives restart', async () => {
-  const dataDir = fs.mkdtempSync('/tmp/aica-agentd-chat-delete-')
+  const dataDir = makeTempDir('aica-agentd-chat-delete-')
   const secret = 'f'.repeat(32)
   const server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
   const { origin } = await server.start()
@@ -157,7 +158,7 @@ test('agentd chat session deletion is authenticated, idempotent, cascades messag
 })
 
 test('agentd chat routes enforce bounded identifiers, content, fields, and CSRF', async () => {
-  const dataDir = fs.mkdtempSync('/tmp/aica-agentd-chat-bounds-')
+  const dataDir = makeTempDir('aica-agentd-chat-bounds-')
   const secret = 'e'.repeat(32)
   const server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
   const { origin } = await server.start()

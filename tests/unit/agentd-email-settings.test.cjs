@@ -3,6 +3,7 @@ const fs = require('node:fs')
 const http = require('node:http')
 const test = require('node:test')
 const { AgentdServer } = require('../../agentd/server.cjs')
+const { makeTempDir } = require('./temp-dir.cjs')
 
 function request(origin, method, pathname, body, headers = {}) {
   return new Promise((resolve, reject) => {
@@ -18,7 +19,7 @@ function request(origin, method, pathname, body, headers = {}) {
 }
 
 test('agentd email settings are authenticated, bounded, durable, and secret-free', async () => {
-  const dataDir = fs.mkdtempSync('/tmp/aica-agentd-email-settings-')
+  const dataDir = makeTempDir('aica-agentd-email-settings-')
   const secret = 'e'.repeat(32)
   const server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
   const { origin } = await server.start()

@@ -3,9 +3,10 @@ const fs = require('node:fs')
 const path = require('node:path')
 const test = require('node:test')
 const { KeyringCredentialStore, isAllowedCredentialKey } = require('../../agentd/keyring-credential-store.cjs')
+const { makeTempDir } = require('./temp-dir.cjs')
 
 test('keyring adapter sends secret values only over stdin and supports allowlisted operations', async () => {
-  const dataDir = fs.mkdtempSync('/tmp/aica-keyring-adapter-')
+  const dataDir = makeTempDir('aica-keyring-adapter-')
   const filename = path.join(dataDir, 'fake-keyring.json')
   const previousPath = process.env.AICA_TEST_KEYRING_FILE
   process.env.AICA_TEST_KEYRING_FILE = filename

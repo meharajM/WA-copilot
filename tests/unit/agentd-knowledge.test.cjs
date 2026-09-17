@@ -3,6 +3,7 @@ const fs = require('node:fs')
 const http = require('node:http')
 const test = require('node:test')
 const { AgentdServer } = require('../../agentd/server.cjs')
+const { makeTempDir } = require('./temp-dir.cjs')
 
 function request(origin, method, pathname, body, headers = {}) {
   return new Promise((resolve, reject) => {
@@ -18,7 +19,7 @@ function request(origin, method, pathname, body, headers = {}) {
 }
 
 test('agentd persists bounded browser knowledge, searches it, and records accuracy', async () => {
-  const dataDir = fs.mkdtempSync('/tmp/aica-agentd-knowledge-')
+  const dataDir = makeTempDir('aica-agentd-knowledge-')
   const server = new AgentdServer({ dataDir, secret: 's'.repeat(32), logger: { log() {} } })
   const { origin } = await server.start()
   const auth = { authorization: `Bearer ${'s'.repeat(32)}` }
@@ -45,7 +46,7 @@ test('agentd persists bounded browser knowledge, searches it, and records accura
 })
 
 test('agentd rejects unbounded or malformed browser knowledge', async () => {
-  const dataDir = fs.mkdtempSync('/tmp/aica-agentd-knowledge-bounds-')
+  const dataDir = makeTempDir('aica-agentd-knowledge-bounds-')
   const server = new AgentdServer({ dataDir, secret: 's'.repeat(32), logger: { log() {} } })
   const { origin } = await server.start()
   const auth = { authorization: `Bearer ${'s'.repeat(32)}` }

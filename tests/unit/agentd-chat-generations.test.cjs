@@ -3,6 +3,7 @@ const fs = require('node:fs')
 const http = require('node:http')
 const test = require('node:test')
 const { AgentdServer } = require('../../agentd/server.cjs')
+const { makeTempDir } = require('./temp-dir.cjs')
 
 function request(origin, method, pathname, body, headers = {}) {
   return new Promise((resolve, reject) => {
@@ -51,7 +52,7 @@ function providerResponse(content = 'safe answer') {
 }
 
 test('agentd generation is authenticated, bounded, fixed-endpoint, persisted, and idempotent', async () => {
-  const dataDir = fs.mkdtempSync('/tmp/aica-agentd-generation-')
+  const dataDir = makeTempDir('aica-agentd-generation-')
   const secret = 'g'.repeat(32)
   const calls = []
   const credentialValues = { openai_api_key: 'provider-secret' }
@@ -100,7 +101,7 @@ test('agentd generation is authenticated, bounded, fixed-endpoint, persisted, an
 })
 
 test('agentd generation returns safe errors and never accepts arbitrary provider URLs', async () => {
-  const dataDir = fs.mkdtempSync('/tmp/aica-agentd-generation-error-')
+  const dataDir = makeTempDir('aica-agentd-generation-error-')
   const secret = 'h'.repeat(32)
   const server = new AgentdServer({
     dataDir,
@@ -126,7 +127,7 @@ test('agentd generation returns safe errors and never accepts arbitrary provider
 })
 
 test('agentd persists bounded browser attachments and maps text/images into provider content parts', async () => {
-  const dataDir = fs.mkdtempSync('/tmp/aica-agentd-generation-attachments-')
+  const dataDir = makeTempDir('aica-agentd-generation-attachments-')
   const secret = 'a'.repeat(32)
   const calls = []
   const server = new AgentdServer({
@@ -161,7 +162,7 @@ test('agentd persists bounded browser attachments and maps text/images into prov
 })
 
 test('agentd streams provider deltas over authenticated SSE and persists the completed answer', async () => {
-  const dataDir = fs.mkdtempSync('/tmp/aica-agentd-generation-stream-')
+  const dataDir = makeTempDir('aica-agentd-generation-stream-')
   const secret = 's'.repeat(32)
   const calls = []
   const server = new AgentdServer({
@@ -199,7 +200,7 @@ test('agentd streams provider deltas over authenticated SSE and persists the com
 })
 
 test('agentd aborts provider work on browser cancellation and allows retry', async () => {
-  const dataDir = fs.mkdtempSync('/tmp/aica-agentd-generation-cancel-')
+  const dataDir = makeTempDir('aica-agentd-generation-cancel-')
   const secret = 'c'.repeat(32)
   let callCount = 0
   let providerAborted = false

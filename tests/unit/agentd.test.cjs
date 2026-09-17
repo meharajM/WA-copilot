@@ -5,6 +5,7 @@ const http = require('node:http')
 const path = require('node:path')
 const test = require('node:test')
 const { AgentdServer } = require('../../agentd/server.cjs')
+const { makeTempDir } = require('./temp-dir.cjs')
 
 function request(origin, method, pathname, body, headers = {}) {
   return new Promise((resolve, reject) => {
@@ -30,7 +31,7 @@ function rawRequest(origin, pathname) {
 }
 
 test('agentd persists events, enforces pairing/CSRF, and survives client disconnect', async () => {
-  const dataDir = fs.mkdtempSync('/tmp/aica-agentd-')
+  const dataDir = makeTempDir('aica-agentd-')
   const logMessages = []
   const server = new AgentdServer({ dataDir, secret: 's'.repeat(32), pairingCode: '123456', logger: { log: message => logMessages.push(message) } })
   const { origin } = await server.start()
@@ -88,7 +89,7 @@ test('agentd persists events, enforces pairing/CSRF, and survives client disconn
 })
 
 test('agentd rejects a second owner', async () => {
-  const dataDir = fs.mkdtempSync('/tmp/aica-agentd-lock-')
+  const dataDir = makeTempDir('aica-agentd-lock-')
   const first = new AgentdServer({ dataDir, secret: 's'.repeat(32), logger: { log() {} } })
   await first.start()
   await assert.rejects(() => new AgentdServer({ dataDir, secret: 's'.repeat(32), logger: { log() {} } }).start(), /Another agentd instance/)
@@ -97,7 +98,7 @@ test('agentd rejects a second owner', async () => {
 })
 
 test('agentd removes a stale lock left by a crashed owner', async () => {
-  const dataDir = fs.mkdtempSync('/tmp/aica-agentd-stale-lock-')
+  const dataDir = makeTempDir('aica-agentd-stale-lock-')
   fs.writeFileSync(`${dataDir}/agentd.lock`, '9007199254740991\n', { mode: 0o600 })
   const servers = [0, 1].map(() => new AgentdServer({ dataDir, secret: 's'.repeat(32), logger: { log() {} } }))
   const results = await Promise.allSettled(servers.map(server => server.start()))
@@ -110,7 +111,7 @@ test('agentd removes a stale lock left by a crashed owner', async () => {
 })
 
 test('agentd rate-limits wrong pairing codes without logging secrets', async () => {
-  const dataDir = fs.mkdtempSync('/tmp/aica-agentd-pair-limit-')
+  const dataDir = makeTempDir('aica-agentd-pair-limit-')
   const logMessages = []
   const server = new AgentdServer({ dataDir, secret: 's'.repeat(32), pairingCode: '123456', logger: { log: message => logMessages.push(message) } })
   const { origin } = await server.start()
@@ -128,7 +129,7 @@ test('agentd rate-limits wrong pairing codes without logging secrets', async () 
 })
 
 test('agentd exposes allowlisted credential set, presence, and delete without returning secret values', async () => {
-  const dataDir = fs.mkdtempSync('/tmp/aica-agentd-credentials-')
+  const dataDir = makeTempDir('aica-agentd-credentials-')
   const records = new Map()
   const credentials = {
     get: async key => records.get(key) ?? null,
@@ -160,7 +161,7 @@ test('agentd exposes allowlisted credential set, presence, and delete without re
 })
 
 test('agentd persists exact LLM preferences and probes only fixed providers with stored credentials', async () => {
-  const dataDir = fs.mkdtempSync('/tmp/aica-agentd-llm-')
+  const dataDir = makeTempDir('aica-agentd-llm-')
   const records = new Map()
   const calls = []
   let upstreamFailureMode = false
@@ -233,7 +234,7 @@ test('agentd persists exact LLM preferences and probes only fixed providers with
 })
 
 test('agentd persists allowlisted persona settings without accepting unknown fields', async () => {
-  const dataDir = fs.mkdtempSync('/tmp/aica-agentd-persona-')
+  const dataDir = makeTempDir('aica-agentd-persona-')
   const server = new AgentdServer({ dataDir, secret: 's'.repeat(32), logger: { log() {} } })
   const { origin } = await server.start()
   const auth = { authorization: `Bearer ${'s'.repeat(32)}` }
@@ -259,7 +260,7 @@ test('agentd persists allowlisted persona settings without accepting unknown fie
 })
 
 test('agentd persists bounded product preferences and redacts browser audit logs', async () => {
-  const dataDir = fs.mkdtempSync('/tmp/aica-agentd-preferences-')
+  const dataDir = makeTempDir('aica-agentd-preferences-')
   const server = new AgentdServer({ dataDir, secret: 's'.repeat(32), logger: { log() {} } })
   const { origin } = await server.start()
   const auth = { authorization: `Bearer ${'s'.repeat(32)}` }
@@ -292,7 +293,7 @@ test('agentd persists bounded product preferences and redacts browser audit logs
 })
 
 test('agentd persists bounded WhatsApp transport settings and never returns Cloud secrets', async () => {
-  const dataDir = fs.mkdtempSync('/tmp/aica-agentd-whatsapp-settings-')
+  const dataDir = makeTempDir('aica-agentd-whatsapp-settings-')
   const records = new Map()
   const credentials = {
     get: async key => records.get(key) ?? null,
@@ -334,8 +335,8 @@ test('agentd persists bounded WhatsApp transport settings and never returns Clou
 })
 
 test('agentd serves the browser bundle with executable asset MIME types', async () => {
-  const dataDir = fs.mkdtempSync('/tmp/aica-agentd-ui-')
-  const uiRoot = fs.mkdtempSync('/tmp/aica-agentd-ui-root-')
+  const dataDir = makeTempDir('aica-agentd-ui-')
+  const uiRoot = makeTempDir('aica-agentd-ui-root-')
   fs.writeFileSync(path.join(uiRoot, 'tauri.html'), '<script type="module" src="/assets/app.js"></script>')
   fs.mkdirSync(path.join(uiRoot, 'assets'))
   fs.writeFileSync(path.join(uiRoot, 'assets', 'app.js'), 'export default 1')

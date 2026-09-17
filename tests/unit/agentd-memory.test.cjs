@@ -3,6 +3,7 @@ const fs = require('node:fs')
 const http = require('node:http')
 const test = require('node:test')
 const { AgentdServer } = require('../../agentd/server.cjs')
+const { makeTempDir } = require('./temp-dir.cjs')
 
 function request(origin, method, pathname, body, headers = {}) {
   return new Promise((resolve, reject) => {
@@ -18,7 +19,7 @@ function request(origin, method, pathname, body, headers = {}) {
 }
 
 test('agentd memory graph routes persist bounded entities, relations, search, and export', async () => {
-  const dataDir = fs.mkdtempSync('/tmp/aica-agentd-memory-')
+  const dataDir = makeTempDir('aica-agentd-memory-')
   const server = new AgentdServer({ dataDir, secret: 's'.repeat(32), logger: { log() {} } })
   const { origin } = await server.start()
   const auth = { authorization: `Bearer ${'s'.repeat(32)}` }

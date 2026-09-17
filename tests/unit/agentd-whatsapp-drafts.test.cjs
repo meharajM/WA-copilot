@@ -3,6 +3,7 @@ const fs = require('node:fs')
 const http = require('node:http')
 const test = require('node:test')
 const { AgentdServer } = require('../../agentd/server.cjs')
+const { makeTempDir } = require('./temp-dir.cjs')
 
 function request(origin, method, pathname, body, headers = {}) {
   return new Promise((resolve, reject) => {
@@ -15,7 +16,7 @@ function request(origin, method, pathname, body, headers = {}) {
 }
 
 test('authenticated WhatsApp events dedupe, pause, persist, and expose safe draft transitions', async () => {
-  const dataDir = fs.mkdtempSync('/tmp/aica-agentd-wa-drafts-')
+  const dataDir = makeTempDir('aica-agentd-wa-drafts-')
   const secret = 's'.repeat(32)
   const server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
   const { origin } = await server.start()
@@ -45,7 +46,7 @@ test('authenticated WhatsApp events dedupe, pause, persist, and expose safe draf
 })
 
 test('concurrent WhatsApp retries and legacy endpoint ordering stay idempotent', async () => {
-  const dataDir = fs.mkdtempSync('/tmp/aica-agentd-wa-race-')
+  const dataDir = makeTempDir('aica-agentd-wa-race-')
   const secret = 'r'.repeat(32)
   const server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
   const { origin } = await server.start()
