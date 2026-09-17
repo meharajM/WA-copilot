@@ -29,4 +29,14 @@ describe('native bridge security boundary', () => {
     expect(secure.match(/success: true/g)).toBeNull()
     expect(secure).toContain("Not supported in browser mode")
   })
+
+  it('does not return success-shaped MCP browser mocks', async () => {
+    const electron = await source('src/renderer/src/lib/electron.ts')
+    const mcp = electron.slice(electron.indexOf('    // MCP operations'), electron.indexOf('    // Storage with localStorage fallback'))
+
+    expect(mcp).not.toContain('mock_')
+    expect(mcp).not.toContain('MCP connect mock')
+    expect(mcp).toContain('MCP server management is not available in browser mode')
+    expect(mcp).toContain('MCP tool execution is not available in browser mode')
+  })
 })

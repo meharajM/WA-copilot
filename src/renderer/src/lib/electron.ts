@@ -137,33 +137,28 @@ export const electron = {
             if (isElectron() && window.electron?.mcp) {
                 return await window.electron.mcp.connect(serverConfig)
             }
-            // Browser fallback - mock implementation
-            console.log('[Browser] MCP connect mock:', serverConfig)
-            return { success: true, serverId: `mock_${Date.now()}` }
+            return { success: false, error: 'MCP server management is not available in browser mode' }
         },
 
         disconnect: async (serverId: string) => {
             if (isElectron() && window.electron?.mcp) {
                 return await window.electron.mcp.disconnect(serverId)
             }
-            console.log('[Browser] MCP disconnect mock:', serverId)
-            return { success: true }
+            return { success: false, error: 'MCP server management is not available in browser mode' }
         },
 
         listTools: async (serverId: string) => {
             if (isElectron() && window.electron?.mcp) {
                 return await window.electron.mcp.listTools(serverId)
             }
-            console.log('[Browser] MCP list tools mock:', serverId)
-            return { tools: [] }
+            return { success: false, error: 'MCP server management is not available in browser mode', tools: [] }
         },
 
         callTool: async (serverId: string, toolName: string, args: unknown, requestId?: string) => {
             if (isElectron() && window.electron?.mcp) {
                 return await window.electron.mcp.callTool(serverId, toolName, args, requestId)
             }
-            console.log('[Browser] MCP call tool mock:', { serverId, toolName, args })
-            return { result: null }
+            return { success: false, error: 'MCP tool execution is not available in browser mode', result: null }
         },
         cancelTool: async (requestId: string) => {
             if (isElectron() && window.electron?.mcp) return await window.electron.mcp.cancelTool(requestId)

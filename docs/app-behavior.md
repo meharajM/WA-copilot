@@ -332,6 +332,7 @@ Pass evidence:
   - toggle auto-connect
   - troubleshoot
 - Troubleshoot injects a prompt into chat for the AI to inspect a tool failure.
+- In the browser product, migrated agentd-owned memory and knowledge tools remain available, but arbitrary MCP server management/tool execution is explicitly unavailable until its authenticated agentd adapter is migrated; the browser must not show success-shaped MCP mocks. Electron retains the existing MCP path during transition.
 
 Pass evidence:
 
