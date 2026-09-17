@@ -1,5 +1,6 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest'
 import * as fs from 'node:fs'
+import * as path from 'node:path'
 
 // Mock Electron explicitly for the persona module
 vi.mock('electron', () => ({
@@ -77,7 +78,7 @@ describe('BusinessPersona Unit Tests', () => {
         
         // Check the arguments passed to fs.writeFileSync
         const writeArgs = vi.mocked(fs.writeFileSync).mock.calls[0]
-        expect(writeArgs[0]).toBe('/mock/userData/business_profile.json')
+        expect(writeArgs[0]).toBe(path.join('/mock/userData', 'business_profile.json'))
         expect(writeArgs[1]).toContain('"name": "Updated Bot"')
         expect(writeArgs[1]).toContain('"customRules": "Never say hello."')
     })
