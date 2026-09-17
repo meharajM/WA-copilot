@@ -9,7 +9,10 @@
  */
 
 import { create } from 'zustand'
-import { persist, createJSONStorage } from 'zustand/middleware'
+import { persist, createJSONStorage, type StateStorage } from 'zustand/middleware'
+import type { EmailSettings } from '../../../shared/native-bridge'
+import { getBrowserAgentdClient } from '../lib/browser-agentd-client'
+import { isTauriRuntime } from '../lib/tauri-native-bridge'
 
 /** Supported email providers for MCP integration */
 export type EmailProvider = 'imap-smtp' | 'gmail-api' | 'outlook-api' | 'custom-mcp'
@@ -26,7 +29,7 @@ export interface EmailConnectionState {
 }
 
 /** Email channel configuration — persisted */
-interface EmailConfig {
+export interface EmailConfig extends EmailSettings {
   /** Logical mailbox account label for MCP server */
   accountName: string
   /** Selected email provider type */
@@ -116,6 +119,13 @@ const DEFAULT_CONFIG: EmailConfig = {
   draftMode: true, // Safe default: drafts only until user approves
 }
 
+const isBrowserProduct = (): boolean => typeof window !== 'undefined' && !window.electron && !isTauriRuntime()
+const browserStorage: StateStorage = {
+  getItem: async () => null,
+  setItem: async () => undefined,
+  removeItem: async () => undefined,
+}
+
 export const useEmailStore = create<EmailState>()(
   persist(
     (set) => ({
@@ -169,7 +179,8 @@ export const useEmailStore = create<EmailState>()(
     }),
     {
       name: 'aica-email-v1',
-      storage: createJSONStorage(() => localStorage),
+      // Browser settings are owned by authenticated agentd, never renderer storage.
+      storage: createJSONStorage(() => isBrowserProduct() ? browserStorage : localStorage),
       merge: (persistedState, currentState) => {
         const persisted = persistedState as Partial<EmailState> | undefined
         return {
@@ -188,3 +199,15 @@ export const useEmailStore = create<EmailState>()(
     }
   )
 )
+
+if (isBrowserProduct()) {
+  let hydrated = false
+  void getBrowserAgentdClient().getEmailSettings().then((config) => {
+    useEmailStore.setState({ config })
+    hydrated = true
+  }).catch(() => { hydrated = true })
+  useEmailStore.subscribe((state, previous) => {
+    if (!hydrated || state.config === previous.config) return
+    void getBrowserAgentdClient().saveEmailSettings(state.config).catch(() => undefined)
+  })
+}

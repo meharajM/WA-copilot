@@ -12,6 +12,8 @@ import { useEmailStore, type EmailProvider, type GmailAuthMode } from '../../sto
 import { Card } from '../primitives/Card'
 import electron from '../../lib/electron'
 import { buildEmailRuntimeConfig } from '../../lib/email-runtime'
+import { getBrowserAgentdClient } from '../../lib/browser-agentd-client'
+import { isElectron } from '../../lib/electron'
 import {
   Mail,
   Server,
@@ -151,10 +153,12 @@ export function EmailSettingsPanel() {
   }, [config])
 
   useEffect(() => {
-    electron.secure.get('email_mcp_password').then((result) => {
-      if (result.success && result.value) setLocalPassword(result.value)
-    }).catch(() => {})
-    electron.emailOAuth.initialize().then(setOauthStatus).catch(() => {})
+    if (isElectron()) {
+      electron.secure.get('email_mcp_password').then((result) => {
+        if (result.success && result.value) setLocalPassword(result.value)
+      }).catch(() => {})
+      electron.emailOAuth.initialize().then(setOauthStatus).catch(() => {})
+    }
   }, [])
 
   const applyProvider = (provider: EmailProvider) => {
@@ -187,7 +191,8 @@ export function EmailSettingsPanel() {
     })
     setPollingInterval(localPollingInterval)
     if (localPassword.trim()) {
-      await electron.secure.set('email_mcp_password', localPassword.trim())
+      if (isElectron()) await electron.secure.set('email_mcp_password', localPassword.trim())
+      else await getBrowserAgentdClient().setCredential('email_mcp_password', localPassword.trim())
     }
   }
 
@@ -241,6 +246,11 @@ export function EmailSettingsPanel() {
   }
 
   const handleTestConnection = async () => {
+    if (!isElectron()) {
+      await persistSettings()
+      setTestState({ status: 'error', message: 'Email transport is not available in the browser yet. Settings are saved securely by agentd; IMAP/SMTP runtime migration is still required.' })
+      return
+    }
     if (!readyForAuth || !readyForVerify) {
       setTestState({
         status: 'error',

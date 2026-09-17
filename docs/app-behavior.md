@@ -205,10 +205,11 @@ Pass evidence:
 
 ### Positioning
 
-- Email is a client-side local connector flow.
+- Electron currently runs the legacy client-side local connector flow. In the browser product, non-secret Email configuration is persisted by authenticated `agentd`, while the mailbox transport remains explicitly unavailable until its daemon adapter is migrated.
 - The primary path is IMAP/SMTP.
 - Gmail is presented as a first-class option, but defaults to app-password mode.
 - Google sign-in is optional, not required.
+- Browser Email settings never use renderer `localStorage` and app-password values are write-only through the authenticated daemon credential route; the browser cannot read them back.
 
 ### Provider and auth behavior
 
@@ -227,6 +228,7 @@ Pass evidence:
 
 - Gmail app-password mode can test and start without requiring OAuth.
 - Gmail Google sign-in mode fails cleanly when OAuth is not configured or not signed in.
+- Browser settings survive reload/restart without exposing the credential value; browser test/start reports a clear transport-migration message instead of probing Electron IPC.
 
 ### Channel gating
 

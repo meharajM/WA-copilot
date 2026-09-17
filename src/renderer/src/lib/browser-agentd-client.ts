@@ -15,6 +15,7 @@ import type {
   PersonaSettings,
   ProductPreferences,
   WhatsAppSettings,
+  EmailSettings,
 } from '../../../shared/native-bridge'
 import { readGeneration, readMessage, readSession } from './tauri-chat-client'
 
@@ -87,6 +88,22 @@ const readWhatsAppSettings = (value: unknown): WhatsAppSettings => {
     || typeof value.whatsapp_cloud_phone_number_id !== 'string'
     || typeof value.whatsapp_cloud_api_version !== 'string') throw new Error('Invalid WhatsApp settings response')
   return value as unknown as WhatsAppSettings
+}
+
+const readEmailSettings = (value: unknown): EmailSettings => {
+  if (!isRecord(value)) throw new Error('Invalid email settings response')
+  const expected = ['accountName', 'autoReplyMode', 'draftMode', 'emailAddress', 'enabled', 'gmailAuthMode', 'imapHost', 'imapPort', 'imapTls', 'pollingIntervalSeconds', 'provider', 'smtpHost', 'smtpPort', 'smtpTls', 'userName']
+  if (Object.keys(value).sort().join(',') !== expected.join(',')
+    || typeof value.accountName !== 'string'
+    || !['imap-smtp', 'gmail-api', 'outlook-api', 'custom-mcp'].includes(value.provider as string)
+    || !['app-password', 'google-oauth'].includes(value.gmailAuthMode as string)
+    || typeof value.imapHost !== 'string' || !Number.isSafeInteger(value.imapPort)
+    || typeof value.smtpHost !== 'string' || !Number.isSafeInteger(value.smtpPort)
+    || typeof value.emailAddress !== 'string' || typeof value.userName !== 'string'
+    || typeof value.imapTls !== 'boolean' || typeof value.smtpTls !== 'boolean'
+    || !Number.isSafeInteger(value.pollingIntervalSeconds)
+    || typeof value.enabled !== 'boolean' || typeof value.autoReplyMode !== 'boolean' || typeof value.draftMode !== 'boolean') throw new Error('Invalid email settings response')
+  return value as unknown as EmailSettings
 }
 
 const readPersonaSettings = (value: unknown): PersonaSettings => {
@@ -192,6 +209,8 @@ export interface BrowserAgentdClient extends ChatClient {
   saveLlmSettings(settings: LlmSettings): Promise<LlmSettings>
   getWhatsAppSettings(): Promise<WhatsAppSettings>
   saveWhatsAppSettings(settings: WhatsAppSettings): Promise<WhatsAppSettings>
+  getEmailSettings(): Promise<EmailSettings>
+  saveEmailSettings(settings: EmailSettings): Promise<EmailSettings>
   getPersonaSettings(): Promise<PersonaSettings>
   savePersonaSettings(settings: PersonaSettings): Promise<PersonaSettings>
   getProductPreferences(): Promise<ProductPreferences>
@@ -456,6 +475,8 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
   const saveLlmSettings = async (settings: LlmSettings) => readLlmSettings(await request('/api/v1/settings/llm', { method: 'PUT', body: JSON.stringify(settings) }, true))
   const getWhatsAppSettings = async () => readWhatsAppSettings(await request('/api/v1/settings/whatsapp'))
   const saveWhatsAppSettings = async (settings: WhatsAppSettings) => readWhatsAppSettings(await request('/api/v1/settings/whatsapp', { method: 'PUT', body: JSON.stringify(settings) }, true))
+  const getEmailSettings = async () => readEmailSettings(await request('/api/v1/settings/email'))
+  const saveEmailSettings = async (settings: EmailSettings) => readEmailSettings(await request('/api/v1/settings/email', { method: 'PUT', body: JSON.stringify(settings) }, true))
   const getPersonaSettings = async () => readPersonaSettings(await request('/api/v1/settings/persona'))
   const savePersonaSettings = async (settings: PersonaSettings) => readPersonaSettings(await request('/api/v1/settings/persona', { method: 'PUT', body: JSON.stringify(settings) }, true))
   const getProductPreferences = async () => readProductPreferences(await request('/api/v1/settings/preferences'))
@@ -595,6 +616,8 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     saveLlmSettings,
     getWhatsAppSettings,
     saveWhatsAppSettings,
+    getEmailSettings,
+    saveEmailSettings,
     getPersonaSettings,
     savePersonaSettings,
     getProductPreferences,

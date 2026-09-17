@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import electron from '../lib/electron'
+import electron, { isElectron } from '../lib/electron'
 import { useEmailStore } from '../stores/emailStore'
 import { buildEmailRuntimeConfig } from '../lib/email-runtime'
 import { normalizeEmailAddress, type EmailMessage } from '../lib/email-integration'
@@ -33,6 +33,10 @@ export function useEmailBridge(): void {
   const setConnectionState = useEmailStore((s) => s.setConnectionState)
 
   useEffect(() => {
+    if (!isElectron()) {
+      setConnectionState({ status: 'disconnected', error: null, lastSyncAt: null, unreadCount: 0 })
+      return
+    }
     let cancelled = false
     electron.email.getState().then((state) => {
       if (!cancelled) {
@@ -43,6 +47,7 @@ export function useEmailBridge(): void {
   }, [setConnectionState])
 
   useEffect(() => {
+    if (!isElectron()) return
     const unsubConnection = electron.email.onConnectionChange((state) => {
       setConnectionState(state as EmailConnectionState)
     })
@@ -77,6 +82,12 @@ export function useEmailBridge(): void {
 
   useEffect(() => {
     const run = async () => {
+      if (!isElectron()) {
+        setConnectionState(config.enabled
+          ? { status: 'error', error: 'Email transport is not available in the browser yet; settings are saved by agentd.', lastSyncAt: null, unreadCount: 0 }
+          : { status: 'disconnected', error: null, lastSyncAt: null, unreadCount: 0 })
+        return
+      }
       console.log('[EmailBridge] run', {
         enabled: config.enabled,
         provider: config.provider,

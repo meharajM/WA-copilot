@@ -86,6 +86,23 @@ const WHATSAPP_SETTINGS_DEFAULTS = Object.freeze({
   whatsapp_cloud_phone_number_id: '',
   whatsapp_cloud_api_version: 'v23.0',
 })
+const EMAIL_SETTINGS_DEFAULTS = Object.freeze({
+  accountName: 'default',
+  provider: 'imap-smtp',
+  gmailAuthMode: 'app-password',
+  imapHost: '',
+  imapPort: 993,
+  smtpHost: '',
+  smtpPort: 587,
+  emailAddress: '',
+  userName: '',
+  imapTls: true,
+  smtpTls: true,
+  pollingIntervalSeconds: 60,
+  enabled: false,
+  autoReplyMode: false,
+  draftMode: true,
+})
 
 function resolveDataDir(dataDir = process.env.AICA_AGENTD_DATA_DIR) {
   if (dataDir) return dataDir
@@ -481,6 +498,7 @@ class AgentdServer {
     if (url.pathname === '/api/v1/settings/persona' && ['GET', 'PUT'].includes(req.method)) return this.personaSettings(req, res)
     if (url.pathname === '/api/v1/settings/preferences' && ['GET', 'PUT'].includes(req.method)) return this.productPreferences(req, res)
     if (url.pathname === '/api/v1/settings/whatsapp' && ['GET', 'PUT'].includes(req.method)) return this.whatsappSettings(req, res)
+    if (url.pathname === '/api/v1/settings/email' && ['GET', 'PUT'].includes(req.method)) return this.emailSettings(req, res)
     const providerTestMatch = /^\/api\/v1\/providers\/(openai|openrouter)\/test$/.exec(url.pathname)
     if (providerTestMatch && req.method === 'POST') return this.testProvider(req, res, providerTestMatch[1])
     if (url.pathname === '/api/v1/status' && req.method === 'GET') {
@@ -593,6 +611,21 @@ class AgentdServer {
     if (!preferences) return json(res, 400, { error: 'Invalid product preferences' })
     this.setState('product_preferences', JSON.stringify(preferences))
     return json(res, 200, preferences)
+  }
+
+  async emailSettings(req, res) {
+    this.authorize(req, { mutation: req.method === 'PUT' })
+    if (req.method === 'GET') {
+      let stored = null
+      try { stored = JSON.parse(this.getState('email_settings', 'null')) } catch {}
+      return json(res, 200, parseEmailSettings(stored) || EMAIL_SETTINGS_DEFAULTS)
+    }
+    if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
+    const body = await readBody(req, 16 * 1024)
+    const settings = parseEmailSettings(body)
+    if (!settings) return json(res, 400, { error: 'Invalid email settings' })
+    this.setState('email_settings', JSON.stringify(settings))
+    return json(res, 200, settings)
   }
 
   async auditLogs(req, res, url) {
@@ -1531,6 +1564,42 @@ function parseWhatsAppSettings(value) {
     whatsapp_transport: value.whatsapp_transport,
     whatsapp_cloud_phone_number_id: value.whatsapp_cloud_phone_number_id,
     whatsapp_cloud_api_version: value.whatsapp_cloud_api_version,
+  }
+}
+
+function parseEmailSettings(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const keys = Object.keys(value).sort()
+  const expected = Object.keys(EMAIL_SETTINGS_DEFAULTS).sort()
+  if (keys.length !== expected.length || keys.some((key, index) => key !== expected[index])) return null
+  if (!validBoundedText(value.accountName, 128)
+    || !['imap-smtp', 'gmail-api', 'outlook-api', 'custom-mcp'].includes(value.provider)
+    || !['app-password', 'google-oauth'].includes(value.gmailAuthMode)
+    || !validBoundedText(value.imapHost, 256, true)
+    || !Number.isSafeInteger(value.imapPort) || value.imapPort < 1 || value.imapPort > 65535
+    || !validBoundedText(value.smtpHost, 256, true)
+    || !Number.isSafeInteger(value.smtpPort) || value.smtpPort < 1 || value.smtpPort > 65535
+    || !validBoundedText(value.emailAddress, 320, true)
+    || !validBoundedText(value.userName, 320, true)
+    || typeof value.imapTls !== 'boolean' || typeof value.smtpTls !== 'boolean'
+    || !Number.isSafeInteger(value.pollingIntervalSeconds) || value.pollingIntervalSeconds < 30 || value.pollingIntervalSeconds > 86400
+    || typeof value.enabled !== 'boolean' || typeof value.autoReplyMode !== 'boolean' || typeof value.draftMode !== 'boolean') return null
+  return {
+    accountName: value.accountName.trim(),
+    provider: value.provider,
+    gmailAuthMode: value.gmailAuthMode,
+    imapHost: value.imapHost.trim(),
+    imapPort: value.imapPort,
+    smtpHost: value.smtpHost.trim(),
+    smtpPort: value.smtpPort,
+    emailAddress: value.emailAddress.trim(),
+    userName: value.userName.trim(),
+    imapTls: value.imapTls,
+    smtpTls: value.smtpTls,
+    pollingIntervalSeconds: value.pollingIntervalSeconds,
+    enabled: value.enabled,
+    autoReplyMode: value.autoReplyMode,
+    draftMode: value.draftMode,
   }
 }
 

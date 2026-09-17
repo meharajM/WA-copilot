@@ -70,6 +70,28 @@ export interface WhatsAppSettings {
   whatsapp_cloud_api_version: string
 }
 
+export type EmailProvider = 'imap-smtp' | 'gmail-api' | 'outlook-api' | 'custom-mcp'
+export type GmailAuthMode = 'app-password' | 'google-oauth'
+
+/** Non-secret email channel configuration owned by agentd. Passwords/tokens stay in credentials. */
+export interface EmailSettings {
+  accountName: string
+  provider: EmailProvider
+  gmailAuthMode: GmailAuthMode
+  imapHost: string
+  imapPort: number
+  smtpHost: string
+  smtpPort: number
+  emailAddress: string
+  userName: string
+  imapTls: boolean
+  smtpTls: boolean
+  pollingIntervalSeconds: number
+  enabled: boolean
+  autoReplyMode: boolean
+  draftMode: boolean
+}
+
 export interface ProviderTestResult extends NativeResult {
   modelCount?: number
 }

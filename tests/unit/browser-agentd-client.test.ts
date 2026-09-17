@@ -161,6 +161,31 @@ describe('browser agentd client', () => {
     expect(new Headers(post?.[1]?.headers).get('x-csrf-token')).toBe('csrf-token')
   })
 
+  it('maps non-secret email settings through authenticated agentd routes', async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
+      if (url.endsWith('/api/v1/settings/email')) return response({
+        accountName: 'support', provider: 'imap-smtp', gmailAuthMode: 'app-password',
+        imapHost: 'imap.example.test', imapPort: 993, smtpHost: 'smtp.example.test', smtpPort: 587,
+        emailAddress: 'support@example.test', userName: 'support@example.test', imapTls: true, smtpTls: true,
+        pollingIntervalSeconds: 60, enabled: false, autoReplyMode: false, draftMode: true,
+      })
+      return response({ success: true })
+    })
+    const client = createBrowserAgentdClient({ origin: 'http://127.0.0.1:4141', fetch: fetcher })
+    await client.pair('123456')
+    await expect(client.getEmailSettings()).resolves.toMatchObject({ provider: 'imap-smtp', draftMode: true })
+    await client.saveEmailSettings({
+      accountName: 'support', provider: 'imap-smtp', gmailAuthMode: 'app-password', imapHost: 'imap.example.test', imapPort: 993,
+      smtpHost: 'smtp.example.test', smtpPort: 587, emailAddress: 'support@example.test', userName: 'support@example.test',
+      imapTls: true, smtpTls: true, pollingIntervalSeconds: 120, enabled: true, autoReplyMode: false, draftMode: true,
+    })
+    const put = fetcher.mock.calls.find(([input, init]) => String(input).endsWith('/api/v1/settings/email') && init?.method === 'PUT')
+    expect(new Headers(put?.[1]?.headers).get('x-csrf-token')).toBe('csrf-token')
+    expect(Object.prototype.hasOwnProperty.call(JSON.parse(String(put?.[1]?.body)), 'password')).toBe(false)
+  })
+
   it('maps draft-only autonomy controls to authenticated agentd routes', async () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
