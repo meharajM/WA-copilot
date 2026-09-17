@@ -38,6 +38,14 @@ export interface LlmSettings {
   openrouterModel: string
 }
 
+export interface PersonaSettings {
+  name: string
+  industry: string
+  tone: 'professional' | 'casual' | 'enthusiastic' | 'concise'
+  coreKnowledge: string[]
+  customRules?: string
+}
+
 export type WhatsAppTransport = 'baileys' | 'cloud' | 'web'
 
 export interface WhatsAppSettings {

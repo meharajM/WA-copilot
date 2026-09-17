@@ -14,6 +14,7 @@ describe('browser agentd client', () => {
         return calls.some(call => call.url.endsWith('/api/v1/pair')) ? response({ runtime: 'agentd', paused: false, queueDepth: 0, events: 0 }) : response({ error: 'Authentication required' }, 401)
       }
       if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 }, 200, { 'set-cookie': 'agentd_session=opaque; HttpOnly' })
+      if (url.endsWith('/api/v1/session')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
       if (url.endsWith('/api/v1/sessions')) return response({ sessions: [] })
       throw new Error(`unexpected request ${url}`)
     })
@@ -31,6 +32,14 @@ describe('browser agentd client', () => {
     expect(new Headers(statusCall.init?.headers).has('x-csrf-token')).toBe(false)
     const sessionsCall = calls.find(call => call.url.endsWith('/api/v1/sessions'))!
     expect(new Headers(sessionsCall.init?.headers).has('x-csrf-token')).toBe(false)
+
+    // A browser reload loses the in-memory token but keeps the HttpOnly cookie.
+    // The authenticated session bootstrap restores mutation protection.
+    const reloadedClient = createBrowserAgentdClient({ origin: 'http://127.0.0.1:4141', fetch: fetcher })
+    await expect(reloadedClient.readiness()).resolves.toBe('ready')
+    await reloadedClient.createSession('chat_after_reload', 'Reloaded')
+    const reloadMutation = calls.find(call => call.url.endsWith('/api/v1/sessions') && call.init?.method === 'POST' && String(call.init?.body).includes('chat_after_reload'))!
+    expect(new Headers(reloadMutation.init?.headers).get('x-csrf-token')).toBe('csrf-token')
   })
 
   it('maps chat routes and emits complete-response events without renderer storage', async () => {
@@ -63,5 +72,20 @@ describe('browser agentd client', () => {
     const client = createBrowserAgentdClient({ origin: 'http://127.0.0.1:4141', fetch: fetcher })
     await expect(client.pair('12')).rejects.toThrow('Pairing code must be six digits')
     expect(fetcher).not.toHaveBeenCalled()
+  })
+
+  it('maps authenticated persona settings without using renderer secret storage', async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
+      if (url.endsWith('/api/v1/settings/persona')) return response({ name: 'AICA', industry: 'Support', tone: 'professional', coreKnowledge: [] })
+      return response({ success: true })
+    })
+    const client = createBrowserAgentdClient({ origin: 'http://127.0.0.1:4141', fetch: fetcher })
+    await client.pair('123456')
+    await expect(client.getPersonaSettings()).resolves.toMatchObject({ name: 'AICA', tone: 'professional' })
+    await expect(client.savePersonaSettings({ name: 'AICA', industry: 'Support', tone: 'concise', coreKnowledge: ['FAQ'] })).resolves.toMatchObject({ tone: 'professional' })
+    const mutation = fetcher.mock.calls.find(([input, init]) => String(input).endsWith('/api/v1/settings/persona') && init?.method === 'PUT')
+    expect(new Headers(mutation?.[1]?.headers).get('x-csrf-token')).toBe('csrf-token')
   })
 })

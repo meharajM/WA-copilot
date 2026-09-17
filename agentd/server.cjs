@@ -37,6 +37,12 @@ const LLM_SETTINGS_DEFAULTS = Object.freeze({
   openaiModel: 'gpt-4o-mini',
   openrouterModel: 'anthropic/claude-3-haiku',
 })
+const PERSONA_DEFAULTS = Object.freeze({
+  name: 'AIConsumerAgent',
+  industry: 'Tech Support',
+  tone: 'professional',
+  coreKnowledge: [],
+})
 const WHATSAPP_SETTINGS_DEFAULTS = Object.freeze({
   whatsapp_transport: 'baileys',
   whatsapp_cloud_phone_number_id: '',
@@ -356,7 +362,7 @@ class AgentdServer {
     this.checkOrigin(req, mutation)
     if (mutation && req.headers['x-csrf-token'] !== session.csrfToken) throw Object.assign(new Error('CSRF token required'), { statusCode: 403 })
     session.expiresAt = Date.now() + SESSION_TTL_MS
-    return { kind: 'session' }
+    return { kind: 'session', csrfToken: session.csrfToken, expiresAt: session.expiresAt }
   }
 
   async handle(req, res) {
@@ -364,9 +370,15 @@ class AgentdServer {
     const url = new URL(req.url, this.origin || 'http://127.0.0.1')
     if (url.pathname === '/healthz' && req.method === 'GET') return json(res, 200, { ok: true })
     if (url.pathname === '/api/v1/pair' && req.method === 'POST') return this.pair(req, res)
+    if (url.pathname === '/api/v1/session' && req.method === 'GET') {
+      const session = this.authorize(req)
+      if (session.kind !== 'session') return json(res, 401, { error: 'Browser session required' })
+      return json(res, 200, { csrfToken: session.csrfToken, expiresAt: session.expiresAt })
+    }
     const credentialMatch = /^\/api\/v1\/credentials\/([^/]+)$/.exec(url.pathname)
     if (credentialMatch && ['GET', 'POST', 'DELETE'].includes(req.method)) return this.credential(req, res, credentialMatch[1])
     if (url.pathname === '/api/v1/settings/llm' && ['GET', 'PUT'].includes(req.method)) return this.llmSettings(req, res)
+    if (url.pathname === '/api/v1/settings/persona' && ['GET', 'PUT'].includes(req.method)) return this.personaSettings(req, res)
     if (url.pathname === '/api/v1/settings/whatsapp' && ['GET', 'PUT'].includes(req.method)) return this.whatsappSettings(req, res)
     const providerTestMatch = /^\/api\/v1\/providers\/(openai|openrouter)\/test$/.exec(url.pathname)
     if (providerTestMatch && req.method === 'POST') return this.testProvider(req, res, providerTestMatch[1])
@@ -435,6 +447,21 @@ class AgentdServer {
       return json(res, 400, { error: 'Invalid LLM settings' })
     }
     this.setState('llm_settings', JSON.stringify(settings))
+    return json(res, 200, settings)
+  }
+
+  async personaSettings(req, res) {
+    this.authorize(req, { mutation: req.method === 'PUT' })
+    if (req.method === 'GET') {
+      let stored = null
+      try { stored = JSON.parse(this.getState('persona_settings', 'null')) } catch {}
+      return json(res, 200, parsePersonaSettings(stored) || PERSONA_DEFAULTS)
+    }
+    if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
+    const body = await readBody(req, 32 * 1024)
+    const settings = parsePersonaSettings(body)
+    if (!settings) return json(res, 400, { error: 'Invalid persona settings' })
+    this.setState('persona_settings', JSON.stringify(settings))
     return json(res, 200, settings)
   }
 
@@ -898,6 +925,25 @@ function parseLlmSettings(value) {
     preferredProvider: value.preferredProvider,
     openaiModel: value.openaiModel,
     openrouterModel: value.openrouterModel,
+  }
+}
+
+function parsePersonaSettings(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const keys = Object.keys(value).sort()
+  if (keys.some((key) => !['name', 'industry', 'tone', 'coreKnowledge', 'customRules'].includes(key))) return null
+  if (typeof value.name !== 'string' || !value.name.trim() || value.name.length > 128
+    || typeof value.industry !== 'string' || value.industry.length > 128
+    || !['professional', 'casual', 'enthusiastic', 'concise'].includes(value.tone)
+    || !Array.isArray(value.coreKnowledge) || value.coreKnowledge.length > 100
+    || value.coreKnowledge.some((item) => typeof item !== 'string' || item.length > 512)
+    || (value.customRules !== undefined && (typeof value.customRules !== 'string' || value.customRules.length > 4096))) return null
+  return {
+    name: value.name.trim(),
+    industry: value.industry,
+    tone: value.tone,
+    coreKnowledge: [...value.coreKnowledge],
+    ...(value.customRules !== undefined && value.customRules.length ? { customRules: value.customRules } : {}),
   }
 }
 

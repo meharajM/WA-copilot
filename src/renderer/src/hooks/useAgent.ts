@@ -40,6 +40,7 @@ import { useEmailStore } from "../stores/emailStore";
 import { useDraftStore } from "../stores/draftStore";
 import electron from "../lib/electron";
 import { createTauriChatClient } from "../lib/tauri-chat-client";
+import { getBrowserAgentdClient } from "../lib/browser-agentd-client";
 import { isTauriRuntime } from "../lib/tauri-native-bridge";
 import { type LLMMessage } from "../lib/types";
 import { resolveWhatsAppTarget, setWhatsAppTyping, setWhatsAppPaused, getWhatsAppSystemPrompt, sendWhatsAppResponse, resolveWhatsAppMessageToLLM } from "../lib/whatsapp-integration";
@@ -350,15 +351,28 @@ export function useAgent(): UseAgentReturn {
             const abortSignal = startProcessing(originSessionId);
 
             try {
-                // The native shell owns provider credentials and generation. Keep
-                // the full workspace on the same typed daemon path instead of
-                // loading the Electron-only AgentRuntime and its tool graph.
+                // The local agentd owns provider credentials and generation for
+                // both the browser workspace and the native companion. Keep the
+                // full workspace on the same typed daemon path instead of loading
+                // the Electron-only AgentRuntime and its tool graph.
                 // The daemon persists the user message idempotently using the
                 // local message id as request id, so the chat-store write queue
                 // can safely replay the same message after this call.
-                if (isTauriRuntime() && !targetJid && !isEmailFlow && !multimodalWhatsAppMessage) {
-                    const client = createTauriChatClient();
+                const browserRuntime = typeof window !== 'undefined' && !window.electron && !isTauriRuntime();
+                if ((isTauriRuntime() || browserRuntime) && !targetJid && !isEmailFlow && !multimodalWhatsAppMessage && !(attachments && attachments.length > 0)) {
+                    const client = isTauriRuntime() ? createTauriChatClient() : getBrowserAgentdClient();
                     const requestId = addedUserMessage.id;
+                    const daemonSession = useChatStore.getState().sessions.find((session) => session.id === originSessionId);
+                    // Zustand persistence is intentionally asynchronous. Ensure the
+                    // daemon owns the session/message before generation instead of
+                    // racing the persistence middleware after a fresh browser chat.
+                    await client.createSession(originSessionId, daemonSession?.title || 'New Chat');
+                    await client.appendMessage(originSessionId, {
+                        id: requestId,
+                        role: 'user',
+                        content,
+                        timestamp: addedUserMessage.timestamp,
+                    });
                     let assistantContent = '';
                     let assistantAdded = false;
                     await client.generate(

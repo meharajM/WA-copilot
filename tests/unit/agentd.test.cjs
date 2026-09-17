@@ -64,6 +64,9 @@ test('agentd persists events, enforces pairing/CSRF, and survives client disconn
   assert.equal(fs.existsSync(path.join(dataDir, 'agentd.pairing-code')), false)
   const cookie = pair.headers['set-cookie'][0].split(';')[0]
   const auth = { ...originHeaders, cookie }
+  const csrfBootstrap = await request(origin, 'GET', '/api/v1/session', undefined, auth)
+  assert.equal(csrfBootstrap.status, 200)
+  assert.equal(csrfBootstrap.body.csrfToken, pair.body.csrfToken)
   assert.equal((await request(origin, 'POST', '/api/v1/pause-all', {}, auth)).status, 403)
   const session = { ...auth, 'x-csrf-token': pair.body.csrfToken }
   assert.equal((await request(origin, 'POST', '/api/v1/events', { channel: 'whatsapp', providerEventId: 'evt-1', conversationId: 'chat-1', payload: { text: 'hello' } }, session)).status, 202)
@@ -225,6 +228,32 @@ test('agentd persists exact LLM preferences and probes only fixed providers with
   assert.deepEqual(upstreamFailure.body, { success: false, error: 'Provider test failed' })
   assert.equal(JSON.stringify(upstreamFailure.body).includes('openai-secret-do-not-return'), false)
 
+  await server.stop()
+  fs.rmSync(dataDir, { recursive: true, force: true })
+})
+
+test('agentd persists allowlisted persona settings without accepting unknown fields', async () => {
+  const dataDir = fs.mkdtempSync('/tmp/aica-agentd-persona-')
+  const server = new AgentdServer({ dataDir, secret: 's'.repeat(32), logger: { log() {} } })
+  const { origin } = await server.start()
+  const auth = { authorization: `Bearer ${'s'.repeat(32)}` }
+  assert.deepEqual((await request(origin, 'GET', '/api/v1/settings/persona', undefined, auth)).body, {
+    name: 'AIConsumerAgent',
+    industry: 'Tech Support',
+    tone: 'professional',
+    coreKnowledge: [],
+  })
+  const persona = {
+    name: 'Northwind Support',
+    industry: 'Retail',
+    tone: 'concise',
+    coreKnowledge: ['Returns within 30 days'],
+    customRules: 'Never promise a refund before checking the order.',
+  }
+  assert.deepEqual((await request(origin, 'PUT', '/api/v1/settings/persona', persona, auth)).body, persona)
+  assert.deepEqual((await request(origin, 'GET', '/api/v1/settings/persona', undefined, auth)).body, persona)
+  assert.equal((await request(origin, 'PUT', '/api/v1/settings/persona', { ...persona, apiKey: 'never' }, auth)).status, 400)
+  assert.equal((await request(origin, 'PUT', '/api/v1/settings/persona', { ...persona, tone: 'unsafe' }, auth)).status, 400)
   await server.stop()
   fs.rmSync(dataDir, { recursive: true, force: true })
 })

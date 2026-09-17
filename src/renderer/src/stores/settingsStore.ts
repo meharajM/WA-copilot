@@ -3,6 +3,8 @@ import { persist, createJSONStorage } from 'zustand/middleware'
 import { VOICE_CONFIG, LLM_CONFIG, STORAGE_KEYS } from '../lib/constants'
 import electron from '../lib/electron'
 import { getUserProfile } from '../lib/firebase'
+import { getBrowserAgentdClient } from '../lib/browser-agentd-client'
+import { isTauriRuntime } from '../lib/tauri-native-bridge'
 
 export type Theme = 'dark' | 'light' | 'system'
 export type LLMProviderType = 'auto' | 'ollama' | 'openai' | 'gemini' | 'openrouter' | 'browser' | 'anthropic' | 'groq'
@@ -79,6 +81,7 @@ interface SettingsState {
     // Sync Actions
     setActiveUserId: (uid: string | null) => void
     loadRemoteSettings: (uid: string) => Promise<void>
+    loadAgentdSettings: () => Promise<void>
     hydrateSettings: (settings: Partial<SettingsState>) => void
     loadUserSecrets: (uid: string) => Promise<void>
     clearUserSecrets: () => void
@@ -116,6 +119,23 @@ const defaultSettings = {
     lastSyncTime: 0,
 }
 
+const isBrowserProduct = (): boolean => (
+    typeof window !== 'undefined' && !window.electron && !isTauriRuntime()
+)
+
+const isAgentdProvider = (provider: LLMProviderType): provider is 'auto' | 'openai' | 'openrouter' => (
+    provider === 'auto' || provider === 'openai' || provider === 'openrouter'
+)
+
+const syncBrowserLlmSettings = (state: Pick<SettingsState, 'preferredProvider' | 'openaiModel' | 'openrouterModel'>): void => {
+    if (!isBrowserProduct() || !isAgentdProvider(state.preferredProvider)) return
+    void getBrowserAgentdClient().saveLlmSettings({
+        preferredProvider: state.preferredProvider,
+        openaiModel: state.openaiModel,
+        openrouterModel: state.openrouterModel,
+    }).catch((error) => console.warn('[Settings] Failed to persist browser LLM settings:', error))
+}
+
 // ... existing migration code ...
 
 export const useSettingsStore = create<SettingsState>()(
@@ -131,11 +151,15 @@ export const useSettingsStore = create<SettingsState>()(
             setSpeechLang: (lang) => set({ speechLang: lang }),
             setOfflineSpeech: (enabled) => set({ offlineSpeech: enabled }),
             setVoskModel: (model: string) => set({ voskModel: model }),
-            setPreferredProvider: (provider) => set({ preferredProvider: provider }),
+            setPreferredProvider: (provider) => {
+                set({ preferredProvider: provider })
+                syncBrowserLlmSettings({ ...get(), preferredProvider: provider })
+            },
             setOllamaModel: (model) => set({ ollamaModel: model }),
             setOllamaBaseUrl: (url) => set({ ollamaBaseUrl: url }),
             setOpenaiApiKey: async (key) => {
                 set({ openaiApiKey: key })
+                if (isBrowserProduct()) return
                 const uid = get().activeUserId || undefined
                 // Store API key in encrypted secure storage
                 await electron.secure.set('openai_api_key', key || '', uid)
@@ -147,9 +171,13 @@ export const useSettingsStore = create<SettingsState>()(
                 const storeKey = uid ? `user_${uid}_openai_base_url` : 'openai_base_url'
                 await electron.store.set(storeKey, url)
             },
-            setOpenaiModel: (model) => set({ openaiModel: model }),
+            setOpenaiModel: (model) => {
+                set({ openaiModel: model })
+                syncBrowserLlmSettings({ ...get(), openaiModel: model })
+            },
             setGeminiApiKey: async (key) => {
                 set({ geminiApiKey: key })
+                if (isBrowserProduct()) return
                 const uid = get().activeUserId || undefined
                 // Store API key in encrypted secure storage
                 await electron.secure.set('gemini_api_key', key || '', uid)
@@ -157,11 +185,15 @@ export const useSettingsStore = create<SettingsState>()(
             setGeminiModel: (model) => set({ geminiModel: model }),
             setOpenrouterApiKey: async (key) => {
                 set({ openrouterApiKey: key })
+                if (isBrowserProduct()) return
                 const uid = get().activeUserId || undefined
                 // Store API key in encrypted secure storage
                 await electron.secure.set('openrouter_api_key', key || '', uid)
             },
-            setOpenrouterModel: (model) => set({ openrouterModel: model }),
+            setOpenrouterModel: (model) => {
+                set({ openrouterModel: model })
+                syncBrowserLlmSettings({ ...get(), openrouterModel: model })
+            },
             setBrowserModel: (model) => set({ browserModel: model }),
             setTheme: (theme) => set({ theme }),
             setPlaywrightBrowser: async (browser) => {
@@ -200,6 +232,20 @@ export const useSettingsStore = create<SettingsState>()(
                     isSyncing: false,
                     lastSyncTime: Date.now()
                 }))
+            },
+
+            loadAgentdSettings: async () => {
+                if (!isBrowserProduct()) return
+                const client = getBrowserAgentdClient()
+                const saved = await client.getLlmSettings()
+                set({
+                    preferredProvider: saved.preferredProvider,
+                    openaiModel: saved.openaiModel,
+                    openrouterModel: saved.openrouterModel,
+                    // Credential values are intentionally never read back from agentd.
+                    openaiApiKey: '',
+                    openrouterApiKey: '',
+                })
             },
 
             loadUserSecrets: async (uid: string) => {

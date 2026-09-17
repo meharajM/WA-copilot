@@ -18,6 +18,8 @@ import { useSettingsStore, LLMProviderType } from '../../../stores/settingsStore
 import { OllamaSettings } from './OllamaSettings'
 import { OpenAISettings } from './OpenAISettings'
 import { GeminiSettings } from './GeminiSettings'
+import { getBrowserAgentdClient } from '../../../lib/browser-agentd-client'
+import { isTauriRuntime } from '../../../lib/tauri-native-bridge'
 
 interface SingleProviderStatus {
     available: boolean
@@ -46,6 +48,7 @@ const PROVIDERS: { id: LLMProviderType; label: string }[] = [
 
 export function LLMProviderSettings() {
     const settings = useSettingsStore()
+    const browserRuntime = typeof window !== 'undefined' && !window.electron && !isTauriRuntime()
     const [providerStatus, setProviderStatus] = useState<ProviderStatusMap | null>(null)
     const [checking, setChecking] = useState(false)
     const checkRef = useRef<Promise<void> | null>(null)
@@ -70,6 +73,32 @@ export function LLMProviderSettings() {
         const promise = (async () => {
             setChecking(true)
             try {
+                if (browserRuntime) {
+                    const client = getBrowserAgentdClient()
+                    const [openai, openrouter] = await Promise.all([
+                        client.hasCredential('openai_api_key'),
+                        client.hasCredential('openrouter_api_key'),
+                    ])
+                    setProviderStatus({
+                        ollama: { available: false, error: 'Ollama is not yet exposed through the browser agentd API' },
+                        openai: {
+                            available: openai.success && openai.exists,
+                            model: settings.openaiModel,
+                            models: [settings.openaiModel],
+                            modelsEndpointAvailable: false,
+                            ...(openai.success && openai.exists ? {} : { error: openai.error || 'Credential not configured' }),
+                        },
+                        gemini: { available: false, error: 'Gemini is not yet exposed through the browser agentd API' },
+                        openrouter: {
+                            available: openrouter.success && openrouter.exists,
+                            model: settings.openrouterModel,
+                            models: [settings.openrouterModel],
+                            modelsEndpointAvailable: false,
+                            ...(openrouter.success && openrouter.exists ? {} : { error: openrouter.error || 'Credential not configured' }),
+                        },
+                    })
+                    return
+                }
                 const p = settings.preferredProvider
                 if (p === 'ollama') {
                     const ollama = await checkOllama(settingsForLLM)
@@ -118,10 +147,17 @@ export function LLMProviderSettings() {
         return () => clearTimeout(t)
     }, [checkProviders])
 
+    useEffect(() => {
+        if (!browserRuntime) return
+        void settings.loadAgentdSettings().catch((error) => {
+            console.warn('[LLMProviderSettings] Browser agentd settings unavailable:', error)
+        })
+    }, [browserRuntime])
+
     const p = settings.preferredProvider
-    const showOllama = p === 'ollama' || p === 'auto'
+    const showOllama = !browserRuntime && (p === 'ollama' || p === 'auto')
     const showOpenAI = p === 'openai' || p === 'auto'
-    const showGemini = p === 'gemini' || p === 'auto'
+    const showGemini = !browserRuntime && (p === 'gemini' || p === 'auto')
     const showOpenRouter = p === 'openrouter' || p === 'auto'
 
     return (
@@ -133,7 +169,7 @@ export function LLMProviderSettings() {
                 <div className="bg-[var(--color-card-elevated)] border border-[var(--color-border)] rounded-xl p-4">
                     <label className="block text-sm text-[var(--color-text-muted)] mb-3">Preferred Provider</label>
                     <div className="flex gap-2 flex-wrap">
-                        {PROVIDERS.map(({ id, label }) => (
+                        {PROVIDERS.filter(({ id }) => !browserRuntime || id === 'auto' || id === 'openai' || id === 'openrouter').map(({ id, label }) => (
                             <button
                                 key={id}
                                 onClick={() => settings.setPreferredProvider(id)}

@@ -11,6 +11,7 @@ import type {
   NativeHealth,
   NativeResult,
   ProviderTestResult,
+  PersonaSettings,
   WhatsAppSettings,
 } from '../../../shared/native-bridge'
 import { readGeneration, readMessage, readSession } from './tauri-chat-client'
@@ -86,6 +87,23 @@ const readWhatsAppSettings = (value: unknown): WhatsAppSettings => {
   return value as unknown as WhatsAppSettings
 }
 
+const readPersonaSettings = (value: unknown): PersonaSettings => {
+  if (!isRecord(value)
+    || typeof value.name !== 'string'
+    || typeof value.industry !== 'string'
+    || !['professional', 'casual', 'enthusiastic', 'concise'].includes(value.tone as string)
+    || !Array.isArray(value.coreKnowledge)
+    || value.coreKnowledge.some((item) => typeof item !== 'string')
+    || (value.customRules !== undefined && typeof value.customRules !== 'string')) throw new Error('Invalid persona settings response')
+  return {
+    name: value.name,
+    industry: value.industry,
+    tone: value.tone as PersonaSettings['tone'],
+    coreKnowledge: value.coreKnowledge as string[],
+    ...(typeof value.customRules === 'string' && value.customRules ? { customRules: value.customRules } : {}),
+  }
+}
+
 const normaliseOrigin = (origin: string): string => {
   const url = new URL(origin)
   if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('Agentd origin must use HTTP(S)')
@@ -101,6 +119,8 @@ export interface BrowserAgentdClient extends ChatClient {
   saveLlmSettings(settings: LlmSettings): Promise<LlmSettings>
   getWhatsAppSettings(): Promise<WhatsAppSettings>
   saveWhatsAppSettings(settings: WhatsAppSettings): Promise<WhatsAppSettings>
+  getPersonaSettings(): Promise<PersonaSettings>
+  savePersonaSettings(settings: PersonaSettings): Promise<PersonaSettings>
   setCredential(key: CredentialKey, value: string): Promise<NativeResult>
   hasCredential(key: CredentialKey): Promise<NativeResult & { exists: boolean }>
   deleteCredential(key: CredentialKey): Promise<NativeResult>
@@ -111,7 +131,18 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
   const windowOrigin = typeof window !== 'undefined' && typeof window.location?.origin === 'string' ? window.location.origin : null
   const baseOrigin = normaliseOrigin(options.origin || windowOrigin || 'http://127.0.0.1')
   const fetcher = options.fetch || globalThis.fetch.bind(globalThis)
-  let csrfToken: string | null = null
+  const csrfSlot = '__AICA_AGENTD_CSRF_TOKEN__'
+  const readSharedCsrf = (): string | null => {
+    if (typeof window === 'undefined') return null
+    const value = (window as Window & { [csrfSlot]?: unknown })[csrfSlot]
+    return typeof value === 'string' && value ? value : null
+  }
+  const writeSharedCsrf = (value: string | null): void => {
+    if (typeof window !== 'undefined') (window as Window & { [csrfSlot]?: unknown })[csrfSlot] = value || undefined
+  }
+  // The token is intentionally memory-only. The window slot also keeps the
+  // token shared when Vite splits the browser entry and lazy App into chunks.
+  let csrfToken: string | null = readSharedCsrf()
 
   const request = async <T = unknown>(path: string, init: RequestInit = {}, mutation = false): Promise<T> => {
     const headers = new Headers(init.headers)
@@ -138,6 +169,7 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     })
     if (typeof body.csrfToken !== 'string' || !Number.isSafeInteger(body.expiresAt)) throw new Error('Invalid pairing response')
     csrfToken = body.csrfToken
+    writeSharedCsrf(csrfToken)
     return { expiresAt: body.expiresAt as number }
   }
 
@@ -147,6 +179,12 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     try {
       await request('/healthz')
       await status()
+      if (!csrfToken) {
+        const session = await request<{ csrfToken?: unknown; expiresAt?: unknown }>('/api/v1/session')
+        if (typeof session.csrfToken !== 'string' || !Number.isSafeInteger(session.expiresAt)) throw new Error('Invalid browser session response')
+        csrfToken = session.csrfToken
+        writeSharedCsrf(csrfToken)
+      }
       return 'ready'
     } catch (error) {
       if (error instanceof BrowserAgentdError && error.status === 401) return 'pairing'
@@ -210,6 +248,8 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
   const saveLlmSettings = async (settings: LlmSettings) => readLlmSettings(await request('/api/v1/settings/llm', { method: 'PUT', body: JSON.stringify(settings) }, true))
   const getWhatsAppSettings = async () => readWhatsAppSettings(await request('/api/v1/settings/whatsapp'))
   const saveWhatsAppSettings = async (settings: WhatsAppSettings) => readWhatsAppSettings(await request('/api/v1/settings/whatsapp', { method: 'PUT', body: JSON.stringify(settings) }, true))
+  const getPersonaSettings = async () => readPersonaSettings(await request('/api/v1/settings/persona'))
+  const savePersonaSettings = async (settings: PersonaSettings) => readPersonaSettings(await request('/api/v1/settings/persona', { method: 'PUT', body: JSON.stringify(settings) }, true))
   const setCredential = async (key: CredentialKey, value: string) => readResult(await request(`/api/v1/credentials/${encodeURIComponent(key)}`, { method: 'POST', body: JSON.stringify({ value }) }, true))
   const hasCredential = async (key: CredentialKey) => readCredentialPresence(await request(`/api/v1/credentials/${encodeURIComponent(key)}`))
   const deleteCredential = async (key: CredentialKey) => readResult(await request(`/api/v1/credentials/${encodeURIComponent(key)}`, { method: 'DELETE' }, true))
@@ -233,6 +273,8 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     saveLlmSettings,
     getWhatsAppSettings,
     saveWhatsAppSettings,
+    getPersonaSettings,
+    savePersonaSettings,
     setCredential,
     hasCredential,
     deleteCredential,

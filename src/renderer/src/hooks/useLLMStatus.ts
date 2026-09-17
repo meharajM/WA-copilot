@@ -22,6 +22,8 @@ import {
     type WebLLMStatus,
 } from "../lib/llm";
 import { useSettingsStore } from "../stores/settingsStore";
+import { getBrowserAgentdClient } from "../lib/browser-agentd-client";
+import { isTauriRuntime } from "../lib/tauri-native-bridge";
 
 /** Shape of the LLM status returned by this hook. */
 export interface LLMStatus {
@@ -46,6 +48,7 @@ export interface LLMStatus {
  */
 export function useLLMStatus(currentView: string): { llmStatus: LLMStatus } {
     const settings = useSettingsStore();
+    const browserRuntime = typeof window !== 'undefined' && !window.electron && !isTauriRuntime();
 
     const [llmStatus, setLlmStatus] = useState<LLMStatus>({
         provider: null,
@@ -74,6 +77,24 @@ export function useLLMStatus(currentView: string): { llmStatus: LLMStatus } {
 
         const promise = (async () => {
             try {
+                if (browserRuntime) {
+                    const client = getBrowserAgentdClient();
+                    const saved = await client.getLlmSettings();
+                    const preferred = saved.preferredProvider === 'auto'
+                        ? ['openai', 'openrouter'] as const
+                        : [saved.preferredProvider] as const;
+                    for (const provider of preferred) {
+                        const key = provider === 'openai' ? 'openai_api_key' : 'openrouter_api_key';
+                        const presence = await client.hasCredential(key);
+                        if (presence.success && presence.exists) {
+                            const model = provider === 'openai' ? saved.openaiModel : saved.openrouterModel;
+                            setLlmStatus({ provider: `${provider === 'openai' ? 'OpenAI' : 'OpenRouter'} (${model})`, available: true });
+                            return;
+                        }
+                    }
+                    setLlmStatus({ provider: null, available: false });
+                    return;
+                }
                 // Build a plain settings object — we don't pass the full Zustand store
                 // to avoid coupling llm.ts to the store shape.
                 const settingsForLLM = {
@@ -147,6 +168,7 @@ export function useLLMStatus(currentView: string): { llmStatus: LLMStatus } {
         settings.openrouterApiKey,
         settings.openrouterModel,
         settings.browserModel,
+        browserRuntime,
         currentView,
     ]);
 
