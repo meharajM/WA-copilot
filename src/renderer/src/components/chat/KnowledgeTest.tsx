@@ -4,6 +4,10 @@ import { executeToolCall } from '../../lib/mcp'
 import electron from '../../lib/electron'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { chat } from '../../lib/llm'
+import { getBrowserAgentdClient } from '../../lib/browser-agentd-client'
+import { isTauriRuntime } from '../../lib/tauri-native-bridge'
+
+const isBrowserProduct = (): boolean => typeof window !== 'undefined' && !window.electron && !isTauriRuntime()
 
 export function KnowledgeTest() {
   const [query, setQuery] = useState('')
@@ -36,18 +40,33 @@ export function KnowledgeTest() {
         // Feed the RAG chunks into the LLM to generate a human-readable answer
         const settings = useSettingsStore.getState()
         try {
-            const llmRes = await chat(
-                [
-                    { 
-                        role: 'system', 
-                        content: `You are an AI assistant. Answer the user's query based ONLY on the provided Knowledge Context. If the context does not contain the answer, say "I don't have enough information in the provided documents to answer that."\n\nKnowledge Context:\n${text}` 
-                    },
-                    { role: 'user', content: query }
-                ],
-                undefined, // no tools
-                settings as any
-            )
-            setResult(llmRes.content || 'No response generated.')
+            const systemPrompt = `You are an AI assistant. Answer the user's query based ONLY on the provided Knowledge Context. If the context does not contain the answer, say "I don't have enough information in the provided documents to answer that."\n\nKnowledge Context:\n${text}`
+            if (isBrowserProduct()) {
+                const client = getBrowserAgentdClient()
+                const sessionId = `knowledge_test_${Date.now()}`
+                const requestId = `query_${Date.now()}`
+                let answer = ''
+                try {
+                    await client.createSession(sessionId, 'Knowledge test')
+                    await client.appendMessage(sessionId, { id: `system_${requestId}`, role: 'system', content: systemPrompt, timestamp: Date.now() })
+                    await client.generate({ sessionId, requestId, content: query }, event => {
+                        if (event.type === 'assistant.delta') answer += event.delta
+                    })
+                } finally {
+                    await client.deleteSession(sessionId).catch(() => undefined)
+                }
+                setResult(answer || 'No response generated.')
+            } else {
+                const llmRes = await chat(
+                    [
+                        { role: 'system', content: systemPrompt },
+                        { role: 'user', content: query }
+                    ],
+                    undefined, // no tools
+                    settings as any
+                )
+                setResult(llmRes.content || 'No response generated.')
+            }
             setTested(true)
         } catch (llmErr: any) {
             console.error('LLM generation failed:', llmErr)
