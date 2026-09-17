@@ -37,7 +37,9 @@ jobs:
           targets: x86_64-pc-windows-msvc
 
       - name: Install JavaScript dependencies
-        run: npm ci --ignore-scripts --no-audit --no-fund
+        # better-sqlite3 is part of the daemon/migration verification path and
+        # must compile its native binding on the Windows runner.
+        run: npm ci --no-audit --no-fund
 
       - name: Typecheck browser renderer
         run: npm run typecheck:renderer
