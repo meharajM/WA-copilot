@@ -28,6 +28,13 @@ const MAX_KNOWLEDGE_TYPE_LENGTH = 128
 const MAX_KNOWLEDGE_CONTENT_LENGTH = 512 * 1024
 const MAX_KNOWLEDGE_BODY_BYTES = MAX_KNOWLEDGE_CONTENT_LENGTH + 32 * 1024
 const MAX_INTELLIGENCE_DETAILS_LENGTH = 4096
+const MAX_MEMORY_NAME_LENGTH = 256
+const MAX_MEMORY_TYPE_LENGTH = 128
+const MAX_MEMORY_DESCRIPTION_LENGTH = 4096
+const MAX_MEMORY_METADATA_BYTES = 32 * 1024
+const MAX_MEMORY_QUERY_LENGTH = 512
+const MAX_MEMORY_EXPORT_ENTITIES = 10_000
+const MAX_MEMORY_EXPORT_BYTES = 2 * 1024 * 1024
 const MAX_PROVIDER_RESPONSE_BYTES = 1024 * 1024
 const MAX_PROVIDER_REQUEST_BYTES = 512 * 1024
 const MAX_CHAT_REQUEST_BYTES = MAX_PROVIDER_REQUEST_BYTES + 64 * 1024
@@ -245,6 +252,28 @@ class AgentdServer {
           details TEXT,
           timestamp TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS memory_entities (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          type TEXT NOT NULL,
+          description TEXT NOT NULL,
+          observations TEXT NOT NULL,
+          metadata TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS memory_entities_name_idx ON memory_entities(name);
+        CREATE TABLE IF NOT EXISTS memory_relations (
+          id TEXT PRIMARY KEY,
+          from_entity_id TEXT NOT NULL,
+          to_entity_id TEXT NOT NULL,
+          relation_type TEXT NOT NULL,
+          description TEXT NOT NULL,
+          metadata TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS memory_relations_from_idx ON memory_relations(from_entity_id);
+        CREATE INDEX IF NOT EXISTS memory_relations_to_idx ON memory_relations(to_entity_id);
       `)
       const chatColumns = this.db.prepare('PRAGMA table_info(chat_messages)').all()
       if (!chatColumns.some((column) => column.name === 'attachments')) this.db.exec('ALTER TABLE chat_messages ADD COLUMN attachments TEXT')
@@ -454,6 +483,9 @@ class AgentdServer {
     if (url.pathname === '/api/v1/intelligence/logs' && req.method === 'GET') return this.intelligenceLogs(req, res, url)
     if (url.pathname === '/api/v1/intelligence/stats' && req.method === 'GET') return this.intelligenceStats(req, res)
     if (url.pathname === '/api/v1/intelligence/accuracy' && req.method === 'POST') return this.logIntelligenceAccuracy(req, res)
+    if (url.pathname === '/api/v1/memory/stats' && req.method === 'GET') return this.memoryStats(req, res)
+    if (url.pathname === '/api/v1/memory/export' && req.method === 'GET') return this.memoryExport(req, res)
+    if (url.pathname === '/api/v1/memory/tools' && req.method === 'POST') return this.memoryTool(req, res)
     if (url.pathname === '/api/v1/sessions' && ['GET', 'POST'].includes(req.method)) return this.chatSessions(req, res)
     const sessionMatch = /^\/api\/v1\/sessions\/([^/]+)$/.exec(url.pathname)
     if (sessionMatch && req.method === 'PATCH') return this.updateChatSession(req, res, sessionMatch[1])
@@ -664,6 +696,152 @@ class AgentdServer {
     }
     this.db.prepare('INSERT INTO intelligence_logs(type,event,details,timestamp) VALUES (?,?,?,?)').run('accuracy', body.event, body.details || null, new Date().toISOString())
     return json(res, 200, { success: true })
+  }
+
+  parseMemoryJson(value, fallback) {
+    try {
+      const parsed = JSON.parse(value)
+      return parsed && typeof parsed === 'object' ? parsed : fallback
+    } catch {
+      return fallback
+    }
+  }
+
+  memoryEntityView(row) {
+    if (!row) return null
+    return {
+      id: row.id,
+      name: row.name,
+      type: row.type,
+      description: row.description,
+      observations: this.parseMemoryJson(row.observations, []),
+      metadata: this.parseMemoryJson(row.metadata, {}),
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+    }
+  }
+
+  memoryRelationView(row) {
+    if (!row) return null
+    return {
+      id: row.id,
+      from_entity_id: row.from_entity_id,
+      to_entity_id: row.to_entity_id,
+      relation_type: row.relation_type,
+      description: row.description,
+      metadata: this.parseMemoryJson(row.metadata, {}),
+      created_at: row.created_at,
+    }
+  }
+
+  validMemoryMetadata(value) {
+    if (value === undefined) return {}
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+    let serialized
+    try { serialized = JSON.stringify(value) } catch { return null }
+    if (Buffer.byteLength(serialized, 'utf8') > MAX_MEMORY_METADATA_BYTES) return null
+    const check = (candidate) => {
+      if (Array.isArray(candidate)) return candidate.every(check)
+      if (!candidate || typeof candidate !== 'object') return true
+      return Object.entries(candidate).every(([key, child]) => !/(password|token|secret|authorization|api[-_]?key)/i.test(key) && check(child))
+    }
+    return check(value) ? value : null
+  }
+
+  validMemoryObservations(value) {
+    if (value === undefined) return []
+    if (!Array.isArray(value) || value.length > 50) return null
+    return value.every(item => validBoundedText(item, 1024, true)) ? value : null
+  }
+
+  memoryStatsValue() {
+    const entityCount = this.db.prepare('SELECT COUNT(*) AS count FROM memory_entities').get().count
+    const relationCount = this.db.prepare('SELECT COUNT(*) AS count FROM memory_relations').get().count
+    let storageSize = 0
+    try { storageSize = fs.statSync(path.join(this.dataDir, 'agentd.db')).size } catch {}
+    return { entityCount, relationCount, storageSize, avgSearchLatency: 0, backend: 'agentd-sqlite' }
+  }
+
+  async memoryStats(req, res) {
+    this.authorize(req)
+    return json(res, 200, { success: true, stats: this.memoryStatsValue() })
+  }
+
+  async memoryExport(req, res) {
+    this.authorize(req)
+    const entities = this.db.prepare('SELECT * FROM memory_entities ORDER BY created_at ASC, id ASC LIMIT ?').all(MAX_MEMORY_EXPORT_ENTITIES).map(row => this.memoryEntityView(row))
+    const relations = this.db.prepare('SELECT * FROM memory_relations ORDER BY created_at ASC, id ASC LIMIT ?').all(MAX_MEMORY_EXPORT_ENTITIES).map(row => this.memoryRelationView(row))
+    const payload = { entities, relations, metadata: { exportedAt: new Date().toISOString(), version: '1.0.0', backend: 'agentd-sqlite' } }
+    if (Buffer.byteLength(JSON.stringify(payload), 'utf8') > MAX_MEMORY_EXPORT_BYTES) return json(res, 413, { error: 'Memory export too large' })
+    return json(res, 200, { success: true, data: payload })
+  }
+
+  async memoryTool(req, res) {
+    this.authorize(req, { mutation: true })
+    if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
+    const body = await readBody(req, MAX_MEMORY_METADATA_BYTES + MAX_MEMORY_DESCRIPTION_LENGTH + 16 * 1024)
+    if (!body || typeof body !== 'object' || Array.isArray(body) || typeof body.name !== 'string' || !/^memory_[a-z_]+$/.test(body.name) || !body.args || typeof body.args !== 'object' || Array.isArray(body.args)) return json(res, 400, { error: 'Invalid memory tool request' })
+    const name = body.name
+    const args = body.args
+    try {
+      if (name === 'memory_create_entity') {
+        if (!validBoundedText(args.name, MAX_MEMORY_NAME_LENGTH) || !validBoundedText(args.type, MAX_MEMORY_TYPE_LENGTH) || !validBoundedText(args.description, MAX_MEMORY_DESCRIPTION_LENGTH, true)) return json(res, 400, { error: 'Invalid memory entity' })
+        const metadata = this.validMemoryMetadata(args.metadata)
+        const observations = this.validMemoryObservations(args.observations === undefined && args.observation !== undefined ? [args.observation] : args.observations)
+        if (metadata === null || observations === null) return json(res, 400, { error: 'Invalid memory entity' })
+        const now = new Date().toISOString()
+        const entity = { id: crypto.randomUUID(), name: args.name.trim(), type: args.type.trim(), description: args.description || '', observations, metadata, created_at: now, updated_at: now }
+        this.db.prepare('INSERT INTO memory_entities(id,name,type,description,observations,metadata,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)').run(entity.id, entity.name, entity.type, entity.description, JSON.stringify(entity.observations), JSON.stringify(entity.metadata), now, now)
+        return json(res, 200, { success: true, result: entity })
+      }
+      if (name === 'memory_search') {
+        if (typeof args.query !== 'string' || !args.query.trim() || args.query.length > MAX_MEMORY_QUERY_LENGTH) return json(res, 400, { error: 'Invalid memory query' })
+        const requested = Number.isSafeInteger(args.limit) ? Math.min(Math.max(args.limit, 1), 100) : 10
+        const query = `%${args.query.trim()}%`
+        const rows = this.db.prepare('SELECT * FROM memory_entities WHERE name LIKE ? OR description LIKE ? OR observations LIKE ? ORDER BY updated_at DESC, id DESC LIMIT ?').all(query, query, query, requested)
+        return json(res, 200, { success: true, result: rows.map(row => this.memoryEntityView(row)) })
+      }
+      if (name === 'memory_read_entity') {
+        if ((args.id !== undefined && !validBoundedText(args.id, 128)) || (args.name !== undefined && !validBoundedText(args.name, MAX_MEMORY_NAME_LENGTH))) return json(res, 400, { error: 'Invalid memory lookup' })
+        const row = args.id ? this.db.prepare('SELECT * FROM memory_entities WHERE id = ?').get(args.id) : this.db.prepare('SELECT * FROM memory_entities WHERE name = ?').get(args.name)
+        return json(res, 200, { success: true, result: this.memoryEntityView(row) })
+      }
+      if (name === 'memory_update_entity') {
+        if ((args.id !== undefined && !validBoundedText(args.id, 128)) || (args.name !== undefined && !validBoundedText(args.name, MAX_MEMORY_NAME_LENGTH))) return json(res, 400, { error: 'Invalid memory lookup' })
+        const row = args.id ? this.db.prepare('SELECT * FROM memory_entities WHERE id = ?').get(args.id) : this.db.prepare('SELECT * FROM memory_entities WHERE name = ?').get(args.name)
+        if (!row) return json(res, 200, { success: true, result: null, error: `Entity not found: ${args.id || args.name || '(missing id/name)'}` })
+        const metadataUpdate = this.validMemoryMetadata(args.metadata)
+        if (metadataUpdate === null || (args.description !== undefined && !validBoundedText(args.description, MAX_MEMORY_DESCRIPTION_LENGTH, true)) || (args.observation !== undefined && !validBoundedText(args.observation, 1024))) return json(res, 400, { error: 'Invalid memory update' })
+        const existing = this.memoryEntityView(row)
+        const observations = args.observation === undefined ? existing.observations : [...existing.observations, args.observation].slice(-50)
+        const metadata = { ...existing.metadata, ...(metadataUpdate || {}) }
+        const updatedAt = new Date().toISOString()
+        this.db.prepare('UPDATE memory_entities SET description = ?, observations = ?, metadata = ?, updated_at = ? WHERE id = ?').run(args.description ?? existing.description, JSON.stringify(observations), JSON.stringify(metadata), updatedAt, existing.id)
+        return json(res, 200, { success: true, result: this.memoryEntityView(this.db.prepare('SELECT * FROM memory_entities WHERE id = ?').get(existing.id)) })
+      }
+      if (name === 'memory_delete_entity') {
+        if ((args.id !== undefined && !validBoundedText(args.id, 128)) || (args.name !== undefined && !validBoundedText(args.name, MAX_MEMORY_NAME_LENGTH))) return json(res, 400, { error: 'Invalid memory lookup' })
+        const row = args.id ? this.db.prepare('SELECT * FROM memory_entities WHERE id = ?').get(args.id) : this.db.prepare('SELECT * FROM memory_entities WHERE name = ?').get(args.name)
+        if (!row) return json(res, 200, { success: true, result: { deleted: false, reason: 'not_found' } })
+        this.db.transaction(() => {
+          this.db.prepare('DELETE FROM memory_relations WHERE from_entity_id = ? OR to_entity_id = ?').run(row.id, row.id)
+          this.db.prepare('DELETE FROM memory_entities WHERE id = ?').run(row.id)
+        })()
+        return json(res, 200, { success: true, result: { deleted: true, id: row.id, name: row.name } })
+      }
+      if (name === 'memory_create_relation') {
+        if (!validBoundedText(args.from_entity_id, 128) || !validBoundedText(args.to_entity_id, 128) || !validBoundedText(args.relation_type, MAX_MEMORY_TYPE_LENGTH) || (args.description !== undefined && !validBoundedText(args.description, MAX_MEMORY_DESCRIPTION_LENGTH, true))) return json(res, 400, { error: 'Invalid memory relation' })
+        if (!this.db.prepare('SELECT id FROM memory_entities WHERE id = ?').get(args.from_entity_id) || !this.db.prepare('SELECT id FROM memory_entities WHERE id = ?').get(args.to_entity_id)) return json(res, 404, { error: 'Memory entity not found' })
+        const metadata = this.validMemoryMetadata(args.metadata)
+        if (metadata === null) return json(res, 400, { error: 'Invalid memory relation' })
+        const relation = { id: `${args.from_entity_id}-${args.relation_type}-${args.to_entity_id}`, from_entity_id: args.from_entity_id, to_entity_id: args.to_entity_id, relation_type: args.relation_type.trim(), description: args.description || '', metadata: metadata || {}, created_at: new Date().toISOString() }
+        this.db.prepare('INSERT OR REPLACE INTO memory_relations(id,from_entity_id,to_entity_id,relation_type,description,metadata,created_at) VALUES (?,?,?,?,?,?,?)').run(relation.id, relation.from_entity_id, relation.to_entity_id, relation.relation_type, relation.description, JSON.stringify(relation.metadata), relation.created_at)
+        return json(res, 200, { success: true, result: relation })
+      }
+      return json(res, 400, { error: `Unknown memory tool: ${name}` })
+    } catch (error) {
+      return json(res, 400, { error: error instanceof Error ? error.message : 'Memory tool failed' })
+    }
   }
 
   async whatsappSettings(req, res) {

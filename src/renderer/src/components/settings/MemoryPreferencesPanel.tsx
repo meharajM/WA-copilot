@@ -3,6 +3,8 @@ import React, { useState, useEffect } from 'react'
 import { Database, HardDrive, Server, RefreshCw } from 'lucide-react'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { MemoryInspector } from './memory/MemoryInspector'
+import electron from '../../lib/electron'
+import { isTauriRuntime } from '../../lib/tauri-native-bridge'
 
 interface MemoryStats {
     entityCount: number
@@ -16,12 +18,12 @@ export function MemoryPreferencesPanel() {
     const settings = useSettingsStore()
     const [stats, setStats] = useState<MemoryStats | null>(null)
     const [loading, setLoading] = useState(false)
+    const browserProduct = typeof window !== 'undefined' && !window.electron && !isTauriRuntime()
 
     const loadStats = async () => {
-        if (!window.electron?.memory) return
         setLoading(true)
         try {
-            const response = await window.electron.memory.getStats()
+            const response = await electron.memory.getStats()
             if (response.success && response.stats) {
                 setStats(response.stats)
             } else {
@@ -40,6 +42,7 @@ export function MemoryPreferencesPanel() {
     }, [])
 
     const handleBackendChange = async (backend: 'sqlite' | 'server-memory') => {
+        if (browserProduct && backend === 'server-memory') return
         await settings.setMemoryBackend(backend)
     }
 
@@ -86,15 +89,17 @@ export function MemoryPreferencesPanel() {
 
                     <button
                         onClick={() => handleBackendChange('server-memory')}
+                        disabled={browserProduct}
+                        title={browserProduct ? 'Server Memory remains available in the Electron transition client only.' : undefined}
                         className={`flex flex-col items-start p-4 rounded-xl border transition-all ${
                             settings.memoryBackend === 'server-memory'
                                 ? 'bg-purple-500/10 border-purple-500/50'
                                 : 'bg-[var(--color-surface)] border-transparent hover:bg-[var(--color-border)]'
-                        }`}
+                        } ${browserProduct ? 'opacity-50 cursor-not-allowed' : ''}`}
                     >
                         <div className="flex items-center gap-2 mb-2">
                             <Server className={`w-5 h-5 ${settings.memoryBackend === 'server-memory' ? 'text-purple-400' : 'text-[var(--color-text-muted)]'}`} />
-                            <span className="font-bold text-[var(--color-text-primary)]">Server Memory</span>
+                            <span className="font-bold text-[var(--color-text-primary)]">{browserProduct ? 'Server Memory (desktop)' : 'Server Memory'}</span>
                         </div>
                         <p className="text-xs text-left text-[var(--color-text-dim)]">
                             Compatibility backend for existing JSON-based memory stores.
@@ -102,7 +107,7 @@ export function MemoryPreferencesPanel() {
                     </button>
                 </div>
                 <p className="mt-3 text-xs text-[var(--color-text-dim)]">
-                    Backend changes take effect after restarting the app. Memento MCP is hidden until its adapter is implemented.
+                    Backend changes take effect after restarting the app. The browser product uses agentd SQLite for this migration slice; Server Memory remains an Electron transition option until its data adapter is migrated.
                 </p>
             </div>
 
@@ -155,7 +160,7 @@ export function MemoryPreferencesPanel() {
                     onClick={async () => {
                         console.log('Testing memory write...');
                         try {
-                            const result = await window.electron.memory.callTool('memory_create_entity', {
+                            const result = await electron.memory.callTool('memory_create_entity', {
                                 name: 'Manual Test Entity',
                                 type: 'test_data',
                                 description: 'This is a safe test description.',

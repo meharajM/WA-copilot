@@ -252,14 +252,18 @@ export async function executeToolCall(
 
   // Built-in knowledge routes are daemon-owned in the browser even if a stale
   // Electron MCP schema is still present in persisted renderer state.
-  const server = isBrowserProduct() && toolName.startsWith('rag_') ? null : findServerForTool(toolName);
+  const server = isBrowserProduct() && (toolName.startsWith('rag_') || toolName.startsWith('memory_')) ? null : findServerForTool(toolName);
   if (!server) {
     // FALLBACK: Check if it's an internal memory tool
     if (toolName.startsWith('memory_')) {
       logMcpRenderer("info", "Executing memory tool via direct IPC fallback", { tool: toolName });
       try {
-        const result = await electron.memory.callTool(toolName, safeArgs) as { result: unknown; error?: string };
-        return result;
+        if (isBrowserProduct()) {
+          const response = await getBrowserAgentdClient().callMemoryTool(toolName, safeArgs)
+          return { result: response.result ?? null, ...(response.error ? { error: response.error } : {}) }
+        }
+        const result = await electron.memory.callTool(toolName, safeArgs)
+        return { result: result.result ?? null, ...(result.error ? { error: result.error } : {}) };
       } catch (err) {
         return { result: null, error: `Direct memory tool call failed: ${err instanceof Error ? err.message : String(err)}` };
       }

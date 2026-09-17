@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { FileJson, FolderOpen, RefreshCw, Copy, Check } from 'lucide-react'
+import electron from '../../../lib/electron'
 
 export function MemoryInspector() {
     const [data, setData] = useState<any>(null)
@@ -12,10 +13,7 @@ export function MemoryInspector() {
         setLoading(true)
         setError(null)
         try {
-            if (!window.electron?.memory) {
-                throw new Error('Memory API not available')
-            }
-            const result = await window.electron.memory.exportAll()
+            const result = await electron.memory.exportAll()
             if (result.success) {
                 setData(result.data)
             } else {
@@ -29,8 +27,7 @@ export function MemoryInspector() {
     }
 
     const openFileLocation = async () => {
-        if (!window.electron?.memory) return
-        await window.electron.memory.openFileLocation()
+        await electron.memory.openFileLocation()
     }
 
     const handleCopy = () => {

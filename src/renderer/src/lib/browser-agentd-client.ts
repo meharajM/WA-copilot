@@ -161,6 +161,20 @@ export interface BrowserIntelligenceLog {
   timestamp: string
 }
 
+export interface BrowserMemoryStats {
+  entityCount: number
+  relationCount: number
+  storageSize: number
+  avgSearchLatency: number
+  backend: string
+}
+
+export interface BrowserMemoryExport {
+  entities: unknown[]
+  relations: unknown[]
+  metadata: Record<string, unknown>
+}
+
 const normaliseOrigin = (origin: string): string => {
   const url = new URL(origin)
   if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('Agentd origin must use HTTP(S)')
@@ -193,6 +207,9 @@ export interface BrowserAgentdClient extends ChatClient {
   getIntelligenceStats(): Promise<{ totalQueries: number; resolvedQueries: number; autonomyRate: number; trainingCount: number; learningCount: number }>
   listIntelligenceLogs(limit?: number): Promise<BrowserIntelligenceLog[]>
   logAccuracy(entry: { event: string; details?: string }): Promise<void>
+  getMemoryStats(): Promise<BrowserMemoryStats>
+  exportMemory(): Promise<BrowserMemoryExport>
+  callMemoryTool(name: string, args: Record<string, unknown>): Promise<{ success: boolean; result?: unknown; error?: string }>
   setCredential(key: CredentialKey, value: string): Promise<NativeResult>
   hasCredential(key: CredentialKey): Promise<NativeResult & { exists: boolean }>
   deleteCredential(key: CredentialKey): Promise<NativeResult>
@@ -420,6 +437,24 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
   const logAccuracy = async (entry: { event: string; details?: string }): Promise<void> => {
     await request('/api/v1/intelligence/accuracy', { method: 'POST', body: JSON.stringify(entry) }, true)
   }
+  const getMemoryStats = async (): Promise<BrowserMemoryStats> => {
+    const value = await request<unknown>('/api/v1/memory/stats')
+    if (!isRecord(value) || value.success !== true || !isRecord(value.stats)
+      || typeof value.stats.entityCount !== 'number' || typeof value.stats.relationCount !== 'number'
+      || typeof value.stats.storageSize !== 'number' || typeof value.stats.avgSearchLatency !== 'number' || typeof value.stats.backend !== 'string') throw new Error('Invalid memory stats response')
+    return value.stats as unknown as BrowserMemoryStats
+  }
+  const exportMemory = async (): Promise<BrowserMemoryExport> => {
+    const value = await request<unknown>('/api/v1/memory/export')
+    if (!isRecord(value) || value.success !== true || !isRecord(value.data) || !Array.isArray(value.data.entities) || !Array.isArray(value.data.relations) || !isRecord(value.data.metadata)) throw new Error('Invalid memory export response')
+    return value.data as unknown as BrowserMemoryExport
+  }
+  const callMemoryTool = async (name: string, args: Record<string, unknown>): Promise<{ success: boolean; result?: unknown; error?: string }> => {
+    if (!/^memory_[a-z_]+$/.test(name)) throw new Error('Invalid memory tool name')
+    const value = await request<unknown>('/api/v1/memory/tools', { method: 'POST', body: JSON.stringify({ name, args }) }, true)
+    if (!isRecord(value) || typeof value.success !== 'boolean') throw new Error('Invalid memory tool response')
+    return { success: value.success, ...(Object.prototype.hasOwnProperty.call(value, 'result') ? { result: value.result } : {}), ...(typeof value.error === 'string' ? { error: value.error } : {}) }
+  }
   const setCredential = async (key: CredentialKey, value: string) => readResult(await request(`/api/v1/credentials/${encodeURIComponent(key)}`, { method: 'POST', body: JSON.stringify({ value }) }, true))
   const hasCredential = async (key: CredentialKey) => readCredentialPresence(await request(`/api/v1/credentials/${encodeURIComponent(key)}`))
   const deleteCredential = async (key: CredentialKey) => readResult(await request(`/api/v1/credentials/${encodeURIComponent(key)}`, { method: 'DELETE' }, true))
@@ -461,6 +496,9 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     getIntelligenceStats,
     listIntelligenceLogs,
     logAccuracy,
+    getMemoryStats,
+    exportMemory,
+    callMemoryTool,
     setCredential,
     hasCredential,
     deleteCredential,

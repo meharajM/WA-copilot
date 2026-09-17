@@ -72,13 +72,15 @@ const browserAutonomyHealth = async () => {
     }
     let knowledgeDocuments = 0
     try { knowledgeDocuments = (await getBrowserAgentdClient().listKnowledge()).length } catch { /* status remains useful if the optional slice is unavailable */ }
+    let memoryBackend: string | null = null
+    try { memoryBackend = (await getBrowserAgentdClient().getMemoryStats()).backend } catch { /* the rest of the health surface remains actionable */ }
     return {
         executionLocation: 'agentd',
         transport: 'authenticated loopback HTTP',
         channel: { status: 'draft-only', error: null },
         queues: { whatsapp: status.queueDepth || 0, email: 0, meta: 0 },
         leaseHeld: true,
-        memory: { status: 'not migrated', backend: null },
+        memory: { status: memoryBackend ? 'bounded' : 'unavailable', backend: memoryBackend },
         rag: { status: 'bounded-text', documents: knowledgeDocuments },
     }
 }
@@ -287,21 +289,23 @@ export const electron = {
 
     // Memory operations
     memory: {
-        callTool: async (name: string, args: Record<string, unknown>) => {
+        callTool: async (name: string, args: Record<string, unknown>): Promise<{ success: boolean; result?: unknown; error?: string }> => {
             if (isElectron() && window.electron?.memory) {
                 return await window.electron.memory.callTool(name, args)
             }
+            if (isBrowserProduct()) return await getBrowserAgentdClient().callMemoryTool(name, args)
             console.log('[Browser] Memory call tool mock:', { name, args })
-            return { result: null }
+            return { success: false, result: null, error: 'Memory is not supported in this runtime' }
         },
         getStats: async () => {
             if (isElectron() && window.electron?.memory) {
                 return await window.electron.memory.getStats()
             }
             if (isBrowserProduct()) {
+                const stats = await getBrowserAgentdClient().getMemoryStats()
                 return {
                     success: true,
-                    stats: { entityCount: 0, relationCount: 0, storageSize: 0, avgSearchLatency: 0, backend: 'not-migrated' },
+                    stats,
                 }
             }
             return {
@@ -313,6 +317,13 @@ export const electron = {
             if (isElectron() && window.electron?.memory) {
                 return await window.electron.memory.openFileLocation()
             }
+            if (isBrowserProduct()) return { success: false, error: 'Memory files are owned by agentd and are not exposed as native paths in the browser.' }
+            return { success: false, error: 'Not supported in browser mode' }
+        },
+        exportAll: async () => {
+            if (isElectron() && window.electron?.memory) return await window.electron.memory.exportAll()
+            if (isBrowserProduct()) return { success: true, data: await getBrowserAgentdClient().exportMemory() }
+            return { success: false, error: 'Not supported in browser mode' }
         }
     },
     intelligence: {

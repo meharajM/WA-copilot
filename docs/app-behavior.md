@@ -298,6 +298,7 @@ Pass evidence:
 - The panel shows entity count, relation count, storage size, and average search latency.
 - `memento-mcp` is not selectable until its adapter is implemented. Persisted legacy selections fall back to SQLite.
 - A memory inspector is available.
+- In the browser product, memory stats, bounded graph tool calls, and raw JSON export use authenticated agentd routes. The browser does not expose the daemon's native database path; opening the file location remains a desktop-only capability.
 
 Pass evidence:
 
