@@ -257,9 +257,21 @@ fn process_is_live_and_owned_by_current_user(pid: u32) -> bool {
 
     unsafe fn token_matches_current_user(process_token: HANDLE, current_token: HANDLE) -> bool {
         let mut process_length = 0_u32;
-        let _ = GetTokenInformation(process_token, TokenUser, None, 0, &mut process_length);
+        let _ = GetTokenInformation(
+            process_token,
+            TokenUser,
+            std::ptr::null_mut(),
+            0,
+            &mut process_length,
+        );
         let mut current_length = 0_u32;
-        let _ = GetTokenInformation(current_token, TokenUser, None, 0, &mut current_length);
+        let _ = GetTokenInformation(
+            current_token,
+            TokenUser,
+            std::ptr::null_mut(),
+            0,
+            &mut current_length,
+        );
         if process_length == 0 || current_length == 0 {
             return false;
         }
@@ -268,14 +280,14 @@ fn process_is_live_and_owned_by_current_user(pid: u32) -> bool {
         if GetTokenInformation(
             process_token,
             TokenUser,
-            Some(process_buffer.as_mut_ptr().cast::<c_void>()),
+            process_buffer.as_mut_ptr().cast::<c_void>(),
             process_length,
             &mut process_length,
         ) == 0
             || GetTokenInformation(
                 current_token,
                 TokenUser,
-                Some(current_buffer.as_mut_ptr().cast::<c_void>()),
+                current_buffer.as_mut_ptr().cast::<c_void>(),
                 current_length,
                 &mut current_length,
             ) == 0
