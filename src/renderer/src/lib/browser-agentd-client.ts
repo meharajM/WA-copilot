@@ -284,6 +284,9 @@ export interface BrowserAgentdClient extends ChatClient {
   listDrafts(limit?: number, status?: BrowserDraft['status']): Promise<BrowserDraft[]>
   updateDraftStatus(id: number, status: BrowserDraft['status']): Promise<BrowserDraft>
   sendWhatsAppDraft(id: number): Promise<BrowserDraftSendResult>
+  retryWhatsAppDraft(id: number): Promise<BrowserDraftSendResult>
+  quarantineWhatsAppDraft(id: number): Promise<BrowserDraft>
+  cancelWhatsAppDraft(id: number): Promise<BrowserDraft>
   getAutonomyMetrics(days?: number): Promise<BrowserAutonomyMetrics>
   listKnowledge(limit?: number): Promise<BrowserKnowledgeDocument[]>
   ingestKnowledge(input: { fileName: string; filePath: string; fileType: string; content: string; size: number }): Promise<BrowserKnowledgeDocument>
@@ -612,6 +615,19 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     if (!isRecord(value) || typeof value.providerMessageId !== 'string' || !value.providerMessageId || typeof value.duplicate !== 'boolean') throw new Error('Invalid WhatsApp draft send response')
     return { providerMessageId: value.providerMessageId, duplicate: value.duplicate, draft: readDraft(value.draft) }
   }
+  const retryWhatsAppDraft = async (id: number): Promise<BrowserDraftSendResult> => {
+    if (!Number.isSafeInteger(id) || id < 1) throw new Error('Invalid draft id')
+    const value = await request<unknown>(`/api/v1/whatsapp/drafts/${id}/retry`, { method: 'POST', body: '{}' }, true)
+    if (!isRecord(value) || typeof value.providerMessageId !== 'string' || !value.providerMessageId || typeof value.duplicate !== 'boolean') throw new Error('Invalid WhatsApp draft retry response')
+    return { providerMessageId: value.providerMessageId, duplicate: value.duplicate, draft: readDraft(value.draft) }
+  }
+  const disposeWhatsAppDraft = async (id: number, action: 'quarantine' | 'cancel'): Promise<BrowserDraft> => {
+    if (!Number.isSafeInteger(id) || id < 1) throw new Error('Invalid draft id')
+    const value = await request<unknown>(`/api/v1/whatsapp/drafts/${id}/${action}`, { method: 'POST', body: '{}' }, true)
+    return readDraft(value)
+  }
+  const quarantineWhatsAppDraft = async (id: number): Promise<BrowserDraft> => disposeWhatsAppDraft(id, 'quarantine')
+  const cancelWhatsAppDraft = async (id: number): Promise<BrowserDraft> => disposeWhatsAppDraft(id, 'cancel')
   const getAutonomyMetrics = async (days = 14): Promise<BrowserAutonomyMetrics> => {
     const value = await request<unknown>(`/api/v1/autonomy/metrics?days=${encodeURIComponent(String(Math.max(1, Math.min(90, Math.trunc(days)))))}`)
     const fields = ['inbound', 'sent', 'escalated', 'drafts', 'failed', 'averageDecisionLatencyMs', 'llmCalls', 'averageLlmLatencyMs', 'groundedDecisionRate', 'deliveryUnknown', 'draftApprovalRate', 'averageDraftEditingTimeMs', 'estimatedCostPerResolvedConversation', 'reviewedDecisions', 'reviewAccuracy', 'escalationPrecision', 'unnecessaryEscalations', 'missedEscalations', 'recoveryDrills', 'averageRecoveryTimeMs']
@@ -728,6 +744,9 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     listDrafts,
     updateDraftStatus,
     sendWhatsAppDraft,
+    retryWhatsAppDraft,
+    quarantineWhatsAppDraft,
+    cancelWhatsAppDraft,
     getAutonomyMetrics,
     listKnowledge,
     ingestKnowledge,

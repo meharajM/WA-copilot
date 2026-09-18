@@ -183,3 +183,51 @@ test('approved WhatsApp drafts send through the durable browser outbox exactly o
   assert.equal(metrics.body.draftApprovalRate, 1)
   await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true })
 })
+
+test('failed browser outbox attempts support retry and explicit operator disposition', async () => {
+  const dataDir = makeTempDir('aica-agentd-wa-recovery-')
+  const secret = 'y'.repeat(32)
+  let calls = 0
+  const server = new AgentdServer({
+    dataDir,
+    secret,
+    credentials: { async get() { return 'cloud-secret-token' }, async exists() { return true } },
+    providerFetch: async () => {
+      calls += 1
+      if (calls === 2) return new Response(JSON.stringify({ messages: [{ id: 'wamid.retry-1' }] }), { status: 200, headers: { 'content-type': 'application/json' } })
+      return new Response(JSON.stringify({ error: { message: 'provider unavailable' } }), { status: 500, headers: { 'content-type': 'application/json' } })
+    },
+    logger: { log() {} },
+  })
+  const { origin } = await server.start()
+  const auth = { authorization: `Bearer ${secret}` }
+  await request(origin, 'PUT', '/api/v1/settings/whatsapp', { whatsapp_transport: 'cloud', whatsapp_cloud_phone_number_id: '1234567890', whatsapp_cloud_api_version: 'v23.0' }, auth)
+
+  const createDraft = async (providerEventId) => {
+    const created = await request(origin, 'POST', '/api/v1/whatsapp/events', { channel: 'whatsapp', providerEventId, conversationId: '14155551212@s.whatsapp.net', payload: {}, draftText: 'operator recovery' }, auth)
+    assert.equal(created.status, 202)
+    const draft = (await request(origin, 'GET', `/api/v1/whatsapp/drafts?status=draft`, undefined, auth)).body.drafts[0]
+    assert.equal((await request(origin, 'PATCH', `/api/v1/whatsapp/drafts/${draft.id}`, { status: 'approved' }, auth)).status, 200)
+    return draft.id
+  }
+
+  const retryable = await createDraft('recovery-retry')
+  assert.equal((await request(origin, 'POST', `/api/v1/whatsapp/drafts/${retryable}/send`, {}, auth)).status, 502)
+  assert.equal((await request(origin, 'POST', `/api/v1/whatsapp/drafts/${retryable}/retry`, {}, auth)).body.providerMessageId, 'wamid.retry-1')
+
+  const quarantined = await createDraft('recovery-quarantine')
+  assert.equal((await request(origin, 'POST', `/api/v1/whatsapp/drafts/${quarantined}/send`, {}, auth)).status, 502)
+  const quarantine = await request(origin, 'POST', `/api/v1/whatsapp/drafts/${quarantined}/quarantine`, {}, auth)
+  assert.equal(quarantine.status, 200)
+  assert.equal(quarantine.body.sendError, 'Quarantined by operator')
+  assert.equal((await request(origin, 'POST', `/api/v1/whatsapp/drafts/${quarantined}/retry`, {}, auth)).status, 409)
+
+  const cancelled = await createDraft('recovery-cancel')
+  assert.equal((await request(origin, 'POST', `/api/v1/whatsapp/drafts/${cancelled}/send`, {}, auth)).status, 502)
+  const cancel = await request(origin, 'POST', `/api/v1/whatsapp/drafts/${cancelled}/cancel`, {}, auth)
+  assert.equal(cancel.status, 200)
+  assert.equal(cancel.body.sendError, 'Cancelled by operator')
+  assert.equal((await request(origin, 'POST', `/api/v1/whatsapp/drafts/${cancelled}/retry`, {}, auth)).status, 409)
+
+  await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true })
+})

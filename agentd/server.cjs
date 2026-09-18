@@ -13,6 +13,8 @@ const MAX_BODY_BYTES = 256 * 1024
 const MAX_WHATSAPP_BODY_BYTES = 64 * 1024
 const MAX_WHATSAPP_PAYLOAD_BYTES = 32 * 1024
 const MAX_DRAFT_TEXT_LENGTH = 4096
+const OUTBOX_QUARANTINED_ERROR = 'Quarantined by operator'
+const OUTBOX_CANCELLED_ERROR = 'Cancelled by operator'
 const MAX_CHAT_MESSAGES_PER_SESSION = 10_000
 const MAX_CHAT_ID_LENGTH = 128
 const MAX_CHAT_TITLE_LENGTH = 200
@@ -568,7 +570,13 @@ class AgentdServer {
     if (['/api/v1/drafts', '/api/v1/whatsapp/drafts'].includes(url.pathname) && req.method === 'GET') return this.listDrafts(req, res, url)
     const draftMatch = /^\/api\/v1\/(?:whatsapp\/)?drafts\/(\d+)$/.exec(url.pathname)
     const draftSendMatch = /^\/api\/v1\/whatsapp\/drafts\/(\d+)\/send$/.exec(url.pathname)
+    const draftRetryMatch = /^\/api\/v1\/whatsapp\/drafts\/(\d+)\/retry$/.exec(url.pathname)
+    const draftQuarantineMatch = /^\/api\/v1\/whatsapp\/drafts\/(\d+)\/quarantine$/.exec(url.pathname)
+    const draftCancelMatch = /^\/api\/v1\/whatsapp\/drafts\/(\d+)\/cancel$/.exec(url.pathname)
     if (draftSendMatch && req.method === 'POST') return this.sendWhatsAppDraft(req, res, Number(draftSendMatch[1]))
+    if (draftRetryMatch && req.method === 'POST') return this.retryWhatsAppDraft(req, res, Number(draftRetryMatch[1]))
+    if (draftQuarantineMatch && req.method === 'POST') return this.dispositionWhatsAppDraft(req, res, Number(draftQuarantineMatch[1]), OUTBOX_QUARANTINED_ERROR)
+    if (draftCancelMatch && req.method === 'POST') return this.dispositionWhatsAppDraft(req, res, Number(draftCancelMatch[1]), OUTBOX_CANCELLED_ERROR)
     if (draftMatch && req.method === 'GET') return this.getDraft(req, res, Number(draftMatch[1]))
     if (draftMatch && ['PATCH', 'PUT'].includes(req.method)) return this.updateDraftStatus(req, res, Number(draftMatch[1]))
     if (url.pathname === '/api/v1/pause-all' && req.method === 'POST') return this.control(req, res, true)
@@ -1607,20 +1615,19 @@ class AgentdServer {
     return json(res, 200, this.draftView(this.db.prepare('SELECT * FROM whatsapp_drafts WHERE id = ?').get(id)))
   }
 
-  async sendWhatsAppDraft(req, res, id) {
-    this.authorize(req, { mutation: true })
-    if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
-    const body = await readBody(req, 1024)
-    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 0) return json(res, 400, { error: 'Draft send accepts no input' })
+  async performWhatsAppDraftSend(id) {
     const draft = this.db.prepare('SELECT * FROM whatsapp_drafts WHERE id = ?').get(id)
-    if (!draft) return json(res, 404, { error: 'Draft not found' })
-    if (!['approved', 'sent'].includes(draft.status)) return json(res, 409, { error: 'Draft must be approved before sending' })
+    if (!draft) return { status: 404, body: { error: 'Draft not found' } }
+    if (!['approved', 'sent'].includes(draft.status)) return { status: 409, body: { error: 'Draft must be approved before sending' } }
 
     const existing = this.db.prepare('SELECT * FROM whatsapp_outbox WHERE draft_id = ?').get(id)
-    if (existing?.status === 'sent' && existing.provider_message_id) {
-      return json(res, 200, { success: true, duplicate: true, providerMessageId: existing.provider_message_id, draft: this.draftView(draft) })
+    if (existing?.status === 'failed' && [OUTBOX_QUARANTINED_ERROR, OUTBOX_CANCELLED_ERROR].includes(existing.error)) {
+      return { status: 409, body: { error: `Draft outbox is ${existing.error.toLowerCase()}` } }
     }
-    if (existing?.status === 'pending') return json(res, 409, { error: 'WhatsApp send is already pending' })
+    if (existing?.status === 'sent' && existing.provider_message_id) {
+      return { status: 200, body: { success: true, duplicate: true, providerMessageId: existing.provider_message_id, draft: this.draftView(draft) } }
+    }
+    if (existing?.status === 'pending') return { status: 409, body: { error: 'WhatsApp send is already pending' } }
 
     const now = Date.now()
     const claimed = this.db.transaction(() => {
@@ -1635,10 +1642,10 @@ class AgentdServer {
         ON CONFLICT(draft_id) DO UPDATE SET status = 'pending', error = NULL, attempts = whatsapp_outbox.attempts + 1, updated_at = excluded.updated_at`).run(id, 'pending', prior?.attempts ? prior.attempts + 1 : 1, now, now)
       return { current }
     })()
-    if (claimed.missing) return json(res, 404, { error: 'Draft not found' })
-    if (claimed.invalid) return json(res, 409, { error: 'Draft must be approved before sending' })
-    if (claimed.sent) return json(res, 200, { success: true, duplicate: true, providerMessageId: claimed.sent.provider_message_id, draft: this.draftView(draft) })
-    if (claimed.pending) return json(res, 409, { error: 'WhatsApp send is already pending' })
+    if (claimed.missing) return { status: 404, body: { error: 'Draft not found' } }
+    if (claimed.invalid) return { status: 409, body: { error: 'Draft must be approved before sending' } }
+    if (claimed.sent) return { status: 200, body: { success: true, duplicate: true, providerMessageId: claimed.sent.provider_message_id, draft: this.draftView(draft) } }
+    if (claimed.pending) return { status: 409, body: { error: 'WhatsApp send is already pending' } }
 
     // Inbound conversation IDs may be stored as `+15551234567` or as a
     // WhatsApp JID. Strip only the known JID suffix; never guess a recipient.
@@ -1649,13 +1656,68 @@ class AgentdServer {
         this.db.prepare("UPDATE whatsapp_outbox SET status = 'sent', provider_message_id = ?, error = NULL, updated_at = ? WHERE draft_id = ?").run(providerMessageId, Date.now(), id)
         this.db.prepare("UPDATE whatsapp_drafts SET status = 'sent', updated_at = ? WHERE id = ? AND status = 'approved'").run(Date.now(), id)
       })()
-      return json(res, 200, { success: true, duplicate: false, providerMessageId, draft: this.draftView(this.db.prepare('SELECT * FROM whatsapp_drafts WHERE id = ?').get(id)) })
+      return { status: 200, body: { success: true, duplicate: false, providerMessageId, draft: this.draftView(this.db.prepare('SELECT * FROM whatsapp_drafts WHERE id = ?').get(id)) } }
     } catch (error) {
       const message = Number.isInteger(error?.statusCode) && error.statusCode !== 502 ? error.message : 'WhatsApp Cloud message failed'
       this.db.prepare("UPDATE whatsapp_outbox SET status = 'failed', error = ?, updated_at = ? WHERE draft_id = ?").run(message, Date.now(), id)
       const statusCode = Number.isInteger(error?.statusCode) ? error.statusCode : 502
-      return json(res, statusCode, { success: false, error: message })
+      return { status: statusCode, body: { success: false, error: message } }
     }
+  }
+
+  async readEmptyDraftMutation(req, res, message) {
+    if (!String(req.headers['content-type'] || '').startsWith('application/json')) {
+      json(res, 415, { error: 'application/json required' })
+      return false
+    }
+    let body
+    try { body = await readBody(req, 1024) } catch (error) {
+      json(res, Number.isInteger(error?.statusCode) ? error.statusCode : 400, { error: error?.statusCode === 413 ? 'Request body too large' : 'Invalid JSON' })
+      return false
+    }
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 0) {
+      json(res, 400, { error: message })
+      return false
+    }
+    return true
+  }
+
+  async sendWhatsAppDraft(req, res, id) {
+    this.authorize(req, { mutation: true })
+    if (!await this.readEmptyDraftMutation(req, res, 'Draft send accepts no input')) return
+    const result = await this.performWhatsAppDraftSend(id)
+    return json(res, result.status, result.body)
+  }
+
+  async retryWhatsAppDraft(req, res, id) {
+    this.authorize(req, { mutation: true })
+    if (!await this.readEmptyDraftMutation(req, res, 'Draft retry accepts no input')) return
+    const outbox = this.db.prepare('SELECT status,error FROM whatsapp_outbox WHERE draft_id = ?').get(id)
+    if (!outbox) return json(res, 409, { error: 'Draft has no failed outbox to retry' })
+    if (outbox.status === 'pending') return json(res, 409, { error: 'WhatsApp send is already pending' })
+    if (outbox.status === 'sent') return json(res, 409, { error: 'WhatsApp draft is already sent' })
+    if (outbox.error === OUTBOX_QUARANTINED_ERROR || outbox.error === OUTBOX_CANCELLED_ERROR) return json(res, 409, { error: 'Draft outbox is operator-disposed' })
+    if (outbox.status !== 'failed') return json(res, 409, { error: 'Draft outbox is not retryable' })
+    const result = await this.performWhatsAppDraftSend(id)
+    return json(res, result.status, result.body)
+  }
+
+  async dispositionWhatsAppDraft(req, res, id, disposition) {
+    this.authorize(req, { mutation: true })
+    if (!await this.readEmptyDraftMutation(req, res, 'Draft disposition accepts no input')) return
+    const draft = this.db.prepare('SELECT * FROM whatsapp_drafts WHERE id = ?').get(id)
+    if (!draft) return json(res, 404, { error: 'Draft not found' })
+    const outbox = this.db.prepare('SELECT status,error FROM whatsapp_outbox WHERE draft_id = ?').get(id)
+    if (!outbox) return json(res, 409, { error: 'Draft has no outbound attempt to dispose' })
+    if (outbox.status === 'sent') return json(res, 409, { error: 'Sent drafts cannot be disposed' })
+    if (outbox.status === 'pending') return json(res, 409, { error: 'Pending sends cannot be disposed while provider work is active' })
+    if (outbox.status !== 'failed') return json(res, 409, { error: 'Draft outbox is not disposable' })
+    if (outbox.error === OUTBOX_QUARANTINED_ERROR || outbox.error === OUTBOX_CANCELLED_ERROR) {
+      if (outbox.error !== disposition) return json(res, 409, { error: 'Draft outbox already has an operator disposition' })
+      return json(res, 200, this.draftView(draft))
+    }
+    this.db.prepare('UPDATE whatsapp_outbox SET error = ?, updated_at = ? WHERE draft_id = ? AND status = ?').run(disposition, Date.now(), id, 'failed')
+    return json(res, 200, this.draftView(this.db.prepare('SELECT * FROM whatsapp_drafts WHERE id = ?').get(id)))
   }
 
   control(req, res, paused) {

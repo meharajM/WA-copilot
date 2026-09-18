@@ -219,6 +219,29 @@ describe('browser agentd client', () => {
     expect(new Headers(send.init?.headers).get('x-csrf-token')).toBe('csrf-token')
   })
 
+  it('maps browser outbox retry and operator disposition routes', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = []
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      calls.push({ url, init })
+      if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
+      const draft = { id: 7, channel: 'whatsapp', providerEventId: 'evt-7', conversationId: '14155551212@s.whatsapp.net', responseText: 'draft reply', status: 'approved', createdAt: 10, updatedAt: 30, sendStatus: 'failed', sendAttempts: 2 }
+      if (url.endsWith('/retry')) return response({ success: true, duplicate: false, providerMessageId: 'wamid.retry-1', draft: { ...draft, status: 'sent', sendStatus: 'sent', providerMessageId: 'wamid.retry-1' } })
+      if (url.endsWith('/quarantine')) return response({ ...draft, sendError: 'Quarantined by operator' })
+      if (url.endsWith('/cancel')) return response({ ...draft, sendError: 'Cancelled by operator' })
+      return response({ success: true })
+    })
+    const client = createBrowserAgentdClient({ origin: 'http://127.0.0.1:4141', fetch: fetcher })
+    await client.pair('123456')
+    await expect(client.retryWhatsAppDraft(7)).resolves.toMatchObject({ providerMessageId: 'wamid.retry-1', draft: { status: 'sent' } })
+    await expect(client.quarantineWhatsAppDraft(7)).resolves.toMatchObject({ sendError: 'Quarantined by operator' })
+    await expect(client.cancelWhatsAppDraft(7)).resolves.toMatchObject({ sendError: 'Cancelled by operator' })
+    for (const suffix of ['/retry', '/quarantine', '/cancel']) {
+      const call = calls.find(item => item.url.endsWith(`/api/v1/whatsapp/drafts/7${suffix}`))!
+      expect(new Headers(call.init?.headers).get('x-csrf-token')).toBe('csrf-token')
+    }
+  })
+
   it('maps loopback Ollama settings and model discovery through agentd', async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = []
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

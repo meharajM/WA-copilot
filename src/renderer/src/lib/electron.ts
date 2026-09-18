@@ -555,10 +555,25 @@ export const electron = {
         pruneRetention: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.pruneRetention() : null,
         pauseConversation: async (jid: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.pauseConversation(jid) : null,
         resumeConversation: async (jid: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.resumeConversation(jid) : null,
-        retryDelivery: async (inboundId: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.retryDelivery(inboundId) : null,
+        retryDelivery: async (inboundId: string) => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.retryDelivery(inboundId)
+            if (!isBrowserProduct()) return null
+            const draft = (await getBrowserAgentdClient().listDrafts(100)).find(item => item.providerEventId === inboundId)
+            return draft ? getBrowserAgentdClient().retryWhatsAppDraft(draft.id).then(() => browserAutonomyState()) : null
+        },
         retryJob: async (inboundId: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.retryJob(inboundId) : null,
-        quarantineDelivery: async (inboundId: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.quarantineDelivery(inboundId) : null,
-        cancelOutbound: async (inboundId: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.cancelOutbound(inboundId) : null,
+        quarantineDelivery: async (inboundId: string) => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.quarantineDelivery(inboundId)
+            if (!isBrowserProduct()) return null
+            const draft = (await getBrowserAgentdClient().listDrafts(100)).find(item => item.providerEventId === inboundId)
+            return draft ? getBrowserAgentdClient().quarantineWhatsAppDraft(draft.id).then(() => browserAutonomyState()) : null
+        },
+        cancelOutbound: async (inboundId: string) => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.cancelOutbound(inboundId)
+            if (!isBrowserProduct()) return null
+            const draft = (await getBrowserAgentdClient().listDrafts(100)).find(item => item.providerEventId === inboundId)
+            return draft ? getBrowserAgentdClient().cancelWhatsAppDraft(draft.id).then(() => browserAutonomyState()) : null
+        },
         listApprovedTemplates: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listApprovedTemplates() : [],
         listTakeovers: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listTakeovers() : [],
         listUnresolvedOutbound: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listUnresolvedOutbound() : [],
