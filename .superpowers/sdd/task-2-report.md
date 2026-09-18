@@ -8,7 +8,7 @@ Result: DONE_WITH_CONCERNS
 
 Implemented native-only `settings-persona` live cutover while leaving Electron paths unchanged. agentd validates staged/source identity immediately before commit, maps only validated persona + browser-safe LLM/Ollama/product preferences, preserves absent values, excludes secret-looking fields, issues a short-lived single-use native bearer confirmation token bound to preview hash/scope/runtime, writes an atomic mode-600 backup, applies all four `agent_state` values in one SQLite transaction, exposes status/apply/rollback controls, and fences generation, inbound polling, and outbound sends during commit. Typed Tauri/Rust commands and native diagnostics controls cover confirm/apply/status/rollback. Docs distinguish metadata cutover from deferred chat/credential migration.
 
-Commit: pending
+Commit chain: `efdaf52e5961063ea905ff7b39457027ea19d0fd` → `ae054349` → `5e65f7eb` → `54d59cc5`
 
 Focused verification:
 
@@ -20,11 +20,11 @@ Focused verification:
 - `cargo test --manifest-path src-tauri/Cargo.toml` — 17 passed (warnings only).
 - `git diff --check` — passed.
 
-Concern: Node pathname operations retain the prior platform TOCTOU limitation documented by the staging hardening report; chat history, credentials/OAuth, and Electron removal remain intentionally out of scope.
+Concern: chat history, credentials/OAuth, and Electron removal remain intentionally out of scope; Windows no-reparse descriptor support remains a release blocker.
 
 ## Reviewer fixes and re-verification (2026-09-18)
 
-Result: DONE_WITH_CONCERNS
+Result: APPROVED after independent review of `5e65f7eb` and `54d59cc5`.
 
 - Added durable `settings_persona_cutovers` SQLite records for preview manifest, state, token-consumed marker, idempotency result, and backup reference; status and completed retries recover after restart without exposing tokens or credentials.
 - Added active-operation draining and immediate hold checks around generation, SMTP, WhatsApp direct/draft provider calls and their DB commits; apply aborts generation controllers, stops polling, drains work, then restores prior hold/poller state.
@@ -62,7 +62,7 @@ Remaining concern: Windows native no-reparse descriptor support remains a releas
 
 ## Concurrency follow-up — 2026-09-18
 
-Result: DONE_WITH_CONCERNS
+Result: APPROVED after independent concurrency review.
 
 - Generation admission now acquires the active-operation fence before request-body reads, provider discovery/credential awaits, validation, chat DB mutations, and provider response cleanup. Migration apply can drain the admitted request; a hold recheck before chat mutation prevents an orphan user message when discovery overlaps cutover.
 - Settings/persona confirmation now rejects while a cutover is `applying` or owns the migration hold. Public cutover responses expose confirmation tokens only for `confirmed` records, so terminal and in-flight states cannot leak one.
