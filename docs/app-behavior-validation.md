@@ -370,6 +370,10 @@ or spending-limit blocker is still external to the code; it does not provide
 Windows runtime, Credential Manager, packaging, signing, install/upgrade, or
 native resource evidence.
 
+The documentation follow-up triggered workflow `35383920744` and was rejected
+in the same three-second pre-job window, again without executable steps or
+logs. The PR therefore still has no hosted Windows runtime evidence.
+
 ### Finding 6: browser WebGPU Email could fall through to Electron delivery — resolved
 
 Severity: high
