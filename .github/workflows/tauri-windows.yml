@@ -24,7 +24,9 @@ permissions:
 jobs:
   build-and-test:
     runs-on: windows-latest
-    timeout-minutes: 30
+    # Cross-target Rust bundling can take more than 30 minutes on a cold
+    # Windows runner; native tests still run before this longer packaging gate.
+    timeout-minutes: 45
     steps:
       - name: Check out source
         uses: actions/checkout@v4
