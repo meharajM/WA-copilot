@@ -79,6 +79,9 @@ const MAX_LOG_BYTES = 32 * 1024
 const REQUEST_TIMEOUT_MS = 30 * 1000
 const HEADERS_TIMEOUT_MS = 10 * 1000
 const KEEP_ALIVE_TIMEOUT_MS = 5 * 1000
+const SETTINGS_PERSONA_SCOPE = 'settings-persona'
+const SETTINGS_PERSONA_TOKEN_TTL_MS = 5 * 60 * 1000
+const SETTINGS_PERSONA_MAX_SOURCE_BYTES = 512 * 1024
 const PROVIDER_ENDPOINTS = Object.freeze({
   openai: 'https://api.openai.com/v1/models',
   openrouter: 'https://openrouter.ai/api/v1/models',
@@ -407,6 +410,8 @@ class AgentdServer {
     this.generations = new Set()
     this.generationControllers = new Map()
     this.continuityPreviews = new Map()
+    this.settingsPersonaCutovers = new Map()
+    this.migrationHold = false
     this.pairingCode = pairingCode || String(crypto.randomInt(100000, 999999))
     this.pairingExpiresAt = Date.now() + PAIRING_TTL_MS
     this.pairingFailures = 0
@@ -698,6 +703,7 @@ class AgentdServer {
     this.server = null
     this.sessions.clear()
     this.generations.clear()
+    this.settingsPersonaCutovers.clear()
     if (this.db) this.db.close()
     this.db = null
     this.removeOwnedFiles()
@@ -718,6 +724,7 @@ class AgentdServer {
   }
 
   startEmailInboundPolling() {
+    if (this.migrationHold) return
     const settings = this.getEmailSettings()
     if (!this.credentials || this.emailInboundWorker || !settings?.enabled
       || !['imap-smtp', 'gmail-api'].includes(settings.provider)
@@ -730,6 +737,7 @@ class AgentdServer {
       poll: this.emailPoll,
       logger: this.logger,
       onMessage: async (settings, message) => {
+        if (this.migrationHold) return
         const providerEventId = `imap:${settings.accountName}:${message.uid}`
         const from = message.payload.from || 'unknown'
         const messageId = message.payload.messageId || providerEventId
@@ -749,6 +757,7 @@ class AgentdServer {
   }
 
   ingestEmailInbound(body) {
+    if (this.migrationHold) throw Object.assign(new Error('Settings migration is committing'), { statusCode: 409 })
     if (!parseEmailInbound(body)) throw new Error('Invalid email inbound event')
     const payload = JSON.stringify(body.payload)
     if (Buffer.byteLength(payload, 'utf8') > MAX_EMAIL_INBOUND_BODY_BYTES) throw new Error('Email inbound payload too large')
@@ -838,6 +847,10 @@ class AgentdServer {
     if (url.pathname === '/api/v1/continuity/preview' && req.method === 'POST') return this.continuityPreview(req, res)
     if (url.pathname === '/api/v1/continuity/import' && req.method === 'POST') return this.continuityImport(req, res)
     if (url.pathname === '/api/v1/continuity/rollback' && req.method === 'POST') return this.continuityRollback(req, res)
+    if (url.pathname === '/api/v1/continuity/settings-persona/confirm' && req.method === 'POST') return this.settingsPersonaConfirm(req, res)
+    if (url.pathname === '/api/v1/continuity/settings-persona/apply' && req.method === 'POST') return this.settingsPersonaApply(req, res)
+    if (url.pathname === '/api/v1/continuity/settings-persona/rollback' && req.method === 'POST') return this.settingsPersonaRollback(req, res)
+    if (url.pathname === '/api/v1/continuity/settings-persona/status' && req.method === 'GET') return this.settingsPersonaStatus(req, res)
     if (url.pathname === '/api/v1/autonomy/metrics' && req.method === 'GET') return this.autonomyMetrics(req, res, url)
     if (url.pathname === '/api/v1/logs' && ['GET', 'POST'].includes(req.method)) return this.auditLogs(req, res, url)
     if (url.pathname === '/api/v1/knowledge' && ['GET', 'POST'].includes(req.method)) return this.knowledge(req, res, url)
@@ -979,6 +992,14 @@ class AgentdServer {
     const body = await readBody(req, 16 * 1024)
     const preview = continuityMigration.createPreview(body.sourceRoot, this.dataDir)
     this.continuityPreviews.set(preview.previewId, preview)
+    this.settingsPersonaCutovers.set(preview.previewId, {
+      previewId: preview.previewId,
+      manifest: preview.manifest,
+      manifestHash: this.migrationManifestHash(preview.manifest),
+      scope: SETTINGS_PERSONA_SCOPE,
+      targetRuntime: this.runtimeId,
+      state: 'previewed',
+    })
     // Keep preview manifests short-lived and memory-only. They contain paths and
     // hashes, never store contents or credentials.
     setTimeout(() => this.continuityPreviews.delete(preview.previewId), 10 * 60 * 1000).unref?.()
@@ -1014,7 +1035,193 @@ class AgentdServer {
     const body = await readBody(req, 8 * 1024)
     const result = continuityMigration.rollback(body.migrationId, this.dataDir)
     this.continuityPreviews.delete(body.migrationId)
+    const cutover = this.settingsPersonaCutovers.get(body.migrationId)
+    if (!cutover || ['previewed', 'confirmed'].includes(cutover.state)) this.settingsPersonaCutovers.delete(body.migrationId)
     return json(res, 200, result)
+  }
+
+  migrationFence(req, res) {
+    if (!this.migrationHold) return false
+    json(res, 409, { error: 'Settings migration is committing' })
+    return true
+  }
+
+  migrationManifestHash(manifest) {
+    return crypto.createHash('sha256').update(JSON.stringify(manifest)).digest('hex')
+  }
+
+  readSettingsPersonaInput(preview) {
+    if (!preview || !preview.manifest || !Array.isArray(preview.manifest.entries)) throw Object.assign(new Error('Migration preview expired'), { statusCode: 404 })
+    const entries = preview.manifest.entries
+    const required = ['electron-settings', 'electron-persona']
+    if (required.some(id => !entries.some(entry => entry.id === id))) throw Object.assign(new Error('Settings/persona stores are missing from preview'), { statusCode: 409 })
+    const stagingRoot = path.join(this.dataDir, '.migration-staging', preview.previewId)
+    const manifestPath = path.join(stagingRoot, 'manifest.json')
+    let persisted
+    try { persisted = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) } catch { throw Object.assign(new Error('Staged migration manifest is unavailable'), { statusCode: 409 }) }
+    if (persisted.previewId !== preview.previewId || JSON.stringify(persisted.manifest) !== JSON.stringify(preview.manifest)) throw Object.assign(new Error('Staged migration manifest does not match preview'), { statusCode: 409 })
+    const bytesFor = (id) => {
+      const entry = entries.find(item => item.id === id)
+      const staged = path.join(stagingRoot, id)
+      let bytes
+      try {
+        const stat = fs.lstatSync(staged)
+        if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('unsafe')
+        bytes = fs.readFileSync(staged)
+      } catch { throw Object.assign(new Error(`Staged migration file unavailable: ${id}`), { statusCode: 409 }) }
+      if (bytes.length !== entry.byteSize || crypto.createHash('sha256').update(bytes).digest('hex') !== entry.sha256) throw Object.assign(new Error(`Staged migration file changed: ${id}`), { statusCode: 409 })
+      if (bytes.length > SETTINGS_PERSONA_MAX_SOURCE_BYTES) throw Object.assign(new Error(`Migration store too large: ${id}`), { statusCode: 413 })
+      return bytes
+    }
+    const sourceFor = (id, relativePath) => {
+      const source = path.join(preview.manifest.sourceRoot, relativePath)
+      try {
+        const stat = fs.lstatSync(source)
+        if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('unsafe')
+        const bytes = fs.readFileSync(source)
+        const entry = entries.find(item => item.id === id)
+        if (bytes.length !== entry.byteSize || crypto.createHash('sha256').update(bytes).digest('hex') !== entry.sha256) throw Object.assign(new Error(`Source changed after preview: ${id}`), { statusCode: 409 })
+      } catch (error) {
+        if (error.statusCode) throw error
+        throw Object.assign(new Error(`Source changed after preview: ${id}`), { statusCode: 409 })
+      }
+    }
+    sourceFor('electron-settings', 'aica-store.json')
+    sourceFor('electron-persona', 'business_profile.json')
+    let settingsRaw
+    let personaRaw
+    try { settingsRaw = JSON.parse(bytesFor('electron-settings').toString('utf8')); personaRaw = JSON.parse(bytesFor('electron-persona').toString('utf8')) } catch { throw Object.assign(new Error('Invalid JSON in settings/persona stores'), { statusCode: 400 }) }
+    const denySecretKeys = value => {
+      if (Array.isArray(value)) return value.forEach(denySecretKeys)
+      if (!value || typeof value !== 'object') return
+      for (const [key, child] of Object.entries(value)) {
+        if (/(?:api[_.-]?key|secret|token|password|oauth|credential|bearer|authorization|private[_.-]?key|encryption)/i.test(key)) throw Object.assign(new Error(`Secret field refused: ${key}`), { statusCode: 400 })
+        denySecretKeys(child)
+      }
+    }
+    denySecretKeys(settingsRaw)
+    denySecretKeys(personaRaw)
+    const persona = parsePersonaSettings(personaRaw)
+    if (!persona) throw Object.assign(new Error('Invalid business persona schema'), { statusCode: 400 })
+    const state = settingsRaw?.['aica-settings']?.state || settingsRaw?.['aica-settings'] || settingsRaw?.state || settingsRaw
+    if (!state || typeof state !== 'object' || Array.isArray(state)) throw Object.assign(new Error('Invalid Electron settings schema'), { statusCode: 400 })
+    let currentLlm; let currentOllama; let currentPreferences
+    try { currentLlm = parseLlmSettings(JSON.parse(this.getState('llm_settings', 'null'))) || LLM_SETTINGS_DEFAULTS } catch { currentLlm = LLM_SETTINGS_DEFAULTS }
+    try { currentOllama = parseOllamaSettings(JSON.parse(this.getState('ollama_settings', 'null'))) || OLLAMA_SETTINGS_DEFAULTS } catch { currentOllama = OLLAMA_SETTINGS_DEFAULTS }
+    try { currentPreferences = parseProductPreferences(JSON.parse(this.getState('product_preferences', 'null'))) || PRODUCT_PREFERENCES_DEFAULTS } catch { currentPreferences = PRODUCT_PREFERENCES_DEFAULTS }
+    const pick = (keys) => Object.fromEntries(keys.filter(key => Object.prototype.hasOwnProperty.call(state, key)).map(key => [key, state[key]]))
+    const llm = parseLlmSettings({ ...currentLlm, ...pick(['preferredProvider', 'openaiModel', 'openrouterModel']) })
+    const ollama = parseOllamaSettings({
+      baseUrl: state.ollamaBaseUrl ?? currentOllama.baseUrl,
+      model: state.ollamaModel ?? currentOllama.model,
+    })
+    const preferences = parseProductPreferences({ ...currentPreferences, ...pick(Object.keys(PRODUCT_PREFERENCES_DEFAULTS)) })
+    if (!llm || !ollama || !preferences) throw Object.assign(new Error('Electron settings contain invalid allowlisted values'), { statusCode: 400 })
+    return { persona, llm, ollama, preferences, manifestHash: this.migrationManifestHash(preview.manifest) }
+  }
+
+  writeMigrationBackup(record, prior) {
+    const backupDir = path.join(this.dataDir, 'migration-backups')
+    fs.mkdirSync(backupDir, { recursive: true, mode: 0o700 })
+    const filename = path.join(backupDir, `${SETTINGS_PERSONA_SCOPE}-${record.previewId}-${crypto.randomUUID()}.json`)
+    const payload = { version: 1, scope: SETTINGS_PERSONA_SCOPE, previewId: record.previewId, manifest: record.manifest, previewHash: record.manifestHash, prior }
+    const bytes = Buffer.from(JSON.stringify(payload) + '\n')
+    const sha256 = crypto.createHash('sha256').update(bytes).digest('hex')
+    const complete = Buffer.from(JSON.stringify({ ...payload, sha256 }) + '\n')
+    const temporary = `${filename}.${crypto.randomUUID()}.tmp`
+    const handle = fs.openSync(temporary, 'wx', 0o600)
+    try { fs.writeFileSync(handle, complete); fs.fsyncSync(handle); fs.closeSync(handle); fs.renameSync(temporary, filename); fs.chmodSync(filename, 0o600) } catch (error) { try { fs.closeSync(handle) } catch {}; try { fs.unlinkSync(temporary) } catch {}; throw error }
+    return { path: filename, sha256: crypto.createHash('sha256').update(complete).digest('hex') }
+  }
+
+  async settingsPersonaConfirm(req, res) {
+    this.authorizeNative(req)
+    const body = await readBody(req, 16 * 1024)
+    if (body?.scope !== SETTINGS_PERSONA_SCOPE) return json(res, 400, { error: 'Invalid migration scope' })
+    const preview = this.continuityPreviews.get(body.previewId)
+    if (!preview) return json(res, 404, { error: 'Migration preview expired' })
+    const existing = this.settingsPersonaCutovers.get(preview.previewId)
+    if (existing && existing.state !== 'previewed') return json(res, 200, this.settingsPersonaPublic(existing))
+    const input = this.readSettingsPersonaInput(preview)
+    const record = existing || { previewId: preview.previewId, manifest: preview.manifest, manifestHash: input.manifestHash, scope: SETTINGS_PERSONA_SCOPE, targetRuntime: this.runtimeId, state: 'previewed' }
+    record.state = 'confirmed'; record.confirmedAt = Date.now(); record.expiresAt = Date.now() + SETTINGS_PERSONA_TOKEN_TTL_MS
+    record.token = record.token || crypto.randomBytes(32).toString('hex')
+    record.input = input
+    this.settingsPersonaCutovers.set(preview.previewId, record)
+    return json(res, 200, this.settingsPersonaPublic(record))
+  }
+
+  settingsPersonaPublic(record) {
+    const output = { previewId: record.previewId, scope: record.scope, targetRuntime: record.targetRuntime, state: record.state, manifestHash: record.manifestHash, ...(record.expiresAt ? { expiresAt: record.expiresAt } : {}), ...(record.token ? { confirmationToken: record.token } : {}), ...(record.result || {}) }
+    return output
+  }
+
+  async settingsPersonaApply(req, res) {
+    this.authorizeNative(req)
+    const body = await readBody(req, 16 * 1024)
+    const record = this.settingsPersonaCutovers.get(body?.previewId)
+    if (!record) return json(res, 404, { error: 'Migration preview expired' })
+    if (record.state === 'applied' || record.state === 'rolled-back') {
+      if (body.confirmationToken !== undefined) return json(res, 403, { error: 'Confirmation token already consumed' })
+      return json(res, 200, this.settingsPersonaPublic(record))
+    }
+    if (record.state !== 'confirmed' || body.confirmationToken !== record.token || Date.now() > record.expiresAt) return json(res, 403, { error: 'Valid native confirmation token required' })
+    record.token = null
+    record.consumedAt = Date.now()
+    const priorHold = this.migrationHold
+    this.migrationHold = true
+    let prior = null
+    try {
+      const input = this.readSettingsPersonaInput(this.continuityPreviews.get(record.previewId))
+      if (input.manifestHash !== record.manifestHash) throw Object.assign(new Error('Preview changed after confirmation'), { statusCode: 409 })
+      prior = Object.fromEntries(['persona_settings', 'llm_settings', 'ollama_settings', 'product_preferences'].map(key => [key, this.getState(key, null)]))
+      const backup = this.writeMigrationBackup(record, prior)
+      this.db.transaction(() => {
+        this.setState('persona_settings', JSON.stringify(input.persona))
+        this.setState('llm_settings', JSON.stringify(input.llm))
+        this.setState('ollama_settings', JSON.stringify(input.ollama))
+        this.setState('product_preferences', JSON.stringify(input.preferences))
+      })()
+      record.state = 'applied'; record.appliedAt = Date.now(); record.backupPath = backup.path; record.backupSha256 = backup.sha256
+      record.result = { backupSha256: backup.sha256, liveDataChanged: true }
+      this.migrationHold = priorHold
+      return json(res, 200, this.settingsPersonaPublic(record))
+    } catch (error) {
+      const keys = ['persona_settings', 'llm_settings', 'ollama_settings', 'product_preferences']
+      const restored = !prior || keys.every(key => this.getState(key, null) === prior[key])
+      record.state = restored ? 'rolled-back' : 'needs-recovery'; record.error = error.message
+      this.migrationHold = restored ? priorHold : true
+      return json(res, error.statusCode || 500, { ...this.settingsPersonaPublic(record), error: error.message })
+    }
+  }
+
+  async settingsPersonaRollback(req, res) {
+    this.authorizeNative(req)
+    const body = await readBody(req, 16 * 1024)
+    const record = this.settingsPersonaCutovers.get(body?.previewId)
+    if (!record || !record.backupPath) return json(res, 404, { error: 'Migration backup not found' })
+    const priorHold = this.migrationHold
+    this.migrationHold = true
+    try {
+      const backup = JSON.parse(fs.readFileSync(record.backupPath, 'utf8'))
+      if (backup.scope !== SETTINGS_PERSONA_SCOPE || backup.previewId !== record.previewId) throw new Error('Invalid migration backup')
+      this.db.transaction(() => Object.entries(backup.prior).forEach(([key, value]) => value === null ? this.db.prepare('DELETE FROM agent_state WHERE key = ?').run(key) : this.setState(key, value)))()
+      record.state = 'rolled-back'; record.rolledBackAt = Date.now(); record.result = { liveDataChanged: true }
+      this.migrationHold = priorHold
+      return json(res, 200, this.settingsPersonaPublic(record))
+    } catch (error) {
+      record.state = 'needs-recovery'; record.error = error.message
+      this.migrationHold = true
+      return json(res, 500, { ...this.settingsPersonaPublic(record), error: error.message })
+    }
+  }
+
+  async settingsPersonaStatus(req, res) {
+    this.authorizeNative(req)
+    const body = new URL(req.url, this.origin).searchParams
+    const record = this.settingsPersonaCutovers.get(body.get('previewId'))
+    if (!record) return json(res, 404, { error: 'Migration preview not found' })
+    return json(res, 200, this.settingsPersonaPublic(record))
   }
 
   async llmSettings(req, res) {
@@ -1119,6 +1326,7 @@ class AgentdServer {
 
   async emailInbound(req, res, url) {
     this.authorize(req, { mutation: req.method === 'POST' })
+    if (req.method === 'POST' && this.migrationFence(req, res)) return
     if (req.method === 'GET') {
       const requestedAfter = Number.parseInt(url.searchParams.get('after_id') || '0', 10)
       const afterId = Number.isSafeInteger(requestedAfter) && requestedAfter >= 0 ? requestedAfter : 0
@@ -1275,6 +1483,7 @@ class AgentdServer {
 
   async sendEmailDraft(req, res, id) {
     this.authorize(req, { mutation: true })
+    if (this.migrationFence(req, res)) return
     if (!/^draft_[A-Za-z0-9_-]{1,120}$/.test(id)) return json(res, 400, { error: 'Invalid email draft id' })
     let settings = null
     try { settings = parseEmailSettings(JSON.parse(this.getState('email_settings', 'null'))) } catch {}
@@ -1697,6 +1906,7 @@ class AgentdServer {
 
   async sendWhatsAppMessage(req, res) {
     this.authorize(req, { mutation: true })
+    if (this.migrationFence(req, res)) return
     if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
     const body = await readBody(req, 16 * 1024)
     const keys = Object.keys(body || {}).sort()
@@ -1966,6 +2176,7 @@ class AgentdServer {
 
   async generateChat(req, res, rawId) {
     this.authorize(req, { mutation: true })
+    if (this.migrationFence(req, res)) return
     if (!this.validChatId(rawId)) return json(res, 400, { error: 'Invalid session id' })
     if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
     const body = await readBody(req, MAX_CHAT_REQUEST_BYTES)
@@ -2193,6 +2404,7 @@ class AgentdServer {
 
   async recordEvent(req, res) {
     this.authorize(req, { mutation: true })
+    if (this.migrationFence(req, res)) return
     if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
     const body = await readBody(req)
     if (!['whatsapp', 'email', 'instagram', 'messenger', 'twitter'].includes(body.channel) || typeof body.providerEventId !== 'string' || !body.providerEventId || body.providerEventId.length > 300 || typeof body.conversationId !== 'string' || !body.conversationId || body.conversationId.length > 500) return json(res, 400, { error: 'Invalid event identity' })
@@ -2205,6 +2417,7 @@ class AgentdServer {
 
   async whatsappInbound(req, res, url) {
     this.authorize(req, { mutation: req.method === 'POST' })
+    if (req.method === 'POST' && this.migrationFence(req, res)) return
     if (req.method === 'GET') {
       const requestedAfter = Number.parseInt(url.searchParams.get('after_id') || '0', 10)
       const afterId = Number.isSafeInteger(requestedAfter) && requestedAfter >= 0 ? requestedAfter : 0
@@ -2381,6 +2594,7 @@ class AgentdServer {
 
   async sendWhatsAppDraft(req, res, id) {
     this.authorize(req, { mutation: true })
+    if (this.migrationFence(req, res)) return
     if (!await this.readEmptyDraftMutation(req, res, 'Draft send accepts no input')) return
     const result = await this.performWhatsAppDraftSend(id)
     return json(res, result.status, result.body)
@@ -2388,6 +2602,7 @@ class AgentdServer {
 
   async retryWhatsAppDraft(req, res, id) {
     this.authorize(req, { mutation: true })
+    if (this.migrationFence(req, res)) return
     if (!await this.readEmptyDraftMutation(req, res, 'Draft retry accepts no input')) return
     const outbox = this.db.prepare('SELECT status,error FROM whatsapp_outbox WHERE draft_id = ?').get(id)
     if (!outbox) return json(res, 409, { error: 'Draft has no failed outbox to retry' })

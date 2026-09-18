@@ -512,6 +512,14 @@ Pass evidence:
 
 ## Known Current Limitations
 
+### Native settings/persona continuity cutover
+
+- Tauri native owner controls can preview, confirm, apply, inspect status, and roll back the `settings-persona` scope after the existing Electron snapshot is staged.
+- The cutover copies only validated `business_profile.json` persona fields and the browser-safe `aica-settings` LLM, Ollama, and product-preference fields into agentd `agent_state`; omitted fields retain current agentd values.
+- Confirmation uses a short-lived, single-use native bearer token bound to the preview manifest and runtime. Browser sessions cannot confirm or apply this scope, and credentials, OAuth material, MCP command/env values, and chat history remain excluded.
+- A mode-600 atomic backup is created before the SQLite transaction. Generation, inbound polling, and outbound send admission fail closed during commit and recover the prior hold state afterward.
+- Chat-history migration, credential/keychain migration, and Electron removal remain deferred release gates.
+
 - Browser Email inbound polling is daemon-owned and starts only when `Enable Email Channel` is on, app-password mode is selected, IMAP TLS is enabled, and an IMAP host plus OS-stored `email_imap_password` exist. The worker uses UID-based durable deduplication, accepts bounded `text/plain` messages only, and queues normalized events for the browser; Auto-Reply controls response policy, not mailbox ingestion. STARTTLS is supported for non-993 IMAP endpoints. HTML, multipart, attachments, unsupported transfer encodings, malformed messages, and oversized messages fail closed. Approved text-only drafts can deliver through the separately gated daemon SMTP route. OAuth/Gmail API polling remains unavailable.
 - Browser knowledge imports are text-only and cannot open the original native file after indexing; Electron retains native parser and file-reveal behavior.
 - The browser Autonomy panel does not render Electron-only WhatsApp Web automation, native backup staging, reconnect, or local-retention controls; those controls remain in the Electron transition client until agentd adapters are migrated.

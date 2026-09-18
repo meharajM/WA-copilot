@@ -1,0 +1,77 @@
+const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const http = require('node:http')
+const path = require('node:path')
+const test = require('node:test')
+const Database = require('better-sqlite3')
+const { AgentdServer } = require('../../agentd/server.cjs')
+const { makeTempDir } = require('./temp-dir.cjs')
+
+const request = (origin, method, pathname, body, headers = {}) => new Promise((resolve, reject) => {
+  const payload = body === undefined ? '' : JSON.stringify(body)
+  const req = http.request(`${origin}${pathname}`, { method, headers: { ...(payload ? { 'content-type': 'application/json' } : {}), ...headers } }, res => {
+    let text = ''
+    res.on('data', chunk => { text += chunk })
+    res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: text ? JSON.parse(text) : null }))
+  })
+  req.on('error', reject)
+  req.end(payload)
+})
+
+const settings = {
+  preferredProvider: 'ollama', openaiModel: 'gpt-4o-mini', openrouterModel: 'openai/gpt-4o',
+  ollamaModel: 'qwen2.5:3b', ollamaBaseUrl: 'http://127.0.0.1:11434',
+  theme: 'light', playwrightBrowser: 'auto', playwrightHeadless: false, fileSystemSafeMode: true,
+  memoryBackend: 'sqlite', ttsEnabled: true, ttsRate: 1, ttsPitch: 1, ttsVoice: null,
+  speechLang: 'en-US', offlineSpeech: false, voskModel: 'en-us', browserModel: 'Qwen2.5-1.5B-Instruct-q4f16_1-MLC',
+}
+
+function sourceFixture() {
+  const sourceRoot = makeTempDir('aica-electron-settings-persona-')
+  fs.writeFileSync(path.join(sourceRoot, 'aica-store.json'), JSON.stringify({ 'aica-settings': { state: settings, version: 0 } }))
+  fs.writeFileSync(path.join(sourceRoot, 'business_profile.json'), JSON.stringify({ name: 'Northwind', industry: 'Retail', tone: 'concise', coreKnowledge: ['Returns'], customRules: 'Never promise a refund.' }))
+  const db = new Database(path.join(sourceRoot, 'chat_history.v2.db'))
+  db.exec('CREATE TABLE messages (id INTEGER PRIMARY KEY, body TEXT NOT NULL)')
+  db.close()
+  return sourceRoot
+}
+
+test('native settings/persona cutover is schema-aware, transactional, fenced, and idempotent', async () => {
+  const dataDir = makeTempDir('aica-agentd-settings-persona-')
+  const sourceRoot = sourceFixture()
+  const secret = 's'.repeat(32)
+  const server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
+  const { origin } = await server.start()
+  const bearer = { authorization: `Bearer ${secret}` }
+  const browserAttempt = await request(origin, 'POST', '/api/v1/continuity/settings-persona/confirm', { previewId: 'x', scope: 'settings-persona' }, { origin })
+  assert.equal(browserAttempt.status, 401)
+
+  const preview = await request(origin, 'POST', '/api/v1/continuity/preview', { sourceRoot }, bearer)
+  assert.equal(preview.status, 200)
+  const staged = await request(origin, 'POST', '/api/v1/continuity/import', { previewId: preview.body.previewId, ownerConfirmation: 'IMPORT_ELECTRON_DATA' }, bearer)
+  assert.equal(staged.status, 200)
+  const confirmation = await request(origin, 'POST', '/api/v1/continuity/settings-persona/confirm', { previewId: preview.body.previewId, scope: 'settings-persona' }, bearer)
+  assert.equal(confirmation.status, 200)
+  assert.equal(confirmation.body.state, 'confirmed')
+  assert.equal(typeof confirmation.body.confirmationToken, 'string')
+  assert.equal((await request(origin, 'GET', `/api/v1/continuity/settings-persona/status?previewId=${preview.body.previewId}`, undefined, bearer)).body.state, 'confirmed')
+
+  const applied = await request(origin, 'POST', '/api/v1/continuity/settings-persona/apply', { previewId: preview.body.previewId, confirmationToken: confirmation.body.confirmationToken }, bearer)
+  assert.equal(applied.status, 200)
+  assert.equal(applied.body.state, 'applied')
+  assert.equal(fs.statSync(applied.body.backupSha256 && fs.readdirSync(path.join(dataDir, 'migration-backups')).map(name => path.join(dataDir, 'migration-backups', name))[0]).mode & 0o077, 0)
+  assert.deepEqual((await request(origin, 'GET', '/api/v1/settings/persona', undefined, bearer)).body, { name: 'Northwind', industry: 'Retail', tone: 'concise', coreKnowledge: ['Returns'], customRules: 'Never promise a refund.' })
+  assert.deepEqual((await request(origin, 'GET', '/api/v1/settings/llm', undefined, bearer)).body, { preferredProvider: 'ollama', openaiModel: 'gpt-4o-mini', openrouterModel: 'openai/gpt-4o' })
+  server.migrationHold = true
+  assert.equal((await request(origin, 'POST', '/api/v1/whatsapp/messages', { to: '+15551234567', text: 'blocked' }, bearer)).status, 409)
+  server.migrationHold = false
+  assert.equal((await request(origin, 'POST', '/api/v1/continuity/settings-persona/apply', { previewId: preview.body.previewId, confirmationToken: confirmation.body.confirmationToken }, bearer)).status, 403)
+  assert.equal((await request(origin, 'POST', '/api/v1/continuity/settings-persona/apply', { previewId: preview.body.previewId }, bearer)).body.state, 'applied')
+  assert.equal((await request(origin, 'POST', '/api/v1/continuity/settings-persona/rollback', { previewId: preview.body.previewId }, bearer)).body.state, 'rolled-back')
+  assert.equal(server.migrationHold, false)
+  assert.equal(server.migrationHold, false)
+
+  await server.stop()
+  fs.rmSync(dataDir, { recursive: true, force: true })
+  fs.rmSync(sourceRoot, { recursive: true, force: true })
+})

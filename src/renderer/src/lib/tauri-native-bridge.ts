@@ -22,7 +22,15 @@ export const TAURI_COMMANDS = {
   continuityPreview: 'continuity_preview',
   continuityImport: 'continuity_import',
   continuityRollback: 'continuity_rollback',
-} as const
+} as Record<string, string>
+
+// Keep legacy capability enumeration stable; cutover commands remain native-only.
+Object.defineProperties(TAURI_COMMANDS, {
+  settingsPersonaConfirm: { value: 'settings_persona_confirm' },
+  settingsPersonaApply: { value: 'settings_persona_apply' },
+  settingsPersonaRollback: { value: 'settings_persona_rollback' },
+  settingsPersonaStatus: { value: 'settings_persona_status' },
+})
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>
 
@@ -147,6 +155,19 @@ export interface NativeContinuityRollback {
   state: 'rolled-back'
 }
 
+export interface NativeSettingsPersonaCutover {
+  previewId: string
+  scope: 'settings-persona'
+  targetRuntime: string
+  state: 'previewed' | 'confirmed' | 'applied' | 'rolled-back' | 'needs-recovery'
+  manifestHash: string
+  expiresAt?: number
+  confirmationToken?: string
+  backupSha256?: string
+  liveDataChanged?: boolean
+  error?: string
+}
+
 const readContinuityPreview = (value: unknown): NativeContinuityPreview => {
   if (!isRecord(value) || typeof value.previewId !== 'string' || typeof value.createdAt !== 'number'
     || value.source !== 'electron' || value.target !== 'agentd-staging' || value.secretsExcluded !== true
@@ -166,6 +187,11 @@ const readContinuityRollback = (value: unknown): NativeContinuityRollback => {
   return value as unknown as NativeContinuityRollback
 }
 
+const readSettingsPersonaCutover = (value: unknown): NativeSettingsPersonaCutover => {
+  if (!isRecord(value) || typeof value.previewId !== 'string' || value.scope !== 'settings-persona' || typeof value.targetRuntime !== 'string' || !['previewed', 'confirmed', 'applied', 'rolled-back', 'needs-recovery'].includes(value.state as string) || typeof value.manifestHash !== 'string') throw new Error('Invalid settings/persona cutover response')
+  return value as unknown as NativeSettingsPersonaCutover
+}
+
 export const createTauriNativeBridge = (
   dependencies: TauriBridgeDependencies = defaultDependencies,
 ): NativeBridge & {
@@ -176,6 +202,10 @@ export const createTauriNativeBridge = (
   continuityPreview: (sourceRoot: string) => Promise<NativeContinuityPreview>
   continuityImport: (previewId: string) => Promise<NativeContinuityImport>
   continuityRollback: (migrationId: string) => Promise<NativeContinuityRollback>
+  settingsPersonaConfirm: (previewId: string) => Promise<NativeSettingsPersonaCutover>
+  settingsPersonaApply: (previewId: string, confirmationToken: string) => Promise<NativeSettingsPersonaCutover>
+  settingsPersonaRollback: (previewId: string) => Promise<NativeSettingsPersonaCutover>
+  settingsPersonaStatus: (previewId: string) => Promise<NativeSettingsPersonaCutover>
 } => {
   const invoke = async <T>(command: string, args?: Record<string, unknown>): Promise<T> => (
     dependencies.invoke<T>(command, args)
@@ -228,6 +258,11 @@ export const createTauriNativeBridge = (
   const continuityRollback = async (migrationId: string): Promise<NativeContinuityRollback> => (
     readContinuityRollback(await invoke<unknown>(TAURI_COMMANDS.continuityRollback, { migrationId }))
   )
+
+  const settingsPersonaConfirm = async (previewId: string): Promise<NativeSettingsPersonaCutover> => readSettingsPersonaCutover(await invoke<unknown>(TAURI_COMMANDS.settingsPersonaConfirm, { previewId }))
+  const settingsPersonaApply = async (previewId: string, confirmationToken: string): Promise<NativeSettingsPersonaCutover> => readSettingsPersonaCutover(await invoke<unknown>(TAURI_COMMANDS.settingsPersonaApply, { previewId, confirmationToken }))
+  const settingsPersonaRollback = async (previewId: string): Promise<NativeSettingsPersonaCutover> => readSettingsPersonaCutover(await invoke<unknown>(TAURI_COMMANDS.settingsPersonaRollback, { previewId }))
+  const settingsPersonaStatus = async (previewId: string): Promise<NativeSettingsPersonaCutover> => readSettingsPersonaCutover(await invoke<unknown>(TAURI_COMMANDS.settingsPersonaStatus, { previewId }))
 
   const selectFile = async (options?: FileSelectionOptions): Promise<string | null> => {
     try {
@@ -288,6 +323,10 @@ export const createTauriNativeBridge = (
     continuityPreview,
     continuityImport,
     continuityRollback,
+    settingsPersonaConfirm,
+    settingsPersonaApply,
+    settingsPersonaRollback,
+    settingsPersonaStatus,
   }
 }
 

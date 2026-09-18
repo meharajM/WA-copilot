@@ -18,7 +18,7 @@ use std::env;
 
 use agentd_api::{
     AgentdClient, ContinuityImport, ContinuityPreview, ContinuityRollback, CredentialExistsResult,
-    NativeHealth, NativeResult,
+    NativeHealth, NativeResult, SettingsPersonaCutover,
 };
 use serde::Deserialize;
 use tauri::{
@@ -148,6 +148,39 @@ async fn continuity_rollback(
         .continuity_rollback(&migration_id)
         .await
         .map_err(|_| "Continuity rollback failed".into())
+}
+
+#[tauri::command]
+async fn settings_persona_confirm(
+    client: State<'_, AgentdClient>,
+    preview_id: String,
+) -> Result<SettingsPersonaCutover, String> {
+    client.settings_persona_confirm(&preview_id).await.map_err(|_| "Settings/persona confirmation failed".into())
+}
+
+#[tauri::command]
+async fn settings_persona_apply(
+    client: State<'_, AgentdClient>,
+    preview_id: String,
+    confirmation_token: String,
+) -> Result<SettingsPersonaCutover, String> {
+    client.settings_persona_apply(&preview_id, &confirmation_token).await.map_err(|_| "Settings/persona cutover failed".into())
+}
+
+#[tauri::command]
+async fn settings_persona_rollback(
+    client: State<'_, AgentdClient>,
+    preview_id: String,
+) -> Result<SettingsPersonaCutover, String> {
+    client.settings_persona_rollback(&preview_id).await.map_err(|_| "Settings/persona rollback failed".into())
+}
+
+#[tauri::command]
+async fn settings_persona_status(
+    client: State<'_, AgentdClient>,
+    preview_id: String,
+) -> Result<SettingsPersonaCutover, String> {
+    client.settings_persona_status(&preview_id).await.map_err(|_| "Settings/persona status unavailable".into())
 }
 
 #[tauri::command]
@@ -398,6 +431,10 @@ fn main() {
             continuity_preview,
             continuity_import,
             continuity_rollback,
+            settings_persona_confirm,
+            settings_persona_apply,
+            settings_persona_rollback,
+            settings_persona_status,
             select_file,
             select_folder
         ])

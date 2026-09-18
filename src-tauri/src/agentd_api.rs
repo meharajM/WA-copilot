@@ -708,6 +708,21 @@ pub struct ContinuityRollback {
     pub state: String,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SettingsPersonaCutover {
+    pub preview_id: String,
+    pub scope: String,
+    pub target_runtime: String,
+    pub state: String,
+    pub manifest_hash: String,
+    pub expires_at: Option<u64>,
+    pub confirmation_token: Option<String>,
+    pub backup_sha256: Option<String>,
+    pub live_data_changed: Option<bool>,
+    pub error: Option<String>,
+}
+
 #[derive(Clone, Copy)]
 enum CredentialKey {
     Openai,
@@ -764,6 +779,10 @@ enum Route {
     ContinuityPreview,
     ContinuityImport,
     ContinuityRollback,
+    SettingsPersonaConfirm,
+    SettingsPersonaApply,
+    SettingsPersonaRollback,
+    SettingsPersonaStatus(String),
     LlmSettingsGet,
     LlmSettingsPut,
     WhatsAppSettingsGet,
@@ -796,11 +815,15 @@ impl Route {
             | Self::ContinuityPreview
             | Self::ContinuityImport
             | Self::ContinuityRollback
+            | Self::SettingsPersonaConfirm
+            | Self::SettingsPersonaApply
+            | Self::SettingsPersonaRollback
             | Self::ProviderTest(_)
             | Self::ChatSessionsCreate
             | Self::ChatMessages(_)
             | Self::ChatGenerations(_) => Method::POST,
             Self::CredentialDelete(_) | Self::ChatSessionDelete(_) => Method::DELETE,
+            Self::SettingsPersonaStatus(_) => Method::GET,
         }
     }
 
@@ -810,6 +833,10 @@ impl Route {
             Self::ContinuityPreview => "/api/v1/continuity/preview".into(),
             Self::ContinuityImport => "/api/v1/continuity/import".into(),
             Self::ContinuityRollback => "/api/v1/continuity/rollback".into(),
+            Self::SettingsPersonaConfirm => "/api/v1/continuity/settings-persona/confirm".into(),
+            Self::SettingsPersonaApply => "/api/v1/continuity/settings-persona/apply".into(),
+            Self::SettingsPersonaRollback => "/api/v1/continuity/settings-persona/rollback".into(),
+            Self::SettingsPersonaStatus(preview_id) => format!("/api/v1/continuity/settings-persona/status?previewId={preview_id}"),
             Self::LlmSettingsGet | Self::LlmSettingsPut => "/api/v1/settings/llm".into(),
             Self::WhatsAppSettingsGet | Self::WhatsAppSettingsPut => {
                 "/api/v1/settings/whatsapp".into()
@@ -930,6 +957,29 @@ impl AgentdClient {
         }
         let body = serde_json::to_vec(&serde_json::json!({ "migrationId": migration_id })).map_err(|_| ())?;
         self.request(Route::ContinuityRollback, Some(&body)).await
+    }
+
+    pub async fn settings_persona_confirm(&self, preview_id: &str) -> Result<SettingsPersonaCutover, ()> {
+        if preview_id.len() != 36 { return Err(()); }
+        let body = serde_json::to_vec(&serde_json::json!({ "previewId": preview_id, "scope": "settings-persona" })).map_err(|_| ())?;
+        self.request(Route::SettingsPersonaConfirm, Some(&body)).await
+    }
+
+    pub async fn settings_persona_apply(&self, preview_id: &str, confirmation_token: &str) -> Result<SettingsPersonaCutover, ()> {
+        if preview_id.len() != 36 || confirmation_token.len() != 64 { return Err(()); }
+        let body = serde_json::to_vec(&serde_json::json!({ "previewId": preview_id, "confirmationToken": confirmation_token })).map_err(|_| ())?;
+        self.request(Route::SettingsPersonaApply, Some(&body)).await
+    }
+
+    pub async fn settings_persona_rollback(&self, preview_id: &str) -> Result<SettingsPersonaCutover, ()> {
+        if preview_id.len() != 36 { return Err(()); }
+        let body = serde_json::to_vec(&serde_json::json!({ "previewId": preview_id })).map_err(|_| ())?;
+        self.request(Route::SettingsPersonaRollback, Some(&body)).await
+    }
+
+    pub async fn settings_persona_status(&self, preview_id: &str) -> Result<SettingsPersonaCutover, ()> {
+        if preview_id.len() != 36 { return Err(()); }
+        self.request(Route::SettingsPersonaStatus(preview_id.to_owned()), None).await
     }
 
     pub async fn llm_settings(&self) -> Result<LlmSettings, ()> {

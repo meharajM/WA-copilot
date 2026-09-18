@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { CredentialKey, NativeHealth } from '../../shared/native-bridge'
-import { tauriNativeBridge, type NativeContinuityPreview } from './lib/tauri-native-bridge'
+import { tauriNativeBridge, type NativeContinuityPreview, type NativeSettingsPersonaCutover } from './lib/tauri-native-bridge'
 
 const CREDENTIALS: Array<{ key: CredentialKey; label: string }> = [
   { key: 'openai_api_key', label: 'OpenAI key' },
@@ -24,6 +24,7 @@ export default function NativeHostDiagnostics() {
   const [notice, setNotice] = useState<string | null>(null)
   const [continuityPreview, setContinuityPreview] = useState<NativeContinuityPreview | null>(null)
   const [migrationId, setMigrationId] = useState<string | null>(null)
+  const [settingsPersonaCutover, setSettingsPersonaCutover] = useState<NativeSettingsPersonaCutover | null>(null)
 
   const refresh = async () => {
     try { setHealth(await tauriNativeBridge.health()) }
@@ -112,6 +113,30 @@ export default function NativeHostDiagnostics() {
     finally { setBusy(null) }
   }
 
+  const confirmSettingsPersona = async () => {
+    if (!continuityPreview) return
+    setBusy('settings-persona-confirm'); setError(null); setNotice(null)
+    try { setSettingsPersonaCutover(await tauriNativeBridge.settingsPersonaConfirm(continuityPreview.previewId)); setNotice('Metadata cutover confirmed. Apply only after reviewing the staged stores.') }
+    catch (reason) { setError(messageFrom(reason, 'Metadata cutover confirmation unavailable')) }
+    finally { setBusy(null) }
+  }
+
+  const applySettingsPersona = async () => {
+    if (!settingsPersonaCutover?.confirmationToken) return
+    setBusy('settings-persona-apply'); setError(null); setNotice(null)
+    try { setSettingsPersonaCutover(await tauriNativeBridge.settingsPersonaApply(settingsPersonaCutover.previewId, settingsPersonaCutover.confirmationToken)); setNotice('Settings/persona metadata applied to agentd') }
+    catch (reason) { setError(messageFrom(reason, 'Metadata cutover failed')) }
+    finally { setBusy(null) }
+  }
+
+  const rollbackSettingsPersona = async () => {
+    if (!settingsPersonaCutover) return
+    setBusy('settings-persona-rollback'); setError(null); setNotice(null)
+    try { setSettingsPersonaCutover(await tauriNativeBridge.settingsPersonaRollback(settingsPersonaCutover.previewId)); setNotice('Settings/persona metadata rolled back') }
+    catch (reason) { setError(messageFrom(reason, 'Metadata rollback unavailable')) }
+    finally { setBusy(null) }
+  }
+
   const healthy = health.status === 'ready'
   return (
     <main className="pilot-shell">
@@ -143,7 +168,7 @@ export default function NativeHostDiagnostics() {
           <div className="pilot-panel-heading"><div><p className="pilot-label">04 / continuity</p><h2>Stage Electron data</h2></div><span className="pilot-index">OWNER ACTION</span></div>
           <p className="pilot-copy">Preview and stage only allowlisted, non-secret stores. This does not replace live agentd data; credentials require separate reauthentication.</p>
           <div className="pilot-actions"><button type="button" className="pilot-button pilot-button-primary" onClick={() => void previewContinuity()} disabled={busy !== null}>{busy === 'continuity-preview' ? 'Validating…' : 'Preview Electron data'}</button></div>
-          {continuityPreview && <div className="pilot-continuity" aria-live="polite"><p>{continuityPreview.entries.map(entry => `${entry.id} (${entry.byteSize} bytes)`).join(' · ')}</p><p className="pilot-copy">Review this list before staging. Credential and live-database cutover remain separate reauthentication-gated work.</p><div className="pilot-actions"><button type="button" className="pilot-button pilot-button-primary" onClick={() => void stageContinuity()} disabled={busy !== null || Boolean(migrationId)}>{busy === 'continuity-import' ? 'Staging…' : 'Stage validated data'}</button>{migrationId && <button type="button" className="pilot-button" onClick={() => void rollbackContinuity()} disabled={busy !== null}>{busy === 'continuity-rollback' ? 'Rolling back…' : 'Rollback staging'}</button>}</div></div>}
+          {continuityPreview && <div className="pilot-continuity" aria-live="polite"><p>{continuityPreview.entries.map(entry => `${entry.id} (${entry.byteSize} bytes)`).join(' · ')}</p><p className="pilot-copy">Review this list before staging. Credential, chat-history, and OAuth migration remain deferred.</p><div className="pilot-actions"><button type="button" className="pilot-button pilot-button-primary" onClick={() => void stageContinuity()} disabled={busy !== null || Boolean(migrationId)}>{busy === 'continuity-import' ? 'Staging…' : 'Stage validated data'}</button>{migrationId && !settingsPersonaCutover && <button type="button" className="pilot-button" onClick={() => void confirmSettingsPersona()} disabled={busy !== null}>{busy === 'settings-persona-confirm' ? 'Confirming…' : 'Confirm settings/persona'}</button>}{migrationId && !settingsPersonaCutover?.backupSha256 && <button type="button" className="pilot-button" onClick={() => void rollbackContinuity()} disabled={busy !== null}>{busy === 'continuity-rollback' ? 'Rolling back…' : 'Rollback staging'}</button>}</div>{settingsPersonaCutover && <div className="pilot-actions"><span className="pilot-key-state" role="status">Cutover: {settingsPersonaCutover.state}</span>{settingsPersonaCutover.confirmationToken && <button type="button" className="pilot-button pilot-button-primary" onClick={() => void applySettingsPersona()} disabled={busy !== null}>{busy === 'settings-persona-apply' ? 'Applying…' : 'Apply metadata cutover'}</button>}{settingsPersonaCutover.state === 'applied' && <button type="button" className="pilot-button" onClick={() => void rollbackSettingsPersona()} disabled={busy !== null}>{busy === 'settings-persona-rollback' ? 'Rolling back…' : 'Rollback metadata'}</button>}</div>}</div>}
         </article>
       </section>
       <footer className="pilot-footer" aria-live="polite"><span className={`pilot-message-dot ${error ? 'is-error' : ''}`} aria-hidden="true" /><span>{error || notice || 'Native host only. Product UI runs in the browser.'}</span></footer>
