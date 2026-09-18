@@ -62,6 +62,15 @@ jobs:
         # prepare the browser-first product assets before compiling Rust.
         run: npm run build:tauri:web
 
+      - name: Prepare Windows keyring helper
+        run: npm run prepare:agentd:keyring-helper
+
+      - name: Prepare Windows agentd sidecar
+        run: npm run prepare:tauri:agentd
+
+      - name: Verify staged Tauri resources
+        run: node scripts/verify-tauri-resources.mjs --platform win32 --target-triple x86_64-pc-windows-msvc --sidecar-root src-tauri/sidecar --ui-root dist
+
       - name: Run Windows native host tests
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc
 

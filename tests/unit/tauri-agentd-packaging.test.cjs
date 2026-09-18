@@ -47,3 +47,16 @@ test('Windows CI runs target-specific native host tests before packaging', () =>
   assert.ok(browserBundle < nativeTests, 'browser assets must exist before native host compilation')
   assert.ok(nativeTests < bundle, 'native host tests must run before packaging')
 })
+
+test('Windows CI verifies prepared sidecar and browser resources before packaging', () => {
+  const keyring = windowsWorkflow.indexOf('npm run prepare:agentd:keyring-helper')
+  const sidecar = windowsWorkflow.indexOf('npm run prepare:tauri:agentd')
+  const resourceGate = windowsWorkflow.indexOf('node scripts/verify-tauri-resources.mjs')
+  const bundle = windowsWorkflow.indexOf('npm run build:tauri:win')
+  assert.notEqual(keyring, -1)
+  assert.notEqual(sidecar, -1)
+  assert.notEqual(resourceGate, -1)
+  assert.ok(keyring < resourceGate, 'keyring helper must be prepared before resource verification')
+  assert.ok(sidecar < resourceGate, 'agentd sidecar must be prepared before resource verification')
+  assert.ok(resourceGate < bundle, 'resource verification must run before packaging')
+})
