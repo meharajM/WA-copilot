@@ -11,13 +11,128 @@
 
 import { useEffect, useCallback } from 'react'
 import { useWhatsAppStore, WhatsAppConnectionState } from '../stores/whatsappStore'
-import electron from '../lib/electron'
+import electron, { isElectron } from '../lib/electron'
+import { useChatStore, type ChatSession } from '../stores/chatStore'
+import { BrowserAgentdError, getBrowserAgentdClient, type BrowserWhatsAppInboundEvent } from '../lib/browser-agentd-client'
+import { isTauriRuntime } from '../lib/tauri-native-bridge'
+import type { ChatSession as AgentdChatSession } from '../../../shared/chat-protocol'
+
+const isBrowserProduct = (): boolean => typeof window !== 'undefined' && !window.electron && !isTauriRuntime()
+
+const stableWhatsAppSessionId = (conversationId: string): string => {
+    // FNV-1a keeps a deterministic, bounded session id without exposing raw JIDs in ids.
+    let hash = 2166136261
+    for (let index = 0; index < conversationId.length; index += 1) hash = Math.imul(hash ^ conversationId.charCodeAt(index), 16777619)
+    return `whatsapp_${(hash >>> 0).toString(16)}`
+}
+
+export interface BrowserWhatsAppMessage {
+    id: string
+    from: string
+    content: string
+    type: string
+    timestamp: number
+    isFromMe: boolean
+    conversationId: string
+}
+
+const readPayloadString = (payload: Record<string, unknown>, keys: string[]): string => {
+    for (const key of keys) {
+        const value = payload[key]
+        if (typeof value === 'string' && value.trim()) return value.trim()
+    }
+    return ''
+}
+
+export const normalizeBrowserWhatsAppEvent = (event: BrowserWhatsAppInboundEvent): BrowserWhatsAppMessage | null => {
+    const payload = event.payload
+    const nested = payload.message && typeof payload.message === 'object' && !Array.isArray(payload.message)
+        ? payload.message as Record<string, unknown>
+        : null
+    const read = (keys: string[]) => readPayloadString(payload, keys) || (nested ? readPayloadString(nested, keys) : '')
+    const content = read(['content', 'body', 'text', 'caption'])
+    if (!content) return null
+    const timestampValue = payload.timestamp ?? payload.timestampMs ?? payload.createdAt
+    const timestamp = typeof timestampValue === 'number' && Number.isFinite(timestampValue)
+        ? (timestampValue < 2_000_000_000 ? timestampValue * 1000 : timestampValue)
+        : typeof timestampValue === 'string' && Number.isFinite(Date.parse(timestampValue))
+            ? Date.parse(timestampValue)
+            : event.createdAt
+    const conversationId = event.conversationId.trim()
+    const from = read(['from', 'sender', 'fromNumber', 'fromJid', 'author']) || conversationId
+    const isFromMeValue = payload.isFromMe ?? payload.fromMe ?? payload.outgoing ?? nested?.isFromMe
+    return {
+        id: read(['messageId', 'id']) || event.providerEventId,
+        from,
+        content,
+        type: read(['type', 'messageType']) || 'text',
+        timestamp,
+        isFromMe: isFromMeValue === true,
+        conversationId,
+    }
+}
+
+const toRendererSession = (session: AgentdChatSession): ChatSession => ({
+    id: session.id,
+    title: session.title,
+    createdAt: session.createdAt,
+    updatedAt: session.updatedAt,
+    status: session.status,
+    ...(session.channel ? { channel: session.channel as ChatSession['channel'] } : {}),
+    ...(session.contactId ? { contact_id: session.contactId } : {}),
+    ...(session.threadId ? { thread_id: session.threadId } : {}),
+    ...(session.workspacePath ? { workspacePath: session.workspacePath } : {}),
+    ...(session.topic ? { topic: session.topic } : {}),
+    messages: session.messages.map((message) => ({
+        id: message.id,
+        role: message.role,
+        content: message.content,
+        timestamp: message.timestamp,
+    })),
+})
+
+const ingestBrowserWhatsAppEvent = async (event: BrowserWhatsAppInboundEvent): Promise<void> => {
+    const message = normalizeBrowserWhatsAppEvent(event)
+    if (!message || message.isFromMe) return
+    const client = getBrowserAgentdClient()
+    const sessionId = stableWhatsAppSessionId(message.conversationId)
+    const sessions = await client.loadSessions()
+    const existing = sessions.find((session) => session.id === sessionId)
+        || sessions.find((session) => session.channel === 'whatsapp' && session.contactId === message.conversationId)
+    const resolvedSessionId = existing?.id || sessionId
+    if (!existing) {
+        await client.createSession(sessionId, `WhatsApp · ${message.from}`, undefined, {
+            channel: 'whatsapp',
+            contactId: message.conversationId,
+            threadId: message.conversationId,
+        })
+    }
+    try {
+        await client.appendMessage(resolvedSessionId, {
+            id: `whatsapp_${event.providerEventId}`,
+            role: 'user',
+            content: `📱 **WhatsApp** (${message.from}): ${message.content}`,
+            timestamp: message.timestamp,
+        })
+    } catch (error) {
+        if (!(error instanceof BrowserAgentdError) || error.status !== 409) throw error
+    }
+    const refreshed = await client.loadSessions()
+    const activeSessionId = useChatStore.getState().activeSessionId
+    useChatStore.setState({
+        sessions: refreshed.map(toRendererSession),
+        activeSessionId: activeSessionId && refreshed.some((session) => session.id === activeSessionId) ? activeSessionId : resolvedSessionId,
+    })
+}
 
 export function useWhatsAppBridge(): void {
     const setConnectionState = useWhatsAppStore((s) => s.setConnectionState)
+    const whatsappEnabled = useWhatsAppStore((s) => s.whatsappEnabled)
+    const businessBotMode = useWhatsAppStore((s) => s.businessBotMode)
 
     // On mount: fetch initial state from main process
     useEffect(() => {
+        if (!isElectron()) return
         let cancelled = false
         electron.whatsapp.getState().then((state) => {
             if (!cancelled) setConnectionState(state as WhatsAppConnectionState)
@@ -25,8 +140,38 @@ export function useWhatsAppBridge(): void {
         return () => { cancelled = true }
     }, [setConnectionState])
 
+    // Browser mode consumes durable agentd events only when an explicit WhatsApp
+    // mode is enabled. This hydrates Lead Directory sessions without pretending
+    // that QR/Web transport or autonomous replies have migrated yet.
+    useEffect(() => {
+        if (!isBrowserProduct() || (!whatsappEnabled && !businessBotMode)) return
+        let cancelled = false
+        let timer: ReturnType<typeof setTimeout> | null = null
+        let afterId = 0
+        const poll = async () => {
+            if (cancelled) return
+            try {
+                const result = await getBrowserAgentdClient().listWhatsAppInbound(afterId, 50)
+                for (const event of result.events) {
+                    if (cancelled) return
+                    await ingestBrowserWhatsAppEvent(event)
+                }
+                afterId = result.nextAfterId
+            } catch (error) {
+                if (!cancelled) console.warn('[WhatsAppBridge] Browser inbound event poll failed', error)
+            }
+            if (!cancelled) timer = setTimeout(() => void poll(), 30_000)
+        }
+        void poll()
+        return () => {
+            cancelled = true
+            if (timer) clearTimeout(timer)
+        }
+    }, [businessBotMode, whatsappEnabled])
+
     // Subscribe to connection state push events from main
     useEffect(() => {
+        if (!isElectron()) return
         const unsub = electron.whatsapp.onConnectionChange((state: WhatsAppConnectionState) => {
             setConnectionState(state)
 
@@ -76,6 +221,7 @@ export function useWhatsAppBridge(): void {
     }, [])
 
     useEffect(() => {
+        if (!isElectron()) return
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const unsub = electron.whatsapp.onMessage(handleMessage as any)
         return unsub
@@ -83,6 +229,7 @@ export function useWhatsAppBridge(): void {
 
     // Subscribe to frustration/loop escalation events
     useEffect(() => {
+        if (!isElectron()) return
         const unsub = electron.whatsapp.onEscalation?.((data: any) => {
             console.warn(`[WhatsAppBridge] ESCALATION: ${data.reason} for ${data.jid}`);
             window.dispatchEvent(new CustomEvent('app:escalation', { detail: data }));

@@ -73,6 +73,18 @@ test('agentd persists events, enforces pairing/CSRF, and survives client disconn
   assert.equal((await request(origin, 'POST', '/api/v1/events', { channel: 'whatsapp', providerEventId: 'evt-1', conversationId: 'chat-1', payload: { text: 'hello' } }, session)).status, 202)
   const duplicate = await request(origin, 'POST', '/api/v1/events', { channel: 'whatsapp', providerEventId: 'evt-1', conversationId: 'chat-1', payload: { text: 'hello' } }, session)
   assert.deepEqual(duplicate.body, { accepted: true, duplicate: true, id: 1 })
+  const inbound = await request(origin, 'GET', '/api/v1/whatsapp/inbound?after_id=0&limit=10', undefined, auth)
+  assert.equal(inbound.status, 200)
+  assert.equal(inbound.body.events.length, 1)
+  assert.deepEqual(inbound.body.events[0], {
+    id: 1,
+    providerEventId: 'evt-1',
+    conversationId: 'chat-1',
+    payload: { text: 'hello' },
+    status: 'draft',
+    createdAt: inbound.body.events[0].createdAt,
+  })
+  assert.equal((await request(origin, 'GET', '/api/v1/whatsapp/inbound?after_id=1&limit=10', undefined, auth)).body.nextAfterId, 1)
   assert.equal((await request(origin, 'POST', '/api/v1/pause-all', {}, session)).body.paused, true)
   assert.equal((await request(origin, 'GET', '/api/v1/status', undefined, session)).body.events, 1)
   await server.stop()

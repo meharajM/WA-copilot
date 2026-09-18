@@ -17,6 +17,7 @@ const MAX_WHATSAPP_BODY_BYTES = 64 * 1024
 const MAX_WHATSAPP_PAYLOAD_BYTES = 32 * 1024
 const MAX_EMAIL_INBOUND_BODY_BYTES = 128 * 1024
 const MAX_EMAIL_INBOUND_BATCH = 50
+const MAX_WHATSAPP_INBOUND_BATCH = 50
 const MAX_DRAFT_TEXT_LENGTH = 4096
 const OUTBOX_QUARANTINED_ERROR = 'Quarantined by operator'
 const OUTBOX_CANCELLED_ERROR = 'Cancelled by operator'
@@ -703,7 +704,7 @@ class AgentdServer {
     const cancelGenerationMatch = /^\/api\/v1\/sessions\/([^/]+)\/generations\/([^/]+)\/cancel$/.exec(url.pathname)
     if (cancelGenerationMatch && req.method === 'POST') return this.cancelGeneration(req, res, cancelGenerationMatch[1], cancelGenerationMatch[2])
     if (url.pathname === '/api/v1/events' && req.method === 'POST') return this.recordEvent(req, res)
-    if (['/api/v1/whatsapp/events', '/api/v1/whatsapp/inbound', '/api/v1/events/whatsapp'].includes(url.pathname) && req.method === 'POST') return this.recordWhatsAppEvent(req, res)
+    if (['/api/v1/whatsapp/events', '/api/v1/whatsapp/inbound', '/api/v1/events/whatsapp'].includes(url.pathname) && ['GET', 'POST'].includes(req.method)) return this.whatsappInbound(req, res, url)
     if (['/api/v1/drafts', '/api/v1/whatsapp/drafts'].includes(url.pathname) && req.method === 'GET') return this.listDrafts(req, res, url)
     const draftMatch = /^\/api\/v1\/(?:whatsapp\/)?drafts\/(\d+)$/.exec(url.pathname)
     const draftSendMatch = /^\/api\/v1\/whatsapp\/drafts\/(\d+)\/send$/.exec(url.pathname)
@@ -1816,8 +1817,26 @@ class AgentdServer {
     return json(res, 202, { accepted: true, duplicate: false, id: result.lastInsertRowid })
   }
 
-  async recordWhatsAppEvent(req, res) {
-    this.authorize(req, { mutation: true })
+  async whatsappInbound(req, res, url) {
+    this.authorize(req, { mutation: req.method === 'POST' })
+    if (req.method === 'GET') {
+      const requestedAfter = Number.parseInt(url.searchParams.get('after_id') || '0', 10)
+      const afterId = Number.isSafeInteger(requestedAfter) && requestedAfter >= 0 ? requestedAfter : 0
+      const requestedLimit = Number.parseInt(url.searchParams.get('limit') || '20', 10)
+      const limit = Number.isSafeInteger(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), MAX_WHATSAPP_INBOUND_BATCH) : 20
+      const rows = this.db.prepare('SELECT id,provider_event_id,conversation_id,payload,status,created_at FROM inbound_events WHERE channel = ? AND id > ? ORDER BY id ASC LIMIT ?').all('whatsapp', afterId, limit)
+      return json(res, 200, {
+        events: rows.map(row => ({
+          id: row.id,
+          providerEventId: row.provider_event_id,
+          conversationId: row.conversation_id,
+          payload: JSON.parse(row.payload),
+          status: row.status,
+          createdAt: row.created_at,
+        })),
+        nextAfterId: rows.length ? rows[rows.length - 1].id : afterId,
+      })
+    }
     if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
     const body = await readBody(req, MAX_WHATSAPP_BODY_BYTES)
     if (!body || typeof body !== 'object' || Array.isArray(body) || body.channel !== 'whatsapp'

@@ -88,6 +88,15 @@ export interface BrowserEmailInboundEvent {
   createdAt: number
 }
 
+export interface BrowserWhatsAppInboundEvent {
+  id: number
+  providerEventId: string
+  conversationId: string
+  payload: Record<string, unknown>
+  status: 'queued' | 'draft' | 'processing' | 'completed'
+  createdAt: number
+}
+
 type Json = Record<string, unknown> | unknown[]
 
 const isRecord = (value: unknown): value is Record<string, unknown> => (
@@ -405,6 +414,7 @@ export interface BrowserAgentdClient extends ChatClient {
   testEmail(): Promise<BrowserEmailTestResult>
   ingestEmailInbound(event: { providerEventId: string; conversationId: string; payload: BrowserEmailInboundEvent['payload'] }): Promise<{ accepted: true; duplicate: boolean; id: number }>
   listEmailInbound(afterId?: number, limit?: number): Promise<{ events: BrowserEmailInboundEvent[]; nextAfterId: number }>
+  listWhatsAppInbound(afterId?: number, limit?: number): Promise<{ events: BrowserWhatsAppInboundEvent[]; nextAfterId: number }>
   getPersonaSettings(): Promise<PersonaSettings>
   savePersonaSettings(settings: PersonaSettings): Promise<PersonaSettings>
   getProductPreferences(): Promise<ProductPreferences>
@@ -722,6 +732,15 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     if (events.length !== value.events.length) throw new Error('Invalid email inbound list response')
     return { events, nextAfterId: value.nextAfterId as number }
   }
+  const listWhatsAppInbound = async (afterId = 0, limit = 20) => {
+    const value = await request<unknown>(`/api/v1/whatsapp/inbound?after_id=${encodeURIComponent(String(afterId))}&limit=${encodeURIComponent(String(limit))}`)
+    if (!isRecord(value) || !Array.isArray(value.events) || !Number.isSafeInteger(value.nextAfterId)) throw new Error('Invalid WhatsApp inbound list response')
+    const events = value.events.filter((event): event is BrowserWhatsAppInboundEvent => isRecord(event)
+      && Number.isSafeInteger(event.id) && typeof event.providerEventId === 'string' && typeof event.conversationId === 'string'
+      && isRecord(event.payload) && ['queued', 'draft', 'processing', 'completed'].includes(event.status as string) && Number.isSafeInteger(event.createdAt))
+    if (events.length !== value.events.length) throw new Error('Invalid WhatsApp inbound list response')
+    return { events, nextAfterId: value.nextAfterId as number }
+  }
   const getPersonaSettings = async () => readPersonaSettings(await request('/api/v1/settings/persona'))
   const savePersonaSettings = async (settings: PersonaSettings) => readPersonaSettings(await request('/api/v1/settings/persona', { method: 'PUT', body: JSON.stringify(settings) }, true))
   const getProductPreferences = async () => readProductPreferences(await request('/api/v1/settings/preferences'))
@@ -900,6 +919,7 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     testEmail,
     ingestEmailInbound,
     listEmailInbound,
+    listWhatsAppInbound,
     getPersonaSettings,
     savePersonaSettings,
     getProductPreferences,

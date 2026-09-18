@@ -225,6 +225,25 @@ describe('browser agentd client', () => {
     expect(Object.prototype.hasOwnProperty.call(JSON.parse(String(put?.[1]?.body)), 'password')).toBe(false)
   })
 
+  it('lists bounded WhatsApp inbound events through the authenticated cursor', async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
+      if (url.includes('/api/v1/whatsapp/inbound?')) return response({
+        events: [{ id: 4, providerEventId: 'wa-4', conversationId: '15551234567', payload: { from: '15551234567', text: 'hello' }, status: 'draft', createdAt: 42 }],
+        nextAfterId: 4,
+      })
+      return response({ success: true })
+    })
+    const client = createBrowserAgentdClient({ origin: 'http://127.0.0.1:4141', fetch: fetcher })
+    await client.pair('123456')
+    await expect(client.listWhatsAppInbound(0, 10)).resolves.toMatchObject({
+      nextAfterId: 4,
+      events: [{ providerEventId: 'wa-4', conversationId: '15551234567', payload: { text: 'hello' } }],
+    })
+    expect(fetcher.mock.calls.some(([input]) => String(input).includes('/api/v1/whatsapp/inbound?after_id=0&limit=10'))).toBe(true)
+  })
+
   it('maps browser email transport probe without sending a password', async () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
