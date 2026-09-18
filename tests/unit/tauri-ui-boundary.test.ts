@@ -115,10 +115,14 @@ describe('browser-first UI boundary', () => {
 
   it('does not present browser WhatsApp autonomous-send as an available toggle', () => {
     const settings = readSource('components/SettingsPanel.tsx')
+    const bridge = readSource('hooks/useWhatsAppBridge.ts')
 
     expect(settings).toContain('Autonomous Bot Mode (unavailable)')
     expect(settings).toContain('disabled={browserRuntime}')
     expect(settings).toContain('automatic replies are not migrated yet.')
+    expect(bridge).toContain('if (isBrowserProduct() && businessBotMode) setBusinessBotMode(false)')
+    expect(bridge).toContain('if (!isBrowserProduct() || !whatsappEnabled) return')
+    expect(bridge).toContain('legacy autonomous flag is ignored')
   })
 
   it('keeps browser email credentials transport-scoped and review-only', () => {

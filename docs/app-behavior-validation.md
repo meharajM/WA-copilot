@@ -20,7 +20,7 @@ It should be treated as a shared contract for both testers and developers.
 
 The 2026-09-18 audit found and corrected browser Email drift: the contract now distinguishes daemon mailbox ingestion from browser review-session hydration, explicitly excludes automatic browser replies, and documents the transport-specific credential slots plus the legacy fallback.
 
-The follow-up runtime-boundary audit also corrected the launch contract: Edge/Chrome has an explicit agentd readiness/pairing state machine, while the Electron dependency modal is no longer described as a browser startup requirement. Gemini is covered by the browser agentd provider slice, and explicit on-device/WebGPU execution is now available in the browser without changing the Tauri native-only boundary.
+The follow-up runtime-boundary audit also corrected the launch contract: Edge/Chrome has an explicit agentd readiness/pairing state machine, while the Electron dependency modal is no longer described as a browser startup requirement. Gemini is covered by the browser agentd provider slice, and explicit on-device/WebGPU execution is now available in the browser without changing the Tauri native-only boundary. The WhatsApp bridge now clears a legacy persisted Electron autonomous-mode flag at startup and gates browser ingress only on Response Permission, so an old renderer value cannot briefly activate browser polling.
 
 The older support-doc drift identified by the first audit is now corrected in the checked-in HTML manual, email progress note, and architecture overview. The remaining limitations are implementation gates (for example browser media delivery and supervised MCP execution), not competing product-contract descriptions.
 
