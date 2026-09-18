@@ -364,6 +364,12 @@ because the GitHub account has failed payments or an exhausted spending limit.
 No Windows runtime, Credential Manager, packaging, signing, install/upgrade,
 or native resource evidence can be claimed from that run.
 
+The next post-push Windows workflow `35383566270` was rejected at the same
+pre-job boundary (no job steps or logs were created). It confirms the billing
+or spending-limit blocker is still external to the code; it does not provide
+Windows runtime, Credential Manager, packaging, signing, install/upgrade, or
+native resource evidence.
+
 ### Finding 6: browser WebGPU Email could fall through to Electron delivery — resolved
 
 Severity: high
