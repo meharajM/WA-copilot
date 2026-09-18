@@ -453,12 +453,14 @@ export const electron = {
             if (isElectron() && window.electron?.whatsapp) {
                 return window.electron.whatsapp.getState()
             }
+            if (isBrowserProduct()) return getBrowserAgentdClient().getWhatsAppConnectionState()
             return { status: 'disconnected' as const, qrCode: null, error: null, phoneNumber: null, workerNumber: null }
         },
         connect: async (phoneNumber?: string) => {
             if (isElectron() && window.electron?.whatsapp) {
                 return window.electron.whatsapp.connect(phoneNumber)
             }
+            if (isBrowserProduct()) return { success: true, ...(await getBrowserAgentdClient().connectWhatsApp(phoneNumber)) }
             console.warn('[Browser] WhatsApp not supported in browser mode')
             return { success: false, error: 'Not supported in browser mode' }
         },
@@ -466,18 +468,21 @@ export const electron = {
             if (isElectron() && window.electron?.whatsapp) {
                 return window.electron.whatsapp.setTargetNumber(phoneNumber)
             }
+            if (isBrowserProduct()) return getBrowserAgentdClient().setWhatsAppTarget(phoneNumber)
             return { success: false, error: 'Electron not available' }
         },
         disconnect: async (clearAuth?: boolean) => {
             if (isElectron() && window.electron?.whatsapp) {
                 return window.electron.whatsapp.disconnect(clearAuth)
             }
+            if (isBrowserProduct()) return { success: true, ...(await getBrowserAgentdClient().disconnectWhatsApp(clearAuth)) }
             return { success: true }
         },
         sendMessage: async (to: string, content: string) => {
             if (isElectron() && window.electron?.whatsapp) {
                 return window.electron.whatsapp.sendMessage(to, content)
             }
+            if (isBrowserProduct()) return { success: true, ...(await getBrowserAgentdClient().sendWhatsAppText(to, content)) }
             console.warn('[Browser] WhatsApp sendMessage not supported')
             return { success: false, error: 'Not supported in browser mode' }
         },

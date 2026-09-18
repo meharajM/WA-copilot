@@ -129,6 +129,14 @@ describe('browser-first UI boundary', () => {
     expect(drafts).not.toContain('IMAP polling, OAuth, attachments, and insecure SMTP remain unavailable.')
   })
 
+  it('routes legacy WhatsApp wrapper calls through authenticated agentd in browsers', () => {
+    const electron = readSource('lib/electron.ts')
+    expect(electron).toContain('getBrowserAgentdClient().connectWhatsApp(phoneNumber)')
+    expect(electron).toContain('getBrowserAgentdClient().setWhatsAppTarget(phoneNumber)')
+    expect(electron).toContain('getBrowserAgentdClient().sendWhatsAppText(to, content)')
+    expect(electron).toContain('getBrowserAgentdClient().disconnectWhatsApp(clearAuth)')
+  })
+
   it('describes browser knowledge as bounded text instead of binary or visual ingestion', () => {
     const knowledge = readSource('components/chat/KnowledgeBrowser.tsx')
 
