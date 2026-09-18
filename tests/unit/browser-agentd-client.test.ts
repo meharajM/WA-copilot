@@ -1,9 +1,19 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createBrowserAgentdClient } from '../../src/renderer/src/lib/browser-agentd-client'
+import { createBrowserAgentdClient, readBrowserKnowledgeFile } from '../../src/renderer/src/lib/browser-agentd-client'
 
 const response = (body: unknown, status = 200, headers?: HeadersInit) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...headers } })
 
 describe('browser agentd client', () => {
+  it('bounds browser knowledge files before upload', async () => {
+    const file = (content: string, size = content.length) => ({
+      name: 'notes.md', type: 'text/markdown', size, text: async () => content,
+    }) as unknown as File
+
+    await expect(readBrowserKnowledgeFile(file('hello'))).resolves.toEqual({ content: 'hello', size: 5, fileType: 'text/markdown' })
+    await expect(readBrowserKnowledgeFile(file('x', 16 * 1024 * 1024 + 1))).rejects.toThrow('16 MB or smaller')
+    await expect(readBrowserKnowledgeFile(file('🙂'.repeat(200_000)))).rejects.toThrow('512 KiB or smaller')
+  })
+
   it('pairs with HttpOnly session cookies and sends CSRF only for mutations', async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = []
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

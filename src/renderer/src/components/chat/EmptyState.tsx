@@ -8,7 +8,7 @@ import { StatusBadge } from '../primitives/StatusDot'
 import { clsx } from 'clsx'
 import { KnowledgeTest } from './KnowledgeTest'
 import { ViewMode } from '../Sidebar'
-import { getBrowserAgentdClient } from '../../lib/browser-agentd-client'
+import { getBrowserAgentdClient, readBrowserKnowledgeFile } from '../../lib/browser-agentd-client'
 import { isTauriRuntime } from '../../lib/tauri-native-bridge'
 
 const isBrowserProduct = (): boolean => typeof window !== 'undefined' && !window.electron && !isTauriRuntime()
@@ -276,13 +276,11 @@ export function EmptyState({ onNavigate }: { onNavigate?: (view: ViewMode) => vo
               continue
           }
           try {
-              const content = await file.text()
+              const browserFile = await readBrowserKnowledgeFile(file)
               await getBrowserAgentdClient().ingestKnowledge({
-                  fileName: file.name,
-                  filePath: `browser://knowledge/${encodeURIComponent(file.name)}`,
-                  fileType: file.type || 'text/plain',
-                  content,
-                  size: file.size,
+                fileName: file.name,
+                filePath: `browser://knowledge/${encodeURIComponent(file.name)}`,
+                ...browserFile,
               })
               successCount += 1
           } catch (error) {

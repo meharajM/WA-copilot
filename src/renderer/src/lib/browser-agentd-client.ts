@@ -20,6 +20,21 @@ import type {
 } from '../../../shared/native-bridge'
 import { readGeneration, readMessage, readSession } from './tauri-chat-client'
 
+/** Keep browser knowledge imports below agentd's JSON/content limit before reading them into memory. */
+export const MAX_BROWSER_KNOWLEDGE_CONTENT_BYTES = 512 * 1024
+export const MAX_BROWSER_KNOWLEDGE_FILE_BYTES = 16 * 1024 * 1024
+
+export async function readBrowserKnowledgeFile(file: File): Promise<{ content: string; size: number; fileType: string }> {
+  if (file.size > MAX_BROWSER_KNOWLEDGE_FILE_BYTES) {
+    throw new Error('Browser knowledge files must be 16 MB or smaller')
+  }
+  const content = await file.text()
+  if (new TextEncoder().encode(content).byteLength > MAX_BROWSER_KNOWLEDGE_CONTENT_BYTES) {
+    throw new Error('Browser knowledge text must be 512 KiB or smaller')
+  }
+  return { content, size: file.size, fileType: file.type || 'text/plain' }
+}
+
 export class BrowserAgentdError extends Error {
   readonly status: number
 

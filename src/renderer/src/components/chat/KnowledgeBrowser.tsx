@@ -2,7 +2,7 @@ import { Brain, Search, Trash2, FileText, Calendar, Plus, ExternalLink, Zap } fr
 import { useState, useEffect, useRef, type ChangeEvent } from 'react'
 import electron from '../../lib/electron'
 import { executeToolCall } from '../../lib/mcp'
-import { getBrowserAgentdClient } from '../../lib/browser-agentd-client'
+import { getBrowserAgentdClient, readBrowserKnowledgeFile } from '../../lib/browser-agentd-client'
 import { isTauriRuntime } from '../../lib/tauri-native-bridge'
 
 interface Document {
@@ -114,13 +114,11 @@ export function KnowledgeBrowser() {
         }
         setUploading(true)
         try {
-            const content = await file.text()
+            const browserFile = await readBrowserKnowledgeFile(file)
             await getBrowserAgentdClient().ingestKnowledge({
-                fileName: file.name,
-                filePath: `browser://knowledge/${encodeURIComponent(file.name)}`,
-                fileType: file.type || 'text/plain',
-                content,
-                size: file.size,
+              fileName: file.name,
+              filePath: `browser://knowledge/${encodeURIComponent(file.name)}`,
+              ...browserFile,
             })
             await fetchDocs()
             alert(`Successfully ingested: ${file.name}`)
