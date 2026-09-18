@@ -11,7 +11,7 @@
     },
     "scripts": {
         "dev": "electron-vite dev",
-        "dev:tauri": "tauri dev",
+        "dev:tauri": "npm run prepare:agentd:keyring-helper && npm run prepare:agentd:migration-reader && npm run prepare:tauri:agentd && tauri dev",
         "dev:tauri:web": "vite --config vite.tauri.config.ts --host 127.0.0.1 --strictPort",
         "build": "electron-vite build",
         "build:tauri": "tauri build",

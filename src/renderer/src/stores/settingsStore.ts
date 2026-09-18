@@ -124,15 +124,16 @@ const isBrowserProduct = (): boolean => (
     typeof window !== 'undefined' && !window.electron && !isTauriRuntime()
 )
 
-const isAgentdProvider = (provider: LLMProviderType): provider is 'auto' | 'openai' | 'openrouter' | 'ollama' => (
-    provider === 'auto' || provider === 'openai' || provider === 'openrouter' || provider === 'ollama'
+const isAgentdProvider = (provider: LLMProviderType): provider is 'auto' | 'openai' | 'openrouter' | 'ollama' | 'gemini' => (
+    provider === 'auto' || provider === 'openai' || provider === 'openrouter' || provider === 'ollama' || provider === 'gemini'
 )
 
-const syncBrowserLlmSettings = (state: Pick<SettingsState, 'preferredProvider' | 'openaiModel' | 'openrouterModel'>): void => {
+const syncBrowserLlmSettings = (state: Pick<SettingsState, 'preferredProvider' | 'openaiModel' | 'geminiModel' | 'openrouterModel'>): void => {
     if (!isBrowserProduct() || !isAgentdProvider(state.preferredProvider)) return
     void getBrowserAgentdClient().saveLlmSettings({
         preferredProvider: state.preferredProvider,
         openaiModel: state.openaiModel,
+        geminiModel: state.geminiModel,
         openrouterModel: state.openrouterModel,
     }).catch((error) => console.warn('[Settings] Failed to persist browser LLM settings:', error))
 }
@@ -240,7 +241,10 @@ export const useSettingsStore = create<SettingsState>()(
                 // Store API key in encrypted secure storage
                 await electron.secure.set('gemini_api_key', key || '', uid)
             },
-            setGeminiModel: (model) => set({ geminiModel: model }),
+            setGeminiModel: (model) => {
+                set({ geminiModel: model })
+                syncBrowserLlmSettings({ ...get(), geminiModel: model })
+            },
             setOpenrouterApiKey: async (key) => {
                 set({ openrouterApiKey: key })
                 if (isBrowserProduct()) return
@@ -303,6 +307,7 @@ export const useSettingsStore = create<SettingsState>()(
                 set({
                     preferredProvider: saved.preferredProvider,
                     openaiModel: saved.openaiModel,
+                    geminiModel: saved.geminiModel,
                     openrouterModel: saved.openrouterModel,
                     ollamaModel: ollama.model,
                     ollamaBaseUrl: ollama.baseUrl,

@@ -5,6 +5,7 @@ const test = require('node:test')
 
 const root = path.resolve(__dirname, '../..')
 const config = JSON.parse(fs.readFileSync(path.join(root, 'src-tauri/tauri.conf.json'), 'utf8'))
+const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
 const rust = fs.readFileSync(path.join(root, 'src-tauri/src/main.rs'), 'utf8')
 const agentdApi = fs.readFileSync(path.join(root, 'src-tauri/src/agentd_api.rs'), 'utf8')
 const runner = fs.readFileSync(path.join(root, 'scripts/tauri-agentd-runner.cjs'), 'utf8')
@@ -28,6 +29,13 @@ test('Tauri package declares fixed agentd runtime, entrypoint, and keyring helpe
   assert.match(rust, /AICA_AGENTD_UI_ROOT/)
   assert.match(agentdApi, /fn reject_reparse_path\(path: &Path\)/)
   assert.match(agentdApi, /let source_for_agentd = source_path\.to_path_buf\(\)/)
+})
+
+test('Tauri dev stages sidecars before Cargo watch starts', () => {
+  assert.match(packageJson.scripts['dev:tauri'], /prepare:agentd:keyring-helper.*prepare:agentd:migration-reader.*prepare:tauri:agentd.*tauri dev/)
+  assert.doesNotMatch(config.build.beforeDevCommand, /prepare:agentd|prepare:tauri:agentd/)
+  assert.equal(config.build.beforeDevCommand, 'npm run dev:tauri:web')
+  assert.match(config.build.beforeBuildCommand, /prepare:agentd:keyring-helper.*prepare:agentd:migration-reader.*prepare:tauri:agentd/)
 })
 
 test('Windows sidecar preparation preserves executable extensions', () => {

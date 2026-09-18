@@ -55,13 +55,13 @@ describe('browser-first UI boundary', () => {
     expect(dependencies).toContain('Browser mode does not install or inspect host tools.')
   })
 
-  it('keeps Gemini and on-device providers out of the browser selector', () => {
+  it('keeps on-device provider out of the browser selector while exposing daemon Gemini', () => {
     const providers = readSource('components/settings/llm/LLMProviderSettings.tsx')
-    expect(providers).toContain("id === 'auto' || id === 'ollama' || id === 'openai' || id === 'openrouter'")
-    expect(providers).toContain("const showGemini = !browserRuntime")
+    expect(providers).toContain("id === 'auto' || id === 'ollama' || id === 'openai' || id === 'gemini' || id === 'openrouter'")
+    expect(providers).toContain("const showGemini = p === 'gemini' || p === 'auto'")
     expect(providers).toContain("client.hasCredential('openai_api_key')")
     expect(providers).toContain("client.hasCredential('openrouter_api_key')")
-    expect(providers).toContain('Gemini is not yet exposed through the browser agentd API')
+    expect(providers).toContain("client.testProvider('gemini')")
   })
 
   it('registers only native capability commands in the Tauri host', () => {

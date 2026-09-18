@@ -20,7 +20,7 @@ It should be treated as a shared contract for both testers and developers.
 
 The 2026-09-18 audit found and corrected browser Email drift: the contract now distinguishes daemon mailbox ingestion from browser review-session hydration, explicitly excludes automatic browser replies, and documents the transport-specific credential slots plus the legacy fallback.
 
-The follow-up runtime-boundary audit also corrected the launch contract: Edge/Chrome has an explicit agentd readiness/pairing state machine, while the Electron dependency modal is no longer described as a browser startup requirement. Gemini/on-device provider cards are documented as Electron-only until their agentd adapters exist.
+The follow-up runtime-boundary audit also corrected the launch contract: Edge/Chrome has an explicit agentd readiness/pairing state machine, while the Electron dependency modal is no longer described as a browser startup requirement. Gemini is now covered by the browser agentd provider slice; only on-device/browser execution remains Electron-only.
 
 The main problems are in older support docs that still describe:
 
@@ -84,13 +84,15 @@ Evidence:
 
 ### Browser LLM provider boundary
 
-The browser settings component filters the provider selector to `auto`, Ollama, OpenAI/Compatible, and OpenRouter. Browser credentials and provider tests use authenticated agentd routes; Gemini and on-device/browser provider cards remain Electron-only. The docs now distinguish the browser card set from the Electron transition-client card set.
+The browser settings component filters the provider selector to `auto`, Ollama, OpenAI/Compatible, Gemini, and OpenRouter. Browser credentials, provider tests, generation and streaming use authenticated agentd routes; Gemini model discovery is also daemon-backed. OpenAI/OpenRouter keep their configured model labels in this slice; only on-device/browser execution remains Electron-only. The docs now distinguish the browser card set from the Electron transition-client card set.
 
 Evidence:
 
 - [src/renderer/src/components/settings/llm/LLMProviderSettings.tsx](/Users/meharaj/WA-copilot/src/renderer/src/components/settings/llm/LLMProviderSettings.tsx):69
 - [src/renderer/src/lib/browser-agentd-client.ts](/Users/meharaj/WA-copilot/src/renderer/src/lib/browser-agentd-client.ts):251
 - [docs/app-behavior.md](/Users/meharaj/WA-copilot/docs/app-behavior.md):438
+
+The Gemini browser slice was then verified independently: a fake-provider daemon test covered the fixed models probe, `x-goog-api-key` non-disclosure boundary, text/image request shape, non-streaming response parsing, SSE deltas, durable completion and retry-safe generation rows. No real Google credential was used.
 
 ### Email gating and Gmail behavior
 

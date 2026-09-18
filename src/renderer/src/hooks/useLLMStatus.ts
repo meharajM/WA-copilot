@@ -80,15 +80,25 @@ export function useLLMStatus(currentView: string): { llmStatus: LLMStatus } {
                 if (browserRuntime) {
                     const client = getBrowserAgentdClient();
                     const saved = await client.getLlmSettings();
+                    const ollamaSettings = await client.getOllamaSettings();
                     const preferred = saved.preferredProvider === 'auto'
-                        ? ['openai', 'openrouter'] as const
+                        ? ['openai', 'openrouter', 'gemini', 'ollama'] as const
                         : [saved.preferredProvider] as const;
                     for (const provider of preferred) {
-                        const key = provider === 'openai' ? 'openai_api_key' : 'openrouter_api_key';
+                        if (provider === 'ollama') {
+                            const result = await client.testOllama();
+                            if (result.success) {
+                                setLlmStatus({ provider: `Ollama (${ollamaSettings.model})`, available: true });
+                                return;
+                            }
+                            continue;
+                        }
+                        const key = provider === 'openai' ? 'openai_api_key' : provider === 'gemini' ? 'gemini_api_key' : 'openrouter_api_key';
                         const presence = await client.hasCredential(key);
                         if (presence.success && presence.exists) {
-                            const model = provider === 'openai' ? saved.openaiModel : saved.openrouterModel;
-                            setLlmStatus({ provider: `${provider === 'openai' ? 'OpenAI' : 'OpenRouter'} (${model})`, available: true });
+                            const model = provider === 'openai' ? saved.openaiModel : provider === 'gemini' ? saved.geminiModel : saved.openrouterModel;
+                            const label = provider === 'openai' ? 'OpenAI' : provider === 'gemini' ? 'Gemini' : 'OpenRouter';
+                            setLlmStatus({ provider: `${label} (${model})`, available: true });
                             return;
                         }
                     }

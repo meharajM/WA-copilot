@@ -493,6 +493,7 @@ pub enum PreferredProvider {
     Openai,
     Openrouter,
     Ollama,
+    Gemini,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -500,6 +501,7 @@ pub enum PreferredProvider {
 pub struct LlmSettings {
     pub preferred_provider: PreferredProvider,
     pub openai_model: String,
+    pub gemini_model: String,
     pub openrouter_model: String,
 }
 
@@ -508,6 +510,7 @@ impl Default for LlmSettings {
         Self {
             preferred_provider: PreferredProvider::Auto,
             openai_model: "gpt-4o-mini".into(),
+            gemini_model: "gemini-2.5-flash".into(),
             openrouter_model: "anthropic/claude-3-haiku".into(),
         }
     }
@@ -517,6 +520,8 @@ impl LlmSettings {
     fn validate(&self) -> Result<(), &'static str> {
         if self.openai_model.trim().is_empty()
             || self.openai_model.chars().count() > 128
+            || self.gemini_model.trim().is_empty()
+            || self.gemini_model.chars().count() > 128
             || self.openrouter_model.trim().is_empty()
             || self.openrouter_model.chars().count() > 128
         {
@@ -631,6 +636,8 @@ pub struct ProviderTestResult {
     pub success: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub models: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -818,6 +825,7 @@ pub struct CredentialContinuityPreview {
 #[derive(Clone, Copy)]
 enum CredentialKey {
     Openai,
+    Gemini,
     Openrouter,
     WhatsAppCloudAccessToken,
     WhatsAppCloudAppSecret,
@@ -828,6 +836,7 @@ impl CredentialKey {
     fn parse(key: &str) -> Result<Self, ()> {
         match key {
             "openai_api_key" => Ok(Self::Openai),
+            "gemini_api_key" => Ok(Self::Gemini),
             "openrouter_api_key" => Ok(Self::Openrouter),
             "whatsapp_cloud_access_token" => Ok(Self::WhatsAppCloudAccessToken),
             "whatsapp_cloud_app_secret" => Ok(Self::WhatsAppCloudAppSecret),
@@ -839,6 +848,7 @@ impl CredentialKey {
     fn as_str(self) -> &'static str {
         match self {
             Self::Openai => "openai_api_key",
+            Self::Gemini => "gemini_api_key",
             Self::Openrouter => "openrouter_api_key",
             Self::WhatsAppCloudAccessToken => "whatsapp_cloud_access_token",
             Self::WhatsAppCloudAppSecret => "whatsapp_cloud_app_secret",
@@ -850,6 +860,7 @@ impl CredentialKey {
 #[derive(Clone, Copy)]
 enum Provider {
     Openai,
+    Gemini,
     Openrouter,
     Ollama,
 }
@@ -858,6 +869,7 @@ impl Provider {
     fn parse(value: &str) -> Result<Self, ()> {
         match value {
             "openai" => Ok(Self::Openai),
+            "gemini" => Ok(Self::Gemini),
             "openrouter" => Ok(Self::Openrouter),
             "ollama" => Ok(Self::Ollama),
             _ => Err(()),
@@ -955,6 +967,7 @@ impl Route {
                 format!("/api/v1/credentials/{}", key.as_str())
             }
             Self::ProviderTest(Provider::Openai) => "/api/v1/providers/openai/test".into(),
+            Self::ProviderTest(Provider::Gemini) => "/api/v1/providers/gemini/test".into(),
             Self::ProviderTest(Provider::Openrouter) => "/api/v1/providers/openrouter/test".into(),
             Self::ProviderTest(Provider::Ollama) => "/api/v1/providers/ollama/test".into(),
             Self::ChatSessions => "/api/v1/sessions".into(),
@@ -1331,6 +1344,7 @@ impl AgentdClient {
             return ProviderTestResult {
                 success: false,
                 model_count: None,
+                models: None,
                 error: Some("Provider is not supported".into()),
             };
         };
@@ -1342,6 +1356,7 @@ impl AgentdClient {
             Err(()) => ProviderTestResult {
                 success: false,
                 model_count: None,
+                models: None,
                 error: Some("Provider test failed; agentd may be unavailable".into()),
             },
         }
@@ -1697,6 +1712,10 @@ mod tests {
             "/api/v1/providers/openrouter/test"
         );
         assert_eq!(
+            Route::ProviderTest(Provider::Gemini).path(),
+            "/api/v1/providers/gemini/test"
+        );
+        assert_eq!(
             Route::ProviderTest(Provider::Ollama).path(),
             "/api/v1/providers/ollama/test"
         );
@@ -1734,12 +1753,12 @@ mod tests {
             "/api/v1/continuity/chat-history/status?previewId=12345678-1234-1234-1234-123456789012"
         );
         assert!(CredentialKey::parse("openai_api_key").is_ok());
+        assert!(CredentialKey::parse("gemini_api_key").is_ok());
         assert!(CredentialKey::parse("openrouter_api_key").is_ok());
         assert!(CredentialKey::parse("whatsapp_cloud_access_token").is_ok());
         assert!(CredentialKey::parse("whatsapp_cloud_app_secret").is_ok());
         assert!(CredentialKey::parse("whatsapp_cloud_verify_token").is_ok());
         for later_slice_key in [
-            "gemini_api_key",
             "email_imap_password",
             "gmail_oauth_client_id",
         ] {
@@ -1859,17 +1878,17 @@ mod tests {
                 (
                     "GET /api/v1/settings/llm",
                     "",
-                    r#"{"preferredProvider":"auto","openaiModel":"gpt-4o-mini","openrouterModel":"anthropic/claude-3-haiku"}"#,
+                    r#"{"preferredProvider":"auto","openaiModel":"gpt-4o-mini","geminiModel":"gemini-2.5-flash","openrouterModel":"anthropic/claude-3-haiku"}"#,
                 ),
                 (
                     "PUT /api/v1/settings/llm",
-                    r#"{"preferredProvider":"openrouter","openaiModel":"gpt-4.1-mini","openrouterModel":"openai/gpt-4o-mini"}"#,
-                    r#"{"preferredProvider":"openrouter","openaiModel":"gpt-4.1-mini","openrouterModel":"openai/gpt-4o-mini"}"#,
+                    r#"{"preferredProvider":"openrouter","openaiModel":"gpt-4.1-mini","geminiModel":"gemini-2.5-flash","openrouterModel":"openai/gpt-4o-mini"}"#,
+                    r#"{"preferredProvider":"openrouter","openaiModel":"gpt-4.1-mini","geminiModel":"gemini-2.5-flash","openrouterModel":"openai/gpt-4o-mini"}"#,
                 ),
                 (
                     "GET /api/v1/settings/llm",
                     "",
-                    r#"{"preferredProvider":"openrouter","openaiModel":"gpt-4.1-mini","openrouterModel":"openai/gpt-4o-mini"}"#,
+                    r#"{"preferredProvider":"openrouter","openaiModel":"gpt-4.1-mini","geminiModel":"gemini-2.5-flash","openrouterModel":"openai/gpt-4o-mini"}"#,
                 ),
                 (
                     "POST /api/v1/credentials/openai_api_key",
@@ -1957,6 +1976,7 @@ mod tests {
         let settings = LlmSettings {
             preferred_provider: PreferredProvider::Openrouter,
             openai_model: "gpt-4.1-mini".into(),
+            gemini_model: "gemini-2.5-flash".into(),
             openrouter_model: "openai/gpt-4o-mini".into(),
         };
         let settings_body = serde_json::to_vec(&settings).unwrap();

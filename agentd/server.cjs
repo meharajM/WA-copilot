@@ -94,6 +94,7 @@ const CHAT_HISTORY_MAX_MESSAGES = 100_000
 const CHAT_HISTORY_MAX_METADATA_BYTES = 128 * 1024
 const PROVIDER_ENDPOINTS = Object.freeze({
   openai: 'https://api.openai.com/v1/models',
+  gemini: 'https://generativelanguage.googleapis.com/v1beta/models',
   openrouter: 'https://openrouter.ai/api/v1/models',
 })
 const PROVIDER_CHAT_ENDPOINTS = Object.freeze({
@@ -103,6 +104,7 @@ const PROVIDER_CHAT_ENDPOINTS = Object.freeze({
 const LLM_SETTINGS_DEFAULTS = Object.freeze({
   preferredProvider: 'auto',
   openaiModel: 'gpt-4o-mini',
+  geminiModel: 'gemini-2.5-flash',
   openrouterModel: 'anthropic/claude-3-haiku',
 })
 const OLLAMA_SETTINGS_DEFAULTS = Object.freeze({
@@ -130,7 +132,7 @@ const PRODUCT_PREFERENCES_DEFAULTS = Object.freeze({
   voskModel: 'en-us',
   browserModel: 'Qwen2.5-1.5B-Instruct-q4f16_1-MLC',
 })
-const SAFE_IGNORED_ELECTRON_SETTINGS_KEYS = Object.freeze(['activeUserId', 'isSyncing', 'lastSyncTime', 'openaiBaseUrl', 'geminiModel'])
+const SAFE_IGNORED_ELECTRON_SETTINGS_KEYS = Object.freeze(['activeUserId', 'isSyncing', 'lastSyncTime', 'openaiBaseUrl'])
 const WHATSAPP_SETTINGS_DEFAULTS = Object.freeze({
   whatsapp_transport: 'baileys',
   whatsapp_cloud_phone_number_id: '',
@@ -594,7 +596,7 @@ class AgentdServer {
           request_id TEXT PRIMARY KEY,
           session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
           model TEXT NOT NULL,
-          provider TEXT NOT NULL CHECK(provider IN ('openai','openrouter','ollama')),
+          provider TEXT NOT NULL CHECK(provider IN ('openai','openrouter','ollama','gemini')),
           assistant_message_id TEXT,
           response_text TEXT,
           status TEXT NOT NULL CHECK(status IN ('processing','completed')),
@@ -685,14 +687,14 @@ class AgentdServer {
       const inboundColumns = this.db.prepare('PRAGMA table_info(inbound_events)').all()
       if (!inboundColumns.some((column) => column.name === 'claimed_at')) this.db.exec('ALTER TABLE inbound_events ADD COLUMN claimed_at INTEGER')
       const generationSchema = this.db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'chat_generations'").get()?.sql || ''
-      if (generationSchema && !generationSchema.includes("'ollama'")) {
+      if (generationSchema && !generationSchema.includes("'gemini'")) {
         this.db.transaction(() => {
           this.db.exec('ALTER TABLE chat_generations RENAME TO chat_generations_legacy')
           this.db.exec(`CREATE TABLE chat_generations (
             request_id TEXT PRIMARY KEY,
             session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
             model TEXT NOT NULL,
-            provider TEXT NOT NULL CHECK(provider IN ('openai','openrouter','ollama')),
+            provider TEXT NOT NULL CHECK(provider IN ('openai','openrouter','ollama','gemini')),
             assistant_message_id TEXT,
             response_text TEXT,
             status TEXT NOT NULL CHECK(status IN ('processing','completed')),
@@ -1013,7 +1015,7 @@ class AgentdServer {
     if (emailDraftSendMatch && req.method === 'POST') return this.sendEmailDraft(req, res, decodeURIComponent(emailDraftSendMatch[1]))
     if (emailDraftMatch && ['PATCH', 'DELETE'].includes(req.method)) return this.emailDraft(req, res, decodeURIComponent(emailDraftMatch[1]))
     if (url.pathname === '/api/v1/whatsapp/messages' && req.method === 'POST') return this.sendWhatsAppMessage(req, res)
-    const providerTestMatch = /^\/api\/v1\/providers\/(openai|openrouter|ollama)\/test$/.exec(url.pathname)
+    const providerTestMatch = /^\/api\/v1\/providers\/(openai|openrouter|ollama|gemini)\/test$/.exec(url.pathname)
     if (providerTestMatch && req.method === 'POST') return this.testProvider(req, res, providerTestMatch[1])
     if (url.pathname === '/api/v1/status' && req.method === 'GET') {
       this.authorize(req)
@@ -1393,14 +1395,14 @@ class AgentdServer {
     if (wrapperKeys.some(key => !['state', 'version'].includes(key)) || !Object.prototype.hasOwnProperty.call(wrapper, 'state') || (wrapper.version !== undefined && (!Number.isSafeInteger(wrapper.version) || wrapper.version < 0))) throw Object.assign(new Error('Invalid Electron settings wrapper'), { statusCode: 400 })
     const state = wrapper.state
     if (!state || typeof state !== 'object' || Array.isArray(state)) throw Object.assign(new Error('Invalid Electron settings schema'), { statusCode: 400 })
-    const allowedStateKeys = new Set(['preferredProvider', 'openaiModel', 'openrouterModel', 'ollamaModel', 'ollamaBaseUrl', ...Object.keys(PRODUCT_PREFERENCES_DEFAULTS), ...SAFE_IGNORED_ELECTRON_SETTINGS_KEYS])
+    const allowedStateKeys = new Set(['preferredProvider', 'openaiModel', 'geminiModel', 'openrouterModel', 'ollamaModel', 'ollamaBaseUrl', ...Object.keys(PRODUCT_PREFERENCES_DEFAULTS), ...SAFE_IGNORED_ELECTRON_SETTINGS_KEYS])
     if (Object.keys(state).some(key => !allowedStateKeys.has(key))) throw Object.assign(new Error('Unknown Electron settings field'), { statusCode: 400 })
     let currentLlm; let currentOllama; let currentPreferences
     try { currentLlm = parseLlmSettings(JSON.parse(this.getState('llm_settings', 'null'))) || LLM_SETTINGS_DEFAULTS } catch { currentLlm = LLM_SETTINGS_DEFAULTS }
     try { currentOllama = parseOllamaSettings(JSON.parse(this.getState('ollama_settings', 'null'))) || OLLAMA_SETTINGS_DEFAULTS } catch { currentOllama = OLLAMA_SETTINGS_DEFAULTS }
     try { currentPreferences = parseProductPreferences(JSON.parse(this.getState('product_preferences', 'null'))) || PRODUCT_PREFERENCES_DEFAULTS } catch { currentPreferences = PRODUCT_PREFERENCES_DEFAULTS }
     const pick = (keys) => Object.fromEntries(keys.filter(key => Object.prototype.hasOwnProperty.call(state, key)).map(key => [key, state[key]]))
-    const llm = parseLlmSettings({ ...currentLlm, ...pick(['preferredProvider', 'openaiModel', 'openrouterModel']) })
+    const llm = parseLlmSettings({ ...currentLlm, ...pick(['preferredProvider', 'openaiModel', 'geminiModel', 'openrouterModel']) })
     const ollama = parseOllamaSettings({
       baseUrl: state.ollamaBaseUrl ?? currentOllama.baseUrl,
       model: state.ollamaModel ?? currentOllama.model,
@@ -1964,6 +1966,7 @@ class AgentdServer {
     try {
       if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
       const body = await readBody(req, 16 * 1024)
+      if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).sort().join(',') !== 'geminiModel,openaiModel,openrouterModel,preferredProvider') return json(res, 400, { error: 'Invalid LLM settings' })
       const settings = parseLlmSettings(body)
       if (!settings) return json(res, 400, { error: 'Invalid LLM settings' })
       this.setState('llm_settings', JSON.stringify(settings))
@@ -2819,19 +2822,28 @@ class AgentdServer {
         return json(res, 200, { success: false, error: 'Ollama provider test failed' })
       }
     }
-    const credentialKey = provider === 'openai' ? 'openai_api_key' : 'openrouter_api_key'
+    const credentialKey = provider === 'openai' ? 'openai_api_key' : provider === 'gemini' ? 'gemini_api_key' : 'openrouter_api_key'
     let response
     try {
       const key = await this.credentials?.get(credentialKey)
       if (typeof key !== 'string' || !key) throw new Error('Credential unavailable')
       response = await this.providerFetch(PROVIDER_ENDPOINTS[provider], {
         method: 'GET',
-        headers: { authorization: `Bearer ${key}` },
+        headers: provider === 'gemini' ? { 'x-goog-api-key': key } : { authorization: `Bearer ${key}` },
         redirect: 'manual',
         signal: AbortSignal.timeout(5000),
       })
       if (!response.ok || response.redirected) throw new Error('Provider request failed')
       const payload = await readProviderResponse(response)
+      if (provider === 'gemini') {
+        const models = Array.isArray(payload?.models)
+          ? payload.models
+            .filter(model => !Array.isArray(model?.supportedGenerationMethods) || model.supportedGenerationMethods.includes('generateContent'))
+            .map(model => typeof model?.name === 'string' ? model.name.split('/').pop() : null)
+            .filter(model => validGeminiModelName(model))
+          : []
+        return json(res, 200, { success: true, modelCount: models.length, models: models.slice(0, 100) })
+      }
       if (!Array.isArray(payload?.data)) throw new Error('Provider response invalid')
       return json(res, 200, { success: true, modelCount: payload.data.length })
     } catch {
@@ -2924,6 +2936,37 @@ class AgentdServer {
       if (!attachment.text && !attachment.dataUrl) parts.push({ type: 'text', text: `\n[Attached file: ${attachment.name} (${attachment.type || 'unknown type'})]` })
     }
     return { role: row.role, content: parts.length === 1 ? row.content : parts }
+  }
+
+  geminiProviderBody(rows) {
+    const systemParts = []
+    const contents = []
+    for (const row of rows) {
+      const message = this.providerMessage(row)
+      if (row.role === 'system') {
+        const text = typeof message.content === 'string' ? message.content : ''
+        if (text) systemParts.push({ text })
+        continue
+      }
+      const role = row.role === 'assistant' ? 'model' : 'user'
+      const openaiParts = Array.isArray(message.content)
+        ? message.content
+        : [{ type: 'text', text: typeof message.content === 'string' ? message.content : '' }]
+      const parts = openaiParts.flatMap(part => {
+        if (part?.type === 'text' && typeof part.text === 'string') return [{ text: part.text }]
+        if (part?.type === 'image_url' && typeof part.image_url?.url === 'string') {
+          const match = /^data:([^;,]{1,128});base64,([A-Za-z0-9+/=]+)$/.exec(part.image_url.url)
+          if (match) return [{ inlineData: { mimeType: match[1], data: match[2] } }]
+        }
+        return []
+      })
+      if (parts.length) contents.push({ role, parts })
+    }
+    return {
+      contents,
+      ...(systemParts.length ? { systemInstruction: { parts: systemParts } } : {}),
+      generationConfig: { maxOutputTokens: 1024 },
+    }
   }
 
   async chatSessions(req, res) {
@@ -3149,8 +3192,8 @@ class AgentdServer {
     try { settings = parseLlmSettings(JSON.parse(this.getState('llm_settings', 'null'))) || LLM_SETTINGS_DEFAULTS } catch { settings = LLM_SETTINGS_DEFAULTS }
     let ollamaSettings
     try { ollamaSettings = parseOllamaSettings(JSON.parse(this.getState('ollama_settings', 'null'))) || OLLAMA_SETTINGS_DEFAULTS } catch { ollamaSettings = OLLAMA_SETTINGS_DEFAULTS }
-    const providers = settings.preferredProvider === 'auto' ? ['openai', 'openrouter', 'ollama'] : [settings.preferredProvider]
-    const configuredModels = { openai: settings.openaiModel, openrouter: settings.openrouterModel, ollama: ollamaSettings.model }
+    const providers = settings.preferredProvider === 'auto' ? ['openai', 'openrouter', 'gemini', 'ollama'] : [settings.preferredProvider]
+    const configuredModels = { openai: settings.openaiModel, gemini: settings.geminiModel, openrouter: settings.openrouterModel, ollama: ollamaSettings.model }
     const requestedModel = body.model === undefined ? null : body.model
     let provider = null
     let apiKey = null
@@ -3170,7 +3213,7 @@ class AgentdServer {
         } catch {}
         continue
       }
-      const credentialKey = candidate === 'openai' ? 'openai_api_key' : 'openrouter_api_key'
+      const credentialKey = candidate === 'openai' ? 'openai_api_key' : candidate === 'gemini' ? 'gemini_api_key' : 'openrouter_api_key'
       let candidateKey = null
       try { candidateKey = await this.credentials?.get(credentialKey) } catch {}
       if (typeof candidateKey === 'string' && candidateKey) {
@@ -3181,7 +3224,7 @@ class AgentdServer {
     }
     if (!provider || (provider !== 'ollama' && !apiKey)) return json(res, 503, { error: 'Provider unavailable' })
     const model = requestedModel || configuredModels[provider]
-    if (!validModelName(model)) return json(res, 400, { error: 'Invalid model' })
+    if (!validModelName(model) || (provider === 'gemini' && !validGeminiModelName(model))) return json(res, 400, { error: 'Invalid model' })
     if (this.migrationFence(req, res)) return
 
     const now = Date.now()
@@ -3228,7 +3271,9 @@ class AgentdServer {
     if (prepared.completed) return json(res, 200, this.generationView(prepared.completed, true))
 
     const wantsStream = /(?:^|,)\s*text\/event-stream\s*(?:;|,|$)/i.test(String(req.headers.accept || ''))
-    const providerBody = JSON.stringify({ model, messages: prepared.messages.map((message) => this.providerMessage(message)), stream: wantsStream, max_tokens: 1024 })
+    const providerBody = provider === 'gemini'
+      ? JSON.stringify(this.geminiProviderBody(prepared.messages))
+      : JSON.stringify({ model, messages: prepared.messages.map((message) => this.providerMessage(message)), stream: wantsStream, max_tokens: 1024 })
     if (Buffer.byteLength(providerBody, 'utf8') > MAX_PROVIDER_REQUEST_BYTES) {
       this.db.prepare('DELETE FROM chat_generations WHERE request_id = ? AND status = \'processing\'').run(body.requestId)
       return json(res, 413, { error: 'Conversation context too large' })
@@ -3245,10 +3290,15 @@ class AgentdServer {
     try {
       const endpoint = provider === 'ollama'
         ? `${ollamaSettings.baseUrl}/v1/chat/completions`
-        : PROVIDER_CHAT_ENDPOINTS[provider]
+        : provider === 'gemini'
+          ? `https://generativelanguage.googleapis.com/v1beta/models/${model}:` + (wantsStream ? 'streamGenerateContent?alt=sse' : 'generateContent')
+          : PROVIDER_CHAT_ENDPOINTS[provider]
+      const providerHeaders = provider === 'gemini'
+        ? { 'x-goog-api-key': apiKey }
+        : provider === 'ollama' ? {} : { authorization: `Bearer ${apiKey}` }
       response = await this.providerFetch(endpoint, {
         method: 'POST',
-        headers: { ...(provider === 'ollama' ? {} : { authorization: `Bearer ${apiKey}` }), 'content-type': 'application/json', ...(wantsStream ? { accept: 'text/event-stream' } : {}) },
+        headers: { ...providerHeaders, 'content-type': 'application/json', ...(wantsStream ? { accept: 'text/event-stream' } : {}) },
         body: providerBody,
         redirect: 'manual',
         signal: providerController.signal,
@@ -3257,12 +3307,13 @@ class AgentdServer {
       let content
       const contentType = String(response.headers?.get?.('content-type') || '').toLowerCase()
       if (wantsStream && contentType.includes('text/event-stream')) {
-        content = await readProviderStream(response, (delta) => {
+        const readStream = provider === 'gemini' ? readGeminiStream : readProviderStream
+        content = await readStream(response, (delta) => {
           if (!writeSse(res, { type: 'assistant.delta', sessionId: rawId, requestId: body.requestId, sequence: 1, delta })) throw new Error('Client disconnected')
         })
       } else {
         const payload = await readProviderResponse(response)
-        content = payload?.choices?.[0]?.message?.content
+        content = provider === 'gemini' ? extractGeminiText(payload) : payload?.choices?.[0]?.message?.content
         if (wantsStream && typeof content === 'string' && content && !writeSse(res, { type: 'assistant.delta', sessionId: rawId, requestId: body.requestId, sequence: 1, delta: content })) throw new Error('Client disconnected')
       }
       if (typeof content !== 'string' || !content || content.length > MAX_CHAT_CONTENT_LENGTH || Buffer.byteLength(content, 'utf8') > MAX_CHAT_CONTENT_LENGTH) throw new Error('Provider response invalid')
@@ -3672,16 +3723,24 @@ function validModelName(value) {
     && /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(value)
 }
 
+function validGeminiModelName(value) {
+  return validModelName(value) && /^gemini-[A-Za-z0-9._:-]+$/.test(value)
+}
+
 function parseLlmSettings(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   const keys = Object.keys(value).sort()
-  if (keys.length !== 3 || keys.join(',') !== 'openaiModel,openrouterModel,preferredProvider'
-    || !['auto', 'openai', 'openrouter', 'ollama'].includes(value.preferredProvider)
+  const legacy = keys.length === 3 && keys.join(',') === 'openaiModel,openrouterModel,preferredProvider'
+  const current = keys.length === 4 && keys.join(',') === 'geminiModel,openaiModel,openrouterModel,preferredProvider'
+  if ((!legacy && !current)
+    || !['auto', 'openai', 'openrouter', 'ollama', 'gemini'].includes(value.preferredProvider)
     || !validModelName(value.openaiModel)
+    || (current && !validGeminiModelName(value.geminiModel))
     || !validModelName(value.openrouterModel)) return null
   return {
     preferredProvider: value.preferredProvider,
     openaiModel: value.openaiModel,
+    geminiModel: current ? value.geminiModel : LLM_SETTINGS_DEFAULTS.geminiModel,
     openrouterModel: value.openrouterModel,
   }
 }
@@ -3887,6 +3946,72 @@ async function readProviderResponse(response) {
     chunks.push(Buffer.from(value))
   }
   return JSON.parse(Buffer.concat(chunks, size).toString('utf8'))
+}
+
+function extractGeminiText(payload) {
+  const parts = payload?.candidates?.[0]?.content?.parts
+  if (!Array.isArray(parts)) return null
+  const text = parts.map(part => typeof part?.text === 'string' ? part.text : '').join('')
+  return text || null
+}
+
+async function readGeminiStream(response, onDelta) {
+  if (!response.body) throw new Error('Provider response missing')
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let eventData = []
+  let size = 0
+  let content = ''
+  let sawDone = false
+
+  const consume = raw => {
+    const data = raw.trim()
+    if (!data) return
+    let payload
+    try { payload = JSON.parse(data) } catch { throw new Error('Provider stream response invalid') }
+    if (payload?.error) throw new Error('Provider stream response invalid')
+    const candidateText = extractGeminiText(payload)
+    const eventText = payload?.event_type === 'content.delta' && payload?.delta?.type === 'text' ? payload.delta.text : null
+    const delta = typeof candidateText === 'string' ? candidateText : eventText
+    if (typeof delta !== 'string' || !delta) return
+    content += delta
+    if (content.length > MAX_CHAT_CONTENT_LENGTH || Buffer.byteLength(content, 'utf8') > MAX_CHAT_CONTENT_LENGTH) throw new Error('Provider response too large')
+    onDelta(delta)
+    sawDone = true
+  }
+
+  const flushEvent = () => {
+    if (!eventData.length) return
+    const data = eventData.join('\n')
+    eventData = []
+    consume(data)
+  }
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    size += value.byteLength
+    if (size > MAX_PROVIDER_RESPONSE_BYTES) {
+      await reader.cancel()
+      throw new Error('Provider response too large')
+    }
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split(/\r?\n/)
+    buffer = lines.pop() || ''
+    for (const line of lines) {
+      if (!line) flushEvent()
+      else if (line.startsWith('data:')) eventData.push(line.slice(5).trimStart())
+    }
+  }
+  buffer += decoder.decode()
+  for (const line of buffer.split(/\r?\n/)) {
+    if (!line) flushEvent()
+    else if (line.startsWith('data:')) eventData.push(line.slice(5).trimStart())
+  }
+  flushEvent()
+  if (!sawDone || !content) throw new Error('Provider stream ended before completion')
+  return content
 }
 
 function writeSse(res, payload) {

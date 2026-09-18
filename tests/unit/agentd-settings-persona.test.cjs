@@ -19,7 +19,7 @@ const request = (origin, method, pathname, body, headers = {}) => new Promise((r
 })
 
 const settings = {
-  preferredProvider: 'ollama', openaiModel: 'gpt-4o-mini', openrouterModel: 'openai/gpt-4o',
+  preferredProvider: 'ollama', openaiModel: 'gpt-4o-mini', geminiModel: 'gemini-2.5-flash', openrouterModel: 'openai/gpt-4o',
   ollamaModel: 'qwen2.5:3b', ollamaBaseUrl: 'http://127.0.0.1:11434',
   theme: 'light', playwrightBrowser: 'auto', playwrightHeadless: false, fileSystemSafeMode: true,
   memoryBackend: 'sqlite', ttsEnabled: true, ttsRate: 1, ttsPitch: 1, ttsVoice: null,
@@ -74,7 +74,7 @@ migrationTest('native settings/persona cutover is schema-aware, transactional, f
   assert.equal(applied.body.confirmationToken, undefined)
   assert.equal(fs.statSync(applied.body.backupSha256 && fs.readdirSync(path.join(dataDir, 'migration-backups')).map(name => path.join(dataDir, 'migration-backups', name))[0]).mode & 0o077, 0)
   assert.deepEqual((await request(origin, 'GET', '/api/v1/settings/persona', undefined, bearer)).body, { name: 'Northwind', industry: 'Retail', tone: 'concise', coreKnowledge: ['Returns'], customRules: 'Never promise a refund.' })
-  assert.deepEqual((await request(origin, 'GET', '/api/v1/settings/llm', undefined, bearer)).body, { preferredProvider: 'ollama', openaiModel: 'gpt-4o-mini', openrouterModel: 'openai/gpt-4o' })
+  assert.deepEqual((await request(origin, 'GET', '/api/v1/settings/llm', undefined, bearer)).body, { preferredProvider: 'ollama', openaiModel: 'gpt-4o-mini', geminiModel: 'gemini-2.5-flash', openrouterModel: 'openai/gpt-4o' })
   server.migrationHold = true
   assert.equal((await request(origin, 'POST', '/api/v1/whatsapp/messages', { to: '+15551234567', text: 'blocked' }, bearer)).status, 409)
   server.migrationHold = false
@@ -142,7 +142,7 @@ migrationTest('cutover refuses malformed or secret-bearing prior settings before
   await request(origin, 'POST', '/api/v1/continuity/import', { previewId: preview.body.previewId, ownerConfirmation: 'IMPORT_ELECTRON_DATA' }, bearer)
   const confirmation = await request(origin, 'POST', '/api/v1/continuity/settings-persona/confirm', { previewId: preview.body.previewId, scope: 'settings-persona' }, bearer)
   server.db.prepare('INSERT INTO agent_state(key,value,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at')
-    .run('llm_settings', JSON.stringify({ preferredProvider: 'ollama', openaiModel: 'gpt-4o-mini', openrouterModel: 'openai/gpt-4o', openaiApiKey: 'sk-secret-value' }), Date.now())
+    .run('llm_settings', JSON.stringify({ preferredProvider: 'ollama', openaiModel: 'gpt-4o-mini', geminiModel: 'gemini-2.5-flash', openrouterModel: 'openai/gpt-4o', openaiApiKey: 'sk-secret-value' }), Date.now())
   const applied = await request(origin, 'POST', '/api/v1/continuity/settings-persona/apply', { previewId: preview.body.previewId, confirmationToken: confirmation.body.confirmationToken }, bearer)
   assert.equal(applied.status, 500)
   assert.equal(applied.body.state, 'needs-recovery')
@@ -207,7 +207,7 @@ migrationTest('settings PUT routes are fenced while cutover owns the migration h
   server.migrationHold = true
   server.migrationOwner = true
   const bodies = {
-    '/api/v1/settings/llm': { preferredProvider: 'ollama', openaiModel: 'gpt-4o-mini', openrouterModel: 'openai/gpt-4o' },
+    '/api/v1/settings/llm': { preferredProvider: 'ollama', openaiModel: 'gpt-4o-mini', geminiModel: 'gemini-2.5-flash', openrouterModel: 'openai/gpt-4o' },
     '/api/v1/settings/persona': { name: 'AICA', industry: 'Support', tone: 'professional', coreKnowledge: [] },
     '/api/v1/settings/preferences': settings,
     '/api/v1/settings/ollama': { baseUrl: 'http://127.0.0.1:11434', model: 'qwen2.5:3b' },

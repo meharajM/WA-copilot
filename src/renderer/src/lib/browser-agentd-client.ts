@@ -250,9 +250,10 @@ const readCredentialPresence = (value: unknown): NativeResult & { exists: boolea
 
 const readLlmSettings = (value: unknown): LlmSettings => {
   if (!isRecord(value)
-    || Object.keys(value).sort().join(',') !== 'openaiModel,openrouterModel,preferredProvider'
-    || !['auto', 'openai', 'openrouter', 'ollama'].includes(value.preferredProvider as string)
+    || Object.keys(value).sort().join(',') !== 'geminiModel,openaiModel,openrouterModel,preferredProvider'
+    || !['auto', 'openai', 'openrouter', 'ollama', 'gemini'].includes(value.preferredProvider as string)
     || typeof value.openaiModel !== 'string'
+    || typeof value.geminiModel !== 'string'
     || typeof value.openrouterModel !== 'string') throw new Error('Invalid LLM settings response')
   return value as unknown as LlmSettings
 }
@@ -574,7 +575,7 @@ export interface BrowserAgentdClient extends ChatClient {
   setCredential(key: CredentialKey, value: string): Promise<NativeResult>
   hasCredential(key: CredentialKey): Promise<NativeResult & { exists: boolean }>
   deleteCredential(key: CredentialKey): Promise<NativeResult>
-  testProvider(provider: 'openai' | 'openrouter'): Promise<ProviderTestResult>
+  testProvider(provider: 'openai' | 'openrouter' | 'gemini'): Promise<ProviderTestResult>
   getMcpLifecycle(): Promise<BrowserMcpLifecycle>
   getMcpServers(): Promise<{ servers: BrowserMcpServer[]; execution: 'unavailable'; reason: string }>
 }
@@ -1111,10 +1112,17 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
   const setCredential = async (key: CredentialKey, value: string) => readResult(await request(`/api/v1/credentials/${encodeURIComponent(key)}`, { method: 'POST', body: JSON.stringify({ value }) }, true))
   const hasCredential = async (key: CredentialKey) => readCredentialPresence(await request(`/api/v1/credentials/${encodeURIComponent(key)}`))
   const deleteCredential = async (key: CredentialKey) => readResult(await request(`/api/v1/credentials/${encodeURIComponent(key)}`, { method: 'DELETE' }, true))
-  const testProvider = async (provider: 'openai' | 'openrouter') => {
+  const testProvider = async (provider: 'openai' | 'openrouter' | 'gemini') => {
     const value = await request<unknown>(`/api/v1/providers/${provider}/test`, { method: 'POST', body: '{}' }, true)
     if (!isRecord(value) || typeof value.success !== 'boolean') throw new Error('Invalid provider test response')
-    return value as unknown as ProviderTestResult
+    if (!value.success) return { success: false, error: errorText(value.error, 'Provider test failed') }
+    if (value.modelCount !== undefined && (!Number.isSafeInteger(value.modelCount) || (value.modelCount as number) < 0)) throw new Error('Invalid provider test response')
+    if (value.models !== undefined && (!Array.isArray(value.models) || value.models.some(model => typeof model !== 'string'))) throw new Error('Invalid provider test response')
+    return {
+      success: true,
+      ...(Number.isSafeInteger(value.modelCount) ? { modelCount: value.modelCount as number } : {}),
+      ...(Array.isArray(value.models) ? { models: value.models as string[] } : {}),
+    }
   }
 
   return {

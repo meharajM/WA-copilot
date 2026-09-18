@@ -342,6 +342,16 @@ test('agentd persists exact LLM preferences and probes only fixed providers with
   }
   const providerFetch = async (url, options) => {
     calls.push({ url, options })
+    if (url === 'https://generativelanguage.googleapis.com/v1beta/models') {
+      return new Response(JSON.stringify({ models: [
+        { name: 'models/gemini-2.5-flash', supportedGenerationMethods: ['generateContent'] },
+        { name: 'models/gemini-2.0-flash', supportedGenerationMethods: ['generateContent'] },
+        { name: 'models/text-embedding-005', supportedGenerationMethods: ['embedContent'] },
+      ] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
     return upstreamFailureMode
       ? new Response('upstream error contains openai-secret-do-not-return', { status: 401 })
       : new Response(JSON.stringify({ data: [{ id: 'model-a' }, { id: 'model-b' }] }), {
@@ -356,41 +366,48 @@ test('agentd persists exact LLM preferences and probes only fixed providers with
   assert.deepEqual(defaults.body, {
     preferredProvider: 'auto',
     openaiModel: 'gpt-4o-mini',
+    geminiModel: 'gemini-2.5-flash',
     openrouterModel: 'anthropic/claude-3-haiku',
   })
   const settings = {
     preferredProvider: 'openrouter',
     openaiModel: 'gpt-4.1-mini',
+    geminiModel: 'gemini-2.5-flash',
     openrouterModel: 'openai/gpt-4o-mini',
   }
   assert.deepEqual((await request(origin, 'PUT', '/api/v1/settings/llm', settings, auth)).body, settings)
   assert.deepEqual((await request(origin, 'GET', '/api/v1/settings/llm', undefined, auth)).body, settings)
   assert.equal((await request(origin, 'PUT', '/api/v1/settings/llm', { ...settings, apiKey: 'must-not-be-stored' }, auth)).status, 400)
   assert.equal((await request(origin, 'PUT', '/api/v1/settings/llm', { ...settings, openaiModel: ' ' }, auth)).status, 400)
-  assert.equal((await request(origin, 'PUT', '/api/v1/settings/llm', { ...settings, preferredProvider: 'gemini' }, auth)).status, 400)
+  assert.equal((await request(origin, 'PUT', '/api/v1/settings/llm', { ...settings, preferredProvider: 'gemini' }, auth)).status, 200)
 
   assert.deepEqual((await request(origin, 'POST', '/api/v1/providers/openai/test', {}, auth)).body, {
     success: false,
     error: 'Provider test failed',
   })
   const openaiSecret = 'openai-secret-do-not-return'
+  const geminiSecret = 'gemini-secret-do-not-return'
   const openrouterSecret = 'openrouter-secret-do-not-return'
   records.set('openai_api_key', openaiSecret)
+  records.set('gemini_api_key', geminiSecret)
   records.set('openrouter_api_key', openrouterSecret)
-  for (const provider of ['openai', 'openrouter']) {
+  for (const provider of ['openai', 'gemini', 'openrouter']) {
     const result = await request(origin, 'POST', `/api/v1/providers/${provider}/test`, {}, auth)
-    assert.deepEqual(result.body, { success: true, modelCount: 2 })
+    assert.equal(result.body.success, true)
+    assert.equal(result.body.modelCount, 2)
+    if (provider === 'gemini') assert.deepEqual(result.body.models, ['gemini-2.5-flash', 'gemini-2.0-flash'])
     assert.equal(JSON.stringify(result.body).includes('secret'), false)
   }
   assert.deepEqual(calls.map(call => call.url), [
     'https://api.openai.com/v1/models',
+    'https://generativelanguage.googleapis.com/v1beta/models',
     'https://openrouter.ai/api/v1/models',
   ])
-  assert.deepEqual(calls.map(call => call.options.redirect), ['manual', 'manual'])
-  assert.deepEqual(calls.map(call => call.options.headers.authorization), [
-    `Bearer ${openaiSecret}`,
-    `Bearer ${openrouterSecret}`,
-  ])
+  assert.deepEqual(calls.map(call => call.options.redirect), ['manual', 'manual', 'manual'])
+  assert.equal(calls[0].options.headers.authorization, `Bearer ${openaiSecret}`)
+  assert.equal(calls[1].options.headers['x-goog-api-key'], geminiSecret)
+  assert.equal(calls[1].options.headers.authorization, undefined)
+  assert.equal(calls[2].options.headers.authorization, `Bearer ${openrouterSecret}`)
   assert.equal((await request(origin, 'POST', '/api/v1/providers/custom/test', {}, auth)).status, 404)
   assert.equal((await request(origin, 'POST', '/api/v1/providers/openai/test', { url: 'https://attacker.test', key: 'renderer-secret' }, auth)).status, 400)
   upstreamFailureMode = true

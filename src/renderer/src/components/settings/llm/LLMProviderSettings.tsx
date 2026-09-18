@@ -75,10 +75,11 @@ export function LLMProviderSettings() {
             try {
                 if (browserRuntime) {
                     const client = getBrowserAgentdClient()
-                    const [ollamaSettings, ollama, openai, openrouter] = await Promise.all([
+                    const [ollamaSettings, ollama, openai, gemini, openrouter] = await Promise.all([
                         client.getOllamaSettings(),
                         client.testOllama(),
                         client.hasCredential('openai_api_key'),
+                        client.testProvider('gemini'),
                         client.hasCredential('openrouter_api_key'),
                     ])
                     setProviderStatus({
@@ -95,7 +96,13 @@ export function LLMProviderSettings() {
                             modelsEndpointAvailable: false,
                             ...(openai.success && openai.exists ? {} : { error: openai.error || 'Credential not configured' }),
                         },
-                        gemini: { available: false, error: 'Gemini is not yet exposed through the browser agentd API' },
+                        gemini: {
+                            available: gemini.success,
+                            model: settings.geminiModel,
+                            models: gemini.models || [settings.geminiModel],
+                            modelsEndpointAvailable: gemini.models !== undefined,
+                            ...(gemini.success ? {} : { error: gemini.error || 'Credential not configured' }),
+                        },
                         openrouter: {
                             available: openrouter.success && openrouter.exists,
                             model: settings.openrouterModel,
@@ -164,7 +171,7 @@ export function LLMProviderSettings() {
     const p = settings.preferredProvider
     const showOllama = p === 'ollama' || p === 'auto'
     const showOpenAI = p === 'openai' || p === 'auto'
-    const showGemini = !browserRuntime && (p === 'gemini' || p === 'auto')
+    const showGemini = p === 'gemini' || p === 'auto'
     const showOpenRouter = p === 'openrouter' || p === 'auto'
 
     return (
@@ -176,7 +183,7 @@ export function LLMProviderSettings() {
                 <div className="bg-[var(--color-card-elevated)] border border-[var(--color-border)] rounded-xl p-4">
                     <label className="block text-sm text-[var(--color-text-muted)] mb-3">Preferred Provider</label>
                     <div className="flex gap-2 flex-wrap">
-                        {PROVIDERS.filter(({ id }) => !browserRuntime || id === 'auto' || id === 'ollama' || id === 'openai' || id === 'openrouter').map(({ id, label }) => (
+                        {PROVIDERS.filter(({ id }) => !browserRuntime || id === 'auto' || id === 'ollama' || id === 'openai' || id === 'gemini' || id === 'openrouter').map(({ id, label }) => (
                             <button
                                 key={id}
                                 onClick={() => settings.setPreferredProvider(id)}

@@ -29,12 +29,13 @@ export interface NativeHealth {
   events?: number
 }
 
-export type LlmProvider = 'auto' | 'openai' | 'openrouter' | 'ollama'
+export type LlmProvider = 'auto' | 'openai' | 'openrouter' | 'ollama' | 'gemini'
 export type SupportedLlmProvider = Exclude<LlmProvider, 'auto'>
 
 export interface LlmSettings {
   preferredProvider: LlmProvider
   openaiModel: string
+  geminiModel: string
   openrouterModel: string
 }
 
@@ -94,6 +95,7 @@ export interface EmailSettings {
 
 export interface ProviderTestResult extends NativeResult {
   modelCount?: number
+  models?: string[]
 }
 
 export interface FileSelectionOptions {

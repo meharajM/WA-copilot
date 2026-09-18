@@ -312,7 +312,7 @@ test('agentd routes browser generation to a local Ollama loopback service withou
   const { origin } = await server.start()
   const auth = { authorization: `Bearer ${secret}` }
   assert.equal((await request(origin, 'PUT', '/api/v1/settings/ollama', { baseUrl: 'http://127.0.0.1:11434', model: 'qwen2.5:3b' }, auth)).status, 200)
-  assert.equal((await request(origin, 'PUT', '/api/v1/settings/llm', { preferredProvider: 'ollama', openaiModel: 'gpt-4o-mini', openrouterModel: 'anthropic/claude-3-haiku' }, auth)).status, 200)
+  assert.equal((await request(origin, 'PUT', '/api/v1/settings/llm', { preferredProvider: 'ollama', openaiModel: 'gpt-4o-mini', geminiModel: 'gemini-2.5-flash', openrouterModel: 'anthropic/claude-3-haiku' }, auth)).status, 200)
   assert.equal((await request(origin, 'POST', '/api/v1/sessions', { id: 'ollama1', title: 'Local' }, auth)).status, 201)
   const generated = await request(origin, 'POST', '/api/v1/sessions/ollama1/generations', { requestId: 'ollama-r1', content: 'hello local' }, auth)
   assert.equal(generated.status, 200)
@@ -320,6 +320,74 @@ test('agentd routes browser generation to a local Ollama loopback service withou
   assert.equal(generated.body.message.content, 'local answer')
   assert.equal(calls.filter(call => call.url.endsWith('/api/tags')).length, 1)
   assert.equal(calls.filter(call => call.url.endsWith('/v1/chat/completions')).length, 1)
+  await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true })
+})
+
+test('agentd routes browser generation to Gemini with a fixed endpoint and native request shape', async () => {
+  const dataDir = makeTempDir('aica-agentd-gemini-')
+  const secret = 'g'.repeat(32)
+  const calls = []
+  const server = new AgentdServer({
+    dataDir,
+    secret,
+    logger: { log() {} },
+    credentials: credentials({ gemini_api_key: 'gemini-secret' }),
+    providerFetch: async (url, options) => {
+      calls.push({ url, options })
+      assert.equal(url, 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent')
+      assert.equal(options.headers['x-goog-api-key'], 'gemini-secret')
+      assert.equal(options.headers.authorization, undefined)
+      const body = JSON.parse(options.body)
+      assert.deepEqual(body.contents, [{ role: 'user', parts: [{ text: 'hello Gemini' }] }])
+      assert.deepEqual(body.generationConfig, { maxOutputTokens: 1024 })
+      return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: 'Gemini answer' }] } }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    },
+  })
+  const { origin } = await server.start()
+  const auth = { authorization: `Bearer ${secret}` }
+  assert.equal((await request(origin, 'PUT', '/api/v1/settings/llm', { preferredProvider: 'gemini', openaiModel: 'gpt-4o-mini', geminiModel: 'gemini-2.5-flash', openrouterModel: 'anthropic/claude-3-haiku' }, auth)).status, 200)
+  assert.equal((await request(origin, 'POST', '/api/v1/sessions', { id: 'gemini1', title: 'Gemini' }, auth)).status, 201)
+  const generated = await request(origin, 'POST', '/api/v1/sessions/gemini1/generations', { requestId: 'gemini-r1', content: 'hello Gemini' }, auth)
+  assert.equal(generated.status, 200)
+  assert.equal(generated.body.generation.provider, 'gemini')
+  assert.equal(generated.body.message.content, 'Gemini answer')
+  assert.equal(calls.length, 1)
+  await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true })
+})
+
+test('agentd streams Gemini SSE text deltas and persists the answer', async () => {
+  const dataDir = makeTempDir('aica-agentd-gemini-stream-')
+  const secret = 'k'.repeat(32)
+  const server = new AgentdServer({
+    dataDir,
+    secret,
+    logger: { log() {} },
+    credentials: credentials({ gemini_api_key: 'gemini-stream-secret' }),
+    providerFetch: async (url, options) => {
+      assert.equal(url, 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse')
+      assert.equal(options.headers['x-goog-api-key'], 'gemini-stream-secret')
+      return new Response([
+        'data: {"candidates":[{"content":{"parts":[{"text":"part one"}]}}]}',
+        '',
+        'data: {"candidates":[{"content":{"parts":[{"text":" part two"}]}}]}',
+        '',
+      ].join('\n'), { status: 200, headers: { 'content-type': 'text/event-stream' } })
+    },
+  })
+  const { origin } = await server.start()
+  const auth = { authorization: `Bearer ${secret}`, accept: 'text/event-stream' }
+  assert.equal((await request(origin, 'PUT', '/api/v1/settings/llm', { preferredProvider: 'gemini', openaiModel: 'gpt-4o-mini', geminiModel: 'gemini-2.5-flash', openrouterModel: 'anthropic/claude-3-haiku' }, auth)).status, 200)
+  assert.equal((await request(origin, 'POST', '/api/v1/sessions', { id: 'gemini-stream', title: 'Gemini stream' }, auth)).status, 201)
+  const streamed = await rawRequest(origin, 'POST', '/api/v1/sessions/gemini-stream/generations', { requestId: 'gemini-stream-r1', content: 'stream this' }, auth)
+  assert.equal(streamed.status, 200)
+  const events = streamed.text.split(/\n\n/).filter(Boolean).map(chunk => JSON.parse(chunk.replace(/^data: /, '')))
+  assert.deepEqual(events.map(event => event.type), ['assistant.delta', 'assistant.delta', 'assistant.done'])
+  assert.deepEqual(events.slice(0, 2).map(event => event.delta), ['part one', ' part two'])
+  const history = await request(origin, 'GET', '/api/v1/sessions/gemini-stream', undefined, { authorization: `Bearer ${secret}` })
+  assert.equal(history.body.messages.at(-1).content, 'part one part two')
   await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true })
 })
 

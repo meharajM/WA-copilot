@@ -11,6 +11,8 @@ import { testGeminiConnection } from '../../../lib/llm'
 import { ModelSelect } from '../../ModelSelect'
 import { ProviderCard } from './ProviderCard'
 import { AntigravityLinkButton } from './AntigravityLinkButton'
+import { getBrowserAgentdClient } from '../../../lib/browser-agentd-client'
+import { isTauriRuntime } from '../../../lib/tauri-native-bridge'
 
 interface GeminiSettingsProps {
     available?: boolean
@@ -24,8 +26,9 @@ export function GeminiSettings({ available, models, checking, onRefresh }: Gemin
     const { antigravitySignedIn } = useAuthStore()
     const [testing, setTesting] = useState(false)
     const [testResult, setTestResult] = useState<string | undefined>()
+    const browserRuntime = typeof window !== 'undefined' && !window.electron && !isTauriRuntime()
 
-    const canTest = !!(settings.geminiApiKey || antigravitySignedIn)
+    const canTest = browserRuntime ? available === true || !!settings.geminiApiKey : !!(settings.geminiApiKey || antigravitySignedIn)
     const settingsForLLM = {
         preferredProvider: settings.preferredProvider,
         ollamaModel: settings.ollamaModel,
@@ -48,6 +51,19 @@ export function GeminiSettings({ available, models, checking, onRefresh }: Gemin
         setTesting(true)
         setTestResult(undefined)
         try {
+            if (browserRuntime) {
+                const client = getBrowserAgentdClient()
+                if (settings.geminiApiKey) {
+                    const saved = await client.setCredential('gemini_api_key', settings.geminiApiKey)
+                    if (!saved.success) throw new Error(saved.error || 'Credential could not be stored')
+                }
+                const result = await client.testProvider('gemini')
+                if (!result.success) throw new Error(result.error || 'Connection failed')
+                setTestResult(`Connection successful! Found ${result.modelCount ?? result.models?.length ?? 0} model(s).`)
+                settings.setGeminiApiKey('')
+                await onRefresh()
+                return
+            }
             const result = await testGeminiConnection(
                 settings.geminiApiKey,
                 settings.geminiModel || 'gemini-2.0-flash-lite',
@@ -82,7 +98,7 @@ export function GeminiSettings({ available, models, checking, onRefresh }: Gemin
             headerActions={
                 <>
                     <div className="h-4 w-px bg-[var(--color-border)] mx-1" />
-                    <AntigravityLinkButton variant="compact" />
+                    {!browserRuntime && <AntigravityLinkButton variant="compact" />}
                     <a
                         href="https://aistudio.google.com/app/apikey"
                         target="_blank"

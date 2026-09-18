@@ -437,7 +437,8 @@ Pass evidence:
 - API keys are stored through secure storage, not plain text inputs only.
 - In Edge/Chrome, the supported local-model path is Ollama through the authenticated loopback `agentd` service. The browser sends only validated model/base-URL settings; `agentd` reads no Ollama secret and performs the local `/api/tags` and OpenAI-compatible chat calls. Browser Ollama URLs are restricted to `http://localhost`, `http://127.0.0.1`, or `http://[::1]`.
 - Tauri does not render this product settings card. It exposes only native-host diagnostics and OS capability controls; the browser owns the LLM UI.
-- Browser UI exposes cards for Ollama, OpenAI / Compatible, and OpenRouter. Gemini and the on-device/browser provider remain Electron-only until their daemon adapters are migrated; they are not shown as selectable browser providers.
+- Browser UI exposes cards for Ollama, OpenAI / Compatible, Gemini, and OpenRouter. Gemini uses the authenticated agentd credential/test/generation routes; the API key never enters browser responses or durable renderer state.
+- Browser `auto` tries the same daemon providers in fixed order (`openai`, `openrouter`, `gemini`, then loopback Ollama); the selected model is stored in the allowlisted agentd LLM settings schema.
 - Electron UI retains its existing Ollama, OpenAI / Compatible, Gemini, OpenRouter, and on-device/browser options. `browser` remains a legacy provider value in shared settings but is filtered out of the browser selector and has no browser configuration card.
 
 Pass evidence:
@@ -548,7 +549,7 @@ Pass evidence:
 - The browser Autonomy panel does not render Electron-only WhatsApp Web automation, native backup staging, or local-retention controls. Baileys reconnect is daemon-owned and surfaced through bounded connection state; native-only controls remain in the Electron transition client until their agentd adapters are migrated.
 - Browser audit logs are downloaded as redacted NDJSON; native log-folder reveal remains Electron-only.
 - Lead Directory supports non-WhatsApp sessions in the data model, but some copy still describes it as WhatsApp-only.
-- The LLM provider selector includes `browser`, but the browser product filters that legacy option out; there is no dedicated browser-provider configuration card in the panel yet.
+- The LLM provider selector includes `browser`, but the browser product filters that legacy on-device option out. Gemini is now available in the browser through agentd; on-device/browser execution remains Electron-only until a browser-safe model/runtime adapter is migrated.
 - Resolution-audit helper text in some logs/comments still references older timing language, but the actual timeout is 10 minutes.
 
 ## QA Reporting Format
