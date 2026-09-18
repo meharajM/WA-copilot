@@ -405,7 +405,7 @@ function readMigrationFile(filename, maxBytes = null) {
       const args = [filename]
       if (Number.isSafeInteger(maxBytes) && maxBytes >= 0) args.push(String(maxBytes))
       return execFileSync(reader, args, { stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: Number.isSafeInteger(maxBytes) && maxBytes >= 0 ? maxBytes + 1 : 64 * 1024 * 1024 + 1 })
-    } catch {
+    } catch (error) {
       if (error?.status === 3) throw Object.assign(new Error('Migration file is too large'), { statusCode: 413 })
       throw Object.assign(new Error('Migration file unavailable'), { statusCode: 409 })
     }

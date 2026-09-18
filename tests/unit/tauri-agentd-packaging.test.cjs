@@ -33,8 +33,7 @@ test('Tauri package declares fixed agentd runtime, entrypoint, and keyring helpe
 
 test('Tauri dev stages sidecars before Cargo watch starts', () => {
   assert.match(packageJson.scripts['dev:tauri'], /prepare:agentd:keyring-helper.*prepare:agentd:migration-reader.*prepare:tauri:agentd.*tauri dev/)
-  assert.doesNotMatch(config.build.beforeDevCommand, /prepare:agentd|prepare:tauri:agentd/)
-  assert.equal(config.build.beforeDevCommand, 'npm run dev:tauri:web')
+  assert.match(config.build.beforeDevCommand, /prepare:agentd:keyring-helper.*prepare:agentd:migration-reader.*prepare:tauri:agentd.*dev:tauri:web/)
   assert.match(config.build.beforeBuildCommand, /prepare:agentd:keyring-helper.*prepare:agentd:migration-reader.*prepare:tauri:agentd/)
 })
 
