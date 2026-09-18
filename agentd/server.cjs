@@ -1716,7 +1716,11 @@ class AgentdServer {
       if (outbox.error !== disposition) return json(res, 409, { error: 'Draft outbox already has an operator disposition' })
       return json(res, 200, this.draftView(draft))
     }
-    this.db.prepare('UPDATE whatsapp_outbox SET error = ?, updated_at = ? WHERE draft_id = ? AND status = ?').run(disposition, Date.now(), id, 'failed')
+    const updated = this.db.prepare(`UPDATE whatsapp_outbox
+      SET error = ?, updated_at = ?
+      WHERE draft_id = ? AND status = ? AND (error IS NULL OR error NOT IN (?, ?))`)
+      .run(disposition, Date.now(), id, 'failed', OUTBOX_QUARANTINED_ERROR, OUTBOX_CANCELLED_ERROR)
+    if (updated.changes === 0) return json(res, 409, { error: 'Draft outbox changed before the operator disposition was applied' })
     return json(res, 200, this.draftView(this.db.prepare('SELECT * FROM whatsapp_drafts WHERE id = ?').get(id)))
   }
 
