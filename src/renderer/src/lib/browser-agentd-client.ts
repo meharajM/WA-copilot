@@ -59,6 +59,15 @@ export interface BrowserEmailTestResult {
   }
 }
 
+export interface BrowserMcpLifecycle {
+  runtime: 'agentd'
+  management: 'unavailable'
+  execution: 'unavailable'
+  reason: string
+  transports: string[]
+  tools: string[]
+}
+
 type Json = Record<string, unknown> | unknown[]
 
 const isRecord = (value: unknown): value is Record<string, unknown> => (
@@ -85,6 +94,19 @@ const readNativeHealth = (value: unknown): NativeHealth => {
     ...(typeof value.queueDepth === 'number' ? { queueDepth: value.queueDepth } : {}),
     ...(typeof value.events === 'number' ? { events: value.events } : {}),
   }
+}
+
+const readMcpLifecycle = (value: unknown): BrowserMcpLifecycle => {
+  if (!isRecord(value)
+    || value.runtime !== 'agentd'
+    || value.management !== 'unavailable'
+    || value.execution !== 'unavailable'
+    || typeof value.reason !== 'string'
+    || !Array.isArray(value.transports) || value.transports.some(item => typeof item !== 'string')
+    || !Array.isArray(value.tools) || value.tools.some(item => typeof item !== 'string')) {
+    throw new Error('Invalid agentd MCP lifecycle response')
+  }
+  return value as unknown as BrowserMcpLifecycle
 }
 
 const readContinuityStatus = (value: unknown): BrowserContinuityStatus => {
@@ -390,6 +412,7 @@ export interface BrowserAgentdClient extends ChatClient {
   hasCredential(key: CredentialKey): Promise<NativeResult & { exists: boolean }>
   deleteCredential(key: CredentialKey): Promise<NativeResult>
   testProvider(provider: 'openai' | 'openrouter'): Promise<ProviderTestResult>
+  getMcpLifecycle(): Promise<BrowserMcpLifecycle>
 }
 
 export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = {}): BrowserAgentdClient {
@@ -443,6 +466,7 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
   }
 
   const status = async (): Promise<NativeHealth> => readNativeHealth(await request('/api/v1/status'))
+  const getMcpLifecycle = async (): Promise<BrowserMcpLifecycle> => readMcpLifecycle(await request('/api/v1/mcp'))
   const getContinuityStatus = async (): Promise<BrowserContinuityStatus> => readContinuityStatus(await request('/api/v1/continuity/status'))
 
   const readiness = async (): Promise<'ready' | 'pairing' | 'unavailable'> => {
@@ -864,6 +888,7 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     hasCredential,
     deleteCredential,
     testProvider,
+    getMcpLifecycle,
   }
 }
 

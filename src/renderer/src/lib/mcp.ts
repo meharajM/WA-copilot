@@ -53,6 +53,12 @@ export function findServerForTool(toolName: string): MCPServer | null {
   return useMcpStore.getState().findServerForTool(toolName);
 }
 
+/** Browser MCP currently exposes lifecycle metadata only; Electron keeps full MCP ownership. */
+export async function getBrowserMcpLifecycle() {
+  if (!isBrowserProduct()) return null;
+  return getBrowserAgentdClient().getMcpLifecycle();
+}
+
 // Logging utility for renderer process
 function logMcpRenderer(
   level: "info" | "warn" | "error",
@@ -253,6 +259,14 @@ export async function executeToolCall(
   // Built-in knowledge routes are daemon-owned in the browser even if a stale
   // Electron MCP schema is still present in persisted renderer state.
   const server = isBrowserProduct() && (toolName.startsWith('rag_') || toolName.startsWith('memory_')) ? null : findServerForTool(toolName);
+  if (isBrowserProduct() && server) {
+    try {
+      const lifecycle = await getBrowserMcpLifecycle();
+      return { result: null, error: lifecycle?.reason || 'Browser MCP tool execution is unavailable' };
+    } catch (error) {
+      return { result: null, error: `Browser MCP adapter unavailable: ${error instanceof Error ? error.message : String(error)}` };
+    }
+  }
   if (!server) {
     // FALLBACK: Check if it's an internal memory tool
     if (toolName.startsWith('memory_')) {

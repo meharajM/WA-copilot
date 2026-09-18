@@ -396,4 +396,20 @@ describe('browser agentd client', () => {
     const toolCall = fetcher.mock.calls.find(([input]) => String(input).endsWith('/api/v1/memory/tools'))
     expect(new Headers(toolCall?.[1]?.headers).get('x-csrf-token')).toBe('csrf-token')
   })
+
+  it('reads authenticated MCP lifecycle metadata', async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
+      if (url.endsWith('/api/v1/mcp')) return response({
+        runtime: 'agentd', management: 'unavailable', execution: 'unavailable',
+        reason: 'Arbitrary MCP server management and tool execution are not migrated to agentd',
+        transports: [], tools: [],
+      })
+      return response({ success: true })
+    })
+    const client = createBrowserAgentdClient({ origin: 'http://127.0.0.1:4141', fetch: fetcher })
+    await client.pair('123456')
+    await expect(client.getMcpLifecycle()).resolves.toMatchObject({ runtime: 'agentd', execution: 'unavailable' })
+  })
 })

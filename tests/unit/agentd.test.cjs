@@ -423,3 +423,21 @@ test('agentd serves the browser bundle with executable asset MIME types', async 
   fs.rmSync(dataDir, { recursive: true, force: true })
   fs.rmSync(uiRoot, { recursive: true, force: true })
 })
+
+test('agentd exposes authenticated MCP lifecycle metadata without enabling execution', async () => {
+  const dataDir = makeTempDir('aica-agentd-mcp-lifecycle-')
+  const server = new AgentdServer({ dataDir, secret: 's'.repeat(32), pairingCode: '246810', logger: { log() {} } })
+  const { origin } = await server.start()
+  assert.equal((await request(origin, 'GET', '/api/v1/mcp')).status, 401)
+  const response = await request(origin, 'GET', '/api/v1/mcp', undefined, { authorization: `Bearer ${'s'.repeat(32)}` })
+  assert.deepEqual(response.body, {
+    runtime: 'agentd',
+    management: 'unavailable',
+    execution: 'unavailable',
+    reason: 'Arbitrary MCP server management and tool execution are not migrated to agentd',
+    transports: [],
+    tools: [],
+  })
+  await server.stop()
+  fs.rmSync(dataDir, { recursive: true, force: true })
+})

@@ -132,6 +132,14 @@ const EMAIL_SETTINGS_DEFAULTS = Object.freeze({
 })
 
 const EMAIL_PROBE_TIMEOUT_MS = 10 * 1000
+const MCP_LIFECYCLE = Object.freeze({
+  runtime: 'agentd',
+  management: 'unavailable',
+  execution: 'unavailable',
+  reason: 'Arbitrary MCP server management and tool execution are not migrated to agentd',
+  transports: [],
+  tools: [],
+})
 
 function createProtocolReader(socket) {
   let buffer = ''
@@ -659,6 +667,10 @@ class AgentdServer {
     if (url.pathname === '/api/v1/status' && req.method === 'GET') {
       this.authorize(req)
       return json(res, 200, { runtime: 'agentd', paused: this.getState('paused', 'true') === 'true', queueDepth: this.db.prepare("SELECT COUNT(*) AS count FROM inbound_events WHERE status IN ('queued','processing')").get().count, events: this.db.prepare('SELECT COUNT(*) AS count FROM inbound_events').get().count })
+    }
+    if (url.pathname === '/api/v1/mcp' && req.method === 'GET') {
+      this.authorize(req)
+      return json(res, 200, MCP_LIFECYCLE)
     }
     if (url.pathname === '/api/v1/continuity/status' && req.method === 'GET') return this.continuityStatus(req, res)
     if (url.pathname === '/api/v1/continuity/preview' && req.method === 'POST') return this.continuityPreview(req, res)
@@ -2279,4 +2291,4 @@ async function readProviderStream(response, onDelta) {
   return content
 }
 
-module.exports = { AgentdServer, PAIRING_TTL_MS, resolveDataDir, parseWhatsAppSettings, WHATSAPP_SETTINGS_DEFAULTS, parseOllamaSettings, OLLAMA_SETTINGS_DEFAULTS, parseProductPreferences, PRODUCT_PREFERENCES_DEFAULTS }
+module.exports = { AgentdServer, MCP_LIFECYCLE, PAIRING_TTL_MS, resolveDataDir, parseWhatsAppSettings, WHATSAPP_SETTINGS_DEFAULTS, parseOllamaSettings, OLLAMA_SETTINGS_DEFAULTS, parseProductPreferences, PRODUCT_PREFERENCES_DEFAULTS }
