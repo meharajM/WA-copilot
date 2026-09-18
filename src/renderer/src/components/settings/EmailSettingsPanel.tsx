@@ -128,6 +128,7 @@ export function EmailSettingsPanel() {
   const [oauthStatus, setOauthStatus] = useState<{ signedIn: boolean; email: string | null }>({ signedIn: false, email: null })
   const [oauthBusy, setOauthBusy] = useState(false)
 
+  const browserRuntime = !isElectron()
   const readyForAuth = useMemo(() => normalizeEmail(localEmail).includes('@'), [localEmail])
   const wantsGmailOAuth = localProvider === 'gmail-api' && localGmailAuthMode === 'google-oauth'
   const readyForVerify = useMemo(() => {
@@ -139,7 +140,8 @@ export function EmailSettingsPanel() {
     return isElectron() ? localPassword.trim().length > 0 : true
   }, [localPassword, oauthStatus.signedIn, wantsGmailOAuth])
   const canGoLive = readyForAuth && readyForVerify
-  const isVerified = testState.status === 'success' || (config.enabled && connectionState.status === 'connected')
+  const transportVerified = testState.status === 'success' || (config.enabled && connectionState.status === 'connected')
+  const isVerified = transportVerified && !browserRuntime
 
   useEffect(() => {
     setLocalProvider(config.provider)
@@ -348,8 +350,10 @@ export function EmailSettingsPanel() {
       <div className="bg-[var(--color-brand-teal)]/10 border border-[var(--color-brand-teal)]/30 rounded-xl p-4 flex gap-3">
         <Sparkles size={18} className="text-[var(--color-brand-teal)] shrink-0 mt-0.5" />
         <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed">
-          <strong>Client-side setup:</strong> choose a mailbox preset, use an app password by default, test the local IMAP/SMTP bridge, then go live.
-          Keep Draft Mode on and Auto-Reply off until verification is complete.
+          {browserRuntime
+            ? <><strong>Browser setup:</strong> agentd stores mailbox settings and credentials, then performs a bounded secure-transport probe. The background mailbox worker is not migrated yet, so browser mode stays fail-closed for delivery.</>
+            : <><strong>Client-side setup:</strong> choose a mailbox preset, use an app password by default, test the local IMAP/SMTP bridge, then go live.</>}
+          {' '}Keep Draft Mode on and Auto-Reply off until verification is complete.
         </p>
       </div>
 
@@ -376,7 +380,9 @@ export function EmailSettingsPanel() {
         </div>
         <p className="text-xs text-[var(--color-text-dim)]">
           {!isVerified
-            ? 'Run Test Connection to complete verification and unlock Go Live.'
+            ? (browserRuntime
+              ? (transportVerified ? 'Transport verified. Browser delivery remains disabled until the agentd mailbox worker is migrated.' : 'Run Test Connection to verify the secure transport. Browser delivery remains disabled until the agentd mailbox worker is migrated.')
+              : 'Run Test Connection to complete verification and unlock Go Live.')
             : 'Verified. You can now safely go live.'}
         </p>
 
@@ -444,7 +450,9 @@ export function EmailSettingsPanel() {
         {localProvider === 'gmail-api' && (
           <div className="space-y-3 pt-2 border-t border-[var(--color-border)]">
             <p className="text-xs text-[var(--color-text-dim)]">
-              Gmail stays client-side here. The recommended path is an app password over IMAP/SMTP.
+              {browserRuntime
+                ? 'Browser mode stores Gmail settings in agentd. The recommended path is an app password over the future agentd IMAP/SMTP worker.'
+                : 'Gmail stays client-side here. The recommended path is an app password over IMAP/SMTP.'}
             </p>
             <p className="text-xs text-[var(--color-text-dim)]">
               Google sign-in remains optional if runtime OAuth is configured, but it is not required for the local bridge.
@@ -459,7 +467,7 @@ export function EmailSettingsPanel() {
                 }`}
               >
                 <p className="text-sm font-semibold text-[var(--color-text-primary)]">App Password</p>
-                <p className="mt-1 text-xs text-[var(--color-text-dim)]">Recommended for client-side QA and production bring-up.</p>
+                <p className="mt-1 text-xs text-[var(--color-text-dim)]">{browserRuntime ? 'Stores a write-only credential for agentd transport verification.' : 'Recommended for client-side QA and production bring-up.'}</p>
               </button>
               <button
                 onClick={() => setLocalGmailAuthMode('google-oauth')}
@@ -643,7 +651,7 @@ export function EmailSettingsPanel() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm text-[var(--color-text-primary)] font-medium">Auto-Reply</p>
-              <p className="text-xs text-[var(--color-text-dim)]">Only enable after successful testing</p>
+              <p className="text-xs text-[var(--color-text-dim)]">{browserRuntime ? 'Controls whether agentd inbound events are consumed; live mailbox polling is not migrated yet.' : 'Only enable after successful testing'}</p>
             </div>
             <button onClick={() => setAutoReplyMode(!config.autoReplyMode)} className="text-[var(--color-brand-teal)]">
               {config.autoReplyMode ? <ToggleRight size={28} /> : <ToggleLeft size={28} />}
@@ -653,7 +661,7 @@ export function EmailSettingsPanel() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm text-[var(--color-text-primary)] font-medium">Enable Email Channel</p>
-              <p className="text-xs text-[var(--color-text-dim)]">Turns on background email processing</p>
+              <p className="text-xs text-[var(--color-text-dim)]">{browserRuntime ? 'Stores desired state; the browser worker remains fail-closed until agentd polling is migrated.' : 'Turns on background email processing'}</p>
             </div>
             <button onClick={() => setEnabled(!config.enabled)} className={config.enabled ? 'text-green-400' : 'text-[var(--color-text-muted)]'}>
               {config.enabled ? <ToggleRight size={28} /> : <ToggleLeft size={28} />}
@@ -686,7 +694,9 @@ export function EmailSettingsPanel() {
 
         <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg p-3 text-xs text-[var(--color-text-dim)] flex gap-2">
           <Info size={14} className="shrink-0 mt-0.5" />
-          This email channel runs as a local client connector. No hosted mail server is required for Gmail, Outlook, or other IMAP/SMTP providers.
+          {browserRuntime
+            ? 'Browser mode uses authenticated local agentd. It does not run mailbox polling or delivery until the daemon adapter is migrated; no hosted mail server is required for Gmail, Outlook, or other IMAP/SMTP providers.'
+            : 'This email channel runs as a local client connector. No hosted mail server is required for Gmail, Outlook, or other IMAP/SMTP providers.'}
         </div>
       </Card>
     </div>

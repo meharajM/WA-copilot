@@ -239,6 +239,7 @@ Pass evidence:
 - Browser Email settings never use renderer `localStorage` and app-password values are write-only through the authenticated daemon credential route; the browser cannot read them back.
 - Browser email drafts are persisted as bounded, authenticated `agentd` records. Reloading Edge/Chrome rehydrates the same pending/rejected/approved history; the browser does not use renderer `localStorage` as a second draft authority.
 - On the first browser startup after this migration, a legacy `aica-email-drafts-v1` renderer record is validated and handed off to agentd; the legacy key is removed only after every draft is accepted, so malformed or partially migrated data remains recoverable for owner review.
+- In browser mode, enabling the Email Channel persists the desired state and controls consumption of inbound events already queued in agentd; it does not start IMAP/Gmail polling or SMTP delivery while the daemon mailbox worker is unavailable.
 
 ### Provider and auth behavior
 
@@ -255,7 +256,7 @@ Pass evidence:
 
 Pass evidence:
 
-- Gmail app-password mode can test and start without requiring OAuth.
+- Electron Gmail app-password mode can test and start without requiring OAuth. Browser Gmail app-password mode can persist credentials and run the bounded transport probe, but cannot start the mailbox worker yet.
 - Gmail Google sign-in mode fails cleanly when OAuth is not configured or not signed in.
 
 Browser parity boundary:
@@ -282,7 +283,7 @@ Pass evidence:
 
 ### Safety and reply behavior
 
-- Test connection starts and stops the email channel to verify connectivity.
+- Electron `Test Connection` starts and stops the legacy email channel to verify connectivity. Browser `Test Connection` only runs the authenticated agentd secure-transport probe; it must not claim that mailbox polling or delivery is active.
 - Drafts are the safe default.
 - Sensitive topics such as refunds, legal, disputes, fraud, and account-deletion style requests escalate.
 - Medium-confidence replies become drafts.
@@ -324,9 +325,10 @@ Pass evidence:
 - Users can:
   - add knowledge
   - search documents by name
-  - open the original file
+  - open the original file in Electron when a native path exists
   - delete indexed knowledge
 - Electron ingestion uses the internal RAG tool path. Browser ingestion uses the authenticated agentd knowledge route and stores bounded text content in the daemon-owned SQLite database; the browser never sends an arbitrary native path.
+- Browser-indexed `browser://knowledge/...` entries do not expose an original native file path or an open-in-Explorer action. Binary conversion and native-file reveal remain explicit unsupported states until a bounded native capability is migrated.
 
 Pass evidence:
 
@@ -452,7 +454,7 @@ Pass evidence:
 ## Audit Logs
 
 - Audit Logs show the local log path.
-- A reveal/open-folder action is available.
+- Electron exposes a reveal/open-folder action. Browser mode shows an agentd-managed label and downloads a redacted NDJSON audit export instead of exposing a native database path.
 - The UI states logs are local and append-only.
 - In the browser product, audit entries are redacted before durable SQLite persistence in `agentd` and can be downloaded as NDJSON; browser UI never receives a native database path.
 
@@ -489,7 +491,9 @@ Pass evidence:
 
 ## Known Current Limitations
 
-- Email inbound automation currently depends on `Auto-Reply` being on. This is stricter than a passive "monitor-only" email mode.
+- Browser Email inbound automation currently depends on `Enable Email Channel` and `Auto-Reply` being on, and only consumes events already queued in agentd. The browser does not poll IMAP/Gmail or deliver SMTP mail until the daemon mailbox worker is migrated. This is stricter than a passive "monitor-only" email mode.
+- Browser knowledge imports are text-only and cannot open the original native file after indexing; Electron retains native parser and file-reveal behavior.
+- Browser audit logs are downloaded as redacted NDJSON; native log-folder reveal remains Electron-only.
 - Lead Directory supports non-WhatsApp sessions in the data model, but some copy still describes it as WhatsApp-only.
 - The LLM provider selector includes `browser`, but there is no dedicated browser-provider configuration card in the panel yet.
 - Resolution-audit helper text in some logs/comments still references older timing language, but the actual timeout is 10 minutes.
