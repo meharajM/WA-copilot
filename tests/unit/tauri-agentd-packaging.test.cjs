@@ -85,3 +85,11 @@ test('Windows CI verifies prepared sidecar and browser resources before packagin
   assert.ok(sidecar < resourceGate, 'agentd sidecar must be prepared before resource verification')
   assert.ok(resourceGate < bundle, 'resource verification must run before packaging')
 })
+
+test('Windows CI runs Credential Manager runtime smoke after preparing the helper', () => {
+  const helper = windowsWorkflow.indexOf('npm run prepare:agentd:keyring-helper')
+  const runtimeSmoke = windowsWorkflow.indexOf('node --test tests/unit/windows-keyring-runtime.test.cjs')
+  assert.notEqual(helper, -1)
+  assert.notEqual(runtimeSmoke, -1)
+  assert.ok(helper < runtimeSmoke, 'Credential Manager smoke must use the prepared helper')
+})

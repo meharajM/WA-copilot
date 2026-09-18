@@ -6,6 +6,8 @@ Updated: 2026-09-18
 
 Primary release platform: Windows. Every new native boundary must have a Windows implementation and CI/package evidence before it can be called production-ready; macOS smoke evidence is supplemental.
 
+Current release gate: the Windows package must stage `aica-keyring-helper.exe` and run the packaged Credential Manager write/read/exists/delete smoke before native credential continuity can be called verified. The smoke uses a scoped throwaway secret and never prints its bytes; a skipped non-Windows run is not evidence for the Windows gate.
+
 ## Goal
 
 Move the complete WA-copilot product to a lightweight browser UI backed by one local `agentd` service, while preserving every currently supported user workflow and its data. Windows users open the product in their normal browser (Edge/Chrome); no second desktop product UI is required.
