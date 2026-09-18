@@ -17,6 +17,9 @@ describe('tauri native bridge', () => {
       'credential_delete',
       'select_file',
       'select_folder',
+      'continuity_preview',
+      'continuity_import',
+      'continuity_rollback',
     ])
   })
 
@@ -88,6 +91,22 @@ describe('tauri native bridge', () => {
     expect(invoke).toHaveBeenCalledWith(TAURI_COMMANDS.credentialExists, { key: 'whatsapp_cloud_access_token' })
   })
 
+  it('keeps continuity actions typed and native-only', async () => {
+    const invoke = vi.fn(async (command: string) => {
+      if (command === TAURI_COMMANDS.continuityPreview) return {
+        previewId: 'preview-id', createdAt: 1, source: 'electron', target: 'agentd-staging',
+        entries: [], secretsExcluded: true, requiresOwnerConfirmation: true, requiresReauthentication: false,
+      }
+      if (command === TAURI_COMMANDS.continuityImport) return { migrationId: 'migration-id', state: 'staged', entries: [], secretsExcluded: true, liveDataChanged: false }
+      return { migrationId: 'migration-id', state: 'rolled-back' }
+    })
+    const bridge = createTauriNativeBridge({ invoke })
+    await expect(bridge.continuityPreview('C:\\Users\\owner\\AppData\\Roaming\\AIConsumerAgent')).resolves.toMatchObject({ target: 'agentd-staging' })
+    await expect(bridge.continuityImport('preview-id')).resolves.toMatchObject({ liveDataChanged: false })
+    await expect(bridge.continuityRollback('migration-id')).resolves.toMatchObject({ state: 'rolled-back' })
+    expect(invoke).toHaveBeenCalledWith(TAURI_COMMANDS.continuityPreview, { sourceRoot: 'C:\\Users\\owner\\AppData\\Roaming\\AIConsumerAgent' })
+  })
+
   it('treats only null as picker cancellation', async () => {
     const invoke = vi.fn(async () => null as unknown)
     const bridge = createTauriNativeBridge({ invoke })
@@ -98,4 +117,5 @@ describe('tauri native bridge', () => {
     invoke.mockResolvedValueOnce({ path: '/tmp/file.txt' })
     await expect(bridge.selectFile()).rejects.toThrow('Invalid native selection response')
   })
+
 })

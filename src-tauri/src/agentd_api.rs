@@ -2,7 +2,7 @@ use std::{
     env,
     fs::{File, OpenOptions},
     io::Read,
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::Duration,
 };
 
@@ -664,6 +664,49 @@ pub struct ChatGenerationResponse {
     pub message: ChatMessage,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ContinuityEntry {
+    pub id: String,
+    pub source: String,
+    pub target: String,
+    pub format: String,
+    pub schema_version: String,
+    pub requires_reauthentication: bool,
+    pub byte_size: u64,
+    pub sha256: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ContinuityPreview {
+    pub preview_id: String,
+    pub created_at: u64,
+    pub source: String,
+    pub target: String,
+    pub entries: Vec<ContinuityEntry>,
+    pub secrets_excluded: bool,
+    pub requires_owner_confirmation: bool,
+    pub requires_reauthentication: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ContinuityImport {
+    pub migration_id: String,
+    pub state: String,
+    pub entries: Vec<ContinuityEntry>,
+    pub secrets_excluded: bool,
+    pub live_data_changed: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ContinuityRollback {
+    pub migration_id: String,
+    pub state: String,
+}
+
 #[derive(Clone, Copy)]
 enum CredentialKey {
     Openai,
@@ -717,6 +760,9 @@ impl Provider {
 #[derive(Clone)]
 enum Route {
     Status,
+    ContinuityPreview,
+    ContinuityImport,
+    ContinuityRollback,
     LlmSettingsGet,
     LlmSettingsPut,
     WhatsAppSettingsGet,
@@ -746,6 +792,9 @@ impl Route {
             Self::LlmSettingsPut | Self::WhatsAppSettingsPut => Method::PUT,
             Self::ChatSessionUpdate(_) => Method::PATCH,
             Self::CredentialSet(_)
+            | Self::ContinuityPreview
+            | Self::ContinuityImport
+            | Self::ContinuityRollback
             | Self::ProviderTest(_)
             | Self::ChatSessionsCreate
             | Self::ChatMessages(_)
@@ -757,6 +806,9 @@ impl Route {
     fn path(self) -> String {
         match self {
             Self::Status => "/api/v1/status".into(),
+            Self::ContinuityPreview => "/api/v1/continuity/preview".into(),
+            Self::ContinuityImport => "/api/v1/continuity/import".into(),
+            Self::ContinuityRollback => "/api/v1/continuity/rollback".into(),
             Self::LlmSettingsGet | Self::LlmSettingsPut => "/api/v1/settings/llm".into(),
             Self::WhatsAppSettingsGet | Self::WhatsAppSettingsPut => {
                 "/api/v1/settings/whatsapp".into()
@@ -820,6 +872,38 @@ impl AgentdClient {
 
     pub async fn status(&self) -> Result<AgentdStatus, ()> {
         self.request(Route::Status, None).await
+    }
+
+    pub async fn continuity_preview(&self, source_root: String) -> Result<ContinuityPreview, ()> {
+        let source = Path::new(&source_root).canonicalize().map_err(|_| ())?;
+        if !source.is_dir() || source_root.len() > MAX_WORKSPACE_PATH_BYTES * 4 {
+            return Err(());
+        }
+        let target = self.data_dir.as_ref().map_err(|_| ())?.canonicalize().map_err(|_| ())?;
+        if source == target || source.starts_with(&target) || target.starts_with(&source) {
+            return Err(());
+        }
+        let body = serde_json::to_vec(&serde_json::json!({ "sourceRoot": source })).map_err(|_| ())?;
+        self.request(Route::ContinuityPreview, Some(&body)).await
+    }
+
+    pub async fn continuity_import(&self, preview_id: &str) -> Result<ContinuityImport, ()> {
+        if preview_id.len() != 36 {
+            return Err(());
+        }
+        let body = serde_json::to_vec(&serde_json::json!({
+            "previewId": preview_id,
+            "ownerConfirmation": "IMPORT_ELECTRON_DATA",
+        })).map_err(|_| ())?;
+        self.request(Route::ContinuityImport, Some(&body)).await
+    }
+
+    pub async fn continuity_rollback(&self, migration_id: &str) -> Result<ContinuityRollback, ()> {
+        if migration_id.len() != 36 {
+            return Err(());
+        }
+        let body = serde_json::to_vec(&serde_json::json!({ "migrationId": migration_id })).map_err(|_| ())?;
+        self.request(Route::ContinuityRollback, Some(&body)).await
     }
 
     pub async fn llm_settings(&self) -> Result<LlmSettings, ()> {

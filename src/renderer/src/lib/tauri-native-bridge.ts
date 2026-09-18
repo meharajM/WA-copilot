@@ -18,6 +18,9 @@ export const TAURI_COMMANDS = {
   credentialDelete: 'credential_delete',
   selectFile: 'select_file',
   selectFolder: 'select_folder',
+  continuityPreview: 'continuity_preview',
+  continuityImport: 'continuity_import',
+  continuityRollback: 'continuity_rollback',
 } as const
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>
@@ -108,12 +111,69 @@ const readSelection = (value: unknown): string | null => {
   throw new Error('Invalid native selection response')
 }
 
+export interface NativeContinuityEntry {
+  id: string
+  source: 'electron'
+  target: 'staged-agentd'
+  format: 'json' | 'sqlite'
+  schemaVersion: string
+  requiresReauthentication: boolean
+  byteSize: number
+  sha256: string
+}
+
+export interface NativeContinuityPreview {
+  previewId: string
+  createdAt: number
+  source: 'electron'
+  target: 'agentd-staging'
+  entries: NativeContinuityEntry[]
+  secretsExcluded: true
+  requiresOwnerConfirmation: true
+  requiresReauthentication: boolean
+}
+
+export interface NativeContinuityImport {
+  migrationId: string
+  state: 'staged'
+  entries: NativeContinuityEntry[]
+  secretsExcluded: true
+  liveDataChanged: false
+}
+
+export interface NativeContinuityRollback {
+  migrationId: string
+  state: 'rolled-back'
+}
+
+const readContinuityPreview = (value: unknown): NativeContinuityPreview => {
+  if (!isRecord(value) || typeof value.previewId !== 'string' || typeof value.createdAt !== 'number'
+    || value.source !== 'electron' || value.target !== 'agentd-staging' || value.secretsExcluded !== true
+    || value.requiresOwnerConfirmation !== true || typeof value.requiresReauthentication !== 'boolean' || !Array.isArray(value.entries)) {
+    throw new Error('Invalid continuity preview response')
+  }
+  return value as unknown as NativeContinuityPreview
+}
+
+const readContinuityImport = (value: unknown): NativeContinuityImport => {
+  if (!isRecord(value) || typeof value.migrationId !== 'string' || value.state !== 'staged' || value.secretsExcluded !== true || value.liveDataChanged !== false || !Array.isArray(value.entries)) throw new Error('Invalid continuity staging response')
+  return value as unknown as NativeContinuityImport
+}
+
+const readContinuityRollback = (value: unknown): NativeContinuityRollback => {
+  if (!isRecord(value) || typeof value.migrationId !== 'string' || value.state !== 'rolled-back') throw new Error('Invalid continuity rollback response')
+  return value as unknown as NativeContinuityRollback
+}
+
 export const createTauriNativeBridge = (
   dependencies: TauriBridgeDependencies = defaultDependencies,
 ): NativeBridge & {
   appVersion: () => Promise<string>
   agentdOrigin: () => Promise<string>
   openBrowserWorkspace: () => Promise<NativeResult>
+  continuityPreview: (sourceRoot: string) => Promise<NativeContinuityPreview>
+  continuityImport: (previewId: string) => Promise<NativeContinuityImport>
+  continuityRollback: (migrationId: string) => Promise<NativeContinuityRollback>
 } => {
   const invoke = async <T>(command: string, args?: Record<string, unknown>): Promise<T> => (
     dependencies.invoke<T>(command, args)
@@ -147,6 +207,19 @@ export const createTauriNativeBridge = (
       return failed(error instanceof Error ? error.message : error, 'Could not open the browser workspace')
     }
   }
+
+  const continuityPreview = async (sourceRoot: string): Promise<NativeContinuityPreview> => {
+    if (!sourceRoot.trim()) throw new Error('Electron data folder is required')
+    return readContinuityPreview(await invoke<unknown>(TAURI_COMMANDS.continuityPreview, { sourceRoot }))
+  }
+
+  const continuityImport = async (previewId: string): Promise<NativeContinuityImport> => {
+    return readContinuityImport(await invoke<unknown>(TAURI_COMMANDS.continuityImport, { previewId }))
+  }
+
+  const continuityRollback = async (migrationId: string): Promise<NativeContinuityRollback> => (
+    readContinuityRollback(await invoke<unknown>(TAURI_COMMANDS.continuityRollback, { migrationId }))
+  )
 
   const selectFile = async (options?: FileSelectionOptions): Promise<string | null> => {
     try {
@@ -203,6 +276,9 @@ export const createTauriNativeBridge = (
     appVersion,
     agentdOrigin,
     openBrowserWorkspace,
+    continuityPreview,
+    continuityImport,
+    continuityRollback,
   }
 }
 

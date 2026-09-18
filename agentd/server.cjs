@@ -800,8 +800,8 @@ class AgentdServer {
     const body = await readBody(req, 16 * 1024)
     const preview = this.continuityPreviews.get(body.previewId)
     if (!preview) return json(res, 404, { error: 'Migration preview expired' })
-    if (body.ownerConfirmation !== 'IMPORT_ELECTRON_DATA' || body.reauthenticated !== true) {
-      return json(res, 403, { error: 'Fresh owner confirmation and reauthentication required' })
+    if (body.ownerConfirmation !== 'IMPORT_ELECTRON_DATA') {
+      return json(res, 403, { error: 'Explicit owner confirmation required' })
     }
     const result = continuityMigration.importPreview(preview, this.dataDir)
     this.continuityPreviews.delete(preview.previewId)

@@ -16,7 +16,7 @@ use std::{
 #[cfg(windows)]
 use std::env;
 
-use agentd_api::{AgentdClient, CredentialExistsResult, NativeHealth, NativeResult};
+use agentd_api::{AgentdClient, ContinuityImport, ContinuityPreview, ContinuityRollback, CredentialExistsResult, NativeHealth, NativeResult};
 use serde::Deserialize;
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder},
@@ -106,6 +106,30 @@ async fn credential_delete(
     key: String,
 ) -> Result<NativeResult, String> {
     Ok(client.delete_credential(&key).await)
+}
+
+#[tauri::command]
+async fn continuity_preview(
+    client: State<'_, AgentdClient>,
+    source_root: String,
+) -> Result<ContinuityPreview, String> {
+    client.continuity_preview(source_root).await.map_err(|_| "Continuity preview failed".into())
+}
+
+#[tauri::command]
+async fn continuity_import(
+    client: State<'_, AgentdClient>,
+    preview_id: String,
+) -> Result<ContinuityImport, String> {
+    client.continuity_import(&preview_id).await.map_err(|_| "Continuity staging failed".into())
+}
+
+#[tauri::command]
+async fn continuity_rollback(
+    client: State<'_, AgentdClient>,
+    migration_id: String,
+) -> Result<ContinuityRollback, String> {
+    client.continuity_rollback(&migration_id).await.map_err(|_| "Continuity rollback failed".into())
 }
 
 #[tauri::command]
@@ -348,6 +372,9 @@ fn main() {
             credential_set,
             credential_exists,
             credential_delete,
+            continuity_preview,
+            continuity_import,
+            continuity_rollback,
             select_file,
             select_folder
         ])

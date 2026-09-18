@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { CredentialKey, NativeHealth } from '../../shared/native-bridge'
-import { tauriNativeBridge } from './lib/tauri-native-bridge'
+import { tauriNativeBridge, type NativeContinuityPreview } from './lib/tauri-native-bridge'
 
 const CREDENTIALS: Array<{ key: CredentialKey; label: string }> = [
   { key: 'openai_api_key', label: 'OpenAI key' },
@@ -21,6 +21,8 @@ export default function NativeHostDiagnostics() {
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const [continuityPreview, setContinuityPreview] = useState<NativeContinuityPreview | null>(null)
+  const [migrationId, setMigrationId] = useState<string | null>(null)
 
   const refresh = async () => {
     try { setHealth(await tauriNativeBridge.health()) }
@@ -64,6 +66,40 @@ export default function NativeHostDiagnostics() {
     finally { setBusy(null) }
   }
 
+  const previewContinuity = async () => {
+    setBusy('continuity-preview'); setError(null); setNotice(null)
+    try {
+      const sourceRoot = await tauriNativeBridge.selectFolder()
+      if (!sourceRoot) { setNotice('Selection canceled'); return }
+      const preview = await tauriNativeBridge.continuityPreview(sourceRoot)
+      setContinuityPreview(preview)
+      setNotice(`Validated ${preview.entries.length} non-secret Electron store${preview.entries.length === 1 ? '' : 's'} for isolated staging`)
+    } catch (reason) { setError(messageFrom(reason, 'Continuity preview unavailable')) }
+    finally { setBusy(null) }
+  }
+
+  const stageContinuity = async () => {
+    if (!continuityPreview) return
+    setBusy('continuity-import'); setError(null); setNotice(null)
+    try {
+      const result = await tauriNativeBridge.continuityImport(continuityPreview.previewId)
+      setMigrationId(result.migrationId)
+      setNotice('Validated data staged. Live agentd data was not changed.')
+    } catch (reason) { setError(messageFrom(reason, 'Continuity staging unavailable')) }
+    finally { setBusy(null) }
+  }
+
+  const rollbackContinuity = async () => {
+    if (!migrationId) return
+    setBusy('continuity-rollback'); setError(null); setNotice(null)
+    try {
+      await tauriNativeBridge.continuityRollback(migrationId)
+      setMigrationId(null); setContinuityPreview(null)
+      setNotice('Staged continuity snapshot rolled back')
+    } catch (reason) { setError(messageFrom(reason, 'Continuity rollback unavailable')) }
+    finally { setBusy(null) }
+  }
+
   const healthy = health.status === 'ready'
   return (
     <main className="pilot-shell">
@@ -89,6 +125,12 @@ export default function NativeHostDiagnostics() {
           <p className="pilot-copy">Check whether a provider credential exists. Values never enter this window.</p>
           <div className="pilot-form-row"><label htmlFor="native-credential">Credential</label><select id="native-credential" value={credential} onChange={(event) => { setCredential(event.target.value as CredentialKey); setCredentialState('unknown') }} disabled={busy !== null}>{CREDENTIALS.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}</select></div>
           <div className="pilot-actions"><button type="button" className="pilot-button pilot-button-primary" onClick={() => void checkCredential()} disabled={busy !== null}>{busy === 'credential' ? 'Checking…' : 'Check presence'}</button><span className="pilot-key-state" role="status">{credentialState === 'present' ? 'Stored' : credentialState === 'missing' ? 'Not stored' : 'Not checked'}</span></div>
+        </article>
+        <article className="pilot-panel">
+          <div className="pilot-panel-heading"><div><p className="pilot-label">04 / continuity</p><h2>Stage Electron data</h2></div><span className="pilot-index">OWNER ACTION</span></div>
+          <p className="pilot-copy">Preview and stage only allowlisted, non-secret stores. This does not replace live agentd data; credentials require separate reauthentication.</p>
+          <div className="pilot-actions"><button type="button" className="pilot-button pilot-button-primary" onClick={() => void previewContinuity()} disabled={busy !== null}>{busy === 'continuity-preview' ? 'Validating…' : 'Preview Electron data'}</button></div>
+          {continuityPreview && <div className="pilot-continuity" aria-live="polite"><p>{continuityPreview.entries.map(entry => `${entry.id} (${entry.byteSize} bytes)`).join(' · ')}</p><p className="pilot-copy">Review this list before staging. Credential and live-database cutover remain separate reauthentication-gated work.</p><div className="pilot-actions"><button type="button" className="pilot-button pilot-button-primary" onClick={() => void stageContinuity()} disabled={busy !== null || Boolean(migrationId)}>{busy === 'continuity-import' ? 'Staging…' : 'Stage validated data'}</button>{migrationId && <button type="button" className="pilot-button" onClick={() => void rollbackContinuity()} disabled={busy !== null}>{busy === 'continuity-rollback' ? 'Rolling back…' : 'Rollback staging'}</button>}</div></div>}
         </article>
       </section>
       <footer className="pilot-footer" aria-live="polite"><span className={`pilot-message-dot ${error ? 'is-error' : ''}`} aria-hidden="true" /><span>{error || notice || 'Native host only. Product UI runs in the browser.'}</span></footer>

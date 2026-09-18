@@ -7,9 +7,9 @@ const Database = require('better-sqlite3')
 // live agentd database or reads credentials. Cutover remains a separate,
 // schema-aware release gate.
 const STORES = Object.freeze([
-  { id: 'electron-settings', relativePath: 'settings.json', format: 'json', schemaVersion: 'electron.settings.v1', requiresReauthentication: true },
-  { id: 'electron-persona', relativePath: 'persona.json', format: 'json', schemaVersion: 'persona.v1', requiresReauthentication: false },
-  { id: 'electron-chat-history', relativePath: 'chat-history.db', format: 'sqlite', schemaVersion: 'chat-history.v1', requiresReauthentication: true },
+  { id: 'electron-settings', relativePath: 'aica-store.json', format: 'json', schemaVersion: 'electron.settings.v1', requiresReauthentication: true },
+  { id: 'electron-persona', relativePath: 'business_profile.json', format: 'json', schemaVersion: 'persona.v1', requiresReauthentication: false },
+  { id: 'electron-chat-history', relativePath: 'chat_history.v2.db', format: 'sqlite', schemaVersion: 'chat-history.v2', requiresReauthentication: true },
 ])
 const SECRET_KEY = /(?:secret|token|password|passwd|api[_.-]?(?:key|secret|token)|private[_.-]?(?:key|secret)|refresh[_.-]?token|access[_.-]?token|cookie|session|authorization|credential|bearer|oauth|encryption[_.-]?(?:key|secret))/i
 const SECRET_SCHEMA = /(?:^|[^a-z])(secret|token|password|passwd|api[_-]?(?:key|secret|token)|private[_-]?(?:key|secret)|refresh[_-]?token|access[_-]?token|session[_-]?(?:token|secret)|cookie|authorization|credential|bearer|oauth|encryption[_-]?(?:key|secret))(?:$|[^a-z])/i
@@ -100,12 +100,20 @@ function importPreview(preview, targetRoot) {
   const latest = inspect(preview.manifest.sourceRoot, targetRoot)
   if (JSON.stringify(latest.entries) !== JSON.stringify(preview.manifest.entries)) fail('Source changed after preview', 409)
   const stagingRoot = path.join(targetRoot, '.migration-staging', preview.previewId)
+  const stagingParent = path.dirname(stagingRoot)
+  if (fs.existsSync(stagingParent)) {
+    const parentStat = fs.lstatSync(stagingParent)
+    if (!parentStat.isDirectory() || parentStat.isSymbolicLink()) fail('Unsafe migration staging path')
+  } else fs.mkdirSync(stagingParent, { recursive: false, mode: 0o700 })
   fs.mkdirSync(stagingRoot, { recursive: false, mode: 0o700 })
   try {
     for (const entry of preview.manifest.entries) {
       const source = safeSourceFile(preview.manifest.sourceRoot, STORES.find(store => store.id === entry.id).relativePath)
       const destination = path.join(stagingRoot, entry.id)
-      fs.copyFileSync(source, destination, fs.constants.COPYFILE_EXCL)
+      const bytes = fs.readFileSync(source)
+      const sourceAfterRead = fs.lstatSync(source)
+      if (!sourceAfterRead.isFile() || sourceAfterRead.isSymbolicLink() || bytes.length !== entry.byteSize || crypto.createHash('sha256').update(bytes).digest('hex') !== entry.sha256) fail(`Source changed after preview: ${entry.id}`, 409)
+      fs.writeFileSync(destination, bytes, { flag: 'wx', mode: 0o600 })
       fs.chmodSync(destination, 0o600)
     }
     fs.writeFileSync(path.join(stagingRoot, 'manifest.json'), JSON.stringify({ ...preview, stagedAt: Date.now() }) + '\n', { flag: 'wx', mode: 0o600 })
