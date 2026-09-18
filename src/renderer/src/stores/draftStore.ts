@@ -33,6 +33,9 @@ interface DraftState {
   /** Mark a draft as sent (after approval + send) */
   markDraftSent: (draftId: string) => void
 
+  /** Mark a draft as failed after a daemon delivery attempt */
+  markDraftFailed: (draftId: string) => void
+
   /** Update the response text of a draft (human editing) */
   updateDraftText: (draftId: string, newText: string) => void
 
@@ -75,6 +78,10 @@ export const useDraftStore = create<DraftState>()(
 
       markDraftSent: (draftId) => {
         set((state) => ({ drafts: state.drafts.map((d) => d.id === draftId ? { ...d, status: 'sent' as const } : d) }))
+      },
+
+      markDraftFailed: (draftId) => {
+        set((state) => ({ drafts: state.drafts.map((d) => d.id === draftId ? { ...d, status: 'failed' as const } : d) }))
       },
 
       updateDraftText: (draftId, newText) => {

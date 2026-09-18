@@ -30,7 +30,7 @@ import {
 } from 'lucide-react';
 
 export function DraftApprovalPanel() {
-  const { drafts, approveDraft, rejectDraft, markDraftSent, updateDraftText, removeDraft, cleanupOldDrafts } = useDraftStore();
+  const { drafts, approveDraft, rejectDraft, markDraftSent, markDraftFailed, updateDraftText, removeDraft, cleanupOldDrafts } = useDraftStore();
   const browserRuntime = !isElectron();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editText, setEditText] = useState('');
@@ -42,7 +42,7 @@ export function DraftApprovalPanel() {
 
   const pendingDrafts = drafts.filter(d => d.status === 'pending_review');
   const escalatedDrafts = drafts.filter(d => d.status === 'escalated');
-  const recentHistory = drafts.filter(d => ['approved', 'rejected', 'sent'].includes(d.status)).slice(0, 10);
+  const recentHistory = drafts.filter(d => ['approved', 'rejected', 'sent', 'failed'].includes(d.status)).slice(0, 10);
 
   const startEditing = (draftId: string, currentText: string) => {
     setEditingId(draftId);
@@ -66,7 +66,7 @@ export function DraftApprovalPanel() {
         const sent = await getBrowserAgentdClient().sendEmailDraft(draftId);
         if (sent.status === 'sent') markDraftSent(draftId);
       } catch {
-        // Keep the approved draft visible; the daemon owns the durable failure state.
+        markDraftFailed(draftId);
       }
       return;
     }

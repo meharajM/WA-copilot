@@ -508,6 +508,7 @@ export interface BrowserAgentdClient extends ChatClient {
   saveEmailSettings(settings: EmailSettings): Promise<EmailSettings>
   testEmail(): Promise<BrowserEmailTestResult>
   ingestEmailInbound(event: { providerEventId: string; conversationId: string; payload: BrowserEmailInboundEvent['payload'] }): Promise<{ accepted: true; duplicate: boolean; id: number }>
+  claimEmailInbound(limit?: number): Promise<BrowserEmailInboundEvent[]>
   listEmailInbound(afterId?: number, limit?: number, status?: Extract<BrowserEmailInboundEvent['status'], 'queued' | 'processing' | 'completed'>): Promise<{ events: BrowserEmailInboundEvent[]; nextAfterId: number }>
   acknowledgeEmailInbound(eventIds: number[]): Promise<number[]>
   listEmailDrafts(limit?: number, status?: BrowserEmailDraftStatus): Promise<BrowserEmailDraft[]>
@@ -825,6 +826,19 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     if (!isRecord(value) || value.accepted !== true || typeof value.duplicate !== 'boolean' || !Number.isSafeInteger(value.id)) throw new Error('Invalid email inbound response')
     return { accepted: true as const, duplicate: value.duplicate, id: value.id as number }
   }
+  const claimEmailInbound = async (limit = 20): Promise<BrowserEmailInboundEvent[]> => {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) throw new Error('Invalid email inbound claim limit')
+    const value = await request<unknown>('/api/v1/email/inbound/claim', { method: 'POST', body: JSON.stringify({ limit }) }, true)
+    if (!isRecord(value) || !Array.isArray(value.events)) throw new Error('Invalid email inbound claim response')
+    const events = value.events.filter((event): event is BrowserEmailInboundEvent => isRecord(event)
+      && Number.isSafeInteger(event.id) && typeof event.providerEventId === 'string' && typeof event.conversationId === 'string'
+      && isRecord(event.payload) && typeof event.payload.from === 'string' && typeof event.payload.to === 'string'
+      && typeof event.payload.subject === 'string' && typeof event.payload.body === 'string'
+      && (event.payload.bodyType === 'text' || event.payload.bodyType === 'html') && typeof event.payload.timestamp === 'number'
+      && event.status === 'processing' && Number.isSafeInteger(event.createdAt))
+    if (events.length !== value.events.length) throw new Error('Invalid email inbound claim response')
+    return events
+  }
   const listEmailInbound = async (afterId = 0, limit = 20, status?: Extract<BrowserEmailInboundEvent['status'], 'queued' | 'processing' | 'completed'>) => {
     const query = new URLSearchParams({ after_id: String(afterId), limit: String(limit) })
     if (status) query.set('status', status)
@@ -1069,6 +1083,7 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     saveEmailSettings,
     testEmail,
     ingestEmailInbound,
+    claimEmailInbound,
     listEmailInbound,
     acknowledgeEmailInbound,
     listEmailDrafts,

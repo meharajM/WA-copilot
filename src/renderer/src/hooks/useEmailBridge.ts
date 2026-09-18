@@ -123,7 +123,6 @@ export function useEmailBridge(): void {
     if (!isBrowserProduct()) return
     let cancelled = false
     let timer: ReturnType<typeof setTimeout> | null = null
-    let afterId = 0
     const poll = async () => {
       if (cancelled) return
       if (!config.enabled) {
@@ -131,17 +130,16 @@ export function useEmailBridge(): void {
       } else {
         try {
           const client = getBrowserAgentdClient()
-          const result = await client.listEmailInbound(afterId, 50, 'queued')
           let processed = 0
           if (config.autoReplyMode) {
-            for (const event of result.events) {
+            const events = await client.claimEmailInbound(50)
+            for (const event of events) {
               await ingestBrowserInboundEmail(event)
               // Acknowledge only after durable session/message hydration. If the
               // tab dies earlier, daemon keeps event queued for retry.
               await client.acknowledgeEmailInbound([event.id])
               processed += 1
             }
-            afterId = result.nextAfterId
           }
           if (!cancelled) setConnectionState({ status: 'connected', error: config.autoReplyMode ? null : 'Inbound events are stored; enable Auto-Reply to create email sessions.', lastSyncAt: Date.now(), unreadCount: processed })
         } catch (error) {

@@ -11,6 +11,7 @@ const { sendTextEmail } = require('./email-transport.cjs')
 
 const SESSION_TTL_MS = 15 * 60 * 1000
 const PAIRING_TTL_MS = 5 * 60 * 1000
+const EMAIL_INBOUND_CLAIM_TTL_MS = 5 * 60 * 1000
 const PAIRING_LOCKOUT_MS = 60 * 1000
 const MAX_PAIRING_ATTEMPTS = 5
 const MAX_BODY_BYTES = 256 * 1024
@@ -528,6 +529,8 @@ class AgentdServer {
         CREATE INDEX IF NOT EXISTS memory_relations_from_idx ON memory_relations(from_entity_id);
         CREATE INDEX IF NOT EXISTS memory_relations_to_idx ON memory_relations(to_entity_id);
       `)
+      const inboundColumns = this.db.prepare('PRAGMA table_info(inbound_events)').all()
+      if (!inboundColumns.some((column) => column.name === 'claimed_at')) this.db.exec('ALTER TABLE inbound_events ADD COLUMN claimed_at INTEGER')
       const generationSchema = this.db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'chat_generations'").get()?.sql || ''
       if (generationSchema && !generationSchema.includes("'ollama'")) {
         this.db.transaction(() => {
@@ -1102,7 +1105,7 @@ class AgentdServer {
       const acknowledged = []
       for (const row of rows) {
         if (row.status === 'queued' || row.status === 'processing') {
-          this.db.prepare("UPDATE inbound_events SET status = 'completed' WHERE channel = 'email' AND id = ?").run(row.id)
+          this.db.prepare("UPDATE inbound_events SET status = 'completed', claimed_at = NULL WHERE channel = 'email' AND id = ?").run(row.id)
           acknowledged.push(row.id)
         } else if (row.status === 'completed') {
           // Idempotent replay after a browser retry or reload.
@@ -1127,8 +1130,11 @@ class AgentdServer {
       return json(res, 400, { error: 'Invalid email inbound claim limit' })
     }
     const events = this.db.transaction(() => {
+      const staleBefore = Date.now() - EMAIL_INBOUND_CLAIM_TTL_MS
+      this.db.prepare("UPDATE inbound_events SET status = 'queued', claimed_at = NULL WHERE channel = 'email' AND status = 'processing' AND (claimed_at IS NULL OR claimed_at < ?)").run(staleBefore)
       const rows = this.db.prepare("SELECT id,provider_event_id,conversation_id,payload,status,created_at FROM inbound_events WHERE channel = 'email' AND status = 'queued' ORDER BY id ASC LIMIT ?").all(requestedLimit)
-      for (const row of rows) this.db.prepare("UPDATE inbound_events SET status = 'processing' WHERE channel = 'email' AND id = ? AND status = 'queued'").run(row.id)
+      const claimedAt = Date.now()
+      for (const row of rows) this.db.prepare("UPDATE inbound_events SET status = 'processing', claimed_at = ? WHERE channel = 'email' AND id = ? AND status = 'queued'").run(claimedAt, row.id)
       return rows.map(row => ({
         id: row.id,
         providerEventId: row.provider_event_id,

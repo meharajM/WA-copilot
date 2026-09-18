@@ -248,6 +248,9 @@ describe('browser agentd client', () => {
       const url = String(input)
       calls.push({ url, init })
       if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
+      if (url.endsWith('/api/v1/email/inbound/claim')) return response({
+        events: [{ id: 9, providerEventId: 'email-9', conversationId: 'sender@example.test::thread-9', payload: { from: 'sender@example.test', to: 'support@example.test', subject: 'Help', body: 'Hello', bodyType: 'text', timestamp: 42 }, status: 'processing', createdAt: 42 }],
+      })
       if (url.includes('/api/v1/email/inbound?')) return response({
         events: [{ id: 9, providerEventId: 'email-9', conversationId: 'sender@example.test::thread-9', payload: { from: 'sender@example.test', to: 'support@example.test', subject: 'Help', body: 'Hello', bodyType: 'text', timestamp: 42 }, status: 'queued', createdAt: 42 }],
         nextAfterId: 9,
@@ -257,6 +260,7 @@ describe('browser agentd client', () => {
     })
     const client = createBrowserAgentdClient({ origin: 'http://127.0.0.1:4141', fetch: fetcher })
     await client.pair('123456')
+    await expect(client.claimEmailInbound(10)).resolves.toMatchObject([{ id: 9, status: 'processing' }])
     await expect(client.listEmailInbound(0, 10, 'queued')).resolves.toMatchObject({ nextAfterId: 9, events: [{ id: 9, status: 'queued' }] })
     await expect(client.acknowledgeEmailInbound([9])).resolves.toEqual([9])
     const ack = calls.find(call => call.url.endsWith('/api/v1/email/inbound/ack'))
