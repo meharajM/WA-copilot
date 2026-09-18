@@ -1,3 +1,4 @@
+import { credentialKeys } from '../../../shared/native-bridge'
 import type {
   ChatClient,
   ChatGenerationRequest,
@@ -59,6 +60,38 @@ const readNativeHealth = (value: unknown): NativeHealth => {
     ...(typeof value.paused === 'boolean' ? { paused: value.paused } : {}),
     ...(typeof value.queueDepth === 'number' ? { queueDepth: value.queueDepth } : {}),
     ...(typeof value.events === 'number' ? { events: value.events } : {}),
+  }
+}
+
+const readContinuityStatus = (value: unknown): BrowserContinuityStatus => {
+  if (!isRecord(value) || value.version !== 1 || value.runtime !== 'agentd' || !isRecord(value.migration)
+    || value.migration.source !== 'electron' || value.migration.target !== 'agentd'
+    || value.migration.state !== 'native-owner-action-required' || value.migration.secretsExcluded !== true
+    || typeof value.migration.note !== 'string' || !Array.isArray(value.stores) || !isRecord(value.data) || !Array.isArray(value.credentials)) {
+    throw new Error('Invalid agentd continuity status response')
+  }
+  const stores = value.stores.map((store) => {
+    if (!isRecord(store)
+      || !['electron-settings', 'electron-persona', 'electron-chat-history', 'agentd-state'].includes(store.id as string)
+      || !['electron', 'agentd'].includes(store.source as string)
+      || typeof store.target !== 'string' || !['json', 'sqlite'].includes(store.format as string)
+      || typeof store.schemaVersion !== 'string' || typeof store.requiresReauthentication !== 'boolean'
+      || !['pending', 'active'].includes(store.state as string)) throw new Error('Invalid agentd continuity status response')
+    return store
+  })
+  const dataKeys = ['sessions', 'messages', 'knowledgeDocuments', 'inboundEvents', 'drafts']
+  if (dataKeys.some((key) => !Number.isSafeInteger(value.data![key]) || (value.data![key] as number) < 0)) throw new Error('Invalid agentd continuity status response')
+  const credentials = value.credentials.map((credential) => {
+    if (!isRecord(credential) || typeof credential.key !== 'string' || !credentialKeys.includes(credential.key as CredentialKey) || typeof credential.present !== 'boolean' || typeof credential.available !== 'boolean') throw new Error('Invalid agentd continuity status response')
+    return credential
+  })
+  return {
+    version: 1,
+    runtime: 'agentd',
+    migration: value.migration as BrowserContinuityStatus['migration'],
+    stores: stores as BrowserContinuityStatus['stores'],
+    data: value.data as unknown as BrowserContinuityStatus['data'],
+    credentials: credentials as BrowserContinuityStatus['credentials'],
   }
 }
 
@@ -199,6 +232,35 @@ export interface BrowserAutonomyMetrics {
   averageRecoveryTimeMs: number
 }
 
+export interface BrowserContinuityStatus {
+  version: 1
+  runtime: 'agentd'
+  migration: {
+    source: 'electron'
+    target: 'agentd'
+    state: 'native-owner-action-required'
+    secretsExcluded: true
+    note: string
+  }
+  stores: Array<{
+    id: 'electron-settings' | 'electron-persona' | 'electron-chat-history' | 'agentd-state'
+    source: 'electron' | 'agentd'
+    target: string
+    format: 'json' | 'sqlite'
+    schemaVersion: string
+    requiresReauthentication: boolean
+    state: 'pending' | 'active'
+  }>
+  data: {
+    sessions: number
+    messages: number
+    knowledgeDocuments: number
+    inboundEvents: number
+    drafts: number
+  }
+  credentials: Array<{ key: CredentialKey; present: boolean; available: boolean }>
+}
+
 export interface BrowserKnowledgeDocument {
   id: number
   file_path: string
@@ -262,6 +324,7 @@ export interface BrowserAgentdClient extends ChatClient {
   pair(code: string): Promise<{ expiresAt: number }>
   readiness(): Promise<'ready' | 'pairing' | 'unavailable'>
   status(): Promise<NativeHealth>
+  getContinuityStatus(): Promise<BrowserContinuityStatus>
   cancelGeneration(sessionId: string, requestId: string): Promise<boolean>
   getLlmSettings(): Promise<LlmSettings>
   saveLlmSettings(settings: LlmSettings): Promise<LlmSettings>
@@ -355,6 +418,7 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
   }
 
   const status = async (): Promise<NativeHealth> => readNativeHealth(await request('/api/v1/status'))
+  const getContinuityStatus = async (): Promise<BrowserContinuityStatus> => readContinuityStatus(await request('/api/v1/continuity/status'))
 
   const readiness = async (): Promise<'ready' | 'pairing' | 'unavailable'> => {
     try {
@@ -715,6 +779,7 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     pair,
     readiness,
     status,
+    getContinuityStatus,
     health,
     loadSessions,
     createSession,

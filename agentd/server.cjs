@@ -15,6 +15,24 @@ const MAX_WHATSAPP_PAYLOAD_BYTES = 32 * 1024
 const MAX_DRAFT_TEXT_LENGTH = 4096
 const OUTBOX_QUARANTINED_ERROR = 'Quarantined by operator'
 const OUTBOX_CANCELLED_ERROR = 'Cancelled by operator'
+const CONTINUITY_CREDENTIAL_KEYS = Object.freeze([
+  'openai_api_key',
+  'gemini_api_key',
+  'openrouter_api_key',
+  'email_mcp_password',
+  'email_imap_password',
+  'email_smtp_password',
+  'gmail_oauth_client_id',
+  'whatsapp_cloud_access_token',
+  'whatsapp_cloud_app_secret',
+  'whatsapp_cloud_verify_token',
+])
+const CONTINUITY_STORE_CONTRACT = Object.freeze([
+  { id: 'electron-settings', source: 'electron', target: 'settings.json', format: 'json', schemaVersion: 'electron.settings.v1', requiresReauthentication: true },
+  { id: 'electron-persona', source: 'electron', target: 'persona.json', format: 'json', schemaVersion: 'persona.v1', requiresReauthentication: false },
+  { id: 'electron-chat-history', source: 'electron', target: 'chat-history.db', format: 'sqlite', schemaVersion: 'chat-history.v1', requiresReauthentication: true },
+  { id: 'agentd-state', source: 'agentd', target: 'agentd.db', format: 'sqlite', schemaVersion: 'agentd.v1', requiresReauthentication: true },
+])
 const MAX_CHAT_MESSAGES_PER_SESSION = 10_000
 const MAX_CHAT_ID_LENGTH = 128
 const MAX_CHAT_TITLE_LENGTH = 200
@@ -542,6 +560,7 @@ class AgentdServer {
       this.authorize(req)
       return json(res, 200, { runtime: 'agentd', paused: this.getState('paused', 'true') === 'true', queueDepth: this.db.prepare("SELECT COUNT(*) AS count FROM inbound_events WHERE status IN ('queued','processing')").get().count, events: this.db.prepare('SELECT COUNT(*) AS count FROM inbound_events').get().count })
     }
+    if (url.pathname === '/api/v1/continuity/status' && req.method === 'GET') return this.continuityStatus(req, res)
     if (url.pathname === '/api/v1/autonomy/metrics' && req.method === 'GET') return this.autonomyMetrics(req, res, url)
     if (url.pathname === '/api/v1/logs' && ['GET', 'POST'].includes(req.method)) return this.auditLogs(req, res, url)
     if (url.pathname === '/api/v1/knowledge' && ['GET', 'POST'].includes(req.method)) return this.knowledge(req, res, url)
@@ -610,6 +629,43 @@ class AgentdServer {
     } catch {
       return json(res, 503, { error: 'Credential store operation failed' })
     }
+  }
+
+  async continuityStatus(req, res) {
+    this.authorize(req)
+    const count = (table) => this.db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get().count
+    const credentials = []
+    for (const key of CONTINUITY_CREDENTIAL_KEYS) {
+      let present = false
+      let available = Boolean(this.credentials)
+      if (this.credentials) {
+        try { present = await this.credentials.exists(key) } catch { available = false }
+      }
+      credentials.push({ key, present, available })
+    }
+    return json(res, 200, {
+      version: 1,
+      runtime: 'agentd',
+      migration: {
+        source: 'electron',
+        target: 'agentd',
+        state: 'native-owner-action-required',
+        secretsExcluded: true,
+        note: 'Electron stores require an explicit owner-approved native migration; this read-only endpoint never reads or imports them.',
+      },
+      stores: CONTINUITY_STORE_CONTRACT.map(store => ({
+        ...store,
+        state: store.id === 'agentd-state' ? 'active' : 'pending',
+      })),
+      data: {
+        sessions: count('chat_sessions'),
+        messages: count('chat_messages'),
+        knowledgeDocuments: count('knowledge_documents'),
+        inboundEvents: count('inbound_events'),
+        drafts: count('whatsapp_drafts'),
+      },
+      credentials,
+    })
   }
 
   async llmSettings(req, res) {

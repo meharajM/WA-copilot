@@ -238,6 +238,7 @@ Pass evidence:
 - Gmail app-password mode can test and start without requiring OAuth.
 - Gmail Google sign-in mode fails cleanly when OAuth is not configured or not signed in.
 - Browser settings survive reload/restart without exposing the credential value; browser test/start reports a clear transport-migration message instead of probing Electron IPC.
+- Browser continuity status is read-only and authenticated. It reports agentd-owned record counts, the allowlisted Electron-to-agentd store contract, and per-key credential presence (`present`/`available`) without returning secret values. Electron stores remain `pending` until an explicit owner-approved native migration flow validates, backs up, imports, and requires reauthentication; the browser endpoint never reads or imports Electron files.
 
 ### Channel gating
 

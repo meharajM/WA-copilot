@@ -160,6 +160,37 @@ test('agentd exposes allowlisted credential set, presence, and delete without re
   fs.rmSync(dataDir, { recursive: true, force: true })
 })
 
+test('agentd exposes read-only continuity status without returning credential values or importing Electron stores', async () => {
+  const dataDir = makeTempDir('aica-agentd-continuity-')
+  const records = new Map([['openai_api_key', 'secret-never-return-this']])
+  const credentials = {
+    get: async key => records.get(key) ?? null,
+    exists: async key => records.has(key),
+    set: async (key, value) => { records.set(key, value) },
+    delete: async key => { records.delete(key) },
+  }
+  const server = new AgentdServer({ dataDir, secret: 's'.repeat(32), pairingCode: '135790', credentials, logger: { log() {} } })
+  const { origin } = await server.start()
+  const pair = await request(origin, 'POST', '/api/v1/pair', { code: '135790' }, { origin })
+  const session = { origin, cookie: pair.headers['set-cookie'][0].split(';')[0] }
+  const result = await request(origin, 'GET', '/api/v1/continuity/status', undefined, session)
+  assert.equal(result.status, 200)
+  assert.deepEqual(result.body.migration, {
+    source: 'electron',
+    target: 'agentd',
+    state: 'native-owner-action-required',
+    secretsExcluded: true,
+    note: 'Electron stores require an explicit owner-approved native migration; this read-only endpoint never reads or imports them.',
+  })
+  assert.equal(result.body.stores.find(store => store.id === 'agentd-state').state, 'active')
+  assert.equal(result.body.stores.find(store => store.id === 'electron-settings').state, 'pending')
+  assert.equal(result.body.credentials.find(credential => credential.key === 'openai_api_key').present, true)
+  assert.equal(JSON.stringify(result.body).includes('secret-never-return-this'), false)
+  assert.deepEqual(result.body.data, { sessions: 0, messages: 0, knowledgeDocuments: 0, inboundEvents: 0, drafts: 0 })
+  await server.stop()
+  fs.rmSync(dataDir, { recursive: true, force: true })
+})
+
 test('agentd persists exact LLM preferences and probes only fixed providers with stored credentials', async () => {
   const dataDir = makeTempDir('aica-agentd-llm-')
   const records = new Map()

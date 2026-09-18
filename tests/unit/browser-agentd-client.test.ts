@@ -118,6 +118,35 @@ describe('browser agentd client', () => {
     expect(fetcher).not.toHaveBeenCalled()
   })
 
+  it('maps continuity readiness without exposing credential values', async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
+      if (url.endsWith('/api/v1/continuity/status')) return response({
+        version: 1,
+        runtime: 'agentd',
+        migration: {
+          source: 'electron', target: 'agentd', state: 'native-owner-action-required', secretsExcluded: true,
+          note: 'Electron stores require an explicit owner-approved native migration; this read-only endpoint never reads or imports them.',
+        },
+        stores: [
+          { id: 'electron-settings', source: 'electron', target: 'settings.json', format: 'json', schemaVersion: 'electron.settings.v1', requiresReauthentication: true, state: 'pending' },
+          { id: 'agentd-state', source: 'agentd', target: 'agentd.db', format: 'sqlite', schemaVersion: 'agentd.v1', requiresReauthentication: true, state: 'active' },
+        ],
+        data: { sessions: 2, messages: 3, knowledgeDocuments: 0, inboundEvents: 1, drafts: 0 },
+        credentials: [{ key: 'openai_api_key', present: true, available: true }],
+      })
+      return response({ success: true })
+    })
+    const client = createBrowserAgentdClient({ origin: 'http://127.0.0.1:4141', fetch: fetcher })
+    await client.pair('123456')
+    await expect(client.getContinuityStatus()).resolves.toMatchObject({
+      migration: { state: 'native-owner-action-required', secretsExcluded: true },
+      data: { sessions: 2, messages: 3 },
+      credentials: [{ key: 'openai_api_key', present: true }],
+    })
+  })
+
   it('maps authenticated persona settings without using renderer secret storage', async () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
