@@ -69,6 +69,7 @@ test('Windows CI runs target-specific native host tests before packaging', () =>
 })
 
 test('Windows CI verifies prepared sidecar and browser resources before packaging', () => {
+  const browserBundle = windowsWorkflow.indexOf('npm run build:tauri:web')
   const keyring = windowsWorkflow.indexOf('npm run prepare:agentd:keyring-helper')
   const migrationReader = windowsWorkflow.indexOf('npm run prepare:agentd:migration-reader')
   const sidecar = windowsWorkflow.indexOf('npm run prepare:tauri:agentd')
@@ -78,6 +79,7 @@ test('Windows CI verifies prepared sidecar and browser resources before packagin
   assert.notEqual(migrationReader, -1)
   assert.notEqual(sidecar, -1)
   assert.notEqual(resourceGate, -1)
+  assert.ok(browserBundle < migrationReader, 'browser assets must exist before migration-reader compilation')
   assert.ok(keyring < resourceGate, 'keyring helper must be prepared before resource verification')
   assert.ok(migrationReader < resourceGate, 'migration reader must be prepared before resource verification')
   assert.ok(sidecar < resourceGate, 'agentd sidecar must be prepared before resource verification')

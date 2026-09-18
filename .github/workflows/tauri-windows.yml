@@ -48,9 +48,6 @@ jobs:
         # must compile its native binding on the Windows runner.
         run: npm ci --no-audit --no-fund
 
-      - name: Prepare Windows migration reader
-        run: npm run prepare:agentd:migration-reader
-
       - name: Typecheck browser renderer
         run: npm run typecheck:renderer
 
@@ -65,6 +62,9 @@ jobs:
         # The Tauri build script embeds ../dist even for `cargo test`, so
         # prepare the browser-first product assets before compiling Rust.
         run: npm run build:tauri:web
+
+      - name: Prepare Windows migration reader
+        run: npm run prepare:agentd:migration-reader
 
       - name: Prepare Windows keyring helper
         run: npm run prepare:agentd:keyring-helper
