@@ -156,6 +156,61 @@ const MCP_LIFECYCLE = Object.freeze({
   transports: [],
   tools: [],
 })
+const MAX_MCP_SERVERS = 50
+const MAX_MCP_NAME_LENGTH = 128
+const MAX_MCP_DESCRIPTION_LENGTH = 512
+const MAX_MCP_COMMAND_LENGTH = 256
+const MAX_MCP_ARGUMENTS = 32
+const MAX_MCP_ARGUMENT_LENGTH = 512
+const MAX_MCP_URL_LENGTH = 2048
+const MAX_MCP_ALLOWED_TOOLS = 128
+const MAX_MCP_TOOL_NAME_LENGTH = 128
+const MAX_MCP_ENV_KEYS = 64
+const MAX_MCP_ENV_KEY_LENGTH = 128
+
+function parseMcpServer(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const keys = Object.keys(value)
+  const required = ['id', 'name', 'description', 'type', 'autoConnect']
+  if (keys.some(key => !['id', 'name', 'description', 'type', 'command', 'args', 'url', 'allowedTools', 'autoConnect', 'envKeys'].includes(key))) return null
+  if (required.some(key => !keys.includes(key))) return null
+  if (typeof value.id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(value.id)
+    || typeof value.name !== 'string' || !value.name.trim() || value.name.length > MAX_MCP_NAME_LENGTH
+    || typeof value.description !== 'string' || value.description.length > MAX_MCP_DESCRIPTION_LENGTH
+    || !['stdio', 'sse', 'http'].includes(value.type)
+    || typeof value.autoConnect !== 'boolean') return null
+  if (value.type === 'stdio') {
+    if (typeof value.command !== 'string' || !value.command.trim() || value.command.length > MAX_MCP_COMMAND_LENGTH) return null
+    if (value.args !== undefined && (!Array.isArray(value.args) || value.args.length > MAX_MCP_ARGUMENTS || value.args.some(arg => typeof arg !== 'string' || arg.length > MAX_MCP_ARGUMENT_LENGTH))) return null
+  } else {
+    if (typeof value.url !== 'string' || value.url.length > MAX_MCP_URL_LENGTH) return null
+    let parsed
+    try { parsed = new URL(value.url) } catch { return null }
+    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password || parsed.hash) return null
+  }
+  if (value.allowedTools !== undefined && (!Array.isArray(value.allowedTools) || value.allowedTools.length > MAX_MCP_ALLOWED_TOOLS || value.allowedTools.some(tool => typeof tool !== 'string' || !tool.trim() || tool.length > MAX_MCP_TOOL_NAME_LENGTH))) return null
+  if (value.envKeys !== undefined && (!Array.isArray(value.envKeys) || value.envKeys.length > MAX_MCP_ENV_KEYS || value.envKeys.some(key => typeof key !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(key)))) return null
+  return {
+    id: value.id,
+    name: value.name.trim(),
+    description: value.description,
+    type: value.type,
+    ...(value.command !== undefined ? { command: value.command.trim() } : {}),
+    ...(value.args !== undefined ? { args: [...value.args] } : {}),
+    ...(value.url !== undefined ? { url: value.url } : {}),
+    ...(value.allowedTools !== undefined ? { allowedTools: [...new Set(value.allowedTools)] } : {}),
+    autoConnect: value.autoConnect,
+    ...(value.envKeys !== undefined ? { envKeys: [...new Set(value.envKeys)] } : {}),
+  }
+}
+
+function parseMcpServers(value) {
+  if (!Array.isArray(value) || value.length > MAX_MCP_SERVERS) return null
+  const parsed = value.map(parseMcpServer)
+  if (parsed.some(item => !item)) return null
+  const ids = new Set(parsed.map(item => item.id))
+  return ids.size === parsed.length ? parsed : null
+}
 
 function createProtocolReader(socket) {
   let buffer = ''
@@ -690,6 +745,7 @@ class AgentdServer {
       this.authorize(req)
       return json(res, 200, MCP_LIFECYCLE)
     }
+    if (url.pathname === '/api/v1/mcp/servers' && ['GET', 'PUT'].includes(req.method)) return this.mcpServers(req, res)
     if (url.pathname === '/api/v1/continuity/status' && req.method === 'GET') return this.continuityStatus(req, res)
     if (url.pathname === '/api/v1/continuity/preview' && req.method === 'POST') return this.continuityPreview(req, res)
     if (url.pathname === '/api/v1/continuity/import' && req.method === 'POST') return this.continuityImport(req, res)
@@ -762,6 +818,27 @@ class AgentdServer {
     } catch {
       return json(res, 503, { error: 'Credential store operation failed' })
     }
+  }
+
+  async mcpServers(req, res) {
+    const read = () => {
+      let stored = []
+      try { stored = JSON.parse(this.getState('mcp_servers', '[]')) } catch {}
+      const parsed = parseMcpServers(stored)
+      return parsed || []
+    }
+    if (req.method === 'GET') {
+      this.authorize(req)
+      return json(res, 200, { servers: read(), execution: 'unavailable', reason: MCP_LIFECYCLE.reason })
+    }
+    this.authorize(req, { mutation: true })
+    if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
+    let body
+    try { body = await readBody(req) } catch (error) { return json(res, error.statusCode || 400, { error: error.message }) }
+    const servers = parseMcpServers(body?.servers)
+    if (!servers) return json(res, 400, { error: 'Invalid MCP server configuration' })
+    this.setState('mcp_servers', JSON.stringify(servers))
+    return json(res, 200, { servers, execution: 'unavailable', reason: MCP_LIFECYCLE.reason })
   }
 
   async continuityStatus(req, res) {

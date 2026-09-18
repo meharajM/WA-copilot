@@ -1,6 +1,8 @@
 import { create } from 'zustand'
 import electron from '../lib/electron'
 import { STORAGE_KEYS } from '../lib/constants'
+import { getBrowserAgentdClient, type BrowserMcpServer } from '../lib/browser-agentd-client'
+import { isTauriRuntime } from '../lib/tauri-native-bridge'
 
 // Types
 export interface MCPServer {
@@ -60,6 +62,33 @@ function generateId(): string {
 
 function getPersistenceKey(uid: string | null) {
     return uid ? `user_${uid}_mcp_servers` : STORAGE_KEYS.MCP_SERVERS
+}
+
+const isBrowserProduct = (): boolean => typeof window !== 'undefined' && !window.electron && !isTauriRuntime()
+
+function toBrowserServer(server: MCPServer): BrowserMcpServer {
+    const envKeys = Object.keys(server.env || {}).filter((key) => /^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(key))
+    return {
+        id: server.id,
+        name: server.name,
+        description: server.description,
+        type: server.type,
+        ...(server.command ? { command: server.command } : {}),
+        ...(server.args ? { args: server.args } : {}),
+        ...(server.url ? { url: server.url } : {}),
+        ...(server.allowedTools ? { allowedTools: server.allowedTools } : {}),
+        autoConnect: server.autoConnect,
+        ...(envKeys.length ? { envKeys } : {}),
+    }
+}
+
+function fromBrowserServer(server: BrowserMcpServer): MCPServer {
+    return {
+        ...server,
+        env: server.envKeys?.length ? Object.fromEntries(server.envKeys.map((key) => [key, ''])) : undefined,
+        connected: false,
+        tools: [],
+    }
 }
 
 const DEFAULT_MCP_SERVERS = [
@@ -122,8 +151,19 @@ export const useMcpStore = create<McpState>()((set, get) => ({
         try {
             console.log(`[mcpStore] Initializing for user: ${uid || 'anonymous'} (Key: ${storageKey})`)
 
-            // Load from electron-store
-            const stored = await electron.store.get<MCPServer[]>(storageKey)
+            let stored = isBrowserProduct()
+                ? (await getBrowserAgentdClient().getMcpServers()).servers.map(fromBrowserServer)
+                : await electron.store.get<MCPServer[]>(storageKey)
+            // One-time continuity handoff for legacy browser-local MCP definitions.
+            // Values are stripped before agentd persistence; browser MCP execution remains gated.
+            if (isBrowserProduct() && (!stored || stored.length === 0)) {
+                const legacy = await electron.store.get<MCPServer[]>(storageKey)
+                if (Array.isArray(legacy) && legacy.length > 0) {
+                    stored = legacy
+                    await getBrowserAgentdClient().saveMcpServers(legacy.map(toBrowserServer))
+                    await electron.store.delete(storageKey)
+                }
+            }
 
             let initialServers: MCPServer[] = []
 
@@ -178,7 +218,8 @@ export const useMcpStore = create<McpState>()((set, get) => ({
                 });
 
                 if (hasNewDefaults || initialServers.some((s, i) => JSON.stringify(s) !== JSON.stringify(stored[i]))) {
-                    await electron.store.set(storageKey, initialServers);
+                    if (isBrowserProduct()) await getBrowserAgentdClient().saveMcpServers(initialServers.map(toBrowserServer))
+                    else await electron.store.set(storageKey, initialServers);
                 }
             } else {
                 // Defaults (only for anonymous or empty user profile? Maybe always safe to default?)
@@ -192,14 +233,15 @@ export const useMcpStore = create<McpState>()((set, get) => ({
                     type: s.type as 'stdio' | 'sse' | 'http',
                     activeUserId: uid // Not strictly needed on server obj but harmless
                 }))
-                await electron.store.set(storageKey, initialServers)
+                if (isBrowserProduct()) await getBrowserAgentdClient().saveMcpServers(initialServers.map(toBrowserServer))
+                else await electron.store.set(storageKey, initialServers)
             }
 
             set({ servers: initialServers, initialized: true })
 
             // Lazy connect: Only auto-connect on startup if we don't have cached tool schemas.
             // This prevents spawning expensive Node/Python child processes for unused servers.
-            const autoConnectServers = initialServers.filter(s => s.autoConnect && s.tools.length === 0)
+            const autoConnectServers = isBrowserProduct() ? [] : initialServers.filter(s => s.autoConnect && s.tools.length === 0)
             for (const server of autoConnectServers) {
                 // Connect sequentially to avoid overwhelming
                 get().connectServer(server.id).catch(console.error)
@@ -243,7 +285,8 @@ export const useMcpStore = create<McpState>()((set, get) => ({
 
         const newServers = [...get().servers, server]
         set({ servers: newServers })
-        await electron.store.set(storageKey, newServers)
+        if (isBrowserProduct()) await getBrowserAgentdClient().saveMcpServers(newServers.map(toBrowserServer))
+        else await electron.store.set(storageKey, newServers)
 
         // Auto-connect new server
         get().connectServer(server.id)
@@ -270,7 +313,8 @@ export const useMcpStore = create<McpState>()((set, get) => ({
         newServers[index] = updatedServer
 
         set({ servers: newServers })
-        await electron.store.set(storageKey, newServers)
+        if (isBrowserProduct()) await getBrowserAgentdClient().saveMcpServers(newServers.map(toBrowserServer))
+        else await electron.store.set(storageKey, newServers)
 
         // Reconnect if it was connected or auto-connect is on
         if (updatedServer.autoConnect) {
@@ -291,7 +335,8 @@ export const useMcpStore = create<McpState>()((set, get) => ({
 
         const newServers = currentServers.filter(s => s.id !== id)
         set({ servers: newServers })
-        await electron.store.set(storageKey, newServers)
+        if (isBrowserProduct()) await getBrowserAgentdClient().saveMcpServers(newServers.map(toBrowserServer))
+        else await electron.store.set(storageKey, newServers)
     },
 
     connectServer: async (id) => {
@@ -305,6 +350,11 @@ export const useMcpStore = create<McpState>()((set, get) => ({
                     s.id === id ? { ...s, error: undefined } : s
                 )
             }))
+
+            if (isBrowserProduct()) {
+                const lifecycle = await getBrowserAgentdClient().getMcpLifecycle()
+                throw new Error(lifecycle.reason)
+            }
 
             const result = await electron.mcp.connect({
                 id: server.id,
@@ -359,7 +409,7 @@ export const useMcpStore = create<McpState>()((set, get) => ({
 
     disconnectServer: async (id) => {
         try {
-            await electron.mcp.disconnect(id)
+            if (!isBrowserProduct()) await electron.mcp.disconnect(id)
             set(state => ({
                 servers: state.servers.map(s =>
                     // Keep tools cached for lazy load later
@@ -379,7 +429,8 @@ export const useMcpStore = create<McpState>()((set, get) => ({
             s.id === id ? { ...s, autoConnect: enabled } : s
         )
         set({ servers: newServers })
-        await electron.store.set(storageKey, newServers)
+            if (isBrowserProduct()) await getBrowserAgentdClient().saveMcpServers(newServers.map(toBrowserServer))
+            else await electron.store.set(storageKey, newServers)
     },
 
     // Sync from cloud (Firestore)
@@ -448,7 +499,8 @@ export const useMcpStore = create<McpState>()((set, get) => ({
 
         if (hasChanges) {
             set({ servers: newServerList })
-            await electron.store.set(storageKey, newServerList)
+            if (isBrowserProduct()) await getBrowserAgentdClient().saveMcpServers(newServerList.map(toBrowserServer))
+            else await electron.store.set(storageKey, newServerList)
 
             // Auto-connect any new/updated servers that are not connected
             newServerList

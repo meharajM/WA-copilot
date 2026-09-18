@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from "react";
 import { Server, Terminal, Globe, Plus, Trash2 } from "lucide-react";
 import { MCPServer } from "../../stores/mcpStore";
+import { isElectron } from "../../lib/electron";
+import { isTauriRuntime } from "../../lib/tauri-native-bridge";
 
 interface McpServerFormProps {
   editingServer: MCPServer | null;
@@ -20,6 +22,7 @@ export function McpServerForm({
   onSubmit, 
   onCancel,
 }: McpServerFormProps) {
+  const browserRuntime = typeof window !== 'undefined' && !isElectron() && !isTauriRuntime();
   const [name, setName] = useState(
     editingServer?.name || DEFAULT_SEQUENTIAL_THINKING.name
   );
@@ -232,7 +235,9 @@ export function McpServerForm({
                 <div className="p-3 bg-[var(--color-warning)]/10 border border-[var(--color-warning)]/20 rounded-lg mb-3">
                     <p className="text-[var(--color-warning)] text-[11px] leading-relaxed flex gap-2">
                         <span className="shrink-0">⚠️</span>
-                        Secrets like API Keys are stored locally on this device only. We do not sync them to the cloud. If you switch devices or clear data, you will need to re-enter them.
+                        {browserRuntime
+                          ? 'Browser mode stores environment variable names only. Values remain unavailable until the supervised agentd MCP worker is migrated.'
+                          : 'Secrets like API Keys are stored locally on this device only. We do not sync them to the cloud. If you switch devices or clear data, you will need to re-enter them.'}
                     </p>
                 </div>
 
@@ -250,6 +255,7 @@ export function McpServerForm({
                                 placeholder="VALUE" 
                                 value={pair.value}
                                 type="password"
+                                disabled={browserRuntime}
                                 onChange={(e) => updateEnvPair(index, 'value', e.target.value)}
                                 className="flex-1 bg-[var(--color-input-bg)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-sm font-mono placeholder:text-[var(--color-text-dim)] text-[var(--color-text-primary)] focus:border-[var(--color-brand-teal)]/50 focus:outline-none"
                             />
