@@ -6,7 +6,9 @@ const net = require('node:net')
 const path = require('node:path')
 const tls = require('node:tls')
 const Database = require('better-sqlite3')
-const { isAllowedCredentialKey } = require('./keyring-credential-store.cjs')
+const { isPublicCredentialKey } = require('./keyring-credential-store.cjs')
+const { GmailOAuthService } = require('./gmail-oauth.cjs')
+const { GmailInboundWorker, pollGmail } = require('./gmail-api.cjs')
 const continuityMigration = require('./continuity-migration.cjs')
 const { sendTextEmail } = require('./email-transport.cjs')
 const { EmailInboundWorker, pollMailbox } = require('./email-inbound-worker.cjs')
@@ -467,7 +469,7 @@ function redactPayload(value, key = '') {
 }
 
 class AgentdServer {
-  constructor({ dataDir, secret, uiRoot = null, logger = console, pairingCode = null, credentials = null, providerFetch = fetch, emailProbe = probeEmailTransport, emailSend = sendTextEmail, emailPoll = undefined } = {}) {
+  constructor({ dataDir, secret, uiRoot = null, logger = console, pairingCode = null, credentials = null, providerFetch = fetch, emailProbe = probeEmailTransport, emailSend = sendTextEmail, emailPoll = undefined, gmailPoll: configuredGmailPoll = undefined } = {}) {
     if (!secret || typeof secret !== 'string' || secret.length < 32) throw new Error('A per-install bearer secret of at least 32 characters is required')
     this.dataDir = resolveDataDir(dataDir)
     this.secret = secret
@@ -478,7 +480,9 @@ class AgentdServer {
     this.emailProbe = emailProbe
     this.emailSend = emailSend
     this.emailPoll = emailPoll
+    this.gmailPoll = configuredGmailPoll
     this.emailInboundWorker = null
+    this.gmailOAuth = new GmailOAuthService({ credentials, fetchImpl: providerFetch, logger })
     this.server = null
     this.db = null
     this.lockDb = null
@@ -704,6 +708,13 @@ class AgentdServer {
       const chatCutoverColumns = this.db.prepare('PRAGMA table_info(chat_history_cutovers)').all()
       if (!chatCutoverColumns.some((column) => column.name === 'source_hash')) this.db.exec('ALTER TABLE chat_history_cutovers ADD COLUMN source_hash TEXT')
       this.db.prepare('INSERT INTO agent_state(key,value,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO NOTHING').run('paused', 'false', Date.now())
+      this.gmailOAuth.configureStateAccessors({
+        get: key => this.getState(key, null),
+        set: (key, value) => {
+          if (value === null || value === undefined) this.db.prepare('DELETE FROM agent_state WHERE key = ?').run(key)
+          else this.setState(key, value)
+        },
+      })
       this.restoreSettingsPersonaCutovers()
       this.restoreChatHistoryCutovers()
       await new Promise((resolve, reject) => {
@@ -854,32 +865,45 @@ class AgentdServer {
   startEmailInboundPolling() {
     if (this.migrationHold) return
     const settings = this.getEmailSettings()
-    if (!this.credentials || this.emailInboundWorker || !settings?.enabled
-      || !['imap-smtp', 'gmail-api'].includes(settings.provider)
-      || settings.gmailAuthMode !== 'app-password' || !settings.imapTls || !settings.imapHost) return
-    this.emailInboundWorker = new EmailInboundWorker({
-      credentials: this.credentials,
-      getSettings: () => this.getEmailSettings(),
-      getCursor: () => Number.parseInt(this.getState('email_imap_last_uid', '0'), 10) || 0,
-      setCursor: uid => this.setState('email_imap_last_uid', String(uid)),
-      poll: async (...args) => {
-        const release = this.beginActiveOperation()
-        if (!release) return []
-        try { return await (this.emailPoll || pollMailbox)(...args) } finally { release() }
-      },
-      logger: this.logger,
-      onMessage: async (settings, message) => {
-        if (this.migrationHold) return
-        const providerEventId = `imap:${settings.accountName}:${message.uid}`
-        const from = message.payload.from || 'unknown'
-        const messageId = message.payload.messageId || providerEventId
-        this.ingestEmailInbound({
-          providerEventId,
-          conversationId: `email::${from}::${messageId}`,
-          payload: message.payload,
-        })
-      },
-    })
+    if (this.emailInboundWorker || !settings?.enabled) return
+    const onMessage = async (settings, message) => {
+      if (this.migrationHold) return
+      const providerEventId = `${settings.provider === 'gmail-api' ? 'gmail' : 'imap'}:${settings.accountName}:${message.uid}`
+      const from = message.payload.from || 'unknown'
+      const messageId = message.payload.messageId || providerEventId
+      this.ingestEmailInbound({ providerEventId, conversationId: `email::${from}::${messageId}`, payload: message.payload })
+    }
+    if (settings.provider === 'gmail-api' && settings.gmailAuthMode === 'google-oauth') {
+      this.emailInboundWorker = new GmailInboundWorker({
+        oauth: this.gmailOAuth,
+        getSettings: () => this.getEmailSettings(),
+        getCursor: () => Number.parseInt(this.getState('email_gmail_last_sync_ms', '0'), 10) || 0,
+        setCursor: cursor => this.setState('email_gmail_last_sync_ms', String(cursor)),
+        poll: async (...args) => {
+          const release = this.beginActiveOperation()
+          if (!release) return { messages: [], nextCursor: 0 }
+          try { return await (this.gmailPoll || pollGmail)(...args) } finally { release() }
+        },
+        logger: this.logger,
+        onMessage,
+      })
+    } else if (this.credentials && ['imap-smtp', 'gmail-api'].includes(settings.provider)
+      && settings.gmailAuthMode === 'app-password' && settings.imapTls && settings.imapHost) {
+      this.emailInboundWorker = new EmailInboundWorker({
+        credentials: this.credentials,
+        getSettings: () => this.getEmailSettings(),
+        getCursor: () => Number.parseInt(this.getState('email_imap_last_uid', '0'), 10) || 0,
+        setCursor: uid => this.setState('email_imap_last_uid', String(uid)),
+        poll: async (...args) => {
+          const release = this.beginActiveOperation()
+          if (!release) return []
+          try { return await (this.emailPoll || pollMailbox)(...args) } finally { release() }
+        },
+        logger: this.logger,
+        onMessage,
+      })
+    }
+    if (!this.emailInboundWorker) return
     this.emailInboundWorker.start().catch(() => {})
   }
 
@@ -953,6 +977,10 @@ class AgentdServer {
     if (url.pathname === '/api/v1/settings/whatsapp' && ['GET', 'PUT'].includes(req.method)) return this.whatsappSettings(req, res)
     if (url.pathname === '/api/v1/settings/ollama' && ['GET', 'PUT'].includes(req.method)) return this.ollamaSettings(req, res)
     if (url.pathname === '/api/v1/settings/email' && ['GET', 'PUT'].includes(req.method)) return this.emailSettings(req, res)
+    if (url.pathname === '/api/v1/email/oauth/callback' && req.method === 'GET') return this.emailOAuthCallback(req, res, url)
+    if (url.pathname === '/api/v1/email/oauth/status' && req.method === 'GET') return this.emailOAuthStatus(req, res)
+    if (url.pathname === '/api/v1/email/oauth/start' && req.method === 'POST') return this.emailOAuthStart(req, res)
+    if (url.pathname === '/api/v1/email/oauth/signout' && req.method === 'POST') return this.emailOAuthSignOut(req, res)
     if (url.pathname === '/api/v1/email/test' && req.method === 'POST') return this.testEmail(req, res)
     if (url.pathname === '/api/v1/email/inbound/ack' && req.method === 'POST') return this.acknowledgeEmailInbound(req, res)
     if (url.pathname === '/api/v1/email/inbound/claim' && req.method === 'POST') return this.claimEmailInbound(req, res)
@@ -1035,7 +1063,7 @@ class AgentdServer {
     let key
     try { key = decodeURIComponent(encodedKey) }
     catch { return json(res, 400, { error: 'Invalid credential key' }) }
-    if (!isAllowedCredentialKey(key)) return json(res, 400, { error: 'Invalid credential key' })
+    if (!isPublicCredentialKey(key)) return json(res, 400, { error: 'Invalid credential key' })
     const mutation = req.method !== 'GET'
     this.authorize(req, { mutation })
     if (!this.credentials) return json(res, 503, { error: 'Credential store unavailable' })
@@ -1977,9 +2005,51 @@ class AgentdServer {
     const settings = parseEmailSettings(body)
     if (!settings) return json(res, 400, { error: 'Invalid email settings' })
     this.setState('email_settings', JSON.stringify(settings))
+    this.stopEmailInboundPolling()
     if (settings.enabled) this.startEmailInboundPolling()
-    else this.stopEmailInboundPolling()
     return json(res, 200, settings)
+  }
+
+  async emailOAuthStatus(req, res) {
+    this.authorize(req)
+    await this.gmailOAuth.initialize()
+    return json(res, 200, this.gmailOAuth.getStatus())
+  }
+
+  async emailOAuthStart(req, res) {
+    this.authorize(req, { mutation: true })
+    try {
+      return json(res, 200, await this.gmailOAuth.start(this.origin))
+    } catch {
+      return json(res, 409, { error: 'Google OAuth is not configured for this local agent' })
+    }
+  }
+
+  async emailOAuthSignOut(req, res) {
+    this.authorize(req, { mutation: true })
+    try {
+      await this.gmailOAuth.signOut()
+      return json(res, 200, { success: true })
+    } catch {
+      return json(res, 503, { success: false, error: 'Google OAuth disconnect failed' })
+    }
+  }
+
+  async emailOAuthCallback(req, res, url) {
+    try {
+      await this.gmailOAuth.complete({
+        code: url.searchParams.get('code'),
+        state: url.searchParams.get('state'),
+        error: url.searchParams.get('error'),
+      })
+      res.statusCode = 200
+      res.setHeader('content-type', 'text/html; charset=utf-8')
+      return res.end('<!doctype html><meta charset="utf-8"><title>Google sign-in complete</title><p>Google sign-in complete. Return to the AICA browser tab.</p>')
+    } catch {
+      res.statusCode = 400
+      res.setHeader('content-type', 'text/html; charset=utf-8')
+      return res.end('<!doctype html><meta charset="utf-8"><title>Google sign-in failed</title><p>Google sign-in could not be completed. Return to AICA and try again.</p>')
+    }
   }
 
   async testEmail(req, res) {
@@ -1987,14 +2057,27 @@ class AgentdServer {
     let stored = null
     try { stored = JSON.parse(this.getState('email_settings', 'null')) } catch {}
     const settings = parseEmailSettings(stored)
-    if (!settings || !settings.emailAddress || !settings.imapHost || !settings.smtpHost) {
+    const gmailOAuthTransport = settings?.provider === 'gmail-api' && settings?.gmailAuthMode === 'google-oauth'
+    if (!settings || !settings.emailAddress || (!gmailOAuthTransport && (!settings.imapHost || !settings.smtpHost))) {
       return json(res, 400, { success: false, error: 'Complete email settings before testing the connection' })
     }
     if (settings.provider === 'custom-mcp') {
       return json(res, 409, { success: false, error: 'Custom MCP email transport is not available in browser mode' })
     }
-    if (settings.provider === 'gmail-api' && settings.gmailAuthMode === 'google-oauth') {
-      return json(res, 409, { success: false, error: 'Gmail Google Sign-In requires the native OAuth flow; use app-password mode in browser mode' })
+    if (gmailOAuthTransport) {
+      try {
+        const token = await this.gmailOAuth.getAccessToken()
+        if (!token) return json(res, 409, { success: false, error: 'Google Sign-In is not connected' })
+        await this.gmailOAuth.request('/profile')
+        return json(res, 200, {
+          success: true,
+          credentialConfigured: true,
+          oauth: { signedIn: this.gmailOAuth.getStatus().signedIn, email: this.gmailOAuth.getStatus().email },
+          transport: { gmailApi: { reachable: true, tls: true } },
+        })
+      } catch {
+        return json(res, 502, { success: false, error: 'Gmail API could not be reached with the connected Google account' })
+      }
     }
     if (!this.credentials) return json(res, 503, { success: false, error: 'Credential store unavailable' })
     let credentialConfigured = false
@@ -2181,11 +2264,13 @@ class AgentdServer {
     if (!/^draft_[A-Za-z0-9_-]{1,120}$/.test(id)) return json(res, 400, { error: 'Invalid email draft id' })
     let settings = null
     try { settings = parseEmailSettings(JSON.parse(this.getState('email_settings', 'null'))) } catch {}
-    if (!settings || !settings.enabled || !['imap-smtp', 'gmail-api'].includes(settings.provider) || settings.gmailAuthMode !== 'app-password') {
-      return json(res, 409, { success: false, error: 'Browser email delivery requires an enabled app-password transport' })
+    const gmailOAuthTransport = settings?.provider === 'gmail-api' && settings?.gmailAuthMode === 'google-oauth'
+    if (!settings || !settings.enabled || !['imap-smtp', 'gmail-api'].includes(settings.provider)
+      || (!gmailOAuthTransport && settings.gmailAuthMode !== 'app-password')) {
+      return json(res, 409, { success: false, error: 'Browser email delivery requires an enabled supported transport' })
     }
-    if (!settings.smtpHost || !settings.emailAddress || !settings.userName) return json(res, 400, { success: false, error: 'Complete SMTP settings before sending email' })
-    if (!settings.smtpTls) return json(res, 409, { success: false, error: 'Browser email delivery requires SMTP TLS or STARTTLS' })
+    if (!settings.emailAddress || (!gmailOAuthTransport && (!settings.smtpHost || !settings.userName))) return json(res, 400, { success: false, error: 'Complete email delivery settings before sending email' })
+    if (!gmailOAuthTransport && !settings.smtpTls) return json(res, 409, { success: false, error: 'Browser email delivery requires SMTP TLS or STARTTLS' })
     const row = this.db.prepare('SELECT payload,status FROM email_drafts WHERE id = ?').get(id)
     if (!row) return json(res, 404, { error: 'Email draft not found' })
     const draft = parseEmailDraft(JSON.parse(row.payload))
@@ -2194,18 +2279,20 @@ class AgentdServer {
     if (draft.status !== 'approved') return json(res, 409, { success: false, error: 'Email draft must be approved before sending' })
     const releaseOperation = this.beginActiveOperation()
     if (!releaseOperation) return json(res, 409, { success: false, error: 'Settings migration is committing' })
-    if (!this.credentials) { releaseOperation(); return json(res, 503, { success: false, error: 'Credential store unavailable' }) }
+    if (!gmailOAuthTransport && !this.credentials) { releaseOperation(); return json(res, 503, { success: false, error: 'Credential store unavailable' }) }
     let password = null
-    for (const key of ['email_smtp_password', 'email_imap_password']) {
-      try {
-        password = await this.credentials.get(key)
-        if (password) break
-      } catch {
-        releaseOperation()
-        return json(res, 503, { success: false, error: 'Credential store operation failed' })
+    if (!gmailOAuthTransport) {
+      for (const key of ['email_smtp_password', 'email_imap_password']) {
+        try {
+          password = await this.credentials.get(key)
+          if (password) break
+        } catch {
+          releaseOperation()
+          return json(res, 503, { success: false, error: 'Credential store operation failed' })
+        }
       }
     }
-    if (!password) { releaseOperation(); return json(res, 400, { success: false, error: 'Email app password is not configured' }) }
+    if (!gmailOAuthTransport && !password) { releaseOperation(); return json(res, 400, { success: false, error: 'Email app password is not configured' }) }
     const lockNow = Date.now()
     this.db.prepare('DELETE FROM email_delivery_locks WHERE draft_id = ? AND started_at < ?').run(id, lockNow - 10 * 60 * 1000)
     try {
@@ -2217,19 +2304,29 @@ class AgentdServer {
     const recipient = draft.replyTo || draft.originalFrom
     try {
       this.assertMigrationOpen()
-      await this.emailSend({
-        host: settings.smtpHost,
-        port: settings.smtpPort,
-        secure: settings.smtpTls,
-        username: settings.userName || settings.emailAddress,
-        password,
-        from: settings.emailAddress,
-        to: recipient,
-        subject: draft.originalSubject ? (draft.originalSubject.startsWith('Re:') ? draft.originalSubject : `Re: ${draft.originalSubject}`) : '(no subject)',
-        body: draft.responseText,
-        inReplyTo: draft.inReplyTo,
-        references: draft.references,
-      })
+      if (gmailOAuthTransport) {
+        await this.gmailOAuth.sendText({
+          to: recipient,
+          subject: draft.originalSubject ? (draft.originalSubject.startsWith('Re:') ? draft.originalSubject : `Re: ${draft.originalSubject}`) : '(no subject)',
+          body: draft.responseText,
+          inReplyTo: draft.inReplyTo,
+          references: draft.references,
+        })
+      } else {
+        await this.emailSend({
+          host: settings.smtpHost,
+          port: settings.smtpPort,
+          secure: settings.smtpTls,
+          username: settings.userName || settings.emailAddress,
+          password,
+          from: settings.emailAddress,
+          to: recipient,
+          subject: draft.originalSubject ? (draft.originalSubject.startsWith('Re:') ? draft.originalSubject : `Re: ${draft.originalSubject}`) : '(no subject)',
+          body: draft.responseText,
+          inReplyTo: draft.inReplyTo,
+          references: draft.references,
+        })
+      }
       const sent = { ...draft, status: 'sent' }
       this.db.prepare('UPDATE email_drafts SET status = ?, payload = ?, updated_at = ? WHERE id = ? AND status = ?').run('sent', JSON.stringify(sent), Date.now(), id, 'approved')
       this.db.prepare('DELETE FROM email_delivery_locks WHERE draft_id = ?').run(id)

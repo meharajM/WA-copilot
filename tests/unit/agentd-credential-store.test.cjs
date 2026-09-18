@@ -2,7 +2,7 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
 const test = require('node:test')
-const { KeyringCredentialStore, isAllowedCredentialKey } = require('../../agentd/keyring-credential-store.cjs')
+const { KeyringCredentialStore, isAllowedCredentialKey, isPublicCredentialKey } = require('../../agentd/keyring-credential-store.cjs')
 const { makeTempDir } = require('./temp-dir.cjs')
 
 test('keyring adapter sends secret values only over stdin and supports allowlisted operations', async () => {
@@ -16,6 +16,9 @@ test('keyring adapter sends secret values only over stdin and supports allowlist
     assert.equal(isAllowedCredentialKey('openai_api_key'), true)
     assert.equal(isAllowedCredentialKey('user_demo_openai_api_key'), true)
     assert.equal(isAllowedCredentialKey('user_demo_openai_api_key_extra'), false)
+    assert.equal(isAllowedCredentialKey('gmail_oauth_refresh_token'), true)
+    assert.equal(isPublicCredentialKey('gmail_oauth_refresh_token'), false)
+    assert.equal(isPublicCredentialKey('user_demo_gmail_oauth_refresh_token'), false)
     assert.equal(isAllowedCredentialKey('arbitrary'), false)
     assert.equal(await store.exists('openai_api_key'), false)
     await store.set('openai_api_key', 'secret-not-in-args')

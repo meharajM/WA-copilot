@@ -336,6 +336,26 @@ describe('browser agentd client', () => {
     expect(new Headers(probe?.[1]?.headers).get('x-csrf-token')).toBe('csrf-token')
   })
 
+  it('starts, validates, and signs out browser Gmail OAuth without exposing tokens', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = []
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      calls.push({ url, init })
+      if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
+      if (url.endsWith('/api/v1/email/oauth/status')) return response({ signedIn: true, email: 'owner@example.test', requiresReauthentication: false })
+      if (url.endsWith('/api/v1/email/oauth/start')) return response({ authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth?client_id=client&state=state', expiresAt: Date.now() + 60_000 })
+      if (url.endsWith('/api/v1/email/oauth/signout')) return response({ success: true })
+      return response({ success: true })
+    })
+    const client = createBrowserAgentdClient({ origin: 'http://127.0.0.1:4141', fetch: fetcher })
+    await client.pair('123456')
+    await expect(client.getGmailOAuthStatus()).resolves.toEqual({ signedIn: true, email: 'owner@example.test', requiresReauthentication: false })
+    await expect(client.startGmailOAuth()).resolves.toMatchObject({ authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth?client_id=client&state=state' })
+    await expect(client.signOutGmailOAuth()).resolves.toBeUndefined()
+    expect(calls.some(call => call.url.endsWith('/api/v1/email/oauth/start') && new Headers(call.init?.headers).get('x-csrf-token') === 'csrf-token')).toBe(true)
+    expect(JSON.stringify(calls).includes('refresh_token')).toBe(false)
+  })
+
   it('sends explicit browser WhatsApp text through the authenticated Cloud route', async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = []
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

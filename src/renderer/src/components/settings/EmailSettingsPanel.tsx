@@ -133,7 +133,7 @@ export function EmailSettingsPanel() {
   const wantsGmailOAuth = localProvider === 'gmail-api' && localGmailAuthMode === 'google-oauth'
   const readyForVerify = useMemo(() => {
     if (wantsGmailOAuth) {
-      return isElectron() ? oauthStatus.signedIn : true
+      return oauthStatus.signedIn
     }
     // Browser keeps password in agentd's credential store. Let server report
     // missing credentials instead of requiring renderer to read them back.
@@ -162,6 +162,8 @@ export function EmailSettingsPanel() {
         if (result.success && result.value) setLocalPassword(result.value)
       }).catch(() => {})
       electron.emailOAuth.initialize().then(setOauthStatus).catch(() => {})
+    } else {
+      getBrowserAgentdClient().getGmailOAuthStatus().then(setOauthStatus).catch(() => {})
     }
   }, [])
 
@@ -201,13 +203,34 @@ export function EmailSettingsPanel() {
   }
 
   const handleGoogleOAuthSignIn = async () => {
-    if (!isElectron()) {
-      setTestState({ status: 'error', message: 'Google Sign-In is unavailable in browser mode. Use Gmail app-password mode or continue in Electron until native OAuth migration is complete.' })
-      return
-    }
     setOauthBusy(true)
     try {
-      const status = await electron.emailOAuth.signInGoogle()
+      let status
+      if (isElectron()) {
+        status = await electron.emailOAuth.signInGoogle()
+      } else {
+        const client = getBrowserAgentdClient()
+        const started = await client.startGmailOAuth()
+        const popup = window.open(started.authorizationUrl, 'aica-google-oauth', 'popup,width=640,height=760')
+        if (!popup) throw new Error('Allow pop-ups for the local AICA workspace, then try again.')
+        const deadline = Math.min(started.expiresAt, Date.now() + 3 * 60 * 1000)
+        status = await new Promise<typeof oauthStatus>((resolve, reject) => {
+          let timer: number | undefined
+          const poll = async () => {
+            try {
+              const next = await client.getGmailOAuthStatus()
+              setOauthStatus(next)
+              if (next.signedIn) { if (timer !== undefined) window.clearTimeout(timer); resolve(next); return }
+              if (Date.now() >= deadline) { if (timer !== undefined) window.clearTimeout(timer); reject(new Error('Google Sign-In timed out.')) ; return }
+              timer = window.setTimeout(() => { void poll() }, 1000)
+            } catch (error) {
+              if (timer !== undefined) window.clearTimeout(timer)
+              reject(error)
+            }
+          }
+          void poll()
+        })
+      }
       setOauthStatus(status)
       if (status.email) setLocalEmail(status.email)
     } catch (error) {
@@ -219,13 +242,10 @@ export function EmailSettingsPanel() {
   }
 
   const handleGoogleOAuthSignOut = async () => {
-    if (!isElectron()) {
-      setTestState({ status: 'error', message: 'Google Sign-In is unavailable in browser mode.' })
-      return
-    }
     setOauthBusy(true)
     try {
-      await electron.emailOAuth.signOut()
+      if (isElectron()) await electron.emailOAuth.signOut()
+      else await getBrowserAgentdClient().signOutGmailOAuth()
       setOauthStatus({ signedIn: false, email: null, requiresReauthentication: false })
     } finally {
       setOauthBusy(false)
@@ -269,7 +289,9 @@ export function EmailSettingsPanel() {
         const result = await getBrowserAgentdClient().testEmail()
         setTestState({
           status: 'success',
-          message: `Secure transport reachable (IMAP ${result.transport.imap.tls ? 'TLS' : 'plain'}, SMTP ${result.transport.smtp.tls ? 'TLS' : 'plain'}). The daemon mailbox worker and approved-draft delivery still require their explicit browser gates.`,
+          message: result.transport.gmailApi
+            ? `Gmail API reachable for ${result.oauth?.email || 'the connected account'}. The daemon mailbox worker and approved-draft delivery still require their explicit browser gates.`
+            : `Secure transport reachable (IMAP ${result.transport.imap?.tls ? 'TLS' : 'plain'}, SMTP ${result.transport.smtp?.tls ? 'TLS' : 'plain'}). The daemon mailbox worker and approved-draft delivery still require their explicit browser gates.`,
         })
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
@@ -351,7 +373,7 @@ export function EmailSettingsPanel() {
         <Sparkles size={18} className="text-[var(--color-brand-teal)] shrink-0 mt-0.5" />
         <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed">
           {browserRuntime
-            ? <><strong>Browser setup:</strong> agentd stores mailbox settings and credentials, performs a bounded secure-transport probe, and runs text-only IMAP/SMTP workers when their TLS, app-password, enable, and approval gates pass.</>
+            ? <><strong>Browser setup:</strong> agentd stores mailbox settings and credentials, performs a bounded secure-transport or Gmail API probe, and runs text-only IMAP/Gmail workers when their OAuth/app-password, TLS, enable, and approval gates pass.</>
             : <><strong>Client-side setup:</strong> choose a mailbox preset, use an app password by default, test the local IMAP/SMTP bridge, then go live.</>}
           {' '}Keep Draft Mode on and Auto-Reply off until verification is complete.
         </p>
@@ -451,12 +473,12 @@ export function EmailSettingsPanel() {
           <div className="space-y-3 pt-2 border-t border-[var(--color-border)]">
             <p className="text-xs text-[var(--color-text-dim)]">
               {browserRuntime
-                ? 'Browser mode stores Gmail settings in agentd. The recommended path is an app password over the bounded agentd IMAP/SMTP workers.'
+                ? 'Browser mode stores Gmail settings in agentd. Use Google Sign-In for the Gmail API worker, or an app password for bounded IMAP/SMTP.'
                 : 'Gmail stays client-side here. The recommended path is an app password over IMAP/SMTP.'}
             </p>
             <p className="text-xs text-[var(--color-text-dim)]">
               {browserRuntime
-                ? 'Google Sign-In is unavailable in browser mode. Use App Password until the native OAuth flow is migrated.'
+                ? 'Google Sign-In opens in a separate browser tab; the refresh token stays in the agentd OS credential store.'
                 : 'Google sign-in remains optional if runtime OAuth is configured, but it is not required for the local bridge.'}
             </p>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -480,7 +502,7 @@ export function EmailSettingsPanel() {
                 }`}
               >
                 <p className="text-sm font-semibold text-[var(--color-text-primary)]">Google Sign-In</p>
-                <p className="mt-1 text-xs text-[var(--color-text-dim)]">{browserRuntime ? 'Native OAuth migration is pending; this mode cannot be tested in browser mode.' : 'Only use this when app-managed Gmail OAuth is configured.'}</p>
+                <p className="mt-1 text-xs text-[var(--color-text-dim)]">{browserRuntime ? 'Uses the local agentd OAuth callback and Gmail API; refresh tokens never enter page state.' : 'Only use this when app-managed Gmail OAuth is configured.'}</p>
               </button>
             </div>
             {localGmailAuthMode === 'app-password' && (
@@ -495,7 +517,7 @@ export function EmailSettingsPanel() {
               {!oauthStatus.signedIn ? (
                 <button
                   onClick={handleGoogleOAuthSignIn}
-                  disabled={!isElectron() || oauthBusy}
+                  disabled={oauthBusy}
                   className="flex items-center gap-2 bg-[var(--color-brand-teal)]/20 hover:bg-[var(--color-brand-teal)]/30 text-[var(--color-brand-teal)] px-4 py-2 rounded-lg text-sm font-semibold disabled:opacity-50"
                 >
                   <LogIn size={14} />
@@ -504,7 +526,7 @@ export function EmailSettingsPanel() {
               ) : (
                 <button
                   onClick={handleGoogleOAuthSignOut}
-                  disabled={!isElectron() || oauthBusy}
+                  disabled={oauthBusy}
                   className="flex items-center gap-2 bg-red-500/15 hover:bg-red-500/25 text-red-300 px-4 py-2 rounded-lg text-sm font-semibold"
                 >
                   <LogOut size={14} />
@@ -512,11 +534,9 @@ export function EmailSettingsPanel() {
                 </button>
               )}
               <span className="text-xs text-[var(--color-text-dim)]">
-                {!isElectron()
-                  ? 'Unavailable in browser mode — use App Password'
-                  : oauthStatus.requiresReauthentication
-                    ? 'Authorization expired — sign in again'
-                    : oauthStatus.signedIn ? `Connected as ${oauthStatus.email || 'Google account'}` : 'Not connected'}
+                {oauthStatus.requiresReauthentication
+                  ? 'Authorization expired — sign in again'
+                  : oauthStatus.signedIn ? `Connected as ${oauthStatus.email || 'Google account'}` : 'Not connected'}
               </span>
             </div>
             )}
@@ -667,7 +687,7 @@ export function EmailSettingsPanel() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm text-[var(--color-text-primary)] font-medium">Enable Email Channel</p>
-              <p className="text-xs text-[var(--color-text-dim)]">{browserRuntime ? 'Starts bounded daemon IMAP polling when the app-password, TLS, host, and credential gates pass.' : 'Turns on background email processing'}</p>
+              <p className="text-xs text-[var(--color-text-dim)]">{browserRuntime ? 'Starts bounded daemon IMAP polling for app-password mode or Gmail API polling after Google Sign-In; each path has separate TLS, credential, and enable gates.' : 'Turns on background email processing'}</p>
             </div>
             <button onClick={() => setEnabled(!config.enabled)} className={config.enabled ? 'text-green-400' : 'text-[var(--color-text-muted)]'}>
               {config.enabled ? <ToggleRight size={28} /> : <ToggleLeft size={28} />}
@@ -701,7 +721,7 @@ export function EmailSettingsPanel() {
         <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg p-3 text-xs text-[var(--color-text-dim)] flex gap-2">
           <Info size={14} className="shrink-0 mt-0.5" />
           {browserRuntime
-            ? 'Browser mode uses authenticated local agentd for bounded text-only IMAP polling and approved SMTP delivery. OAuth, HTML/multipart, attachments, and unsupported providers remain fail-closed; the daemon connects directly to the selected mailbox provider.'
+            ? 'Browser mode uses authenticated local agentd for bounded text-only IMAP/Gmail polling and approved SMTP/Gmail delivery. HTML/multipart, attachments, custom MCP, and unsupported providers remain fail-closed; the daemon connects directly to the selected mailbox provider.'
             : 'This email channel runs as a local client connector. No hosted mail server is required for Gmail, Outlook, or other IMAP/SMTP providers.'}
         </div>
       </Card>

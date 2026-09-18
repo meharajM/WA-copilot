@@ -10,18 +10,34 @@ const ALLOWED_CREDENTIAL_KEYS = new Set([
   'email_imap_password',
   'email_smtp_password',
   'gmail_oauth_client_id',
+  'gmail_oauth_refresh_token',
   'whatsapp_cloud_access_token',
   'whatsapp_cloud_app_secret',
   'whatsapp_cloud_verify_token',
 ])
+const INTERNAL_CREDENTIAL_KEYS = new Set(['gmail_oauth_refresh_token'])
 
 function isAllowedCredentialKey(key) {
-  if (ALLOWED_CREDENTIAL_KEYS.has(key)) return true
-  return [...ALLOWED_CREDENTIAL_KEYS].some((allowedKey) => {
+  if (ALLOWED_CREDENTIAL_KEYS.has(key) || INTERNAL_CREDENTIAL_KEYS.has(key)) return true
+  return [...new Set([...ALLOWED_CREDENTIAL_KEYS, ...INTERNAL_CREDENTIAL_KEYS])].some((allowedKey) => {
     const suffix = `_${allowedKey}`
     if (!key.startsWith('user_') || !key.endsWith(suffix)) return false
     return /^[A-Za-z0-9_-]{1,128}$/.test(key.slice(5, -suffix.length))
   })
+}
+
+function isInternalCredentialKey(key) {
+  if (INTERNAL_CREDENTIAL_KEYS.has(key)) return true
+  return [...INTERNAL_CREDENTIAL_KEYS].some((allowedKey) => {
+    const suffix = `_${allowedKey}`
+    return key.startsWith('user_') && key.endsWith(suffix)
+      && /^[A-Za-z0-9_-]{1,128}$/.test(key.slice(5, -suffix.length))
+  })
+}
+
+function isPublicCredentialKey(key) {
+  if (isInternalCredentialKey(key)) return false
+  return isAllowedCredentialKey(key)
 }
 
 class KeyringCredentialStore {
@@ -112,4 +128,4 @@ class KeyringCredentialStore {
   }
 }
 
-module.exports = { KeyringCredentialStore, isAllowedCredentialKey }
+module.exports = { KeyringCredentialStore, isAllowedCredentialKey, isPublicCredentialKey }

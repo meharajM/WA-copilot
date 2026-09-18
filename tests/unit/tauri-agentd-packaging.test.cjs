@@ -32,6 +32,8 @@ test('Tauri package declares fixed agentd runtime, entrypoint, and keyring helpe
 
 test('Windows sidecar preparation preserves executable extensions', () => {
   const preparation = fs.readFileSync(path.join(root, 'scripts/prepare-tauri-agentd.mjs'), 'utf8')
+  assert.match(preparation, /gmail-oauth\.cjs/)
+  assert.match(preparation, /gmail-api\.cjs/)
   assert.match(preparation, /agentd-runtime\$\{process\.platform === 'win32' \? '\.exe' : ''\}/)
   assert.match(preparation, /staleRuntimePath = join\(sidecarRoot, `agentd-runtime\$\{process\.platform === 'win32' \? '' : '\.exe'\}`\)/)
   assert.match(preparation, /await rm\(staleRuntimePath, \{ force: true \}\)\s+await cp\(process\.execPath, runtimePath\)/)

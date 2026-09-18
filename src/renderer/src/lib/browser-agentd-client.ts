@@ -54,9 +54,17 @@ export interface BrowserEmailTestResult {
   success: true
   credentialConfigured: true
   transport: {
-    imap: { reachable: true; tls: boolean }
-    smtp: { reachable: true; tls: boolean }
+    imap?: { reachable: true; tls: boolean }
+    smtp?: { reachable: true; tls: boolean }
+    gmailApi?: { reachable: true; tls: true }
   }
+  oauth?: { signedIn: boolean; email: string | null }
+}
+
+export interface BrowserGmailOAuthStatus {
+  signedIn: boolean
+  email: string | null
+  requiresReauthentication: boolean
 }
 
 export interface BrowserMcpLifecycle {
@@ -494,6 +502,9 @@ export interface BrowserAgentdClient extends ChatClient {
   getEmailSettings(): Promise<EmailSettings>
   saveEmailSettings(settings: EmailSettings): Promise<EmailSettings>
   testEmail(): Promise<BrowserEmailTestResult>
+  getGmailOAuthStatus(): Promise<BrowserGmailOAuthStatus>
+  startGmailOAuth(): Promise<{ authorizationUrl: string; expiresAt: number }>
+  signOutGmailOAuth(): Promise<void>
   ingestEmailInbound(event: { providerEventId: string; conversationId: string; payload: BrowserEmailInboundEvent['payload'] }): Promise<{ accepted: true; duplicate: boolean; id: number }>
   claimEmailInbound(limit?: number): Promise<BrowserEmailInboundEvent[]>
   listEmailInbound(afterId?: number, limit?: number, status?: Extract<BrowserEmailInboundEvent['status'], 'queued' | 'processing' | 'completed'>): Promise<{ events: BrowserEmailInboundEvent[]; nextAfterId: number }>
@@ -797,13 +808,34 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
   }
   const getEmailSettings = async () => readEmailSettings(await request('/api/v1/settings/email'))
   const saveEmailSettings = async (settings: EmailSettings) => readEmailSettings(await request('/api/v1/settings/email', { method: 'PUT', body: JSON.stringify(settings) }, true))
+  const readGmailOAuthStatus = (value: unknown): BrowserGmailOAuthStatus => {
+    if (!isRecord(value) || typeof value.signedIn !== 'boolean' || (value.email !== null && typeof value.email !== 'string') || typeof value.requiresReauthentication !== 'boolean') throw new Error('Invalid Gmail OAuth status response')
+    return { signedIn: value.signedIn, email: value.email as string | null, requiresReauthentication: value.requiresReauthentication }
+  }
+  const getGmailOAuthStatus = async () => readGmailOAuthStatus(await request('/api/v1/email/oauth/status'))
+  const startGmailOAuth = async (): Promise<{ authorizationUrl: string; expiresAt: number }> => {
+    const value = await request<unknown>('/api/v1/email/oauth/start', { method: 'POST', body: '{}' }, true)
+    if (!isRecord(value) || typeof value.authorizationUrl !== 'string' || !Number.isSafeInteger(value.expiresAt)) throw new Error('Invalid Gmail OAuth start response')
+    let url: URL
+    try { url = new URL(value.authorizationUrl) } catch { throw new Error('Invalid Gmail OAuth authorization URL') }
+    if (url.protocol !== 'https:' || url.hostname !== 'accounts.google.com' || url.pathname !== '/o/oauth2/v2/auth' || url.username || url.password) throw new Error('Invalid Gmail OAuth authorization URL')
+    return { authorizationUrl: url.toString(), expiresAt: value.expiresAt as number }
+  }
+  const signOutGmailOAuth = async (): Promise<void> => {
+    const value = await request<unknown>('/api/v1/email/oauth/signout', { method: 'POST', body: '{}' }, true)
+    if (!isRecord(value) || value.success !== true) throw new Error('Invalid Gmail OAuth sign-out response')
+  }
   const testEmail = async (): Promise<BrowserEmailTestResult> => {
     const value = await request<unknown>('/api/v1/email/test', { method: 'POST', body: '{}' }, true)
-    if (!isRecord(value) || value.success !== true || value.credentialConfigured !== true || !isRecord(value.transport)
-      || !isRecord(value.transport.imap) || value.transport.imap.reachable !== true || typeof value.transport.imap.tls !== 'boolean'
-      || !isRecord(value.transport.smtp) || value.transport.smtp.reachable !== true || typeof value.transport.smtp.tls !== 'boolean') {
+    if (!isRecord(value) || value.success !== true || value.credentialConfigured !== true || !isRecord(value.transport)) {
       throw new Error('Invalid email test response')
     }
+    const transport = value.transport
+    const validImapSmtp = isRecord(transport.imap) && transport.imap.reachable === true && typeof transport.imap.tls === 'boolean'
+      && isRecord(transport.smtp) && transport.smtp.reachable === true && typeof transport.smtp.tls === 'boolean'
+    const validGmail = isRecord(transport.gmailApi) && transport.gmailApi.reachable === true && transport.gmailApi.tls === true
+    if (!validImapSmtp && !validGmail) throw new Error('Invalid email test response')
+    if (value.oauth !== undefined && (!isRecord(value.oauth) || typeof value.oauth.signedIn !== 'boolean' || (value.oauth.email !== null && typeof value.oauth.email !== 'string'))) throw new Error('Invalid email test response')
     return value as unknown as BrowserEmailTestResult
   }
   const ingestEmailInbound = async (event: { providerEventId: string; conversationId: string; payload: BrowserEmailInboundEvent['payload'] }) => {
@@ -1067,6 +1099,9 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     getEmailSettings,
     saveEmailSettings,
     testEmail,
+    getGmailOAuthStatus,
+    startGmailOAuth,
+    signOutGmailOAuth,
     ingestEmailInbound,
     claimEmailInbound,
     listEmailInbound,

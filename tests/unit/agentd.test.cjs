@@ -165,6 +165,7 @@ test('agentd exposes allowlisted credential set, presence, and delete without re
   assert.equal((await request(origin, 'GET', '/api/v1/credentials/openai_api_key', undefined, auth)).body.exists, true)
   assert.equal((await request(origin, 'GET', '/api/v1/credentials/user_demo_openai_api_key', undefined, auth)).body.exists, false)
   assert.equal((await request(origin, 'GET', '/api/v1/credentials/arbitrary', undefined, auth)).status, 400)
+  assert.equal((await request(origin, 'GET', '/api/v1/credentials/gmail_oauth_refresh_token', undefined, auth)).status, 400)
   assert.equal((await request(origin, 'DELETE', '/api/v1/credentials/openai_api_key', undefined, session)).body.success, true)
   assert.equal((await request(origin, 'GET', '/api/v1/credentials/openai_api_key', undefined, auth)).body.exists, false)
   assert.equal(records.size, 0)

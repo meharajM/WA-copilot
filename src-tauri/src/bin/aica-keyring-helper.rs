@@ -15,6 +15,7 @@ const PRODUCT_SECRET_KEYS: &[&str] = &[
     "email_imap_password",
     "email_smtp_password",
     "gmail_oauth_client_id",
+    "gmail_oauth_refresh_token",
     "whatsapp_cloud_access_token",
     "whatsapp_cloud_app_secret",
     "whatsapp_cloud_verify_token",
@@ -161,6 +162,7 @@ mod tests {
     fn allowlist_contains_product_secrets_and_daemon_secret_only() {
         assert!(key_allowed("openai_api_key"));
         assert!(key_allowed("whatsapp_cloud_verify_token"));
+        assert!(key_allowed("gmail_oauth_refresh_token"));
         assert!(key_allowed("agentd_bearer_secret"));
         assert!(key_allowed("user_501_openai_api_key"));
         assert!(key_allowed(

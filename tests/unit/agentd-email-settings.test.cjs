@@ -89,9 +89,9 @@ test('agentd email transport test probes server-side and never returns credentia
   fs.rmSync(dataDir, { recursive: true, force: true })
 })
 
-test('agentd browser email test rejects OAuth and custom MCP instead of pretending parity', async () => {
+test('agentd browser email test rejects unauthenticated OAuth and custom MCP without probing', async () => {
   const dataDir = makeTempDir('aica-agentd-email-gated-')
-  const credentials = { exists: async () => true, get: async () => 'secret', set: async () => {}, delete: async () => {} }
+  const credentials = { exists: async () => false, get: async () => null, set: async () => {}, delete: async () => {} }
   const server = new AgentdServer({ dataDir, secret: 'u'.repeat(32), credentials, emailProbe: async () => { throw new Error('must not probe') }, logger: { log() {} } })
   const { origin } = await server.start()
   const auth = { authorization: `Bearer ${'u'.repeat(32)}` }
