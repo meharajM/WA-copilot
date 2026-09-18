@@ -3,6 +3,7 @@ const fs = require('node:fs/promises')
 const os = require('node:os')
 const path = require('node:path')
 const test = require('node:test')
+const { pathToFileURL } = require('node:url')
 
 const script = path.resolve(__dirname, '../../scripts/verify-tauri-resources.mjs')
 
@@ -34,7 +35,7 @@ async function fixture() {
 }
 
 async function verify(options) {
-  const module = await import(script)
+  const module = await import(pathToFileURL(script).href)
   return module.verifyTauriResources(options)
 }
 
