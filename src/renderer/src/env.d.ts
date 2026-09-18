@@ -235,10 +235,10 @@ interface ElectronAPI {
         onDeliveryStatus: (callback: (status: unknown) => void) => () => void
     }
     emailOAuth?: {
-        initialize: () => Promise<{ signedIn: boolean; email: string | null }>
-        signInGoogle: () => Promise<{ signedIn: boolean; email: string | null }>
+        initialize: () => Promise<{ signedIn: boolean; email: string | null; requiresReauthentication: boolean }>
+        signInGoogle: () => Promise<{ signedIn: boolean; email: string | null; requiresReauthentication: boolean }>
         signOut: () => Promise<{ success: boolean }>
-        getStatus: () => Promise<{ signedIn: boolean; email: string | null }>
+        getStatus: () => Promise<{ signedIn: boolean; email: string | null; requiresReauthentication: boolean }>
         getAccessToken: () => Promise<{ token: string | null }>
     }
 }

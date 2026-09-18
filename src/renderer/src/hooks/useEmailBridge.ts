@@ -213,7 +213,9 @@ export function useEmailBridge(): void {
       if (wantsGmailOAuth && !oauthStatus.signedIn) {
         setConnectionState({
           status: 'error',
-          error: 'Gmail is set to Google sign-in, but the Google account is not connected.',
+          error: oauthStatus.requiresReauthentication
+            ? 'Gmail authorization expired or was revoked. Sign in with Google again.'
+            : 'Gmail is set to Google sign-in, but the Google account is not connected.',
           lastSyncAt: null,
           unreadCount: 0
         })

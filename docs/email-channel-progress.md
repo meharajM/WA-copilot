@@ -11,7 +11,7 @@ For QA pass/fail expectations, treat [docs/app-behavior.md](/Users/meharaj/WA-co
 The repo’s main architecture doc is WhatsApp-oriented. Email currently has two explicit runtime paths:
 
 - Electron owns the legacy/native path: renderer settings, the Zustand store and bridge hook; the main process owns MCP email-server spawn, IMAP/Gmail polling and outbound delivery; IPC connects those layers.
-- Browser mode owns the migrated agentd slice: authenticated settings/credential writes, bounded secure-transport probes, daemon-owned app-password IMAP polling for text/plain messages, gated SMTP delivery for approved text drafts, queued inbound-event consumption, and durable draft/session records. OAuth/Gmail API, rich MIME, attachments, and unsupported providers remain unavailable.
+- Browser mode owns the migrated agentd slice: authenticated settings/credential writes, bounded secure-transport probes, daemon-owned app-password IMAP polling for text/plain messages, gated SMTP delivery for approved text drafts, queued inbound-event consumption, and durable draft/session records. OAuth/Gmail API, rich MIME, attachments, and unsupported providers remain unavailable. When an Electron Gmail OAuth session expires or is revoked, native status explicitly requires reauthentication; browser mode continues to direct the owner to app-password setup until native OAuth is migrated.
 - Both paths map email sessions into chat sessions using deterministic thread keys.
 
 Electron flow:

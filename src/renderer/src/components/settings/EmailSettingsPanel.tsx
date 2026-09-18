@@ -125,7 +125,7 @@ export function EmailSettingsPanel() {
   const [isSaving, setIsSaving] = useState(false)
   const [saveStatus, setSaveStatus] = useState<'idle' | 'success' | 'error'>('idle')
   const [testState, setTestState] = useState<TestState>({ status: 'idle' })
-  const [oauthStatus, setOauthStatus] = useState<{ signedIn: boolean; email: string | null }>({ signedIn: false, email: null })
+  const [oauthStatus, setOauthStatus] = useState<{ signedIn: boolean; email: string | null; requiresReauthentication: boolean }>({ signedIn: false, email: null, requiresReauthentication: false })
   const [oauthBusy, setOauthBusy] = useState(false)
 
   const browserRuntime = !isElectron()
@@ -226,7 +226,7 @@ export function EmailSettingsPanel() {
     setOauthBusy(true)
     try {
       await electron.emailOAuth.signOut()
-      setOauthStatus({ signedIn: false, email: null })
+      setOauthStatus({ signedIn: false, email: null, requiresReauthentication: false })
     } finally {
       setOauthBusy(false)
     }
@@ -514,7 +514,9 @@ export function EmailSettingsPanel() {
               <span className="text-xs text-[var(--color-text-dim)]">
                 {!isElectron()
                   ? 'Unavailable in browser mode — use App Password'
-                  : oauthStatus.signedIn ? `Connected as ${oauthStatus.email || 'Google account'}` : 'Not connected'}
+                  : oauthStatus.requiresReauthentication
+                    ? 'Authorization expired — sign in again'
+                    : oauthStatus.signedIn ? `Connected as ${oauthStatus.email || 'Google account'}` : 'Not connected'}
               </span>
             </div>
             )}

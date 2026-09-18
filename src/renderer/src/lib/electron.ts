@@ -677,13 +677,13 @@ export const electron = {
             if (isElectron() && window.electron?.emailOAuth) {
                 return window.electron.emailOAuth.initialize()
             }
-            return { signedIn: false, email: null }
+            return { signedIn: false, email: null, requiresReauthentication: false }
         },
         signInGoogle: async () => {
             if (isElectron() && window.electron?.emailOAuth) {
                 return window.electron.emailOAuth.signInGoogle()
             }
-            return { signedIn: false, email: null }
+            return { signedIn: false, email: null, requiresReauthentication: false }
         },
         signOut: async () => {
             if (isElectron() && window.electron?.emailOAuth) {
@@ -695,7 +695,7 @@ export const electron = {
             if (isElectron() && window.electron?.emailOAuth) {
                 return window.electron.emailOAuth.getStatus()
             }
-            return { signedIn: false, email: null }
+            return { signedIn: false, email: null, requiresReauthentication: false }
         },
         getAccessToken: async () => {
             if (isElectron() && window.electron?.emailOAuth) {
