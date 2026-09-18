@@ -114,24 +114,23 @@
 <div class="container">
     <header class="manual-header">
         <h1 class="manual-title">System Technical Reference</h1>
-        <p class="manual-subtitle">AIConsumerAgent v1.2 • Engineering Documentation</p>
+        <p class="manual-subtitle">AIConsumerAgent v1.2 • Browser-first migration reference</p>
     </header>
 
     <section id="infrastructure">
         <h2>1. Infrastructure Overview</h2>
         <p>
-            AIConsumerAgent is a multi-process Electron application designed for privacy-first, self-hosted WhatsApp automation. Unlike cloud-based SaaS solutions, the application runs entirely on your local hardware, keeping all Signal Protocol keys and SQLite databases under your direct control.
+            The supported product workspace runs in Windows Edge or Chrome and connects to a paired, owner-supervised <b>agentd</b> service on the same machine. The lightweight Tauri companion supplies native OS capabilities such as keychain access, file/folder dialogs, lifecycle controls, and diagnostics. Electron remains a transition client while browser and agentd parity is completed.
         </p>
         
         <h3>1.1 Compute Layer</h3>
         <p>
-            The system utilizes <b>Electron IPC (Inter-Process Communication)</b> to separate heavy LLM reasoning and WhatsApp bridge activities. 
-            The <span class="code">Main Process</span> handles raw network sockets and WhatsApp Signal sessions via <b>Baileys</b>, while the <span class="code">Renderer Process</span> manages the React-based UI and the asynchronous Agent Runtime.
+            The browser communicates with agentd over authenticated loopback HTTP. Agentd owns durable product state, provider/channel workers, and background credentials; the browser owns the product UI. The native host does not mount a second product workspace or proxy arbitrary commands.
         </p>
 
         <h3>1.2 Persistence Layer</h3>
         <p>
-            Persistence is handled by <b>SQLite 3</b> with <b>FTS5 (Full-Text Search)</b> enabled. All conversation histories and learned entities are stored locally. For high-availability auditing, the system mirrors state to <b>JSON audit logs</b> located in the <span class="code">Library/Application Support</span> directory.
+            Persistence is handled by the daemon-owned <b>SQLite 3</b> database and authenticated service routes. Browser sessions do not use renderer <code>localStorage</code> as a second authority, and credential values remain in the OS-backed store. Redacted audit exports are available through the browser; native file-path reveal remains desktop-only.
         </p>
     </section>
 
@@ -150,33 +149,33 @@
             <tbody>
                 <tr>
                     <td><b>WhatsApp Bridge</b></td>
-                    <td><span class="status-dot status-ready"></span><b>Production</b></td>
-                    <td>Full multi-device sync, QR pairing, and self-healing session management.</td>
+                    <td><span class="status-dot status-beta"></span><b>In progress</b></td>
+                    <td>Browser/agentd supports QR and bounded text/caption events plus explicit text sends. WhatsApp Web automation, media delivery, and autonomous direct-send remain unavailable.</td>
                 </tr>
                 <tr>
-                    <td><b>Vector RAG Engine</b></td>
-                    <td><span class="status-dot status-ready"></span><b>Production</b></td>
-                    <td>Local document ingestion (PDF/TXT), FTS5 semantic search, and context injection.</td>
+                    <td><b>Knowledge and RAG</b></td>
+                    <td><span class="status-dot status-beta"></span><b>In progress</b></td>
+                    <td>Browser ingestion is bounded to supported text/Markdown/CSV/JSON/XML/HTML/log content. Binary/PDF parsing and native file reveal remain Electron/native gates.</td>
                 </tr>
                 <tr>
-                    <td><b>Admin Relay</b></td>
-                    <td><span class="status-dot status-ready"></span><b>Production</b></td>
-                    <td>Real-time escalation notifications to the admin's personal phone via linking.</td>
+                    <td><b>Escalation relay</b></td>
+                    <td><span class="status-dot status-roadmap"></span><b>Migration gate</b></td>
+                    <td>Electron retains the legacy relay. Browser/agentd escalation notification parity is not release-complete.</td>
                 </tr>
                 <tr>
-                    <td><b>Memory Facts</b></td>
-                    <td><span class="status-dot status-beta"></span><b>Beta</b></td>
-                    <td>Long-term entity extraction. Works but requires significant history to stabilize.</td>
+                    <td><b>Memory graph</b></td>
+                    <td><span class="status-dot status-beta"></span><b>In progress</b></td>
+                    <td>Agentd owns bounded entity/relation tools, statistics, search, and export. Legacy backend migration and native database opening remain gates.</td>
                 </tr>
                 <tr>
-                    <td><b>Dashboard Stats</b></td>
-                    <td><span class="status-dot status-beta"></span><b>Beta</b></td>
-                    <td>Core KPIs are real; "AI Topics" requires a manual sync button click to update.</td>
+                    <td><b>Dashboard and topics</b></td>
+                    <td><span class="status-dot status-beta"></span><b>In progress</b></td>
+                    <td>Browser metrics and authenticated topic analysis are backed by agentd state; empty datasets must remain visibly empty rather than fabricated success.</td>
                 </tr>
                 <tr>
                     <td><b>Browser MCP</b></td>
-                    <td><span class="status-dot status-beta"></span><b>Beta</b></td>
-                    <td>Playwright automation. Requires local Chromium/Chrome installation.</td>
+                    <td><span class="status-dot status-roadmap"></span><b>Unavailable</b></td>
+                    <td>Browser exposes only authenticated lifecycle and sanitized server metadata. Arbitrary add/edit/connect/list/call execution is not migrated; Electron retains its transition path.</td>
                 </tr>
                 <tr>
                     <td><b>Social Bridges</b></td>
@@ -189,16 +188,16 @@
 
     <section id="architecture">
         <h2>3. Detailed Architecture Flowchart</h2>
-        <p>The following diagram outlines the path of a customer message from the Edge to the Reasoning Engine.</p>
+        <p>The current browser-first path keeps the product UI in Edge/Chrome and reserves Tauri for native OS capabilities.</p>
 
         <div class="architecture-grid">
             <div class="flow-card">
                 <span class="node-tag">Edge Detection</span>
                 <div class="flow-card-header">
-                    <div class="flow-card-title">📱 Inbound Customer Entry</div>
+                    <div class="flow-card-title">🌐 Browser workspace</div>
                 </div>
                 <div class="flow-card-body">
-                    Baileys captures <code>upsert.messages</code> event. Signal keys are looked up from the local SQLite key-store.
+                    Edge/Chrome renders the product after authenticated loopback pairing. The page never receives daemon bearer secrets or OS credential values.
                 </div>
             </div>
 
@@ -207,10 +206,10 @@
             <div class="flow-card">
                 <span class="node-tag">Governance Layer</span>
                 <div class="flow-card-header">
-                    <div class="flow-card-title">🛡️ deduplication & security</div>
+                    <div class="flow-card-title">🧭 Local agentd boundary</div>
                 </div>
                 <div class="flow-card-body">
-                    Message hash is checked against a 10-minute sliding window. Spam filter determines if the sender is blacklisted.
+                    Agentd owns sessions, SQLite state, credential-backed workers, bounded routes, CSRF/session checks, and provider/channel policy.
                 </div>
             </div>
 
@@ -219,10 +218,10 @@
             <div class="flow-card">
                 <span class="node-tag">Intelligence Engine</span>
                 <div class="flow-card-header">
-                    <div class="flow-card-title">🧠 Agent Reasoning Loop</div>
+                    <div class="flow-card-title">🧠 Provider and channel workers</div>
                 </div>
                 <div class="flow-card-body">
-                    The Agent performs a recursive search: (1) Check PDF knowledge, (2) check Memory Facts, (3) execute LLM reasoning.
+                    Browser chat streams through authenticated agentd providers; bounded knowledge and memory routes are available, while unsupported binary and arbitrary MCP operations fail closed.
                 </div>
             </div>
 
@@ -231,18 +230,18 @@
             <div class="flow-card">
                 <span class="node-tag">Engagement Layer</span>
                 <div class="flow-card-header">
-                    <div class="flow-card-title">⏳ Anti-Ban Delivery</div>
+                    <div class="flow-card-title">🪟 Native companion</div>
                 </div>
                 <div class="flow-card-body">
-                    Gaussian Jitter (8s-45s) is injected. The message is signed and pushed back to the WhatsApp Cloud via the local session.
+                    Tauri supplies only native diagnostics, owner pairing handoff, keychain presence/write flows, file/folder dialogs, and lifecycle controls. It does not render the product workspace.
                 </div>
             </div>
         </div>
     </section>
 
     <div class="alert-block">
-        <b>💡 Developer Note for Testers</b>
-        If you encounter "Double Messaging," please check if your linked phone has a weak data connection. The app uses an optimistic sync mechanism that can occasionally trigger a retry if the cloud ACK is delayed.
+        <b>💡 Tester boundary</b>
+        Validate the browser workspace and the native companion separately. A real Tauri window should show diagnostics/onboarding only; use Edge or Chrome for chat, settings, channels, knowledge, memory, and approvals. Electron remains the transition fallback until parity and Windows release gates are complete.
     </div>
 
     <footer style="margin-top: 80px; text-align: center; color: var(--text-muted); font-size: 13px;">

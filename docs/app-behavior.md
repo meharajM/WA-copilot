@@ -394,6 +394,9 @@ Pass evidence:
 
 ## Business Tools and MCP
 
+- The browser workspace is the primary Windows user interface. It talks to the
+  paired loopback `agentd` service; it does not load Electron IPC or a generic
+  native-command proxy for MCP.
 - In Electron, the Business Tools section manages MCP servers except the hidden internal Playwright entry.
 - Electron-supported actions include:
   - add
@@ -404,13 +407,13 @@ Pass evidence:
   - toggle auto-connect
   - troubleshoot
 - Troubleshoot injects a prompt into chat for the AI to inspect a tool failure.
-- In the browser product, migrated agentd-owned memory and knowledge tools remain available. Any existing MCP definitions are read-only agentd continuity metadata: the browser never reads or writes renderer `localStorage`/legacy Electron state, does not render add/edit/remove/connect/disconnect/auto-connect controls, and never returns environment values. Arbitrary MCP server connect/list/call execution remains explicitly unavailable until its supervised agentd worker is migrated; the browser must not show success-shaped MCP mocks. Electron retains the existing MCP path during transition.
+- In the browser product, migrated agentd-owned memory and knowledge tools remain available. `GET /api/v1/mcp` and `GET /api/v1/mcp/servers` expose only authenticated, bounded lifecycle/identity metadata. Existing MCP definitions are continuity metadata: the browser never reads or writes renderer `localStorage`/legacy Electron state, never receives environment values, and does not render add/edit/remove/connect/disconnect/auto-connect controls. Arbitrary MCP server connect/list/call execution remains explicitly unavailable until its supervised agentd worker is migrated; the browser must not show success-shaped MCP mocks. Electron retains the existing MCP path during transition.
 
 Pass evidence:
 
 - Electron MCP server form can create and update entries.
 - Electron connection state changes reflect in the UI.
-- Browser shows an explicit unavailable state and does not expose actionable arbitrary-MCP controls; authenticated memory/knowledge routes remain usable.
+- Browser shows an explicit unavailable state and does not expose actionable arbitrary-MCP controls; authenticated memory/knowledge routes remain usable. Tauri exposes no MCP UI or generic MCP/native command bridge.
 
 ## Bot Identity
 
