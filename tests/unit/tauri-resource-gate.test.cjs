@@ -17,6 +17,7 @@ async function fixture() {
     'agentd-http/server.cjs',
     'agentd-http/keyring-credential-store.cjs',
     'agentd-http/node_modules/better-sqlite3/package.json',
+    'agentd-http/node_modules/better-sqlite3/build/Release/better_sqlite3.node',
     'agentd-http/node_modules/bindings/package.json',
     'agentd-http/node_modules/file-uri-to-path/package.json',
   ]
@@ -54,6 +55,19 @@ test('resource verifier reports missing staged files and assets', async () => {
     await assert.rejects(
       verify({ sidecarRoot: paths.sidecar, uiRoot: paths.ui, platform: 'win32', targetTriple: 'x86_64-pc-windows-msvc' }),
       /missing staged resource:.*server\.cjs.*missing staged browser CSS asset/s,
+    )
+  } finally {
+    await fs.rm(paths.root, { recursive: true, force: true })
+  }
+})
+
+test('resource verifier rejects staging without a compiled better-sqlite3 binding', async () => {
+  const paths = await fixture()
+  try {
+    await fs.rm(path.join(paths.sidecar, 'agentd-http', 'node_modules', 'better-sqlite3', 'build'), { recursive: true })
+    await assert.rejects(
+      verify({ sidecarRoot: paths.sidecar, uiRoot: paths.ui, platform: 'win32', targetTriple: 'x86_64-pc-windows-msvc' }),
+      /missing compiled better-sqlite3 native binding.*\.node/,
     )
   } finally {
     await fs.rm(paths.root, { recursive: true, force: true })

@@ -58,6 +58,7 @@ export async function verifyTauriResources({
   const extension = platform === 'win32' ? '.exe' : ''
   const runtime = join(sidecar, `agentd-runtime${extension}`)
   const helper = join(sidecar, `aica-keyring-helper${extension}`)
+  const betterSqliteRoot = join(sidecar, 'agentd-http', 'node_modules', 'better-sqlite3')
   const oppositeExtension = extension ? '' : '.exe'
   const requiredFiles = [
     runtime,
@@ -65,7 +66,7 @@ export async function verifyTauriResources({
     join(sidecar, 'agentd-http', 'index.cjs'),
     join(sidecar, 'agentd-http', 'server.cjs'),
     join(sidecar, 'agentd-http', 'keyring-credential-store.cjs'),
-    join(sidecar, 'agentd-http', 'node_modules', 'better-sqlite3', 'package.json'),
+    join(betterSqliteRoot, 'package.json'),
     join(sidecar, 'agentd-http', 'node_modules', 'bindings', 'package.json'),
     join(sidecar, 'agentd-http', 'node_modules', 'file-uri-to-path', 'package.json'),
     join(ui, 'tauri.html'),
@@ -78,6 +79,9 @@ export async function verifyTauriResources({
   }
   if (!(await findAsset(ui, '.js'))) errors.push(`missing staged browser JavaScript asset under: ${relative(process.cwd(), ui)}`)
   if (!(await findAsset(ui, '.css'))) errors.push(`missing staged browser CSS asset under: ${relative(process.cwd(), ui)}`)
+  if (!(await findAsset(betterSqliteRoot, '.node'))) {
+    errors.push(`missing compiled better-sqlite3 native binding (.node) under: ${relative(process.cwd(), betterSqliteRoot)}`)
+  }
 
   if (errors.length) throw new Error(`Tauri resource gate failed:\n${errors.map((error) => `- ${error}`).join('\n')}`)
   return { sidecarRoot: sidecar, uiRoot: ui, targetTriple: target, platform }
