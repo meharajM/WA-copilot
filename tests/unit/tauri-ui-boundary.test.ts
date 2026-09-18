@@ -91,6 +91,7 @@ describe('browser-first UI boundary', () => {
     expect(agent).not.toContain('createTauriChatClient')
     expect(agent).not.toContain('isTauriRuntime() ?')
     expect(agent).toContain('!isTauriRuntime()')
+    expect(agent).toContain('...(daemonAttachments?.length ? { attachments: daemonAttachments } : {})')
     expect(storage).toContain('The Tauri native companion does not mount the product workspace')
   })
 
