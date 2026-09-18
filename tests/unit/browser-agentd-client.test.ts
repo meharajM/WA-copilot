@@ -242,6 +242,32 @@ describe('browser agentd client', () => {
     expect(Object.prototype.hasOwnProperty.call(JSON.parse(String(put?.[1]?.body)), 'password')).toBe(false)
   })
 
+  it('persists browser email drafts through authenticated agentd routes', async () => {
+    const draft = {
+      id: 'draft_email_1', responseText: 'Reply', originalFrom: 'customer@example.test', originalSubject: 'Question', replyTo: 'customer@example.test',
+      policyDecision: { action: 'draft' as const, confidence: 0.5, rationale: 'Review', hasSensitiveTopic: false, sensitiveTopics: [] },
+      createdAt: 10, status: 'pending_review' as const,
+    }
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
+      if (url.includes('/api/v1/email/drafts?')) return response({ drafts: [draft] })
+      if (url.endsWith('/api/v1/email/drafts')) return response(draft)
+      if (url.endsWith('/api/v1/email/drafts/draft_email_1') && init?.method === 'PATCH') return response({ ...draft, status: 'approved' })
+      if (url.endsWith('/api/v1/email/drafts/draft_email_1') && init?.method === 'DELETE') return response({ success: true })
+      return response({ success: true })
+    })
+    const client = createBrowserAgentdClient({ origin: 'http://127.0.0.1:4141', fetch: fetcher })
+    await client.pair('123456')
+    await expect(client.listEmailDrafts()).resolves.toMatchObject([{ id: draft.id, status: 'pending_review' }])
+    await expect(client.saveEmailDraft(draft)).resolves.toMatchObject({ id: draft.id })
+    await expect(client.updateEmailDraft(draft.id, { status: 'approved' })).resolves.toMatchObject({ status: 'approved' })
+    await client.deleteEmailDraft(draft.id)
+    const mutation = fetcher.mock.calls.find(([input, init]) => String(input).endsWith('/api/v1/email/drafts/draft_email_1') && init?.method === 'PATCH')
+    expect(new Headers(mutation?.[1]?.headers).get('x-csrf-token')).toBe('csrf-token')
+    expect(JSON.stringify(fetcher.mock.calls).includes('agentd_session')).toBe(false)
+  })
+
   it('lists bounded WhatsApp inbound events through the authenticated cursor', async () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)

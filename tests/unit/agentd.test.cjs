@@ -503,3 +503,47 @@ test('agentd persists bounded MCP configurations without returning env secret va
   await server.stop()
   fs.rmSync(dataDir, { recursive: true, force: true })
 })
+
+test('agentd persists authenticated email drafts without renderer storage', async () => {
+  const dataDir = makeTempDir('aica-agentd-email-drafts-')
+  const server = new AgentdServer({ dataDir, secret: 's'.repeat(32), logger: { log() {} } })
+  const { origin } = await server.start()
+  const auth = { authorization: `Bearer ${'s'.repeat(32)}` }
+  const draft = {
+    id: 'draft_email_1',
+    responseText: 'Thanks for getting in touch.',
+    originalFrom: 'customer@example.com',
+    originalSubject: 'Support request',
+    replyTo: 'customer@example.com',
+    inReplyTo: '<message-1@example.com>',
+    references: '<message-1@example.com>',
+    accountName: 'default',
+    policyDecision: {
+      action: 'draft',
+      confidence: 0.6,
+      rationale: 'Needs owner review',
+      hasSensitiveTopic: false,
+      sensitiveTopics: [],
+    },
+    createdAt: Date.now(),
+    status: 'pending_review',
+  }
+  assert.equal((await request(origin, 'GET', '/api/v1/email/drafts', undefined, auth)).body.drafts.length, 0)
+  assert.equal((await request(origin, 'POST', '/api/v1/email/drafts', draft, auth)).status, 200)
+  assert.deepEqual((await request(origin, 'GET', '/api/v1/email/drafts', undefined, auth)).body.drafts, [draft])
+  const updated = await request(origin, 'PATCH', '/api/v1/email/drafts/draft_email_1', { responseText: 'Updated reply', status: 'approved' }, auth)
+  assert.equal(updated.status, 200)
+  assert.equal(updated.body.responseText, 'Updated reply')
+  assert.equal(updated.body.status, 'approved')
+  assert.equal((await request(origin, 'GET', '/api/v1/email/drafts?status=approved', undefined, auth)).body.drafts[0].id, draft.id)
+  assert.equal((await request(origin, 'DELETE', '/api/v1/email/drafts/draft_email_1', undefined, auth)).body.success, true)
+  assert.equal((await request(origin, 'GET', '/api/v1/email/drafts', undefined, auth)).body.drafts.length, 0)
+  for (const invalid of [
+    { ...draft, id: 'not-safe' },
+    { ...draft, policyDecision: { ...draft.policyDecision, confidence: 2 } },
+    { ...draft, responseText: 'x'.repeat(32 * 1024 + 1) },
+    { ...draft, status: 'sent' },
+  ]) assert.equal((await request(origin, 'POST', '/api/v1/email/drafts', invalid, auth)).status, 400)
+  await server.stop()
+  fs.rmSync(dataDir, { recursive: true, force: true })
+})

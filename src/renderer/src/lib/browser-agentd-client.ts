@@ -102,6 +102,28 @@ export interface BrowserEmailInboundEvent {
   createdAt: number
 }
 
+export type BrowserEmailDraftStatus = 'pending_review' | 'approved' | 'rejected' | 'escalated' | 'sent' | 'failed'
+
+export interface BrowserEmailDraft {
+  id: string
+  responseText: string
+  originalFrom: string
+  originalSubject: string
+  replyTo: string
+  inReplyTo?: string
+  references?: string
+  accountName?: string
+  policyDecision: {
+    action: 'send' | 'draft' | 'escalate'
+    confidence: number
+    rationale: string
+    hasSensitiveTopic: boolean
+    sensitiveTopics: string[]
+  }
+  createdAt: number
+  status: BrowserEmailDraftStatus
+}
+
 export interface BrowserWhatsAppInboundEvent {
   id: number
   providerEventId: string
@@ -263,6 +285,28 @@ const readEmailSettings = (value: unknown): EmailSettings => {
     || !Number.isSafeInteger(value.pollingIntervalSeconds)
     || typeof value.enabled !== 'boolean' || typeof value.autoReplyMode !== 'boolean' || typeof value.draftMode !== 'boolean') throw new Error('Invalid email settings response')
   return value as unknown as EmailSettings
+}
+
+const readEmailDraft = (value: unknown): BrowserEmailDraft => {
+  if (!isRecord(value)
+    || typeof value.id !== 'string' || !/^draft_[A-Za-z0-9_-]{1,120}$/.test(value.id)
+    || typeof value.responseText !== 'string'
+    || typeof value.originalFrom !== 'string'
+    || typeof value.originalSubject !== 'string'
+    || typeof value.replyTo !== 'string'
+    || (value.inReplyTo !== undefined && typeof value.inReplyTo !== 'string')
+    || (value.references !== undefined && typeof value.references !== 'string')
+    || (value.accountName !== undefined && typeof value.accountName !== 'string')
+    || !Number.isSafeInteger(value.createdAt)
+    || !['pending_review', 'approved', 'rejected', 'escalated', 'sent', 'failed'].includes(value.status as string)
+    || !isRecord(value.policyDecision)
+    || !['send', 'draft', 'escalate'].includes(value.policyDecision.action as string)
+    || typeof value.policyDecision.confidence !== 'number'
+    || typeof value.policyDecision.rationale !== 'string'
+    || typeof value.policyDecision.hasSensitiveTopic !== 'boolean'
+    || !Array.isArray(value.policyDecision.sensitiveTopics)
+    || value.policyDecision.sensitiveTopics.some((item) => typeof item !== 'string')) throw new Error('Invalid agentd email draft response')
+  return value as unknown as BrowserEmailDraft
 }
 
 const readPersonaSettings = (value: unknown): PersonaSettings => {
@@ -465,6 +509,10 @@ export interface BrowserAgentdClient extends ChatClient {
   testEmail(): Promise<BrowserEmailTestResult>
   ingestEmailInbound(event: { providerEventId: string; conversationId: string; payload: BrowserEmailInboundEvent['payload'] }): Promise<{ accepted: true; duplicate: boolean; id: number }>
   listEmailInbound(afterId?: number, limit?: number): Promise<{ events: BrowserEmailInboundEvent[]; nextAfterId: number }>
+  listEmailDrafts(limit?: number, status?: BrowserEmailDraftStatus): Promise<BrowserEmailDraft[]>
+  saveEmailDraft(draft: BrowserEmailDraft): Promise<BrowserEmailDraft>
+  updateEmailDraft(id: string, update: { responseText?: string; status?: BrowserEmailDraftStatus }): Promise<BrowserEmailDraft>
+  deleteEmailDraft(id: string): Promise<void>
   listWhatsAppInbound(afterId?: number, limit?: number): Promise<{ events: BrowserWhatsAppInboundEvent[]; nextAfterId: number }>
   getPersonaSettings(): Promise<PersonaSettings>
   savePersonaSettings(settings: PersonaSettings): Promise<PersonaSettings>
@@ -787,6 +835,27 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     if (events.length !== value.events.length) throw new Error('Invalid email inbound list response')
     return { events, nextAfterId: value.nextAfterId as number }
   }
+  const listEmailDrafts = async (limit = 100, status?: BrowserEmailDraftStatus): Promise<BrowserEmailDraft[]> => {
+    const query = new URLSearchParams({ limit: String(Math.max(1, Math.min(100, Math.trunc(limit)))) })
+    if (status) query.set('status', status)
+    const value = await request<unknown>(`/api/v1/email/drafts?${query.toString()}`)
+    if (!isRecord(value) || !Array.isArray(value.drafts)) throw new Error('Invalid agentd email draft list response')
+    return value.drafts.map(readEmailDraft)
+  }
+  const saveEmailDraft = async (draft: BrowserEmailDraft): Promise<BrowserEmailDraft> => {
+    const value = await request<unknown>('/api/v1/email/drafts', { method: 'POST', body: JSON.stringify(draft) }, true)
+    return readEmailDraft(value)
+  }
+  const updateEmailDraft = async (id: string, update: { responseText?: string; status?: BrowserEmailDraftStatus }): Promise<BrowserEmailDraft> => {
+    if (!/^draft_[A-Za-z0-9_-]{1,120}$/.test(id)) throw new Error('Invalid email draft id')
+    const value = await request<unknown>(`/api/v1/email/drafts/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(update) }, true)
+    return readEmailDraft(value)
+  }
+  const deleteEmailDraft = async (id: string): Promise<void> => {
+    if (!/^draft_[A-Za-z0-9_-]{1,120}$/.test(id)) throw new Error('Invalid email draft id')
+    const value = await request<unknown>(`/api/v1/email/drafts/${encodeURIComponent(id)}`, { method: 'DELETE' }, true)
+    if (!isRecord(value) || value.success !== true) throw new Error('Invalid agentd email draft delete response')
+  }
   const listWhatsAppInbound = async (afterId = 0, limit = 20) => {
     const value = await request<unknown>(`/api/v1/whatsapp/inbound?after_id=${encodeURIComponent(String(afterId))}&limit=${encodeURIComponent(String(limit))}`)
     if (!isRecord(value) || !Array.isArray(value.events) || !Number.isSafeInteger(value.nextAfterId)) throw new Error('Invalid WhatsApp inbound list response')
@@ -985,6 +1054,10 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     testEmail,
     ingestEmailInbound,
     listEmailInbound,
+    listEmailDrafts,
+    saveEmailDraft,
+    updateEmailDraft,
+    deleteEmailDraft,
     listWhatsAppInbound,
     getPersonaSettings,
     savePersonaSettings,

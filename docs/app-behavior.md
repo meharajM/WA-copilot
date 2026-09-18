@@ -237,6 +237,8 @@ Pass evidence:
 - Gmail is presented as a first-class option, but defaults to app-password mode.
 - Google sign-in is optional, not required.
 - Browser Email settings never use renderer `localStorage` and app-password values are write-only through the authenticated daemon credential route; the browser cannot read them back.
+- Browser email drafts are persisted as bounded, authenticated `agentd` records. Reloading Edge/Chrome rehydrates the same pending/rejected/approved history; the browser does not use renderer `localStorage` as a second draft authority.
+- On the first browser startup after this migration, a legacy `aica-email-drafts-v1` renderer record is validated and handed off to agentd; the legacy key is removed only after every draft is accepted, so malformed or partially migrated data remains recoverable for owner review.
 
 ### Provider and auth behavior
 
@@ -262,6 +264,7 @@ Browser parity boundary:
 - `Test Connection` performs a server-side IMAP/SMTP secure-transport probe and reports only bounded reachability/TLS results. It does not expose credentials or claim that the background email worker has migrated.
 - Browser Gmail Google Sign-In and custom MCP transports fail closed with an explicit unsupported message until their native flow/worker is migrated. Electron remains the fallback for full OAuth and channel-worker behavior.
 - Browser settings survive reload/restart without exposing the credential value; browser test/start reports a clear transport-migration message instead of probing Electron IPC.
+- Draft edits, approvals, rejection and deletion use authenticated agentd mutations with CSRF protection. Email delivery remains fail-closed until a daemon-owned IMAP/SMTP/Gmail worker is migrated, so the UI must not claim that an approved draft was sent when the transport is unavailable.
 - Browser continuity status is read-only and authenticated. It reports agentd-owned record counts, the allowlisted Electron-to-agentd store contract, and per-key credential presence (`present`/`available`) without returning secret values. Electron stores remain `pending` until an explicit owner-approved native migration flow validates, backs up, imports, and requires reauthentication; the browser endpoint never reads or imports Electron files.
 
 ### Channel gating

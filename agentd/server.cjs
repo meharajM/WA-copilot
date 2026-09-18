@@ -17,6 +17,9 @@ const MAX_WHATSAPP_BODY_BYTES = 64 * 1024
 const MAX_WHATSAPP_PAYLOAD_BYTES = 32 * 1024
 const MAX_EMAIL_INBOUND_BODY_BYTES = 128 * 1024
 const MAX_EMAIL_INBOUND_BATCH = 50
+const MAX_EMAIL_DRAFT_BATCH = 100
+const MAX_EMAIL_DRAFT_BODY_BYTES = 96 * 1024
+const MAX_EMAIL_DRAFT_TEXT_LENGTH = 32 * 1024
 const MAX_WHATSAPP_INBOUND_BATCH = 50
 const MAX_DRAFT_TEXT_LENGTH = 4096
 const OUTBOX_QUARANTINED_ERROR = 'Quarantined by operator'
@@ -156,6 +159,7 @@ const MCP_LIFECYCLE = Object.freeze({
   transports: [],
   tools: [],
 })
+const EMAIL_DRAFT_STATUSES = Object.freeze(['pending_review', 'approved', 'rejected', 'escalated', 'sent', 'failed'])
 const MAX_MCP_SERVERS = 50
 const MAX_MCP_NAME_LENGTH = 128
 const MAX_MCP_DESCRIPTION_LENGTH = 512
@@ -429,6 +433,13 @@ class AgentdServer {
           provider_message_id TEXT,
           error TEXT,
           attempts INTEGER NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS email_drafts (
+          id TEXT PRIMARY KEY,
+          status TEXT NOT NULL CHECK(status IN ('pending_review','approved','rejected','escalated','sent','failed')),
+          payload TEXT NOT NULL,
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL
         );
@@ -733,6 +744,9 @@ class AgentdServer {
     if (url.pathname === '/api/v1/settings/email' && ['GET', 'PUT'].includes(req.method)) return this.emailSettings(req, res)
     if (url.pathname === '/api/v1/email/test' && req.method === 'POST') return this.testEmail(req, res)
     if (url.pathname === '/api/v1/email/inbound' && ['GET', 'POST'].includes(req.method)) return this.emailInbound(req, res, url)
+    if (url.pathname === '/api/v1/email/drafts' && ['GET', 'POST'].includes(req.method)) return this.emailDrafts(req, res, url)
+    const emailDraftMatch = /^\/api\/v1\/email\/drafts\/([^/]+)$/.exec(url.pathname)
+    if (emailDraftMatch && ['PATCH', 'DELETE'].includes(req.method)) return this.emailDraft(req, res, decodeURIComponent(emailDraftMatch[1]))
     if (url.pathname === '/api/v1/whatsapp/messages' && req.method === 'POST') return this.sendWhatsAppMessage(req, res)
     const providerTestMatch = /^\/api\/v1\/providers\/(openai|openrouter|ollama)\/test$/.exec(url.pathname)
     if (providerTestMatch && req.method === 'POST') return this.testProvider(req, res, providerTestMatch[1])
@@ -872,7 +886,7 @@ class AgentdServer {
         messages: count('chat_messages'),
         knowledgeDocuments: count('knowledge_documents'),
         inboundEvents: count('inbound_events'),
-        drafts: count('whatsapp_drafts'),
+        drafts: count('whatsapp_drafts') + count('email_drafts'),
       },
       credentials,
     })
@@ -1050,6 +1064,67 @@ class AgentdServer {
     if (existing) return json(res, 200, { accepted: true, duplicate: true, id: existing.id })
     const result = this.db.prepare('INSERT INTO inbound_events(channel,provider_event_id,conversation_id,payload,status,created_at) VALUES (?,?,?,?,?,?)').run('email', body.providerEventId, body.conversationId, payload, 'queued', Date.now())
     return json(res, 202, { accepted: true, duplicate: false, id: result.lastInsertRowid })
+  }
+
+  async emailDrafts(req, res, url) {
+    this.authorize(req, { mutation: req.method === 'POST' })
+    if (req.method === 'GET') {
+      const requestedLimit = Number.parseInt(url.searchParams.get('limit') || '100', 10)
+      const limit = Number.isSafeInteger(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), MAX_EMAIL_DRAFT_BATCH) : MAX_EMAIL_DRAFT_BATCH
+      const status = url.searchParams.get('status')
+      if (status && !EMAIL_DRAFT_STATUSES.includes(status)) return json(res, 400, { error: 'Invalid email draft status' })
+      const rows = status
+        ? this.db.prepare('SELECT payload FROM email_drafts WHERE status = ? ORDER BY updated_at DESC LIMIT ?').all(status, limit)
+        : this.db.prepare('SELECT payload FROM email_drafts ORDER BY updated_at DESC LIMIT ?').all(limit)
+      return json(res, 200, { drafts: rows.map((row) => JSON.parse(row.payload)) })
+    }
+    if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
+    let body
+    try { body = await readBody(req, MAX_EMAIL_DRAFT_BODY_BYTES) } catch (error) { return json(res, error.statusCode || 400, { error: error.message }) }
+    const draft = parseEmailDraft(body)
+    if (!draft) return json(res, 400, { error: 'Invalid email draft' })
+    if (!['pending_review', 'approved', 'rejected', 'escalated'].includes(draft.status)) return json(res, 400, { error: 'Email delivery status is owned by the daemon transport' })
+    const now = Date.now()
+    this.db.prepare(`INSERT INTO email_drafts(id,status,payload,created_at,updated_at)
+      VALUES (?,?,?,?,?)
+      ON CONFLICT(id) DO UPDATE SET status = excluded.status, payload = excluded.payload, updated_at = excluded.updated_at`)
+      .run(draft.id, draft.status, JSON.stringify(draft), draft.createdAt, now)
+    return json(res, 200, draft)
+  }
+
+  async emailDraft(req, res, id) {
+    this.authorize(req, { mutation: true })
+    if (!/^draft_[A-Za-z0-9_-]{1,120}$/.test(id)) return json(res, 400, { error: 'Invalid email draft id' })
+    const row = this.db.prepare('SELECT payload FROM email_drafts WHERE id = ?').get(id)
+    if (!row) return json(res, 404, { error: 'Email draft not found' })
+    if (req.method === 'DELETE') {
+      this.db.prepare('DELETE FROM email_drafts WHERE id = ?').run(id)
+      return json(res, 200, { success: true })
+    }
+    if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
+    let body
+    try { body = await readBody(req, MAX_EMAIL_DRAFT_BODY_BYTES) } catch (error) { return json(res, error.statusCode || 400, { error: error.message }) }
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some((key) => !['responseText', 'status'].includes(key))) return json(res, 400, { error: 'Invalid email draft update' })
+    const current = parseEmailDraft(JSON.parse(row.payload))
+    if (!current) return json(res, 500, { error: 'Stored email draft is invalid' })
+    const candidate = { ...current, ...(Object.prototype.hasOwnProperty.call(body, 'responseText') ? { responseText: body.responseText } : {}), ...(Object.prototype.hasOwnProperty.call(body, 'status') ? { status: body.status } : {}) }
+    const draft = parseEmailDraft(candidate)
+    if (!draft) return json(res, 400, { error: 'Invalid email draft update' })
+    if (body.status !== undefined) {
+      const transitions = {
+        pending_review: new Set(['pending_review', 'approved', 'rejected']),
+        escalated: new Set(['escalated', 'approved', 'rejected']),
+        approved: new Set(['approved']),
+        rejected: new Set(['rejected']),
+        sent: new Set(['sent']),
+        failed: new Set(['failed']),
+      }
+      if (!transitions[current.status]?.has(draft.status)) return json(res, 409, { error: 'Invalid email draft status transition' })
+      if (['sent', 'failed'].includes(draft.status)) return json(res, 409, { error: 'Email delivery status is owned by the daemon transport' })
+    }
+    const now = Date.now()
+    this.db.prepare('UPDATE email_drafts SET status = ?, payload = ?, updated_at = ? WHERE id = ?').run(draft.status, JSON.stringify(draft), now, id)
+    return json(res, 200, draft)
   }
 
   async auditLogs(req, res, url) {
@@ -2374,6 +2449,49 @@ function parseEmailInbound(value) {
     || (payload.references !== undefined && !validBoundedText(payload.references, 8192, true))
     || (payload.isFromMe !== undefined && typeof payload.isFromMe !== 'boolean')) return null
   return { providerEventId: value.providerEventId, conversationId: value.conversationId, payload }
+}
+
+function parseEmailDraft(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const allowedKeys = ['accountName', 'createdAt', 'id', 'inReplyTo', 'originalFrom', 'originalSubject', 'policyDecision', 'references', 'replyTo', 'responseText', 'status']
+  if (Object.keys(value).some((key) => !allowedKeys.includes(key))) return null
+  const policy = value.policyDecision
+  if (!/^draft_[A-Za-z0-9_-]{1,120}$/.test(value.id || '')
+    || !validBoundedText(value.responseText, MAX_EMAIL_DRAFT_TEXT_LENGTH)
+    || !validBoundedText(value.originalFrom, 320)
+    || !validBoundedText(value.originalSubject, 998, true)
+    || !validBoundedText(value.replyTo, 320)
+    || (value.inReplyTo !== undefined && !validBoundedText(value.inReplyTo, 998, true))
+    || (value.references !== undefined && !validBoundedText(value.references, 8192, true))
+    || (value.accountName !== undefined && !validBoundedText(value.accountName, 128, true))
+    || !Number.isSafeInteger(value.createdAt) || value.createdAt < 0
+    || !EMAIL_DRAFT_STATUSES.includes(value.status)
+    || !policy || typeof policy !== 'object' || Array.isArray(policy)
+    || !['send', 'draft', 'escalate'].includes(policy.action)
+    || typeof policy.confidence !== 'number' || !Number.isFinite(policy.confidence) || policy.confidence < 0 || policy.confidence > 1
+    || !validBoundedText(policy.rationale, 4096, true)
+    || typeof policy.hasSensitiveTopic !== 'boolean'
+    || !Array.isArray(policy.sensitiveTopics) || policy.sensitiveTopics.length > 32
+    || policy.sensitiveTopics.some((topic) => !validBoundedText(topic, 128))) return null
+  return {
+    id: value.id,
+    responseText: value.responseText,
+    originalFrom: value.originalFrom,
+    originalSubject: value.originalSubject,
+    replyTo: value.replyTo,
+    ...(value.inReplyTo !== undefined && value.inReplyTo ? { inReplyTo: value.inReplyTo } : {}),
+    ...(value.references !== undefined && value.references ? { references: value.references } : {}),
+    ...(value.accountName !== undefined && value.accountName ? { accountName: value.accountName } : {}),
+    policyDecision: {
+      action: policy.action,
+      confidence: policy.confidence,
+      rationale: policy.rationale,
+      hasSensitiveTopic: policy.hasSensitiveTopic,
+      sensitiveTopics: [...policy.sensitiveTopics],
+    },
+    createdAt: value.createdAt,
+    status: value.status,
+  }
 }
 
 async function readProviderResponse(response) {
