@@ -1774,6 +1774,7 @@ class AgentdServer {
     const priorHold = this.migrationHold
     const allowRecovery = record.state === 'needs-recovery' && this.migrationRecoveryScope === CHAT_HISTORY_SCOPE
     if (!this.claimMigrationOwner(CHAT_HISTORY_SCOPE, allowRecovery)) return json(res, 409, { error: 'Another migration is committing' })
+    let rollbackCommitted = false
     try {
       const bytes = readMigrationFile(record.backupPath)
       if (crypto.createHash('sha256').update(bytes).digest('hex') !== record.backupSha256) throw new Error('Migration backup integrity check failed')
@@ -1783,25 +1784,30 @@ class AgentdServer {
       await this.drainActiveOperations(); this.assertMigrationCommitReady()
       const sessionSelect = this.db.prepare('SELECT id,title,workspace_path,status,channel,contact_id,thread_id,topic,metadata,created_at,updated_at FROM chat_sessions WHERE id = ?')
       const messageSelect = this.db.prepare('SELECT session_id,message_id,role,content,attachments,metadata,created_at FROM chat_messages WHERE session_id = ? AND message_id = ?')
-      for (const row of backup.insertedMessages) if (JSON.stringify(messageSelect.get(row.session_id, row.message_id)) !== JSON.stringify(row)) throw new Error('Imported chat-history changed; manual recovery required')
-      for (const row of backup.insertedSessions) {
-        if (JSON.stringify(sessionSelect.get(row.id)) !== JSON.stringify(row)) throw new Error('Imported chat-history changed; manual recovery required')
-        const expectedMessages = backup.insertedMessages.filter(message => message.session_id === row.id)
-        const actualMessages = this.db.prepare('SELECT session_id,message_id,role,content,attachments,metadata,created_at FROM chat_messages WHERE session_id = ?').all(row.id)
-        if (actualMessages.length !== expectedMessages.length || actualMessages.some(actual => {
-          const expected = expectedMessages.find(message => message.message_id === actual.message_id)
-          return !expected || JSON.stringify(actual) !== JSON.stringify(expected)
-        })) throw new Error('Imported chat-history changed; manual recovery required')
+      const importedRowsAbsent = backup.insertedMessages.every(row => !messageSelect.get(row.session_id, row.message_id))
+        && backup.insertedSessions.every(row => !sessionSelect.get(row.id))
+      if (!importedRowsAbsent) {
+        for (const row of backup.insertedMessages) if (JSON.stringify(messageSelect.get(row.session_id, row.message_id)) !== JSON.stringify(row)) throw new Error('Imported chat-history changed; manual recovery required')
+        for (const row of backup.insertedSessions) {
+          if (JSON.stringify(sessionSelect.get(row.id)) !== JSON.stringify(row)) throw new Error('Imported chat-history changed; manual recovery required')
+          const expectedMessages = backup.insertedMessages.filter(message => message.session_id === row.id)
+          const actualMessages = this.db.prepare('SELECT session_id,message_id,role,content,attachments,metadata,created_at FROM chat_messages WHERE session_id = ?').all(row.id)
+          if (actualMessages.length !== expectedMessages.length || actualMessages.some(actual => {
+            const expected = expectedMessages.find(message => message.message_id === actual.message_id)
+            return !expected || JSON.stringify(actual) !== JSON.stringify(expected)
+          })) throw new Error('Imported chat-history changed; manual recovery required')
+        }
+        this.db.transaction(() => {
+          for (const row of backup.insertedMessages) this.db.prepare('DELETE FROM chat_messages WHERE session_id = ? AND message_id = ?').run(row.session_id, row.message_id)
+          for (const row of backup.insertedSessions) this.db.prepare('DELETE FROM chat_sessions WHERE id = ?').run(row.id)
+        })()
+        rollbackCommitted = true
       }
-      this.db.transaction(() => {
-        for (const row of backup.insertedMessages) this.db.prepare('DELETE FROM chat_messages WHERE session_id = ? AND message_id = ?').run(row.session_id, row.message_id)
-        for (const row of backup.insertedSessions) this.db.prepare('DELETE FROM chat_sessions WHERE id = ?').run(row.id)
-      })()
       record.state = 'rolled-back'; record.rolledBackAt = Date.now(); record.result = { ...(record.result || {}), liveDataChanged: Boolean(backup.insertedSessions.length || backup.insertedMessages.length) }; this.persistChatHistoryCutover(record)
       this.releaseMigrationOwner(CHAT_HISTORY_SCOPE, priorHold, allowRecovery)
       return json(res, 200, this.chatHistoryPublic(record))
     } catch (error) {
-      record.state = 'needs-recovery'; record.error = error.message; try { this.persistChatHistoryCutover(record) } catch {}; this.migrationOwner = false; this.migrationScope = null; this.markMigrationRecovery(CHAT_HISTORY_SCOPE)
+      record.state = 'needs-recovery'; record.error = rollbackCommitted ? `Rollback data deletion committed; ${error.message}` : error.message; try { this.persistChatHistoryCutover(record) } catch {}; this.migrationOwner = false; this.migrationScope = null; this.markMigrationRecovery(CHAT_HISTORY_SCOPE)
       return json(res, 500, { ...this.chatHistoryPublic(record), error: error.message })
     }
   }
@@ -2783,12 +2789,18 @@ class AgentdServer {
 
   async cancelGeneration(req, res, rawId, rawRequestId) {
     this.authorize(req, { mutation: true })
+    const releaseOperation = this.beginActiveOperation()
+    if (!releaseOperation) return json(res, 409, { error: 'Settings migration is committing' })
+    try {
     if (!this.validChatId(rawId) || !/^[A-Za-z0-9_-]{1,128}$/.test(rawRequestId)) return json(res, 400, { error: 'Invalid generation id' })
     const requestKey = `${rawId}:${rawRequestId}`
     const controller = this.generationControllers.get(requestKey)
     if (controller) controller.abort()
     const deleted = this.db.prepare('DELETE FROM chat_generations WHERE request_id = ? AND session_id = ? AND status = \'processing\'').run(rawRequestId, rawId).changes > 0
     return json(res, 200, { cancelled: Boolean(controller || deleted) })
+    } finally {
+      releaseOperation()
+    }
   }
 
   async addChatMessage(req, res, rawId) {

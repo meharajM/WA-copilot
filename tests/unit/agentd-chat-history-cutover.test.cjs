@@ -207,6 +207,37 @@ test('chat-history restart recovery allows same-scope rollback and clears the ho
   await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true }); fs.rmSync(sourceRoot, { recursive: true, force: true })
 })
 
+test('chat-history rollback retry completes after post-delete status persistence failure', async () => {
+  const dataDir = makeTempDir('aica-agentd-chat-rollback-status-failure-')
+  const sourceRoot = sourceFixture()
+  const secret = 'l'.repeat(32)
+  const server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
+  const { origin } = await server.start()
+  const { auth, preview } = await staged(server, origin, sourceRoot, secret)
+  const confirmation = await request(origin, 'POST', '/api/v1/continuity/chat-history/confirm', { previewId: preview.previewId, scope: 'chat-history' }, auth)
+  assert.equal((await request(origin, 'POST', '/api/v1/continuity/chat-history/apply', { previewId: preview.previewId, confirmationToken: confirmation.body.confirmationToken }, auth)).status, 200)
+  const persist = server.persistChatHistoryCutover
+  let failRollbackStatus = true
+  server.persistChatHistoryCutover = function (record) {
+    if (failRollbackStatus && record.state === 'rolled-back') {
+      failRollbackStatus = false
+      throw new Error('rollback status persistence failed after delete')
+    }
+    return persist.call(this, record)
+  }
+  const firstRollback = await request(origin, 'POST', '/api/v1/continuity/chat-history/rollback', { previewId: preview.previewId }, auth)
+  assert.equal(firstRollback.status, 500)
+  assert.equal(firstRollback.body.state, 'needs-recovery')
+  assert.equal(server.migrationHold, true)
+  assert.equal(server.db.prepare('SELECT COUNT(*) AS count FROM chat_sessions').get().count, 0)
+  const retry = await request(origin, 'POST', '/api/v1/continuity/chat-history/rollback', { previewId: preview.previewId }, auth)
+  assert.equal(retry.status, 200)
+  assert.equal(retry.body.state, 'rolled-back')
+  assert.equal(server.migrationHold, false)
+  assert.equal(server.db.prepare('SELECT COUNT(*) AS count FROM chat_sessions').get().count, 0)
+  await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true }); fs.rmSync(sourceRoot, { recursive: true, force: true })
+})
+
 test('chat-history migration hold fences chat writes while generation admission is held', async () => {
   const dataDir = makeTempDir('aica-agentd-chat-fence-')
   const sourceRoot = sourceFixture()
@@ -224,6 +255,7 @@ test('chat-history migration hold fences chat writes while generation admission 
   for (let attempt = 0; attempt < 20 && !server.migrationHold; attempt++) await new Promise(resolve => setTimeout(resolve, 5))
   assert.equal(server.migrationHold, true)
   assert.equal((await request(origin, 'POST', '/api/v1/sessions', { id: 'blocked', title: 'blocked' }, auth)).status, 409)
+  assert.equal((await request(origin, 'POST', '/api/v1/sessions/legacy_session/generations/race/cancel', {}, auth)).status, 409)
   release()
   assert.equal((await applying).status, 200)
   await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true }); fs.rmSync(sourceRoot, { recursive: true, force: true })
