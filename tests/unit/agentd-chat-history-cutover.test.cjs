@@ -162,6 +162,29 @@ test('chat-history rollback fails closed when an imported session gains a later 
   await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true }); fs.rmSync(sourceRoot, { recursive: true, force: true })
 })
 
+test('chat-history apply keeps recovery hold when post-commit status persistence fails', async () => {
+  const dataDir = makeTempDir('aica-agentd-chat-commit-status-failure-')
+  const sourceRoot = sourceFixture()
+  const secret = 'k'.repeat(32)
+  const server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
+  const { origin } = await server.start()
+  const { auth, preview } = await staged(server, origin, sourceRoot, secret)
+  const confirmation = await request(origin, 'POST', '/api/v1/continuity/chat-history/confirm', { previewId: preview.previewId, scope: 'chat-history' }, auth)
+  const persist = server.persistChatHistoryCutover
+  server.persistChatHistoryCutover = function (record) {
+    if (record.state === 'applied') throw new Error('status persistence failed after commit')
+    return persist.call(this, record)
+  }
+  const applied = await request(origin, 'POST', '/api/v1/continuity/chat-history/apply', { previewId: preview.previewId, confirmationToken: confirmation.body.confirmationToken }, auth)
+  assert.equal(applied.status, 500)
+  assert.equal(applied.body.state, 'needs-recovery')
+  assert.equal(applied.body.manualRecoveryRequired, true)
+  assert.equal(server.migrationHold, true)
+  assert.equal(server.db.prepare('SELECT COUNT(*) AS count FROM chat_sessions').get().count, 1)
+  assert.equal(server.db.prepare('SELECT COUNT(*) AS count FROM chat_messages').get().count, 1)
+  await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true }); fs.rmSync(sourceRoot, { recursive: true, force: true })
+})
+
 test('chat-history restart recovery allows same-scope rollback and clears the hold', async () => {
   const dataDir = makeTempDir('aica-agentd-chat-recovery-rollback-')
   const sourceRoot = sourceFixture()

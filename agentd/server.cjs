@@ -1707,6 +1707,7 @@ class AgentdServer {
     const priorHold = this.migrationHold
     const allowRecovery = record.state === 'needs-recovery' && this.migrationRecoveryScope === CHAT_HISTORY_SCOPE
     if (!this.claimMigrationOwner(CHAT_HISTORY_SCOPE, allowRecovery)) return json(res, 409, { error: 'Another migration is committing' })
+    let committed = false
     try {
       record.token = null; record.consumedAt = Date.now(); record.state = 'applying'; this.persistChatHistoryCutover(record)
       this.stopEmailInboundPolling()
@@ -1747,10 +1748,17 @@ class AgentdServer {
         for (const row of insertedMessages) this.db.prepare('INSERT INTO chat_messages(session_id,message_id,role,content,attachments,metadata,created_at) VALUES (?,?,?,?,?,?,?)').run(row.session_id, row.message_id, row.role, row.content, row.attachments, row.metadata, row.created_at)
         return { sessionsImported: insertedSessions.length, messagesImported: insertedMessages.length, sessionsAlreadyPresent: existingSessions.length, messagesAlreadyPresent: existingMessages.length, backupSha256: record.backupSha256, liveDataChanged: Boolean(insertedSessions.length || insertedMessages.length) }
       })()
+      committed = true
       record.state = 'applied'; record.appliedAt = Date.now(); record.result = result; this.persistChatHistoryCutover(record)
       this.releaseMigrationOwner(CHAT_HISTORY_SCOPE, priorHold, allowRecovery)
       return json(res, 200, this.chatHistoryPublic(record))
     } catch (error) {
+      if (committed) {
+        record.state = 'needs-recovery'; record.error = error.message
+        try { this.persistChatHistoryCutover(record) } catch {}
+        this.migrationOwner = false; this.migrationScope = null; this.markMigrationRecovery(CHAT_HISTORY_SCOPE)
+        return json(res, error.statusCode || 500, { ...this.chatHistoryPublic(record), error: error.message })
+      }
       record.state = 'rolled-back'; record.error = error.message; try { this.persistChatHistoryCutover(record) } catch {}
       this.releaseMigrationOwner(CHAT_HISTORY_SCOPE, priorHold)
       return json(res, error.statusCode || 500, { ...this.chatHistoryPublic(record), error: error.message })
