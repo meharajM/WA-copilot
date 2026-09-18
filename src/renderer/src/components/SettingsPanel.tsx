@@ -391,6 +391,11 @@ export function SettingsPanel({ onClose, initialSection = 'whatsapp' }: Settings
                                 {editingMcpId ? "Add New Instead" : showMcpForm ? "Hide Form" : "Add Tool"}
                             </button>
                         </div>
+                        {browserRuntime && (
+                            <div className="rounded-lg border border-amber-400/30 bg-amber-400/10 px-4 py-3 text-xs text-amber-100" role="status">
+                                Browser mode saves MCP definitions in agentd, but does not start or execute arbitrary MCP servers yet. Connect actions stay unavailable until the supervised agentd worker is migrated.
+                            </div>
+                        )}
 
                         {showMcpForm && (
                             <McpServerForm
