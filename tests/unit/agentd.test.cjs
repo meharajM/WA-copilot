@@ -255,6 +255,79 @@ test('agentd stages owner-approved continuity imports without touching live data
   fs.rmSync(sourceRoot, { recursive: true, force: true })
 })
 
+test('agentd inventories Electron credential stores for native reauthentication without exposing secret values', async () => {
+  const dataDir = makeTempDir('aica-agentd-credential-continuity-')
+  const sourceRoot = makeTempDir('aica-electron-credential-source-')
+  const secret = 'electron-safe-storage-ciphertext-never-returned'
+  fs.writeFileSync(path.join(sourceRoot, 'aica-secrets.json'), JSON.stringify({
+    openai_api_key: secret,
+    user_alice_openrouter_api_key: 'user-ciphertext',
+    unknown_secret_key: 'must-not-be-listed',
+  }))
+  fs.writeFileSync(path.join(sourceRoot, 'gmail-oauth.json'), JSON.stringify({
+    gmail_client_id: 'client-id',
+    gmail_refresh_token: 'refresh-token-never-returned',
+    gmail_email: 'owner@example.test',
+  }))
+  const bearer = 's'.repeat(32)
+  const server = new AgentdServer({ dataDir, secret: bearer, logger: { log() {} } })
+  const { origin } = await server.start()
+
+  const browserAttempt = await request(origin, 'POST', '/api/v1/continuity/credentials/preview', { sourceRoot, ownerConfirmation: 'INSPECT_ELECTRON_CREDENTIALS' }, { origin })
+  assert.equal(browserAttempt.status, 401)
+  const native = { authorization: `Bearer ${bearer}` }
+  const missingConfirmation = await request(origin, 'POST', '/api/v1/continuity/credentials/preview', { sourceRoot }, native)
+  assert.equal(missingConfirmation.status, 403)
+  const preview = await request(origin, 'POST', '/api/v1/continuity/credentials/preview', { sourceRoot, ownerConfirmation: 'INSPECT_ELECTRON_CREDENTIALS' }, native)
+  assert.equal(preview.status, 200)
+  assert.deepEqual(preview.body, {
+    version: 1,
+    source: 'electron',
+    target: 'agentd-os-credential-store',
+    state: 'reauthentication-required',
+    stores: [
+      {
+        id: 'electron-credentials',
+        present: true,
+        entries: [
+          { key: 'openai_api_key', scope: 'default', supported: true },
+          { key: 'openrouter_api_key', scope: 'user', supported: true },
+        ],
+      },
+      {
+        id: 'electron-gmail-oauth',
+        present: true,
+        entries: [
+          { key: 'gmail_oauth_client_id', scope: 'default', supported: true },
+          { key: 'gmail_oauth_session', scope: 'default', supported: false },
+        ],
+      },
+    ],
+    secretsExcluded: true,
+    requiresOwnerConfirmation: true,
+    requiresReauthentication: true,
+    transferable: false,
+    note: 'Electron safe-storage values are not copied; re-enter each supported credential through the native owner flow.',
+  })
+  assert.equal(JSON.stringify(preview.body).includes(secret), false)
+  assert.equal(JSON.stringify(preview.body).includes('user_alice'), false)
+  assert.equal(JSON.stringify(preview.body).includes('refresh-token'), false)
+  assert.equal(fs.existsSync(path.join(dataDir, 'agentd.db')), true)
+
+  fs.writeFileSync(path.join(sourceRoot, 'aica-secrets.json'), '{"openai_api_key":"a","openai_api_key":"b"}')
+  const duplicate = await request(origin, 'POST', '/api/v1/continuity/credentials/preview', { sourceRoot, ownerConfirmation: 'INSPECT_ELECTRON_CREDENTIALS' }, native)
+  assert.equal(duplicate.status, 400)
+  assert.equal(JSON.stringify(duplicate.body).includes('openai_api_key'), false)
+
+  fs.writeFileSync(path.join(sourceRoot, 'aica-secrets.json'), Buffer.alloc(2 * 1024 * 1024 + 1, 0x20))
+  const oversized = await request(origin, 'POST', '/api/v1/continuity/credentials/preview', { sourceRoot, ownerConfirmation: 'INSPECT_ELECTRON_CREDENTIALS' }, native)
+  assert.equal(oversized.status, 413)
+
+  await server.stop()
+  fs.rmSync(dataDir, { recursive: true, force: true })
+  fs.rmSync(sourceRoot, { recursive: true, force: true })
+})
+
 test('agentd persists exact LLM preferences and probes only fixed providers with stored credentials', async () => {
   const dataDir = makeTempDir('aica-agentd-llm-')
   const records = new Map()

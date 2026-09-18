@@ -110,6 +110,81 @@ describe('tauri native bridge', () => {
     expect(invoke).toHaveBeenCalledWith(TAURI_COMMANDS.continuityPreview, { sourceRoot: 'C:\\Users\\owner\\AppData\\Roaming\\AIConsumerAgent' })
   })
 
+  it('keeps chat-history cutover typed, native-only, and token-free in rendered state', async () => {
+    expect(TAURI_COMMANDS.chatHistoryConfirm).toBe('chat_history_confirm')
+    expect(TAURI_COMMANDS.chatHistoryApply).toBe('chat_history_apply')
+    expect(TAURI_COMMANDS.chatHistoryStatus).toBe('chat_history_status')
+    expect(TAURI_COMMANDS.chatHistoryRollback).toBe('chat_history_rollback')
+    const invoke = vi.fn(async (command: string) => {
+      if (command === TAURI_COMMANDS.chatHistoryConfirm) return {
+        previewId: '12345678-1234-1234-1234-123456789012', scope: 'chat-history', targetRuntime: 'runtime', state: 'confirmed', manifestHash: 'manifest', confirmationToken: 'a'.repeat(64),
+      }
+      if (command === TAURI_COMMANDS.chatHistoryApply) return {
+        previewId: '12345678-1234-1234-1234-123456789012', scope: 'chat-history', targetRuntime: 'runtime', state: 'applied', manifestHash: 'manifest', backupSha256: 'backup', liveDataChanged: true, sessionsImported: 1, messagesImported: 2,
+      }
+      if (command === TAURI_COMMANDS.chatHistoryStatus) return {
+        previewId: '12345678-1234-1234-1234-123456789012', scope: 'chat-history', targetRuntime: 'runtime', state: 'applied', manifestHash: 'manifest', backupSha256: 'backup', liveDataChanged: true,
+      }
+      return {
+        previewId: '12345678-1234-1234-1234-123456789012', scope: 'chat-history', targetRuntime: 'runtime', state: 'rolled-back', manifestHash: 'manifest', liveDataChanged: true,
+      }
+    })
+    const bridge = createTauriNativeBridge({ invoke })
+    const previewId = '12345678-1234-1234-1234-123456789012'
+    const confirmed = await bridge.chatHistoryConfirm(previewId)
+    await expect(bridge.chatHistoryApply(previewId, confirmed.confirmationToken!)).resolves.toMatchObject({ state: 'applied', sessionsImported: 1 })
+    await expect(bridge.chatHistoryStatus(previewId)).resolves.toMatchObject({ state: 'applied' })
+    await expect(bridge.chatHistoryRollback(previewId)).resolves.toMatchObject({ state: 'rolled-back' })
+    expect(invoke).toHaveBeenCalledWith(TAURI_COMMANDS.chatHistoryConfirm, { previewId })
+    expect(invoke).toHaveBeenCalledWith(TAURI_COMMANDS.chatHistoryApply, { previewId, confirmationToken: 'a'.repeat(64) })
+    expect(invoke).toHaveBeenCalledWith(TAURI_COMMANDS.chatHistoryStatus, { previewId })
+    expect(invoke).toHaveBeenCalledWith(TAURI_COMMANDS.chatHistoryRollback, { previewId })
+  })
+
+  it('keeps credential continuity metadata-only and native-owner-only', async () => {
+    expect(TAURI_COMMANDS.credentialContinuityPreview).toBe('credential_continuity_preview')
+    const invoke = vi.fn(async () => ({
+      version: 1,
+      source: 'electron',
+      target: 'agentd-os-credential-store',
+      state: 'reauthentication-required',
+      stores: [{
+        id: 'electron-credentials',
+        present: true,
+        entries: [{ key: 'openai_api_key', scope: 'default', supported: true }],
+      }],
+      secretsExcluded: true,
+      requiresOwnerConfirmation: true,
+      requiresReauthentication: true,
+      transferable: false,
+      note: 'Electron safe-storage values are not copied; re-enter each supported credential through the native owner flow.',
+    }))
+    const bridge = createTauriNativeBridge({ invoke })
+    const sourceRoot = 'C:\\Users\\owner\\AppData\\Roaming\\AIConsumerAgent'
+    await expect(bridge.credentialContinuityPreview(sourceRoot)).resolves.toMatchObject({
+      state: 'reauthentication-required',
+      secretsExcluded: true,
+      transferable: false,
+    })
+    expect(invoke).toHaveBeenCalledWith(TAURI_COMMANDS.credentialContinuityPreview, { sourceRoot })
+  })
+
+  it('rejects malformed credential continuity metadata', async () => {
+    const bridge = createTauriNativeBridge({ invoke: vi.fn(async () => ({
+      version: 1,
+      source: 'electron',
+      target: 'agentd-os-credential-store',
+      state: 'reauthentication-required',
+      stores: [{ id: 'electron-credentials', present: true, entries: [{ key: 'raw_secret_value', scope: 'default', supported: true }] }],
+      secretsExcluded: true,
+      requiresOwnerConfirmation: true,
+      requiresReauthentication: true,
+      transferable: false,
+      note: 'safe',
+    })) })
+    await expect(bridge.credentialContinuityPreview('/tmp/electron')).rejects.toThrow('Invalid credential continuity entry response')
+  })
+
   it('treats only null as picker cancellation', async () => {
     const invoke = vi.fn(async () => null as unknown)
     const bridge = createTauriNativeBridge({ invoke })

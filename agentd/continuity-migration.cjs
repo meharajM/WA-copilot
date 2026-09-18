@@ -5,6 +5,23 @@ const Database = require('better-sqlite3')
 
 const MANIFEST_VERSION = 1
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+const MAX_CREDENTIAL_SOURCE_BYTES = 2 * 1024 * 1024
+const CREDENTIAL_KEYS = Object.freeze([
+  'openai_api_key',
+  'gemini_api_key',
+  'openrouter_api_key',
+  'email_mcp_password',
+  'email_imap_password',
+  'email_smtp_password',
+  'gmail_oauth_client_id',
+  'whatsapp_cloud_access_token',
+  'whatsapp_cloud_app_secret',
+  'whatsapp_cloud_verify_token',
+])
+const CREDENTIAL_SOURCES = Object.freeze([
+  { id: 'electron-credentials', relativePath: 'aica-secrets.json' },
+  { id: 'electron-gmail-oauth', relativePath: 'gmail-oauth.json' },
+])
 
 // This module deliberately stages into a new directory. It never replaces the
 // live agentd database or reads credentials. Cutover remains a separate,
@@ -143,6 +160,122 @@ function safeSourceFile(root, relativePath) {
   return candidate
 }
 
+function parseCredentialJson(bytes) {
+  // Electron's stores are JSON, but a duplicate key would make the inventory
+  // ambiguous. Reject it before JSON.parse so an owner never gets a misleading
+  // "present" result for a value that could be shadowed by a later key.
+  const text = bytes.toString('utf8')
+  let index = 0
+  const whitespace = () => { while (/\s/.test(text[index] || '')) index += 1 }
+  const string = () => {
+    if (text[index] !== '"') throw new Error('invalid')
+    const start = index++
+    while (index < text.length) {
+      if (text[index] === '\\') index += 2
+      else if (text[index++] === '"') return JSON.parse(text.slice(start, index))
+    }
+    throw new Error('invalid')
+  }
+  const value = () => {
+    whitespace()
+    if (text[index] === '{') {
+      index += 1; whitespace(); const keys = new Set()
+      if (text[index] === '}') { index += 1; return }
+      while (true) {
+        const key = string()
+        if (keys.has(key)) throw new Error('duplicate')
+        keys.add(key); whitespace()
+        if (text[index++] !== ':') throw new Error('invalid')
+        value(); whitespace()
+        if (text[index] === '}') { index += 1; return }
+        if (text[index++] !== ',') throw new Error('invalid')
+        whitespace()
+      }
+    }
+    if (text[index] === '[') {
+      index += 1; whitespace()
+      if (text[index] === ']') { index += 1; return }
+      while (true) {
+        value(); whitespace()
+        if (text[index] === ']') { index += 1; return }
+        if (text[index++] !== ',') throw new Error('invalid')
+        whitespace()
+      }
+    }
+    if (text[index] === '"') { string(); return }
+    const match = text.slice(index).match(/^(?:true|false|null|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)/)
+    if (!match) throw new Error('invalid')
+    index += match[0].length
+  }
+  value(); whitespace()
+  if (index !== text.length) throw new Error('invalid')
+  const parsed = JSON.parse(text)
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('invalid')
+  return parsed
+}
+
+function credentialSourceEntry(key, source) {
+  if (source === 'electron-credentials') {
+    if (CREDENTIAL_KEYS.includes(key)) return { key, scope: 'default', supported: true }
+    for (const allowed of CREDENTIAL_KEYS) {
+      const suffix = `_${allowed}`
+      if (key.startsWith('user_') && key.endsWith(suffix)) {
+        const user = key.slice(5, -suffix.length)
+        if (/^[A-Za-z0-9_-]{1,128}$/.test(user)) return { key: allowed, scope: 'user', supported: true }
+      }
+    }
+    return null
+  }
+  // Gmail OAuth's refresh token and account marker cannot be imported into the
+  // browser-first agentd flow. Report their presence without returning the
+  // legacy names or values so the owner can explicitly reauthenticate.
+  return {
+    key: key === 'gmail_client_id' ? 'gmail_oauth_client_id' : 'gmail_oauth_session',
+    scope: 'default',
+    supported: key === 'gmail_client_id',
+  }
+}
+
+function inspectCredentialSources(sourceRoot, targetRoot, readFile = filename => fs.readFileSync(filename)) {
+  const root = rootPath(sourceRoot, targetRoot)
+  const stores = []
+  let found = false
+  for (const source of CREDENTIAL_SOURCES) {
+    const sourcePath = safeSourceFile(root, source.relativePath)
+    if (!sourcePath) continue
+    found = true
+    let bytes
+    try { bytes = readFile(sourcePath) } catch (error) {
+      if (error?.statusCode) throw error
+      fail('Credential store is unavailable', 409)
+    }
+    if (!Buffer.isBuffer(bytes) || bytes.length === 0) fail('Credential store is invalid', 400)
+    if (bytes.length > MAX_CREDENTIAL_SOURCE_BYTES) fail('Credential store is too large', 413)
+    let parsed
+    try { parsed = parseCredentialJson(bytes) } catch { fail('Credential store is invalid', 400) }
+    const keys = []
+    for (const key of Object.keys(parsed)) {
+      const entry = credentialSourceEntry(key, source.id)
+      if (!entry || keys.some(existing => existing.key === entry.key && existing.scope === entry.scope)) continue
+      keys.push(entry)
+    }
+    stores.push({ id: source.id, present: true, entries: keys })
+  }
+  if (!found) fail('No Electron credential stores found', 404)
+  return {
+    version: 1,
+    source: 'electron',
+    target: 'agentd-os-credential-store',
+    state: 'reauthentication-required',
+    stores,
+    secretsExcluded: true,
+    requiresOwnerConfirmation: true,
+    requiresReauthentication: true,
+    transferable: false,
+    note: 'Electron safe-storage values are not copied; re-enter each supported credential through the native owner flow.',
+  }
+}
+
 function assertNoSecrets(value, location = '$') {
   if (Array.isArray(value)) return value.forEach((item, index) => assertNoSecrets(item, `${location}[${index}]`))
   if (!value || typeof value !== 'object') return
@@ -246,4 +379,4 @@ function rollback(migrationId, targetRoot) {
   return { migrationId, state: 'rolled-back' }
 }
 
-module.exports = { assertNoSqliteSidecars, createPreview, importPreview, isSecretMigrationKey, rollback }
+module.exports = { assertNoSqliteSidecars, createPreview, importPreview, inspectCredentialSources, isSecretMigrationKey, rollback }

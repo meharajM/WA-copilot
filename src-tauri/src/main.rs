@@ -17,8 +17,9 @@ use std::{
 use std::env;
 
 use agentd_api::{
-    AgentdClient, ContinuityImport, ContinuityPreview, ContinuityRollback, CredentialExistsResult,
-    NativeHealth, NativeResult, SettingsPersonaCutover,
+    AgentdClient, ChatHistoryCutover, ContinuityImport, ContinuityPreview, ContinuityRollback,
+    CredentialContinuityPreview, CredentialExistsResult, NativeHealth, NativeResult,
+    SettingsPersonaCutover,
 };
 use serde::Deserialize;
 use tauri::{
@@ -155,7 +156,10 @@ async fn settings_persona_confirm(
     client: State<'_, AgentdClient>,
     preview_id: String,
 ) -> Result<SettingsPersonaCutover, String> {
-    client.settings_persona_confirm(&preview_id).await.map_err(|_| "Settings/persona confirmation failed".into())
+    client
+        .settings_persona_confirm(&preview_id)
+        .await
+        .map_err(|_| "Settings/persona confirmation failed".into())
 }
 
 #[tauri::command]
@@ -164,7 +168,10 @@ async fn settings_persona_apply(
     preview_id: String,
     confirmation_token: String,
 ) -> Result<SettingsPersonaCutover, String> {
-    client.settings_persona_apply(&preview_id, &confirmation_token).await.map_err(|_| "Settings/persona cutover failed".into())
+    client
+        .settings_persona_apply(&preview_id, &confirmation_token)
+        .await
+        .map_err(|_| "Settings/persona cutover failed".into())
 }
 
 #[tauri::command]
@@ -172,7 +179,10 @@ async fn settings_persona_rollback(
     client: State<'_, AgentdClient>,
     preview_id: String,
 ) -> Result<SettingsPersonaCutover, String> {
-    client.settings_persona_rollback(&preview_id).await.map_err(|_| "Settings/persona rollback failed".into())
+    client
+        .settings_persona_rollback(&preview_id)
+        .await
+        .map_err(|_| "Settings/persona rollback failed".into())
 }
 
 #[tauri::command]
@@ -180,7 +190,66 @@ async fn settings_persona_status(
     client: State<'_, AgentdClient>,
     preview_id: String,
 ) -> Result<SettingsPersonaCutover, String> {
-    client.settings_persona_status(&preview_id).await.map_err(|_| "Settings/persona status unavailable".into())
+    client
+        .settings_persona_status(&preview_id)
+        .await
+        .map_err(|_| "Settings/persona status unavailable".into())
+}
+
+#[tauri::command]
+async fn chat_history_confirm(
+    client: State<'_, AgentdClient>,
+    preview_id: String,
+) -> Result<ChatHistoryCutover, String> {
+    client
+        .chat_history_confirm(&preview_id)
+        .await
+        .map_err(|_| "Chat-history confirmation failed".into())
+}
+
+#[tauri::command]
+async fn chat_history_apply(
+    client: State<'_, AgentdClient>,
+    preview_id: String,
+    confirmation_token: String,
+) -> Result<ChatHistoryCutover, String> {
+    client
+        .chat_history_apply(&preview_id, &confirmation_token)
+        .await
+        .map_err(|_| "Chat-history cutover failed".into())
+}
+
+#[tauri::command]
+async fn chat_history_rollback(
+    client: State<'_, AgentdClient>,
+    preview_id: String,
+) -> Result<ChatHistoryCutover, String> {
+    client
+        .chat_history_rollback(&preview_id)
+        .await
+        .map_err(|_| "Chat-history rollback failed".into())
+}
+
+#[tauri::command]
+async fn chat_history_status(
+    client: State<'_, AgentdClient>,
+    preview_id: String,
+) -> Result<ChatHistoryCutover, String> {
+    client
+        .chat_history_status(&preview_id)
+        .await
+        .map_err(|_| "Chat-history status unavailable".into())
+}
+
+#[tauri::command]
+async fn credential_continuity_preview(
+    client: State<'_, AgentdClient>,
+    source_root: String,
+) -> Result<CredentialContinuityPreview, String> {
+    client
+        .credential_continuity_preview(source_root)
+        .await
+        .map_err(|_| "Credential continuity preview failed".into())
 }
 
 #[tauri::command]
@@ -435,6 +504,11 @@ fn main() {
             settings_persona_apply,
             settings_persona_rollback,
             settings_persona_status,
+            chat_history_confirm,
+            chat_history_apply,
+            chat_history_rollback,
+            chat_history_status,
+            credential_continuity_preview,
             select_file,
             select_folder
         ])

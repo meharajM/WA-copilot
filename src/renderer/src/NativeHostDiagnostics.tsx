@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { CredentialKey, NativeHealth } from '../../shared/native-bridge'
-import { tauriNativeBridge, type NativeContinuityPreview, type NativeSettingsPersonaCutover } from './lib/tauri-native-bridge'
+import { tauriNativeBridge, type NativeChatHistoryCutover, type NativeContinuityPreview, type NativeCredentialContinuityPreview, type NativeSettingsPersonaCutover } from './lib/tauri-native-bridge'
 
 const CREDENTIALS: Array<{ key: CredentialKey; label: string }> = [
   { key: 'openai_api_key', label: 'OpenAI key' },
@@ -25,6 +25,8 @@ export default function NativeHostDiagnostics() {
   const [continuityPreview, setContinuityPreview] = useState<NativeContinuityPreview | null>(null)
   const [migrationId, setMigrationId] = useState<string | null>(null)
   const [settingsPersonaCutover, setSettingsPersonaCutover] = useState<NativeSettingsPersonaCutover | null>(null)
+  const [chatHistoryCutover, setChatHistoryCutover] = useState<NativeChatHistoryCutover | null>(null)
+  const [credentialContinuityPreview, setCredentialContinuityPreview] = useState<NativeCredentialContinuityPreview | null>(null)
 
   const refresh = async () => {
     try { setHealth(await tauriNativeBridge.health()) }
@@ -91,6 +93,22 @@ export default function NativeHostDiagnostics() {
     finally { setBusy(null) }
   }
 
+  const previewCredentialContinuity = async () => {
+    setBusy('credential-continuity-preview'); setError(null); setNotice(null)
+    try {
+      const sourceRoot = await tauriNativeBridge.selectFolder()
+      if (!sourceRoot) { setNotice('Selection canceled'); return }
+      const preview = await tauriNativeBridge.credentialContinuityPreview(sourceRoot)
+      setCredentialContinuityPreview(preview)
+      const count = preview.stores.reduce((total, store) => total + store.entries.length, 0)
+      setNotice(`Found ${count} credential entr${count === 1 ? 'y' : 'ies'} requiring owner reauthentication; no secret values were read back`)
+    } catch (reason) {
+      setCredentialContinuityPreview(null)
+      setError(messageFrom(reason, 'Credential continuity preview unavailable'))
+    } finally { setBusy(null) }
+  }
+
+
   const stageContinuity = async () => {
     if (!continuityPreview) return
     setBusy('continuity-import'); setError(null); setNotice(null)
@@ -126,6 +144,46 @@ export default function NativeHostDiagnostics() {
     setBusy('settings-persona-apply'); setError(null); setNotice(null)
     try { setSettingsPersonaCutover(await tauriNativeBridge.settingsPersonaApply(settingsPersonaCutover.previewId, settingsPersonaCutover.confirmationToken)); setNotice('Settings/persona metadata applied to agentd') }
     catch (reason) { setError(messageFrom(reason, 'Metadata cutover failed')) }
+    finally { setBusy(null) }
+  }
+
+  const confirmChatHistory = async () => {
+    if (!continuityPreview) return
+    setBusy('chat-history-confirm'); setError(null); setNotice(null)
+    try {
+      setChatHistoryCutover(await tauriNativeBridge.chatHistoryConfirm(continuityPreview.previewId))
+      setNotice('Chat history cutover confirmed. Apply only after reviewing the staged stores.')
+    } catch (reason) { setError(messageFrom(reason, 'Chat-history cutover confirmation unavailable')) }
+    finally { setBusy(null) }
+  }
+
+  const applyChatHistory = async () => {
+    if (!chatHistoryCutover?.confirmationToken) return
+    setBusy('chat-history-apply'); setError(null); setNotice(null)
+    try {
+      setChatHistoryCutover(await tauriNativeBridge.chatHistoryApply(chatHistoryCutover.previewId, chatHistoryCutover.confirmationToken))
+      setNotice('Chat history applied to agentd')
+    } catch (reason) { setError(messageFrom(reason, 'Chat-history cutover failed')) }
+    finally { setBusy(null) }
+  }
+
+  const refreshChatHistoryStatus = async () => {
+    if (!continuityPreview) return
+    setBusy('chat-history-status'); setError(null); setNotice(null)
+    try {
+      setChatHistoryCutover(await tauriNativeBridge.chatHistoryStatus(continuityPreview.previewId))
+      setNotice('Chat-history cutover status refreshed')
+    } catch (reason) { setError(messageFrom(reason, 'Chat-history status unavailable')) }
+    finally { setBusy(null) }
+  }
+
+  const rollbackChatHistory = async () => {
+    if (!chatHistoryCutover) return
+    setBusy('chat-history-rollback'); setError(null); setNotice(null)
+    try {
+      setChatHistoryCutover(await tauriNativeBridge.chatHistoryRollback(chatHistoryCutover.previewId))
+      setNotice('Chat history cutover rolled back')
+    } catch (reason) { setError(messageFrom(reason, 'Chat-history rollback unavailable')) }
     finally { setBusy(null) }
   }
 
@@ -166,9 +224,15 @@ export default function NativeHostDiagnostics() {
         </article>
         <article className="pilot-panel">
           <div className="pilot-panel-heading"><div><p className="pilot-label">04 / continuity</p><h2>Stage Electron data</h2></div><span className="pilot-index">OWNER ACTION</span></div>
-          <p className="pilot-copy">Preview and stage only allowlisted, non-secret stores. This does not replace live agentd data; credentials require separate reauthentication.</p>
+          <p className="pilot-copy">Preview and stage only allowlisted, non-secret stores. Live cutovers require separate owner confirmation; credentials require separate reauthentication.</p>
           <div className="pilot-actions"><button type="button" className="pilot-button pilot-button-primary" onClick={() => void previewContinuity()} disabled={busy !== null}>{busy === 'continuity-preview' ? 'Validating…' : 'Preview Electron data'}</button></div>
-          {continuityPreview && <div className="pilot-continuity" aria-live="polite"><p>{continuityPreview.entries.map(entry => `${entry.id} (${entry.byteSize} bytes)`).join(' · ')}</p><p className="pilot-copy">Review this list before staging. Credential, chat-history, and OAuth migration remain deferred.</p><div className="pilot-actions"><button type="button" className="pilot-button pilot-button-primary" onClick={() => void stageContinuity()} disabled={busy !== null || Boolean(migrationId)}>{busy === 'continuity-import' ? 'Staging…' : 'Stage validated data'}</button>{migrationId && !settingsPersonaCutover && <button type="button" className="pilot-button" onClick={() => void confirmSettingsPersona()} disabled={busy !== null}>{busy === 'settings-persona-confirm' ? 'Confirming…' : 'Confirm settings/persona'}</button>}{migrationId && !settingsPersonaCutover?.backupSha256 && <button type="button" className="pilot-button" onClick={() => void rollbackContinuity()} disabled={busy !== null}>{busy === 'continuity-rollback' ? 'Rolling back…' : 'Rollback staging'}</button>}</div>{settingsPersonaCutover && <div className="pilot-actions"><span className="pilot-key-state" role="status">Cutover: {settingsPersonaCutover.state}</span>{settingsPersonaCutover.confirmationToken && <button type="button" className="pilot-button pilot-button-primary" onClick={() => void applySettingsPersona()} disabled={busy !== null}>{busy === 'settings-persona-apply' ? 'Applying…' : 'Apply metadata cutover'}</button>}{settingsPersonaCutover.state === 'applied' && <button type="button" className="pilot-button" onClick={() => void rollbackSettingsPersona()} disabled={busy !== null}>{busy === 'settings-persona-rollback' ? 'Rolling back…' : 'Rollback metadata'}</button>}</div>}</div>}
+          {continuityPreview && <div className="pilot-continuity" aria-live="polite"><p>{continuityPreview.entries.map(entry => `${entry.id} (${entry.byteSize} bytes)`).join(' · ')}</p><p className="pilot-copy">Review this list before staging. Credentials and OAuth migration remain deferred. Chat history and settings/persona cutovers run independently.</p><div className="pilot-actions"><button type="button" className="pilot-button pilot-button-primary" onClick={() => void stageContinuity()} disabled={busy !== null || Boolean(migrationId)}>{busy === 'continuity-import' ? 'Staging…' : 'Stage validated data'}</button>{migrationId && !settingsPersonaCutover && <button type="button" className="pilot-button" onClick={() => void confirmSettingsPersona()} disabled={busy !== null}>{busy === 'settings-persona-confirm' ? 'Confirming…' : 'Confirm settings/persona'}</button>}{migrationId && (!chatHistoryCutover || (chatHistoryCutover.state === 'confirmed' && !chatHistoryCutover.confirmationToken && chatHistoryCutover.requiresReconfirmation)) && <button type="button" className="pilot-button" onClick={() => void confirmChatHistory()} disabled={busy !== null}>{busy === 'chat-history-confirm' ? 'Confirming…' : chatHistoryCutover ? 'Confirm chat history again' : 'Confirm chat history'}</button>}{migrationId && !settingsPersonaCutover?.backupSha256 && !chatHistoryCutover?.backupSha256 && <button type="button" className="pilot-button" onClick={() => void rollbackContinuity()} disabled={busy !== null}>{busy === 'continuity-rollback' ? 'Rolling back…' : 'Rollback staging'}</button>}</div>{settingsPersonaCutover && <div className="pilot-actions"><span className="pilot-key-state" role="status">Settings/persona: {settingsPersonaCutover.state}</span>{settingsPersonaCutover.confirmationToken && <button type="button" className="pilot-button pilot-button-primary" onClick={() => void applySettingsPersona()} disabled={busy !== null}>{busy === 'settings-persona-apply' ? 'Applying…' : 'Apply metadata cutover'}</button>}{settingsPersonaCutover.state === 'applied' && <button type="button" className="pilot-button" onClick={() => void rollbackSettingsPersona()} disabled={busy !== null}>{busy === 'settings-persona-rollback' ? 'Rolling back…' : 'Rollback metadata'}</button>}</div>}{chatHistoryCutover && <div className="pilot-actions"><span className="pilot-key-state" role="status">Chat history: {chatHistoryCutover.state}</span>{chatHistoryCutover.confirmationToken && <button type="button" className="pilot-button pilot-button-primary" onClick={() => void applyChatHistory()} disabled={busy !== null}>{busy === 'chat-history-apply' ? 'Applying…' : 'Apply chat history'}</button>}{chatHistoryCutover.backupSha256 && chatHistoryCutover.state !== 'rolled-back' && <button type="button" className="pilot-button" onClick={() => void rollbackChatHistory()} disabled={busy !== null}>{busy === 'chat-history-rollback' ? 'Rolling back…' : 'Rollback chat history'}</button>}<button type="button" className="pilot-button" onClick={() => void refreshChatHistoryStatus()} disabled={busy !== null}>{busy === 'chat-history-status' ? 'Refreshing…' : 'Refresh chat-history status'}</button></div>}</div>}
+        </article>
+        <article className="pilot-panel">
+          <div className="pilot-panel-heading"><div><p className="pilot-label">05 / credential continuity</p><h2>Reauthentication only</h2></div><span className="pilot-index">NO SECRET READ</span></div>
+          <p className="pilot-copy">Electron safe-storage values cannot be transferred safely. Review which credentials need to be entered again through the browser's secure agentd flow; no values are shown or copied.</p>
+          <div className="pilot-actions"><button type="button" className="pilot-button pilot-button-primary" onClick={() => void previewCredentialContinuity()} disabled={busy !== null}>{busy === 'credential-continuity-preview' ? 'Inspecting…' : 'Review credentials needing reauthentication'}</button></div>
+          {credentialContinuityPreview && <div className="pilot-continuity" aria-live="polite"><p className="pilot-key-state" role="status">Reauthentication required · values excluded</p>{credentialContinuityPreview.stores.map(store => <p key={store.id} className="pilot-copy">{store.id}: {store.entries.length ? store.entries.map(entry => `${entry.key}${entry.scope === 'user' ? ' (user-scoped)' : ''}${entry.supported ? '' : ' (unsupported)'}`).join(' · ') : 'No recognized credentials'}</p>)}</div>}
         </article>
       </section>
       <footer className="pilot-footer" aria-live="polite"><span className={`pilot-message-dot ${error ? 'is-error' : ''}`} aria-hidden="true" /><span>{error || notice || 'Native host only. Product UI runs in the browser.'}</span></footer>

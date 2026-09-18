@@ -351,7 +351,7 @@ function writePrivateFileAtomically(filename, contents) {
   }
 }
 
-function readMigrationFile(filename) {
+function readMigrationFile(filename, maxBytes = null) {
   if (process.platform === 'win32' && fs.constants.O_NOFOLLOW === undefined) {
     throw Object.assign(new Error('Settings migration requires trusted native no-reparse file access on Windows'), { statusCode: 503 })
   }
@@ -361,6 +361,9 @@ function readMigrationFile(filename) {
     handle = fs.openSync(filename, flags)
     const stat = fs.fstatSync(handle)
     if (!stat.isFile()) throw new Error('unsafe')
+    if (Number.isSafeInteger(maxBytes) && maxBytes >= 0 && stat.size > maxBytes) {
+      throw Object.assign(new Error('Migration file is too large'), { statusCode: 413 })
+    }
     return fs.readFileSync(handle)
   } finally {
     if (handle !== undefined) fs.closeSync(handle)
@@ -964,6 +967,7 @@ class AgentdServer {
     if (url.pathname === '/api/v1/mcp/servers' && ['GET', 'PUT'].includes(req.method)) return this.mcpServers(req, res)
     if (url.pathname === '/api/v1/continuity/status' && req.method === 'GET') return this.continuityStatus(req, res)
     if (url.pathname === '/api/v1/continuity/preview' && req.method === 'POST') return this.continuityPreview(req, res)
+    if (url.pathname === '/api/v1/continuity/credentials/preview' && req.method === 'POST') return this.credentialContinuityPreview(req, res)
     if (url.pathname === '/api/v1/continuity/import' && req.method === 'POST') return this.continuityImport(req, res)
     if (url.pathname === '/api/v1/continuity/rollback' && req.method === 'POST') return this.continuityRollback(req, res)
     if (url.pathname === '/api/v1/continuity/settings-persona/confirm' && req.method === 'POST') return this.settingsPersonaConfirm(req, res)
@@ -1137,6 +1141,23 @@ class AgentdServer {
       requiresOwnerConfirmation: true,
       requiresReauthentication: preview.manifest.entries.some(entry => entry.requiresReauthentication),
     })
+  }
+
+  async credentialContinuityPreview(req, res) {
+    // This is intentionally native-owner-only. Browser sessions may inspect
+    // target credential presence through continuity/status, but may not submit
+    // arbitrary filesystem paths or inspect legacy encrypted stores.
+    this.authorizeNative(req)
+    let body
+    try { body = await readBody(req, 16 * 1024) } catch (error) { return json(res, error.statusCode || 400, { error: error.message }) }
+    if (typeof body?.sourceRoot !== 'string' || !body.sourceRoot.trim()) return json(res, 400, { error: 'Source folder is required' })
+    if (body.ownerConfirmation !== 'INSPECT_ELECTRON_CREDENTIALS') return json(res, 403, { error: 'Explicit owner confirmation required' })
+    try {
+      const preview = continuityMigration.inspectCredentialSources(body.sourceRoot, this.dataDir, filename => readMigrationFile(filename, 2 * 1024 * 1024))
+      return json(res, 200, preview)
+    } catch (error) {
+      return json(res, error.statusCode || 500, { error: error.statusCode === 500 ? 'Credential continuity preview failed' : error.message })
+    }
   }
 
   async continuityImport(req, res) {

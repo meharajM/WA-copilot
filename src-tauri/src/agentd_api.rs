@@ -66,6 +66,21 @@ fn valid_model_name(value: &str) -> bool {
         })
 }
 
+fn valid_preview_id(value: &str) -> bool {
+    value.len() == 36
+        && value.bytes().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        })
+}
+
+fn valid_confirmation_token(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RuntimeDescriptor {
@@ -723,6 +738,58 @@ pub struct SettingsPersonaCutover {
     pub error: Option<String>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChatHistoryCutover {
+    pub preview_id: String,
+    pub scope: String,
+    pub target_runtime: String,
+    pub state: String,
+    pub manifest_hash: String,
+    pub expires_at: Option<u64>,
+    pub confirmation_token: Option<String>,
+    pub requires_reconfirmation: Option<bool>,
+    pub manual_recovery_required: Option<bool>,
+    pub backup_sha256: Option<String>,
+    pub sessions_imported: Option<u64>,
+    pub messages_imported: Option<u64>,
+    pub sessions_already_present: Option<u64>,
+    pub messages_already_present: Option<u64>,
+    pub live_data_changed: Option<bool>,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CredentialContinuityEntry {
+    pub key: String,
+    pub scope: String,
+    pub supported: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CredentialContinuityStore {
+    pub id: String,
+    pub present: bool,
+    pub entries: Vec<CredentialContinuityEntry>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CredentialContinuityPreview {
+    pub version: u64,
+    pub source: String,
+    pub target: String,
+    pub state: String,
+    pub stores: Vec<CredentialContinuityStore>,
+    pub secrets_excluded: bool,
+    pub requires_owner_confirmation: bool,
+    pub requires_reauthentication: bool,
+    pub transferable: bool,
+    pub note: String,
+}
+
 #[derive(Clone, Copy)]
 enum CredentialKey {
     Openai,
@@ -783,6 +850,11 @@ enum Route {
     SettingsPersonaApply,
     SettingsPersonaRollback,
     SettingsPersonaStatus(String),
+    ChatHistoryConfirm,
+    ChatHistoryApply,
+    ChatHistoryRollback,
+    ChatHistoryStatus(String),
+    CredentialContinuityPreview,
     LlmSettingsGet,
     LlmSettingsPut,
     WhatsAppSettingsGet,
@@ -818,12 +890,16 @@ impl Route {
             | Self::SettingsPersonaConfirm
             | Self::SettingsPersonaApply
             | Self::SettingsPersonaRollback
+            | Self::ChatHistoryConfirm
+            | Self::ChatHistoryApply
+            | Self::ChatHistoryRollback
+            | Self::CredentialContinuityPreview
             | Self::ProviderTest(_)
             | Self::ChatSessionsCreate
             | Self::ChatMessages(_)
             | Self::ChatGenerations(_) => Method::POST,
             Self::CredentialDelete(_) | Self::ChatSessionDelete(_) => Method::DELETE,
-            Self::SettingsPersonaStatus(_) => Method::GET,
+            Self::SettingsPersonaStatus(_) | Self::ChatHistoryStatus(_) => Method::GET,
         }
     }
 
@@ -836,7 +912,16 @@ impl Route {
             Self::SettingsPersonaConfirm => "/api/v1/continuity/settings-persona/confirm".into(),
             Self::SettingsPersonaApply => "/api/v1/continuity/settings-persona/apply".into(),
             Self::SettingsPersonaRollback => "/api/v1/continuity/settings-persona/rollback".into(),
-            Self::SettingsPersonaStatus(preview_id) => format!("/api/v1/continuity/settings-persona/status?previewId={preview_id}"),
+            Self::SettingsPersonaStatus(preview_id) => {
+                format!("/api/v1/continuity/settings-persona/status?previewId={preview_id}")
+            }
+            Self::ChatHistoryConfirm => "/api/v1/continuity/chat-history/confirm".into(),
+            Self::ChatHistoryApply => "/api/v1/continuity/chat-history/apply".into(),
+            Self::ChatHistoryRollback => "/api/v1/continuity/chat-history/rollback".into(),
+            Self::ChatHistoryStatus(preview_id) => {
+                format!("/api/v1/continuity/chat-history/status?previewId={preview_id}")
+            }
+            Self::CredentialContinuityPreview => "/api/v1/continuity/credentials/preview".into(),
             Self::LlmSettingsGet | Self::LlmSettingsPut => "/api/v1/settings/llm".into(),
             Self::WhatsAppSettingsGet | Self::WhatsAppSettingsPut => {
                 "/api/v1/settings/whatsapp".into()
@@ -932,11 +1017,17 @@ impl AgentdClient {
         if !source.is_dir() || source_root.len() > MAX_WORKSPACE_PATH_BYTES * 4 {
             return Err(());
         }
-        let target = self.data_dir.as_ref().map_err(|_| ())?.canonicalize().map_err(|_| ())?;
+        let target = self
+            .data_dir
+            .as_ref()
+            .map_err(|_| ())?
+            .canonicalize()
+            .map_err(|_| ())?;
         if source == target || source.starts_with(&target) || target.starts_with(&source) {
             return Err(());
         }
-        let body = serde_json::to_vec(&serde_json::json!({ "sourceRoot": source })).map_err(|_| ())?;
+        let body =
+            serde_json::to_vec(&serde_json::json!({ "sourceRoot": source })).map_err(|_| ())?;
         self.request(Route::ContinuityPreview, Some(&body)).await
     }
 
@@ -947,7 +1038,8 @@ impl AgentdClient {
         let body = serde_json::to_vec(&serde_json::json!({
             "previewId": preview_id,
             "ownerConfirmation": "IMPORT_ELECTRON_DATA",
-        })).map_err(|_| ())?;
+        }))
+        .map_err(|_| ())?;
         self.request(Route::ContinuityImport, Some(&body)).await
     }
 
@@ -955,31 +1047,126 @@ impl AgentdClient {
         if migration_id.len() != 36 {
             return Err(());
         }
-        let body = serde_json::to_vec(&serde_json::json!({ "migrationId": migration_id })).map_err(|_| ())?;
+        let body = serde_json::to_vec(&serde_json::json!({ "migrationId": migration_id }))
+            .map_err(|_| ())?;
         self.request(Route::ContinuityRollback, Some(&body)).await
     }
 
-    pub async fn settings_persona_confirm(&self, preview_id: &str) -> Result<SettingsPersonaCutover, ()> {
-        if preview_id.len() != 36 { return Err(()); }
-        let body = serde_json::to_vec(&serde_json::json!({ "previewId": preview_id, "scope": "settings-persona" })).map_err(|_| ())?;
-        self.request(Route::SettingsPersonaConfirm, Some(&body)).await
+    pub async fn settings_persona_confirm(
+        &self,
+        preview_id: &str,
+    ) -> Result<SettingsPersonaCutover, ()> {
+        if preview_id.len() != 36 {
+            return Err(());
+        }
+        let body = serde_json::to_vec(
+            &serde_json::json!({ "previewId": preview_id, "scope": "settings-persona" }),
+        )
+        .map_err(|_| ())?;
+        self.request(Route::SettingsPersonaConfirm, Some(&body))
+            .await
     }
 
-    pub async fn settings_persona_apply(&self, preview_id: &str, confirmation_token: &str) -> Result<SettingsPersonaCutover, ()> {
-        if preview_id.len() != 36 || confirmation_token.len() != 64 { return Err(()); }
+    pub async fn settings_persona_apply(
+        &self,
+        preview_id: &str,
+        confirmation_token: &str,
+    ) -> Result<SettingsPersonaCutover, ()> {
+        if preview_id.len() != 36 || confirmation_token.len() != 64 {
+            return Err(());
+        }
         let body = serde_json::to_vec(&serde_json::json!({ "previewId": preview_id, "confirmationToken": confirmation_token })).map_err(|_| ())?;
         self.request(Route::SettingsPersonaApply, Some(&body)).await
     }
 
-    pub async fn settings_persona_rollback(&self, preview_id: &str) -> Result<SettingsPersonaCutover, ()> {
-        if preview_id.len() != 36 { return Err(()); }
-        let body = serde_json::to_vec(&serde_json::json!({ "previewId": preview_id })).map_err(|_| ())?;
-        self.request(Route::SettingsPersonaRollback, Some(&body)).await
+    pub async fn settings_persona_rollback(
+        &self,
+        preview_id: &str,
+    ) -> Result<SettingsPersonaCutover, ()> {
+        if preview_id.len() != 36 {
+            return Err(());
+        }
+        let body =
+            serde_json::to_vec(&serde_json::json!({ "previewId": preview_id })).map_err(|_| ())?;
+        self.request(Route::SettingsPersonaRollback, Some(&body))
+            .await
     }
 
-    pub async fn settings_persona_status(&self, preview_id: &str) -> Result<SettingsPersonaCutover, ()> {
-        if preview_id.len() != 36 { return Err(()); }
-        self.request(Route::SettingsPersonaStatus(preview_id.to_owned()), None).await
+    pub async fn settings_persona_status(
+        &self,
+        preview_id: &str,
+    ) -> Result<SettingsPersonaCutover, ()> {
+        if preview_id.len() != 36 {
+            return Err(());
+        }
+        self.request(Route::SettingsPersonaStatus(preview_id.to_owned()), None)
+            .await
+    }
+
+    pub async fn chat_history_confirm(&self, preview_id: &str) -> Result<ChatHistoryCutover, ()> {
+        if !valid_preview_id(preview_id) {
+            return Err(());
+        }
+        let body = serde_json::to_vec(
+            &serde_json::json!({ "previewId": preview_id, "scope": "chat-history" }),
+        )
+        .map_err(|_| ())?;
+        self.request(Route::ChatHistoryConfirm, Some(&body)).await
+    }
+
+    pub async fn chat_history_apply(
+        &self,
+        preview_id: &str,
+        confirmation_token: &str,
+    ) -> Result<ChatHistoryCutover, ()> {
+        if !valid_preview_id(preview_id) || !valid_confirmation_token(confirmation_token) {
+            return Err(());
+        }
+        let body = serde_json::to_vec(&serde_json::json!({ "previewId": preview_id, "confirmationToken": confirmation_token })).map_err(|_| ())?;
+        self.request(Route::ChatHistoryApply, Some(&body)).await
+    }
+
+    pub async fn chat_history_rollback(&self, preview_id: &str) -> Result<ChatHistoryCutover, ()> {
+        if !valid_preview_id(preview_id) {
+            return Err(());
+        }
+        let body =
+            serde_json::to_vec(&serde_json::json!({ "previewId": preview_id })).map_err(|_| ())?;
+        self.request(Route::ChatHistoryRollback, Some(&body)).await
+    }
+
+    pub async fn chat_history_status(&self, preview_id: &str) -> Result<ChatHistoryCutover, ()> {
+        if !valid_preview_id(preview_id) {
+            return Err(());
+        }
+        self.request(Route::ChatHistoryStatus(preview_id.to_owned()), None)
+            .await
+    }
+
+    pub async fn credential_continuity_preview(
+        &self,
+        source_root: String,
+    ) -> Result<CredentialContinuityPreview, ()> {
+        let source = Path::new(&source_root).canonicalize().map_err(|_| ())?;
+        if !source.is_dir() || source_root.len() > MAX_WORKSPACE_PATH_BYTES * 4 {
+            return Err(());
+        }
+        let target = self
+            .data_dir
+            .as_ref()
+            .map_err(|_| ())?
+            .canonicalize()
+            .map_err(|_| ())?;
+        if source == target || source.starts_with(&target) || target.starts_with(&source) {
+            return Err(());
+        }
+        let body = serde_json::to_vec(&serde_json::json!({
+            "sourceRoot": source,
+            "ownerConfirmation": "INSPECT_ELECTRON_CREDENTIALS",
+        }))
+        .map_err(|_| ())?;
+        self.request(Route::CredentialContinuityPreview, Some(&body))
+            .await
     }
 
     pub async fn llm_settings(&self) -> Result<LlmSettings, ()> {
@@ -1458,6 +1645,10 @@ mod tests {
 
     #[test]
     fn api_routes_are_fixed_and_credentials_are_allowlisted() {
+        assert!(valid_preview_id("12345678-1234-1234-1234-123456789012"));
+        assert!(!valid_preview_id("not-a-preview-id"));
+        assert!(valid_confirmation_token(&"a".repeat(64)));
+        assert!(!valid_confirmation_token("not-a-token"));
         assert_eq!(Route::Status.path(), "/api/v1/status");
         assert_eq!(Route::LlmSettingsPut.path(), "/api/v1/settings/llm");
         assert_eq!(
@@ -1498,6 +1689,18 @@ mod tests {
             "/api/v1/sessions/s1/generations"
         );
         assert_eq!(Route::ChatGenerations("s1".into()).method(), Method::POST);
+        assert_eq!(Route::ChatHistoryConfirm.method(), Method::POST);
+        assert_eq!(Route::ChatHistoryApply.method(), Method::POST);
+        assert_eq!(Route::ChatHistoryRollback.method(), Method::POST);
+        assert_eq!(Route::CredentialContinuityPreview.method(), Method::POST);
+        assert_eq!(
+            Route::CredentialContinuityPreview.path(),
+            "/api/v1/continuity/credentials/preview"
+        );
+        assert_eq!(
+            Route::ChatHistoryStatus("12345678-1234-1234-1234-123456789012".into()).path(),
+            "/api/v1/continuity/chat-history/status?previewId=12345678-1234-1234-1234-123456789012"
+        );
         assert!(CredentialKey::parse("openai_api_key").is_ok());
         assert!(CredentialKey::parse("openrouter_api_key").is_ok());
         assert!(CredentialKey::parse("whatsapp_cloud_access_token").is_ok());

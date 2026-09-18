@@ -26,6 +26,13 @@ describe('browser-first UI boundary', () => {
     expect(host).toContain('Native capabilities')
     expect(host).toContain('Open browser workspace')
     expect(host).toContain('Product UI runs in the browser')
+    expect(host).toContain('Confirm chat history')
+    expect(host).toContain('Apply chat history')
+    expect(host).toContain('Refresh chat-history status')
+    expect(host).toContain('Rollback chat history')
+    expect(host).toContain('Review credentials needing reauthentication')
+    expect(host).toContain('values excluded')
+    expect(host).not.toContain('confirmationToken}</')
   })
 
   it('makes BrowserProduct the only entry that lazy-loads App.tsx', () => {
@@ -45,6 +52,11 @@ describe('browser-first UI boundary', () => {
     expect(handler).toContain('select_file')
     expect(handler).toContain('select_folder')
     expect(handler).toContain('open_browser_workspace')
+    expect(handler).toContain('chat_history_confirm')
+    expect(handler).toContain('chat_history_apply')
+    expect(handler).toContain('chat_history_status')
+    expect(handler).toContain('chat_history_rollback')
+    expect(handler).toContain('credential_continuity_preview')
     expect(handler).not.toMatch(/get_llm_settings|save_llm_settings|get_whatsapp_settings|save_whatsapp_settings|provider_test|chat_generate|chat_load_sessions|chat_create_session|chat_append_message/)
   })
 

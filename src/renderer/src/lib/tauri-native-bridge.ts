@@ -30,6 +30,11 @@ Object.defineProperties(TAURI_COMMANDS, {
   settingsPersonaApply: { value: 'settings_persona_apply' },
   settingsPersonaRollback: { value: 'settings_persona_rollback' },
   settingsPersonaStatus: { value: 'settings_persona_status' },
+  chatHistoryConfirm: { value: 'chat_history_confirm' },
+  chatHistoryApply: { value: 'chat_history_apply' },
+  chatHistoryRollback: { value: 'chat_history_rollback' },
+  chatHistoryStatus: { value: 'chat_history_status' },
+  credentialContinuityPreview: { value: 'credential_continuity_preview' },
 })
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>
@@ -58,6 +63,20 @@ const SUPPORTED_CREDENTIAL_KEYS = [
   'whatsapp_cloud_app_secret',
   'whatsapp_cloud_verify_token',
 ] as const
+
+const CREDENTIAL_CONTINUITY_KEYS = new Set([
+  'openai_api_key',
+  'gemini_api_key',
+  'openrouter_api_key',
+  'email_mcp_password',
+  'email_imap_password',
+  'email_smtp_password',
+  'gmail_oauth_client_id',
+  'gmail_oauth_session',
+  'whatsapp_cloud_access_token',
+  'whatsapp_cloud_app_secret',
+  'whatsapp_cloud_verify_token',
+])
 
 const isRecord = (value: unknown): value is Record<string, unknown> => (
   typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -168,6 +187,50 @@ export interface NativeSettingsPersonaCutover {
   error?: string
 }
 
+export interface NativeChatHistoryCutover {
+  previewId: string
+  scope: 'chat-history'
+  targetRuntime: string
+  state: 'previewed' | 'confirmed' | 'applying' | 'applied' | 'rolled-back' | 'needs-recovery'
+  manifestHash: string
+  expiresAt?: number
+  confirmationToken?: string
+  requiresReconfirmation?: boolean
+  manualRecoveryRequired?: boolean
+  backupSha256?: string
+  sessionsImported?: number
+  messagesImported?: number
+  sessionsAlreadyPresent?: number
+  messagesAlreadyPresent?: number
+  liveDataChanged?: boolean
+  error?: string
+}
+
+export interface NativeCredentialContinuityEntry {
+  key: string
+  scope: 'default' | 'user'
+  supported: boolean
+}
+
+export interface NativeCredentialContinuityStore {
+  id: 'electron-credentials' | 'electron-gmail-oauth'
+  present: boolean
+  entries: NativeCredentialContinuityEntry[]
+}
+
+export interface NativeCredentialContinuityPreview {
+  version: 1
+  source: 'electron'
+  target: 'agentd-os-credential-store'
+  state: 'reauthentication-required'
+  stores: NativeCredentialContinuityStore[]
+  secretsExcluded: true
+  requiresOwnerConfirmation: true
+  requiresReauthentication: true
+  transferable: false
+  note: string
+}
+
 const readContinuityPreview = (value: unknown): NativeContinuityPreview => {
   if (!isRecord(value) || typeof value.previewId !== 'string' || typeof value.createdAt !== 'number'
     || value.source !== 'electron' || value.target !== 'agentd-staging' || value.secretsExcluded !== true
@@ -192,6 +255,35 @@ const readSettingsPersonaCutover = (value: unknown): NativeSettingsPersonaCutove
   return value as unknown as NativeSettingsPersonaCutover
 }
 
+const readChatHistoryCutover = (value: unknown): NativeChatHistoryCutover => {
+  if (!isRecord(value) || typeof value.previewId !== 'string' || value.scope !== 'chat-history' || typeof value.targetRuntime !== 'string' || !['previewed', 'confirmed', 'applying', 'applied', 'rolled-back', 'needs-recovery'].includes(value.state as string) || typeof value.manifestHash !== 'string') throw new Error('Invalid chat-history cutover response')
+  if (value.confirmationToken !== undefined && (typeof value.confirmationToken !== 'string' || !/^[a-f0-9]{64}$/.test(value.confirmationToken))) throw new Error('Invalid chat-history confirmation token response')
+  return value as unknown as NativeChatHistoryCutover
+}
+
+const readCredentialContinuityPreview = (value: unknown): NativeCredentialContinuityPreview => {
+  if (!isRecord(value) || value.version !== 1 || value.source !== 'electron'
+    || value.target !== 'agentd-os-credential-store' || value.state !== 'reauthentication-required'
+    || value.secretsExcluded !== true || value.requiresOwnerConfirmation !== true
+    || value.requiresReauthentication !== true || value.transferable !== false
+    || typeof value.note !== 'string' || value.note.length > 512 || !Array.isArray(value.stores)) {
+    throw new Error('Invalid credential continuity preview response')
+  }
+  for (const store of value.stores) {
+    if (!isRecord(store) || (store.id !== 'electron-credentials' && store.id !== 'electron-gmail-oauth')
+      || typeof store.present !== 'boolean' || !Array.isArray(store.entries)) {
+      throw new Error('Invalid credential continuity store response')
+    }
+    for (const entry of store.entries) {
+      if (!isRecord(entry) || typeof entry.key !== 'string' || !CREDENTIAL_CONTINUITY_KEYS.has(entry.key)
+        || (entry.scope !== 'default' && entry.scope !== 'user') || typeof entry.supported !== 'boolean') {
+        throw new Error('Invalid credential continuity entry response')
+      }
+    }
+  }
+  return value as unknown as NativeCredentialContinuityPreview
+}
+
 export const createTauriNativeBridge = (
   dependencies: TauriBridgeDependencies = defaultDependencies,
 ): NativeBridge & {
@@ -206,6 +298,11 @@ export const createTauriNativeBridge = (
   settingsPersonaApply: (previewId: string, confirmationToken: string) => Promise<NativeSettingsPersonaCutover>
   settingsPersonaRollback: (previewId: string) => Promise<NativeSettingsPersonaCutover>
   settingsPersonaStatus: (previewId: string) => Promise<NativeSettingsPersonaCutover>
+  chatHistoryConfirm: (previewId: string) => Promise<NativeChatHistoryCutover>
+  chatHistoryApply: (previewId: string, confirmationToken: string) => Promise<NativeChatHistoryCutover>
+  chatHistoryRollback: (previewId: string) => Promise<NativeChatHistoryCutover>
+  chatHistoryStatus: (previewId: string) => Promise<NativeChatHistoryCutover>
+  credentialContinuityPreview: (sourceRoot: string) => Promise<NativeCredentialContinuityPreview>
 } => {
   const invoke = async <T>(command: string, args?: Record<string, unknown>): Promise<T> => (
     dependencies.invoke<T>(command, args)
@@ -263,6 +360,14 @@ export const createTauriNativeBridge = (
   const settingsPersonaApply = async (previewId: string, confirmationToken: string): Promise<NativeSettingsPersonaCutover> => readSettingsPersonaCutover(await invoke<unknown>(TAURI_COMMANDS.settingsPersonaApply, { previewId, confirmationToken }))
   const settingsPersonaRollback = async (previewId: string): Promise<NativeSettingsPersonaCutover> => readSettingsPersonaCutover(await invoke<unknown>(TAURI_COMMANDS.settingsPersonaRollback, { previewId }))
   const settingsPersonaStatus = async (previewId: string): Promise<NativeSettingsPersonaCutover> => readSettingsPersonaCutover(await invoke<unknown>(TAURI_COMMANDS.settingsPersonaStatus, { previewId }))
+  const chatHistoryConfirm = async (previewId: string): Promise<NativeChatHistoryCutover> => readChatHistoryCutover(await invoke<unknown>(TAURI_COMMANDS.chatHistoryConfirm, { previewId }))
+  const chatHistoryApply = async (previewId: string, confirmationToken: string): Promise<NativeChatHistoryCutover> => readChatHistoryCutover(await invoke<unknown>(TAURI_COMMANDS.chatHistoryApply, { previewId, confirmationToken }))
+  const chatHistoryRollback = async (previewId: string): Promise<NativeChatHistoryCutover> => readChatHistoryCutover(await invoke<unknown>(TAURI_COMMANDS.chatHistoryRollback, { previewId }))
+  const chatHistoryStatus = async (previewId: string): Promise<NativeChatHistoryCutover> => readChatHistoryCutover(await invoke<unknown>(TAURI_COMMANDS.chatHistoryStatus, { previewId }))
+  const credentialContinuityPreview = async (sourceRoot: string): Promise<NativeCredentialContinuityPreview> => {
+    if (!sourceRoot.trim()) throw new Error('Electron data folder is required')
+    return readCredentialContinuityPreview(await invoke<unknown>(TAURI_COMMANDS.credentialContinuityPreview, { sourceRoot }))
+  }
 
   const selectFile = async (options?: FileSelectionOptions): Promise<string | null> => {
     try {
@@ -327,6 +432,11 @@ export const createTauriNativeBridge = (
     settingsPersonaApply,
     settingsPersonaRollback,
     settingsPersonaStatus,
+    chatHistoryConfirm,
+    chatHistoryApply,
+    chatHistoryRollback,
+    chatHistoryStatus,
+    credentialContinuityPreview,
   }
 }
 
