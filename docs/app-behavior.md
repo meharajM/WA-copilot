@@ -237,6 +237,12 @@ Pass evidence:
 
 - Gmail app-password mode can test and start without requiring OAuth.
 - Gmail Google sign-in mode fails cleanly when OAuth is not configured or not signed in.
+
+Browser parity boundary:
+
+- In browser mode, email settings and app-password credentials are stored by authenticated local `agentd`; the renderer never reads password values back.
+- `Test Connection` performs a server-side IMAP/SMTP secure-transport probe and reports only bounded reachability/TLS results. It does not expose credentials or claim that the background email worker has migrated.
+- Browser Gmail Google Sign-In and custom MCP transports fail closed with an explicit unsupported message until their native flow/worker is migrated. Electron remains the fallback for full OAuth and channel-worker behavior.
 - Browser settings survive reload/restart without exposing the credential value; browser test/start reports a clear transport-migration message instead of probing Electron IPC.
 - Browser continuity status is read-only and authenticated. It reports agentd-owned record counts, the allowlisted Electron-to-agentd store contract, and per-key credential presence (`present`/`available`) without returning secret values. Electron stores remain `pending` until an explicit owner-approved native migration flow validates, backs up, imports, and requires reauthentication; the browser endpoint never reads or imports Electron files.
 
@@ -251,6 +257,7 @@ Pass evidence:
 
 - With `Auto-Reply` off, inbound email does not create an email session.
 - With `Auto-Reply` on and the channel enabled, inbound email can create a session.
+- Browser `Test Connection` reaches the local agentd endpoint, rejects missing credentials, and never returns the stored app password.
 
 ### Safety and reply behavior
 

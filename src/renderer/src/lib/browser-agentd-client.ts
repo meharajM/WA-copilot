@@ -35,6 +35,15 @@ export interface BrowserAgentdClientOptions {
   fetch?: typeof globalThis.fetch
 }
 
+export interface BrowserEmailTestResult {
+  success: true
+  credentialConfigured: true
+  transport: {
+    imap: { reachable: true; tls: boolean }
+    smtp: { reachable: true; tls: boolean }
+  }
+}
+
 type Json = Record<string, unknown> | unknown[]
 
 const isRecord = (value: unknown): value is Record<string, unknown> => (
@@ -336,6 +345,7 @@ export interface BrowserAgentdClient extends ChatClient {
   testOllama(): Promise<BrowserOllamaTestResult>
   getEmailSettings(): Promise<EmailSettings>
   saveEmailSettings(settings: EmailSettings): Promise<EmailSettings>
+  testEmail(): Promise<BrowserEmailTestResult>
   getPersonaSettings(): Promise<PersonaSettings>
   savePersonaSettings(settings: PersonaSettings): Promise<PersonaSettings>
   getProductPreferences(): Promise<ProductPreferences>
@@ -623,6 +633,15 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
   }
   const getEmailSettings = async () => readEmailSettings(await request('/api/v1/settings/email'))
   const saveEmailSettings = async (settings: EmailSettings) => readEmailSettings(await request('/api/v1/settings/email', { method: 'PUT', body: JSON.stringify(settings) }, true))
+  const testEmail = async (): Promise<BrowserEmailTestResult> => {
+    const value = await request<unknown>('/api/v1/email/test', { method: 'POST', body: '{}' }, true)
+    if (!isRecord(value) || value.success !== true || value.credentialConfigured !== true || !isRecord(value.transport)
+      || !isRecord(value.transport.imap) || value.transport.imap.reachable !== true || typeof value.transport.imap.tls !== 'boolean'
+      || !isRecord(value.transport.smtp) || value.transport.smtp.reachable !== true || typeof value.transport.smtp.tls !== 'boolean') {
+      throw new Error('Invalid email test response')
+    }
+    return value as unknown as BrowserEmailTestResult
+  }
   const getPersonaSettings = async () => readPersonaSettings(await request('/api/v1/settings/persona'))
   const savePersonaSettings = async (settings: PersonaSettings) => readPersonaSettings(await request('/api/v1/settings/persona', { method: 'PUT', body: JSON.stringify(settings) }, true))
   const getProductPreferences = async () => readProductPreferences(await request('/api/v1/settings/preferences'))
@@ -798,6 +817,7 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     testOllama,
     getEmailSettings,
     saveEmailSettings,
+    testEmail,
     getPersonaSettings,
     savePersonaSettings,
     getProductPreferences,

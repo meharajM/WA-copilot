@@ -132,9 +132,11 @@ export function EmailSettingsPanel() {
   const wantsGmailOAuth = localProvider === 'gmail-api' && localGmailAuthMode === 'google-oauth'
   const readyForVerify = useMemo(() => {
     if (wantsGmailOAuth) {
-      return oauthStatus.signedIn
+      return isElectron() ? oauthStatus.signedIn : true
     }
-    return localPassword.trim().length > 0
+    // Browser keeps password in agentd's credential store. Let server report
+    // missing credentials instead of requiring renderer to read them back.
+    return isElectron() ? localPassword.trim().length > 0 : true
   }, [localPassword, oauthStatus.signedIn, wantsGmailOAuth])
   const canGoLive = readyForAuth && readyForVerify
   const isVerified = testState.status === 'success' || (config.enabled && connectionState.status === 'connected')
@@ -197,6 +199,10 @@ export function EmailSettingsPanel() {
   }
 
   const handleGoogleOAuthSignIn = async () => {
+    if (!isElectron()) {
+      setTestState({ status: 'error', message: 'Google Sign-In is unavailable in browser mode. Use Gmail app-password mode or continue in Electron until native OAuth migration is complete.' })
+      return
+    }
     setOauthBusy(true)
     try {
       const status = await electron.emailOAuth.signInGoogle()
@@ -211,6 +217,10 @@ export function EmailSettingsPanel() {
   }
 
   const handleGoogleOAuthSignOut = async () => {
+    if (!isElectron()) {
+      setTestState({ status: 'error', message: 'Google Sign-In is unavailable in browser mode.' })
+      return
+    }
     setOauthBusy(true)
     try {
       await electron.emailOAuth.signOut()
@@ -247,8 +257,22 @@ export function EmailSettingsPanel() {
 
   const handleTestConnection = async () => {
     if (!isElectron()) {
-      await persistSettings()
-      setTestState({ status: 'error', message: 'Email transport is not available in the browser yet. Settings are saved securely by agentd; IMAP/SMTP runtime migration is still required.' })
+      if (!readyForAuth) {
+        setTestState({ status: 'error', message: 'Please enter a valid email address before testing.' })
+        return
+      }
+      setTestState({ status: 'running', message: 'Testing secure mailbox transport…' })
+      try {
+        await persistSettings()
+        const result = await getBrowserAgentdClient().testEmail()
+        setTestState({
+          status: 'success',
+          message: `Secure transport reachable (IMAP ${result.transport.imap.tls ? 'TLS' : 'plain'}, SMTP ${result.transport.smtp.tls ? 'TLS' : 'plain'}). Browser runtime remains fail-closed until channel worker migration is complete.`,
+        })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        setTestState({ status: 'error', message: `Connection failed: ${message}` })
+      }
       return
     }
     if (!readyForAuth || !readyForVerify) {
@@ -459,7 +483,7 @@ export function EmailSettingsPanel() {
               {!oauthStatus.signedIn ? (
                 <button
                   onClick={handleGoogleOAuthSignIn}
-                  disabled={oauthBusy}
+                  disabled={!isElectron() || oauthBusy}
                   className="flex items-center gap-2 bg-[var(--color-brand-teal)]/20 hover:bg-[var(--color-brand-teal)]/30 text-[var(--color-brand-teal)] px-4 py-2 rounded-lg text-sm font-semibold disabled:opacity-50"
                 >
                   <LogIn size={14} />
@@ -468,7 +492,7 @@ export function EmailSettingsPanel() {
               ) : (
                 <button
                   onClick={handleGoogleOAuthSignOut}
-                  disabled={oauthBusy}
+                  disabled={!isElectron() || oauthBusy}
                   className="flex items-center gap-2 bg-red-500/15 hover:bg-red-500/25 text-red-300 px-4 py-2 rounded-lg text-sm font-semibold"
                 >
                   <LogOut size={14} />
@@ -476,7 +500,9 @@ export function EmailSettingsPanel() {
                 </button>
               )}
               <span className="text-xs text-[var(--color-text-dim)]">
-                {oauthStatus.signedIn ? `Connected as ${oauthStatus.email || 'Google account'}` : 'Not connected'}
+                {!isElectron()
+                  ? 'Unavailable in browser mode — use App Password'
+                  : oauthStatus.signedIn ? `Connected as ${oauthStatus.email || 'Google account'}` : 'Not connected'}
               </span>
             </div>
             )}

@@ -43,3 +43,68 @@ test('agentd email settings are authenticated, bounded, durable, and secret-free
   await restarted.stop()
   fs.rmSync(dataDir, { recursive: true, force: true })
 })
+
+test('agentd email transport test probes server-side and never returns credentials', async () => {
+  const dataDir = makeTempDir('aica-agentd-email-test-')
+  const records = new Map([['email_mcp_password', 'secret-never-return-this']])
+  const probes = []
+  const credentials = {
+    exists: async key => records.has(key),
+    get: async key => records.get(key) ?? null,
+    set: async (key, value) => { records.set(key, value) },
+    delete: async key => { records.delete(key) },
+  }
+  const server = new AgentdServer({
+    dataDir,
+    secret: 't'.repeat(32),
+    credentials,
+    emailProbe: async settings => {
+      probes.push(settings)
+      return { imap: { reachable: true, tls: true }, smtp: { reachable: true, tls: true } }
+    },
+    logger: { log() {} },
+  })
+  const { origin } = await server.start()
+  const auth = { authorization: `Bearer ${'t'.repeat(32)}` }
+  const settings = {
+    accountName: 'support', provider: 'imap-smtp', gmailAuthMode: 'app-password',
+    imapHost: 'imap.example.test', imapPort: 993, smtpHost: 'smtp.example.test', smtpPort: 587,
+    emailAddress: 'support@example.test', userName: 'support@example.test', imapTls: true, smtpTls: true,
+    pollingIntervalSeconds: 60, enabled: false, autoReplyMode: false, draftMode: true,
+  }
+  assert.equal((await request(origin, 'PUT', '/api/v1/settings/email', settings, auth)).status, 200)
+  const result = await request(origin, 'POST', '/api/v1/email/test', {}, auth)
+  assert.equal(result.status, 200)
+  assert.deepEqual(result.body, {
+    success: true,
+    credentialConfigured: true,
+    transport: { imap: { reachable: true, tls: true }, smtp: { reachable: true, tls: true } },
+  })
+  assert.equal(JSON.stringify(result.body).includes('secret-never-return-this'), false)
+  assert.equal(probes.length, 1)
+  assert.equal(probes[0].emailAddress, settings.emailAddress)
+  records.clear()
+  assert.equal((await request(origin, 'POST', '/api/v1/email/test', {}, auth)).status, 400)
+  await server.stop()
+  fs.rmSync(dataDir, { recursive: true, force: true })
+})
+
+test('agentd browser email test rejects OAuth and custom MCP instead of pretending parity', async () => {
+  const dataDir = makeTempDir('aica-agentd-email-gated-')
+  const credentials = { exists: async () => true, get: async () => 'secret', set: async () => {}, delete: async () => {} }
+  const server = new AgentdServer({ dataDir, secret: 'u'.repeat(32), credentials, emailProbe: async () => { throw new Error('must not probe') }, logger: { log() {} } })
+  const { origin } = await server.start()
+  const auth = { authorization: `Bearer ${'u'.repeat(32)}` }
+  const base = {
+    accountName: 'support', provider: 'gmail-api', gmailAuthMode: 'google-oauth',
+    imapHost: 'imap.gmail.com', imapPort: 993, smtpHost: 'smtp.gmail.com', smtpPort: 587,
+    emailAddress: 'support@example.test', userName: 'support@example.test', imapTls: true, smtpTls: true,
+    pollingIntervalSeconds: 60, enabled: false, autoReplyMode: false, draftMode: true,
+  }
+  assert.equal((await request(origin, 'PUT', '/api/v1/settings/email', base, auth)).status, 200)
+  assert.equal((await request(origin, 'POST', '/api/v1/email/test', {}, auth)).status, 409)
+  assert.equal((await request(origin, 'PUT', '/api/v1/settings/email', { ...base, provider: 'custom-mcp', gmailAuthMode: 'app-password' }, auth)).status, 200)
+  assert.equal((await request(origin, 'POST', '/api/v1/email/test', {}, auth)).status, 409)
+  await server.stop()
+  fs.rmSync(dataDir, { recursive: true, force: true })
+})

@@ -1,9 +1,12 @@
 const crypto = require('node:crypto')
 const fs = require('node:fs')
 const http = require('node:http')
+const net = require('node:net')
 const path = require('node:path')
+const tls = require('node:tls')
 const Database = require('better-sqlite3')
 const { isAllowedCredentialKey } = require('./keyring-credential-store.cjs')
+const continuityMigration = require('./continuity-migration.cjs')
 
 const SESSION_TTL_MS = 15 * 60 * 1000
 const PAIRING_TTL_MS = 5 * 60 * 1000
@@ -128,6 +131,98 @@ const EMAIL_SETTINGS_DEFAULTS = Object.freeze({
   draftMode: true,
 })
 
+const EMAIL_PROBE_TIMEOUT_MS = 10 * 1000
+
+function createProtocolReader(socket) {
+  let buffer = ''
+  let closed = false
+  const waiters = []
+  const onData = chunk => {
+    buffer += chunk.toString('utf8')
+    while (true) {
+      const newline = buffer.indexOf('\n')
+      if (newline < 0) return
+      const line = buffer.slice(0, newline).replace(/\r$/, '')
+      buffer = buffer.slice(newline + 1)
+      waiters.shift()?.resolve(line)
+    }
+  }
+  const fail = error => {
+    closed = true
+    while (waiters.length) waiters.shift().reject(error)
+  }
+  socket.on('data', onData)
+  socket.once('error', () => fail(new Error('Email endpoint unavailable')))
+  socket.once('close', () => fail(new Error('Email endpoint closed before response')))
+  return {
+    next(timeoutMs = EMAIL_PROBE_TIMEOUT_MS) {
+      if (closed) return Promise.reject(new Error('Email endpoint closed'))
+      return new Promise((resolve, reject) => {
+        const waiter = {
+          resolve: value => { clearTimeout(timer); resolve(value) },
+          reject: error => { clearTimeout(timer); reject(error) },
+        }
+        const timer = setTimeout(() => {
+          const index = waiters.indexOf(waiter)
+          if (index >= 0) waiters.splice(index, 1)
+          reject(new Error('Email endpoint timed out'))
+        }, timeoutMs)
+        waiters.push(waiter)
+      })
+    },
+    close() { socket.removeListener('data', onData) },
+  }
+}
+
+function openSocket(host, port, secure) {
+  return secure
+    ? tls.connect({ host, port, servername: host, rejectUnauthorized: true })
+    : net.connect({ host, port })
+}
+
+async function probeImap(host, port, secure) {
+  const socket = openSocket(host, port, secure)
+  const reader = createProtocolReader(socket)
+  try {
+    const line = await reader.next()
+    if (!/^\* (?:OK|PREAUTH)\b/i.test(line)) throw new Error('Invalid IMAP greeting')
+    return { reachable: true, tls: secure }
+  } finally {
+    reader.close()
+    socket.destroy()
+  }
+}
+
+async function probeSmtp(host, port, secure) {
+  const directTls = secure && port === 465
+  const socket = openSocket(host, port, directTls)
+  const reader = createProtocolReader(socket)
+  try {
+    const greeting = await reader.next()
+    if (!/^220\b/.test(greeting)) throw new Error('Invalid SMTP greeting')
+    if (!secure || directTls) return { reachable: true, tls: secure }
+    socket.write('EHLO localhost\r\n')
+    let ehlo = await reader.next()
+    if (!/^250[ -]/.test(ehlo)) throw new Error('SMTP EHLO failed')
+    while (/^250-/.test(ehlo)) ehlo = await reader.next()
+    socket.write('STARTTLS\r\n')
+    const startTls = await reader.next()
+    if (!/^220\b/.test(startTls)) throw new Error('SMTP STARTTLS unavailable')
+    return { reachable: true, tls: true }
+  } finally {
+    reader.close()
+    socket.destroy()
+  }
+}
+
+async function probeEmailTransport(settings) {
+  const [imap, smtp] = await Promise.all([
+    probeImap(settings.imapHost, settings.imapPort, settings.imapTls),
+    probeSmtp(settings.smtpHost, settings.smtpPort, settings.smtpTls),
+  ])
+  return { imap, smtp }
+}
+
 function resolveDataDir(dataDir = process.env.AICA_AGENTD_DATA_DIR) {
   if (dataDir) return dataDir
   const os = require('node:os')
@@ -192,7 +287,7 @@ function redactPayload(value, key = '') {
 }
 
 class AgentdServer {
-  constructor({ dataDir, secret, uiRoot = null, logger = console, pairingCode = null, credentials = null, providerFetch = fetch } = {}) {
+  constructor({ dataDir, secret, uiRoot = null, logger = console, pairingCode = null, credentials = null, providerFetch = fetch, emailProbe = probeEmailTransport } = {}) {
     if (!secret || typeof secret !== 'string' || secret.length < 32) throw new Error('A per-install bearer secret of at least 32 characters is required')
     this.dataDir = resolveDataDir(dataDir)
     this.secret = secret
@@ -200,6 +295,7 @@ class AgentdServer {
     this.logger = logger
     this.credentials = credentials
     this.providerFetch = providerFetch
+    this.emailProbe = emailProbe
     this.server = null
     this.db = null
     this.lockDb = null
@@ -210,6 +306,7 @@ class AgentdServer {
     this.sessions = new Map()
     this.generations = new Set()
     this.generationControllers = new Map()
+    this.continuityPreviews = new Map()
     this.pairingCode = pairingCode || String(crypto.randomInt(100000, 999999))
     this.pairingExpiresAt = Date.now() + PAIRING_TTL_MS
     this.pairingFailures = 0
@@ -553,6 +650,7 @@ class AgentdServer {
     if (url.pathname === '/api/v1/settings/whatsapp' && ['GET', 'PUT'].includes(req.method)) return this.whatsappSettings(req, res)
     if (url.pathname === '/api/v1/settings/ollama' && ['GET', 'PUT'].includes(req.method)) return this.ollamaSettings(req, res)
     if (url.pathname === '/api/v1/settings/email' && ['GET', 'PUT'].includes(req.method)) return this.emailSettings(req, res)
+    if (url.pathname === '/api/v1/email/test' && req.method === 'POST') return this.testEmail(req, res)
     if (url.pathname === '/api/v1/whatsapp/messages' && req.method === 'POST') return this.sendWhatsAppMessage(req, res)
     const providerTestMatch = /^\/api\/v1\/providers\/(openai|openrouter|ollama)\/test$/.exec(url.pathname)
     if (providerTestMatch && req.method === 'POST') return this.testProvider(req, res, providerTestMatch[1])
@@ -561,6 +659,9 @@ class AgentdServer {
       return json(res, 200, { runtime: 'agentd', paused: this.getState('paused', 'true') === 'true', queueDepth: this.db.prepare("SELECT COUNT(*) AS count FROM inbound_events WHERE status IN ('queued','processing')").get().count, events: this.db.prepare('SELECT COUNT(*) AS count FROM inbound_events').get().count })
     }
     if (url.pathname === '/api/v1/continuity/status' && req.method === 'GET') return this.continuityStatus(req, res)
+    if (url.pathname === '/api/v1/continuity/preview' && req.method === 'POST') return this.continuityPreview(req, res)
+    if (url.pathname === '/api/v1/continuity/import' && req.method === 'POST') return this.continuityImport(req, res)
+    if (url.pathname === '/api/v1/continuity/rollback' && req.method === 'POST') return this.continuityRollback(req, res)
     if (url.pathname === '/api/v1/autonomy/metrics' && req.method === 'GET') return this.autonomyMetrics(req, res, url)
     if (url.pathname === '/api/v1/logs' && ['GET', 'POST'].includes(req.method)) return this.auditLogs(req, res, url)
     if (url.pathname === '/api/v1/knowledge' && ['GET', 'POST'].includes(req.method)) return this.knowledge(req, res, url)
@@ -668,6 +769,51 @@ class AgentdServer {
     })
   }
 
+  authorizeNative(req) {
+    const authorization = req.headers.authorization
+    if (authorization !== `Bearer ${this.secret}`) throw Object.assign(new Error('Native owner authorization required'), { statusCode: 401 })
+    this.checkOrigin(req, false)
+  }
+
+  async continuityPreview(req, res) {
+    this.authorizeNative(req)
+    const body = await readBody(req, 16 * 1024)
+    const preview = continuityMigration.createPreview(body.sourceRoot, this.dataDir)
+    this.continuityPreviews.set(preview.previewId, preview)
+    // Keep preview manifests short-lived and memory-only. They contain paths and
+    // hashes, never store contents or credentials.
+    setTimeout(() => this.continuityPreviews.delete(preview.previewId), 10 * 60 * 1000).unref?.()
+    return json(res, 200, {
+      previewId: preview.previewId,
+      createdAt: preview.createdAt,
+      source: 'electron',
+      target: 'agentd-staging',
+      entries: preview.manifest.entries,
+      secretsExcluded: true,
+      requiresOwnerConfirmation: true,
+      requiresReauthentication: preview.manifest.entries.some(entry => entry.requiresReauthentication),
+    })
+  }
+
+  async continuityImport(req, res) {
+    this.authorizeNative(req)
+    const body = await readBody(req, 16 * 1024)
+    const preview = this.continuityPreviews.get(body.previewId)
+    if (!preview) return json(res, 404, { error: 'Migration preview expired' })
+    if (body.ownerConfirmation !== 'IMPORT_ELECTRON_DATA' || body.reauthenticated !== true) {
+      return json(res, 403, { error: 'Fresh owner confirmation and reauthentication required' })
+    }
+    const result = continuityMigration.importPreview(preview, this.dataDir)
+    this.continuityPreviews.delete(preview.previewId)
+    return json(res, 200, { ...result, secretsExcluded: true, liveDataChanged: false })
+  }
+
+  async continuityRollback(req, res) {
+    this.authorizeNative(req)
+    const body = await readBody(req, 8 * 1024)
+    return json(res, 200, continuityMigration.rollback(body.migrationId, this.dataDir))
+  }
+
   async llmSettings(req, res) {
     this.authorize(req, { mutation: req.method === 'PUT' })
     if (req.method === 'GET') {
@@ -728,6 +874,42 @@ class AgentdServer {
     if (!settings) return json(res, 400, { error: 'Invalid email settings' })
     this.setState('email_settings', JSON.stringify(settings))
     return json(res, 200, settings)
+  }
+
+  async testEmail(req, res) {
+    this.authorize(req, { mutation: true })
+    let stored = null
+    try { stored = JSON.parse(this.getState('email_settings', 'null')) } catch {}
+    const settings = parseEmailSettings(stored)
+    if (!settings || !settings.emailAddress || !settings.imapHost || !settings.smtpHost) {
+      return json(res, 400, { success: false, error: 'Complete email settings before testing the connection' })
+    }
+    if (settings.provider === 'custom-mcp') {
+      return json(res, 409, { success: false, error: 'Custom MCP email transport is not available in browser mode' })
+    }
+    if (settings.provider === 'gmail-api' && settings.gmailAuthMode === 'google-oauth') {
+      return json(res, 409, { success: false, error: 'Gmail Google Sign-In requires the native OAuth flow; use app-password mode in browser mode' })
+    }
+    if (!this.credentials) return json(res, 503, { success: false, error: 'Credential store unavailable' })
+    let credentialConfigured = false
+    for (const key of ['email_mcp_password', 'email_imap_password', 'email_smtp_password']) {
+      try {
+        if (await this.credentials.exists(key)) {
+          credentialConfigured = true
+          break
+        }
+      } catch {
+        return json(res, 503, { success: false, error: 'Credential store operation failed' })
+      }
+    }
+    if (!credentialConfigured) return json(res, 400, { success: false, error: 'Email app password is not configured' })
+    try {
+      const transport = await this.emailProbe(settings)
+      return json(res, 200, { success: true, credentialConfigured: true, transport })
+    } catch {
+      // Keep endpoint diagnostics generic: host and provider details stay out of logs/responses.
+      return json(res, 502, { success: false, error: 'Email server could not be reached over the configured secure transport' })
+    }
   }
 
   async auditLogs(req, res, url) {

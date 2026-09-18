@@ -215,6 +215,29 @@ describe('browser agentd client', () => {
     expect(Object.prototype.hasOwnProperty.call(JSON.parse(String(put?.[1]?.body)), 'password')).toBe(false)
   })
 
+  it('maps browser email transport probe without sending a password', async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
+      if (url.endsWith('/api/v1/email/test')) {
+        expect(init?.method).toBe('POST')
+        expect(JSON.parse(String(init?.body))).toEqual({})
+        expect(String(init?.body).includes('password')).toBe(false)
+        return response({ success: true, credentialConfigured: true, transport: { imap: { reachable: true, tls: true }, smtp: { reachable: true, tls: true } } })
+      }
+      return response({ success: true })
+    })
+    const client = createBrowserAgentdClient({ origin: 'http://127.0.0.1:4141', fetch: fetcher })
+    await client.pair('123456')
+    await expect(client.testEmail()).resolves.toEqual({
+      success: true,
+      credentialConfigured: true,
+      transport: { imap: { reachable: true, tls: true }, smtp: { reachable: true, tls: true } },
+    })
+    const probe = fetcher.mock.calls.find(([input]) => String(input).endsWith('/api/v1/email/test'))
+    expect(new Headers(probe?.[1]?.headers).get('x-csrf-token')).toBe('csrf-token')
+  })
+
   it('sends explicit browser WhatsApp text through the authenticated Cloud route', async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = []
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
