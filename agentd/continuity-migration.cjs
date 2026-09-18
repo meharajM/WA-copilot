@@ -1,0 +1,129 @@
+const crypto = require('node:crypto')
+const fs = require('node:fs')
+const path = require('node:path')
+const Database = require('better-sqlite3')
+
+// This module deliberately stages into a new directory. It never replaces the
+// live agentd database or reads credentials. Cutover remains a separate,
+// schema-aware release gate.
+const STORES = Object.freeze([
+  { id: 'electron-settings', relativePath: 'settings.json', format: 'json', schemaVersion: 'electron.settings.v1', requiresReauthentication: true },
+  { id: 'electron-persona', relativePath: 'persona.json', format: 'json', schemaVersion: 'persona.v1', requiresReauthentication: false },
+  { id: 'electron-chat-history', relativePath: 'chat-history.db', format: 'sqlite', schemaVersion: 'chat-history.v1', requiresReauthentication: true },
+])
+const SECRET_KEY = /(?:secret|token|password|passwd|api[_.-]?(?:key|secret|token)|private[_.-]?(?:key|secret)|refresh[_.-]?token|access[_.-]?token|cookie|session|authorization|credential|bearer|oauth|encryption[_.-]?(?:key|secret))/i
+const SECRET_SCHEMA = /(?:^|[^a-z])(secret|token|password|passwd|api[_-]?(?:key|secret|token)|private[_-]?(?:key|secret)|refresh[_-]?token|access[_-]?token|session[_-]?(?:token|secret)|cookie|authorization|credential|bearer|oauth|encryption[_-]?(?:key|secret))(?:$|[^a-z])/i
+
+function fail(message, statusCode = 400) {
+  throw Object.assign(new Error(message), { statusCode })
+}
+
+function rootPath(input, targetRoot) {
+  if (typeof input !== 'string' || !input.trim()) fail('Source folder is required')
+  const source = fs.realpathSync(input)
+  const target = fs.realpathSync(targetRoot)
+  const sourceToTarget = path.relative(source, target)
+  const targetToSource = path.relative(target, source)
+  const inside = value => value !== '' && !value.startsWith('..' + path.sep) && !path.isAbsolute(value)
+  if (!fs.statSync(source).isDirectory() || !fs.statSync(target).isDirectory() || sourceToTarget === '' || inside(sourceToTarget) || inside(targetToSource)) fail('Source folder cannot overlap agentd data')
+  return source
+}
+
+function safeSourceFile(root, relativePath) {
+  const candidate = path.resolve(root, relativePath)
+  if (path.relative(root, candidate).startsWith('..') || !path.relative(root, candidate).split(path.sep).every(part => part !== '..')) fail('Unsafe migration path')
+  if (!fs.existsSync(candidate)) return null
+  const listed = fs.lstatSync(candidate)
+  if (!listed.isFile() || listed.isSymbolicLink()) fail(`Unsafe migration file: ${relativePath}`)
+  return candidate
+}
+
+function assertNoSecrets(value, location = '$') {
+  if (Array.isArray(value)) return value.forEach((item, index) => assertNoSecrets(item, `${location}[${index}]`))
+  if (!value || typeof value !== 'object') return
+  for (const [key, child] of Object.entries(value)) {
+    if (SECRET_KEY.test(key)) fail(`Secret field refused: ${location}.${key}`)
+    assertNoSecrets(child, `${location}.${key}`)
+  }
+}
+
+function validateSqlite(file) {
+  const db = new Database(file, { readonly: true, fileMustExist: true })
+  try {
+    db.pragma('query_only = ON')
+    const integrity = db.pragma('integrity_check')
+    if (!Array.isArray(integrity) || integrity.some(row => row.integrity_check !== 'ok')) fail('SQLite integrity check failed')
+    const schema = db.prepare("SELECT name, tbl_name, sql FROM sqlite_master WHERE sql IS NOT NULL").all()
+    if (schema.some(row => SECRET_SCHEMA.test(`${row.name} ${row.tbl_name} ${row.sql}`))) fail('Secret SQLite store refused')
+  } catch (error) {
+    if (error.statusCode) throw error
+    fail(`Invalid SQLite store: ${error.message}`)
+  } finally { db.close() }
+}
+
+function inspect(sourceRoot, targetRoot) {
+  const root = rootPath(sourceRoot, targetRoot)
+  const entries = []
+  for (const store of STORES) {
+    const sourcePath = safeSourceFile(root, store.relativePath)
+    if (!sourcePath) continue
+    const bytes = fs.readFileSync(sourcePath)
+    if (!bytes.length) fail(`Empty migration store: ${store.id}`)
+    if (store.format === 'json') {
+      try { assertNoSecrets(JSON.parse(bytes.toString('utf8'))) } catch (error) {
+        if (error.statusCode) throw error
+        fail(`Invalid JSON store: ${store.id}`)
+      }
+    } else validateSqlite(sourcePath)
+    entries.push({
+      id: store.id,
+      source: 'electron',
+      target: 'staged-agentd',
+      format: store.format,
+      schemaVersion: store.schemaVersion,
+      requiresReauthentication: store.requiresReauthentication,
+      byteSize: bytes.length,
+      sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+    })
+  }
+  if (!entries.length) fail('No allowlisted Electron stores found', 404)
+  return { sourceRoot: root, entries }
+}
+
+function createPreview(sourceRoot, targetRoot) {
+  const manifest = inspect(sourceRoot, targetRoot)
+  const previewId = crypto.randomUUID()
+  return { previewId, createdAt: Date.now(), manifest }
+}
+
+function importPreview(preview, targetRoot) {
+  const latest = inspect(preview.manifest.sourceRoot, targetRoot)
+  if (JSON.stringify(latest.entries) !== JSON.stringify(preview.manifest.entries)) fail('Source changed after preview', 409)
+  const stagingRoot = path.join(targetRoot, '.migration-staging', preview.previewId)
+  fs.mkdirSync(stagingRoot, { recursive: false, mode: 0o700 })
+  try {
+    for (const entry of preview.manifest.entries) {
+      const source = safeSourceFile(preview.manifest.sourceRoot, STORES.find(store => store.id === entry.id).relativePath)
+      const destination = path.join(stagingRoot, entry.id)
+      fs.copyFileSync(source, destination, fs.constants.COPYFILE_EXCL)
+      fs.chmodSync(destination, 0o600)
+    }
+    fs.writeFileSync(path.join(stagingRoot, 'manifest.json'), JSON.stringify({ ...preview, stagedAt: Date.now() }) + '\n', { flag: 'wx', mode: 0o600 })
+    return { migrationId: preview.previewId, state: 'staged', entries: preview.manifest.entries }
+  } catch (error) {
+    fs.rmSync(stagingRoot, { recursive: true, force: true })
+    throw error
+  }
+}
+
+function rollback(migrationId, targetRoot) {
+  if (typeof migrationId !== 'string' || !/^[0-9a-f-]{36}$/.test(migrationId)) fail('Invalid migration id')
+  const stagingRoot = path.join(targetRoot, '.migration-staging', migrationId)
+  if (!fs.existsSync(stagingRoot)) fail('Migration staging not found', 404)
+  const listed = fs.lstatSync(stagingRoot)
+  if (!listed.isDirectory() || listed.isSymbolicLink()) fail('Unsafe migration staging path')
+  fs.rmSync(stagingRoot, { recursive: true, force: false })
+  return { migrationId, state: 'rolled-back' }
+}
+
+module.exports = { createPreview, importPreview, rollback }
