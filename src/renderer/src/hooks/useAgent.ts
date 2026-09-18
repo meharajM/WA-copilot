@@ -69,7 +69,12 @@ export interface UseAgentReturn {
       isHeadless?: boolean,
       multimodalWhatsAppMessage?: import('../lib/whatsapp-integration').WhatsAppMessage,
       inboundEmailMessage?: EmailMessage,
-      options?: { skipUserMessage?: boolean; requestId?: string }
+      options?: {
+        skipUserMessage?: boolean
+        requestId?: string
+        emailDraftId?: string
+        whatsappEvent?: { providerEventId: string; conversationId: string; payload: Record<string, unknown> }
+      }
     ) => Promise<void>;
 }
 
@@ -172,7 +177,7 @@ interface EmailPostResponseDependencies {
         references?: string;
         accountName?: string;
     }) => Promise<{ success: boolean; error?: string }>;
-    addDraft: (draft: ReturnType<typeof createDraftResponse>) => void;
+    addDraft: (draft: ReturnType<typeof createDraftResponse>) => void | Promise<void>;
     addReviewNotice?: (content: string) => void;
 }
 
@@ -183,6 +188,7 @@ interface HandleEmailPostResponseInput {
     draftMode: boolean;
     accountName?: string;
     emailSendHandledByAgent: boolean;
+    draftId?: string;
 }
 
 async function attemptEmailSend(
@@ -234,7 +240,7 @@ export async function handleEmailPostResponse(
                 rationale: `${decision.rationale} Neutral acknowledgement failed (${acknowledgement.error || 'unknown error'}); owner reply required.`,
             };
 
-        dependencies.addDraft(createDraftResponse(input.responseText, reviewDecision, originalEmail));
+        await dependencies.addDraft(createDraftResponse(input.responseText, reviewDecision, originalEmail, input.draftId));
         dependencies.addReviewNotice?.(
             acknowledgement.success
                 ? 'Low-confidence email acknowledged; response escalated for owner review in Drafts.'
@@ -244,7 +250,7 @@ export async function handleEmailPostResponse(
     }
 
     if (input.draftMode || decision.action !== 'send') {
-        dependencies.addDraft(createDraftResponse(input.responseText, decision, originalEmail));
+        await dependencies.addDraft(createDraftResponse(input.responseText, decision, originalEmail, input.draftId));
         dependencies.addReviewNotice?.('Email response drafted for review in Drafts panel.');
         return 'drafted';
     }
@@ -260,7 +266,7 @@ export async function handleEmailPostResponse(
         action: 'draft' as const,
         rationale: `Direct send failed (${sendResult.error || 'unknown error'}). Draft created for review.`,
     };
-    dependencies.addDraft(createDraftResponse(input.responseText, fallbackDecision, originalEmail));
+    await dependencies.addDraft(createDraftResponse(input.responseText, fallbackDecision, originalEmail, input.draftId));
     return 'send_failed_drafted';
 }
 
@@ -299,7 +305,12 @@ export function useAgent(): UseAgentReturn {
           isHeadless?: boolean,
           multimodalWhatsAppMessage?: import('../lib/whatsapp-integration').WhatsAppMessage,
           inboundEmailMessage?: EmailMessage,
-          options?: { skipUserMessage?: boolean; requestId?: string }
+          options?: {
+            skipUserMessage?: boolean
+            requestId?: string
+            emailDraftId?: string
+            whatsappEvent?: { providerEventId: string; conversationId: string; payload: Record<string, unknown> }
+          }
         ) => {
             if (!content.trim() && (!attachments || attachments.length === 0) && !multimodalWhatsAppMessage && !inboundEmailMessage) return;
 
@@ -373,9 +384,10 @@ export function useAgent(): UseAgentReturn {
             const cleanFrom = normalizeWhatsAppId(fromJid) ?? fromJid ?? 'unknown';
             const isAdmin = isSameWhatsAppIdentity(fromJid, adminJid);
             let emailSendHandledByAgent = false;
+            const browserWhatsAppFlow = typeof window !== 'undefined' && !window.electron && !isTauriRuntime() && !!multimodalWhatsAppMessage;
 
             // 1.5 Handle Customer Multimedia Rejection
-            if (multimodalWhatsAppMessage && !isAdmin && multimodalWhatsAppMessage.type !== 'text') {
+            if (multimodalWhatsAppMessage && !browserWhatsAppFlow && !isAdmin && multimodalWhatsAppMessage.type !== 'text') {
                 const rejectionContent = "I'm sorry, I currently only support text-based inquiries for customer assistance. 🤖 Please describe your question in text so I can help you correctly.";
                 
                 // Update Local UI
@@ -406,7 +418,23 @@ export function useAgent(): UseAgentReturn {
                 // can safely replay the same message after this call.
                 const browserRuntime = typeof window !== 'undefined' && !window.electron && !isTauriRuntime();
                 const localBrowserProvider = browserRuntime && settings.preferredProvider === 'browser';
-                if (browserRuntime && !localBrowserProvider && !targetJid && !multimodalWhatsAppMessage) {
+                const useBrowserWhatsAppFlow = browserRuntime && browserWhatsAppFlow;
+                const admitBrowserWhatsAppDraft = async (responseText: string): Promise<void> => {
+                    if (!options?.whatsappEvent) throw new Error('Browser WhatsApp event metadata is unavailable');
+                    const client = getBrowserAgentdClient();
+                    const draft = await client.createWhatsAppDraft({
+                        providerEventId: options.whatsappEvent.providerEventId,
+                        conversationId: options.whatsappEvent.conversationId,
+                        payload: options.whatsappEvent.payload,
+                        draftText: responseText,
+                    });
+                    if (!draft.accepted || draft.paused) throw new Error('Browser WhatsApp draft admission is paused');
+                    useChatStore.getState().addSessionMessage(originSessionId, {
+                        role: 'assistant',
+                        content: 'WhatsApp response drafted for review. Open Autonomy to approve or discard it.',
+                    });
+                };
+                if (browserRuntime && !localBrowserProvider && (useBrowserWhatsAppFlow || (!targetJid && !multimodalWhatsAppMessage))) {
                     const client = getBrowserAgentdClient();
                     const requestId = options?.requestId || addedUserMessage.id;
                     const daemonAttachments = attachments?.length
@@ -499,6 +527,11 @@ export function useAgent(): UseAgentReturn {
                         throw error;
                     }
                     if (!assistantAdded) throw new Error('Agentd returned no assistant response');
+                    if (useBrowserWhatsAppFlow && multimodalWhatsAppMessage && options?.whatsappEvent) {
+                        const responseText = assistantContent.trim();
+                        if (!responseText) throw new Error('Agentd returned an empty WhatsApp draft');
+                        await admitBrowserWhatsAppDraft(responseText);
+                    }
                     if (isEmailFlow && inboundEmailMessage) {
                         const responseText = assistantContent.trim();
                         const session = useChatStore.getState().sessions.find((s) => s.id === originSessionId);
@@ -518,6 +551,9 @@ export function useAgent(): UseAgentReturn {
                         });
                         const browserEmailSend = async (payload: Parameters<EmailPostResponseDependencies['send']>[0]) => {
                             try {
+                                const deliveryDraftId = payload.body === LOW_CONFIDENCE_EMAIL_ACKNOWLEDGEMENT && options?.emailDraftId
+                                    ? `${options.emailDraftId}_ack`
+                                    : options?.emailDraftId;
                                 const draft = createDraftResponse(payload.body, decision, {
                                     from: inboundEmailMessage.from,
                                     subject: inboundEmailMessage.subject,
@@ -525,7 +561,7 @@ export function useAgent(): UseAgentReturn {
                                     inReplyTo: payload.inReplyTo,
                                     references: payload.references,
                                     accountName: payload.accountName,
-                                });
+                                }, deliveryDraftId);
                                 const saved = await client.saveEmailDraft(draft);
                                 await client.updateEmailDraft(saved.id, { status: 'approved' });
                                 const sent = await client.sendEmailDraft(saved.id);
@@ -544,6 +580,7 @@ export function useAgent(): UseAgentReturn {
                                 draftMode: emailConfig.draftMode,
                                 accountName: emailConfig.accountName,
                                 emailSendHandledByAgent: false,
+                                draftId: options?.emailDraftId,
                             },
                             {
                                 send: browserEmailSend,
@@ -778,6 +815,16 @@ export function useAgent(): UseAgentReturn {
                 // Clear timer as response received
                 if (courtesyTimer) clearTimeout(courtesyTimer);
 
+                // Browser WhatsApp remains draft-only even when the selected
+                // provider is the renderer's WebGPU model. Never fall through
+                // to the Electron compatibility send path.
+                if (browserWhatsAppFlow) {
+                    const responseText = typeof llmResponse.content === 'string' ? llmResponse.content.trim() : '';
+                    if (!responseText) throw new Error('Browser WhatsApp returned an empty draft');
+                    await admitBrowserWhatsAppDraft(responseText);
+                    return;
+                }
+
                 // ── Step 7: Handle Outbound WhatsApp Messages ──────────────────────
                 // If WhatsApp mode is enabled, we need to send the final assistant response
                 // back to the remote user via IPC.
@@ -867,7 +914,7 @@ export function useAgent(): UseAgentReturn {
 
             } catch (error) {
                 if (isAbortError(error)) {
-                    if (isEmailFlow && options?.skipUserMessage) throw error;
+                    if ((isEmailFlow || browserWhatsAppFlow) && options?.skipUserMessage) throw error;
                     return;
                 }
                 console.error("[useAgent] Handler error:", error);
@@ -880,7 +927,7 @@ export function useAgent(): UseAgentReturn {
                 // Browser Email polling must not acknowledge a claimed event
                 // when generation or policy handling failed; agentd can reclaim
                 // the processing claim on the next retry window.
-                if (isEmailFlow && options?.skipUserMessage) throw error;
+                if ((isEmailFlow || browserWhatsAppFlow) && options?.skipUserMessage) throw error;
             } finally {
                 // Clear the composing state if this was a WhatsApp message.
                 // Uses the same targetJid captured before the try block — safe even if
@@ -944,6 +991,11 @@ export function useAgent(): UseAgentReturn {
                 emailMessage?: EmailMessage,
                 emailAlreadyHydrated?: boolean,
                 emailGenerationRequestId?: string,
+                emailDraftId?: string,
+                whatsappAlreadyHydrated?: boolean,
+                whatsappGenerationRequestId?: string,
+                whatsappSessionId?: string | null,
+                whatsappEvent?: { providerEventId: string; conversationId: string; payload: Record<string, unknown> },
                 onComplete?: (promise: Promise<void>) => void,
             }>;
             const content = customEvent.detail?.content;
@@ -963,31 +1015,39 @@ export function useAgent(): UseAgentReturn {
             let sessionId = activeSessionId;
             
             if (whatsappMessage?.from) {
-                const existingSession = sessions.find(s => 
-                    s.whatsapp_jid === whatsappMessage.from || 
-                    s.contact_id === whatsappMessage.from
-                );
-                
-                if (existingSession) {
-                    sessionId = existingSession.id;
-                    setActiveSession(sessionId);
+                const hydratedWhatsAppSession = customEvent.detail?.whatsappSessionId
+                    ? sessions.find((session) => session.id === customEvent.detail?.whatsappSessionId)
+                    : undefined
+                if (hydratedWhatsAppSession) {
+                    sessionId = hydratedWhatsAppSession.id
+                    setActiveSession(sessionId)
                 } else {
-                    sessionId = createSession();
-                    // Set the omnichannel session metadata so future messages map here
-                    useChatStore.setState(state => ({
-                        sessions: state.sessions.map(s => 
-                            s.id === sessionId 
-                                ? { 
-                                    ...s, 
-                                    channel: 'whatsapp',
-                                    contact_id: whatsappMessage.from,
-                                    whatsapp_jid: whatsappMessage.from, // Legacy fallback
-                                    title: `💬 ${whatsappMessage.from.split('@')[0]}` 
-                                  } 
-                                : s
-                        )
-                    }));
-                    console.log(`[useAgent] Created NEW omnichannel session for: ${whatsappMessage.from}`);
+                    const existingSession = sessions.find(s =>
+                        s.whatsapp_jid === whatsappMessage.from ||
+                        s.contact_id === whatsappMessage.from
+                    )
+
+                    if (existingSession) {
+                        sessionId = existingSession.id
+                        setActiveSession(sessionId)
+                    } else {
+                        sessionId = createSession()
+                        // Set the omnichannel session metadata so future messages map here
+                        useChatStore.setState(state => ({
+                            sessions: state.sessions.map(s =>
+                                s.id === sessionId
+                                    ? {
+                                        ...s,
+                                        channel: 'whatsapp',
+                                        contact_id: whatsappMessage.from,
+                                        whatsapp_jid: whatsappMessage.from, // Legacy fallback
+                                        title: `💬 ${whatsappMessage.from.split('@')[0]}`
+                                      }
+                                    : s
+                            )
+                        }))
+                        console.log(`[useAgent] Created NEW omnichannel session for: ${whatsappMessage.from}`)
+                    }
                 }
             } else if (emailMessage?.from) {
                 const sender = emailMessage.from.toLowerCase()
@@ -1023,8 +1083,10 @@ export function useAgent(): UseAgentReturn {
             }
             
             const completion = handleSubmit(content || '', undefined, false, whatsappMessage, emailMessage, {
-                skipUserMessage: customEvent.detail?.emailAlreadyHydrated === true,
-                requestId: customEvent.detail?.emailGenerationRequestId,
+                skipUserMessage: customEvent.detail?.emailAlreadyHydrated === true || customEvent.detail?.whatsappAlreadyHydrated === true,
+                requestId: customEvent.detail?.emailGenerationRequestId || customEvent.detail?.whatsappGenerationRequestId,
+                emailDraftId: customEvent.detail?.emailDraftId,
+                whatsappEvent: customEvent.detail?.whatsappEvent,
             });
             customEvent.detail?.onComplete?.(completion);
         };

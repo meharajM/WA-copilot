@@ -331,6 +331,34 @@ Evidence:
 - [src/renderer/src/BrowserProduct.tsx](/Users/meharaj/WA-copilot/src/renderer/src/BrowserProduct.tsx):1
 - [src/renderer/src/tauri-main.tsx](/Users/meharaj/WA-copilot/src/renderer/src/tauri-main.tsx):1
 
+### Finding 5: browser WhatsApp ingress stopped before response handling — resolved
+
+Severity: high
+
+The browser Baileys cursor hydrated an inbound WhatsApp message into the Lead
+Directory but did not enter the existing agent generation path. That made
+Response Permission appear enabled while no reviewable response could be
+produced. Browser text/caption events now dispatch a completion-aware request
+through the browser runtime (agentd-backed providers or explicit WebGPU),
+persist the generated response as a durable review draft through the existing
+authenticated outbox admission route, and advance the
+cursor only after that work completes. Direct autonomous delivery and the
+Electron response loop remain unavailable in the browser.
+
+Evidence:
+
+- [src/renderer/src/hooks/useWhatsAppBridge.ts](/Users/meharaj/WA-copilot/src/renderer/src/hooks/useWhatsAppBridge.ts):197
+- [src/renderer/src/hooks/useAgent.ts](/Users/meharaj/WA-copilot/src/renderer/src/hooks/useAgent.ts):415
+- [src/renderer/src/lib/browser-agentd-client.ts](/Users/meharaj/WA-copilot/src/renderer/src/lib/browser-agentd-client.ts):969
+- [tests/unit/tauri-ui-boundary.test.ts](/Users/meharaj/WA-copilot/tests/unit/tauri-ui-boundary.test.ts):94
+
+The same retry audit also found that checking only for an assistant chat
+message was too early: generation can complete before draft admission or
+email policy delivery. Browser retries now use durable event-scoped WhatsApp
+drafts and Email draft records as the completion markers, and the WhatsApp
+handoff carries the hydrated session id so a participant JID cannot create a
+second renderer session.
+
 ## Recommended Source-of-Truth Order
 
 Use this order:

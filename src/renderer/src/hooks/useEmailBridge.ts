@@ -61,7 +61,7 @@ const toRendererSession = (session: AgentdChatSession): ChatSession => ({
   })),
 })
 
-const ingestBrowserInboundEmail = async (event: BrowserEmailInboundEvent): Promise<{ email: EmailMessage; content: string; alreadyGenerated: boolean }> => {
+const ingestBrowserInboundEmail = async (event: BrowserEmailInboundEvent): Promise<{ email: EmailMessage; content: string; alreadyHandled: boolean }> => {
   const payload = event.payload
   const email: EmailMessage = {
     id: event.providerEventId,
@@ -97,13 +97,17 @@ const ingestBrowserInboundEmail = async (event: BrowserEmailInboundEvent): Promi
     if (!(error instanceof BrowserAgentdError) || error.status !== 409) throw error
   }
   const refreshed = await client.loadSessions()
-  const durableSession = refreshed.find((candidate) => candidate.id === sessionId)
   const activeSessionId = useChatStore.getState().activeSessionId
   useChatStore.setState({
     sessions: refreshed.map(toRendererSession),
     activeSessionId: activeSessionId && refreshed.some((candidate) => candidate.id === activeSessionId) ? activeSessionId : sessionId,
   })
-  return { email, content, alreadyGenerated: durableSession?.messages.some((message) => message.id === `assistant_email_${event.id}`) === true }
+  // A completed generation alone is not enough to acknowledge the event: the
+  // confidence policy may still need to persist a draft or send it. The
+  // deterministic browser draft id is the durable completion marker for both
+  // review and delivery paths.
+  const durableDrafts = await client.listEmailDrafts()
+  return { email, content, alreadyHandled: durableDrafts.some((draft) => draft.id === `draft_email_${event.id}`) }
 }
 
 export function useEmailBridge(): void {
@@ -141,7 +145,7 @@ export function useEmailBridge(): void {
             const events = await client.claimEmailInbound(50)
             for (const event of events) {
               const hydrated = await ingestBrowserInboundEmail(event)
-              if (!hydrated.alreadyGenerated) {
+              if (!hydrated.alreadyHandled) {
                 // The product hook owns generation/policy execution. It reports
                 // completion back through the event detail so the daemon event is
                 // acknowledged only after the response is durably handled.
@@ -157,6 +161,7 @@ export function useEmailBridge(): void {
                       emailMessage: hydrated.email,
                       emailAlreadyHydrated: true,
                       emailGenerationRequestId: `email_${event.id}`,
+                      emailDraftId: `draft_email_${event.id}`,
                       onComplete: completion,
                     },
                   }))

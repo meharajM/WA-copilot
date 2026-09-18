@@ -371,6 +371,27 @@ describe('browser agentd client', () => {
     expect(fetcher.mock.calls.some(([input]) => String(input).includes('/api/v1/whatsapp/inbound?after_id=0&limit=10'))).toBe(true)
   })
 
+  it('admits browser WhatsApp generations as durable review drafts', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = []
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      calls.push({ url, init })
+      if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
+      if (url.endsWith('/api/v1/whatsapp/events')) return response({ accepted: true, duplicate: false, paused: false, draftId: 12 }, 202)
+      return response({ success: true })
+    })
+    const client = createBrowserAgentdClient({ origin: 'http://127.0.0.1:4141', fetch: fetcher })
+    await client.pair('123456')
+    await expect(client.createWhatsAppDraft({
+      providerEventId: 'wa-event-12', conversationId: '15551234567@s.whatsapp.net', payload: { text: 'hello' }, draftText: 'review reply',
+    })).resolves.toEqual({ accepted: true, duplicate: false, paused: false, draftId: 12 })
+    const create = calls.find(call => call.url.endsWith('/api/v1/whatsapp/events'))!
+    expect(JSON.parse(String(create.init?.body))).toEqual({
+      channel: 'whatsapp', providerEventId: 'wa-event-12', conversationId: '15551234567@s.whatsapp.net', payload: { text: 'hello' }, draftText: 'review reply',
+    })
+    expect(new Headers(create.init?.headers).get('x-csrf-token')).toBe('csrf-token')
+  })
+
   it('maps browser email transport probe without sending a password', async () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)

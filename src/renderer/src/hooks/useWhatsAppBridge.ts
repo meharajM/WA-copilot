@@ -91,9 +91,9 @@ const toRendererSession = (session: AgentdChatSession): ChatSession => ({
     })),
 })
 
-const ingestBrowserWhatsAppEvent = async (event: BrowserWhatsAppInboundEvent): Promise<void> => {
+const ingestBrowserWhatsAppEvent = async (event: BrowserWhatsAppInboundEvent): Promise<{ message: BrowserWhatsAppMessage | null; sessionId: string | null; alreadyHandled: boolean }> => {
     const message = normalizeBrowserWhatsAppEvent(event)
-    if (!message || message.isFromMe) return
+    if (!message || message.isFromMe) return { message: null, sessionId: null, alreadyHandled: true }
     const client = getBrowserAgentdClient()
     const sessionId = stableWhatsAppSessionId(message.conversationId)
     const sessions = await client.loadSessions()
@@ -123,6 +123,15 @@ const ingestBrowserWhatsAppEvent = async (event: BrowserWhatsAppInboundEvent): P
         sessions: refreshed.map(toRendererSession),
         activeSessionId: activeSessionId && refreshed.some((session) => session.id === activeSessionId) ? activeSessionId : resolvedSessionId,
     })
+    // A completed generation alone is not enough to advance the cursor: the
+    // durable draft admission can still fail or be paused. The draft record is
+    // the completion marker that makes a reload safe without losing review work.
+    const durableDrafts = await client.listDrafts(100)
+    return {
+        message,
+        sessionId: resolvedSessionId,
+        alreadyHandled: durableDrafts.some((draft) => draft.providerEventId === event.providerEventId),
+    }
 }
 
 export function useWhatsAppBridge(): void {
@@ -195,7 +204,32 @@ export function useWhatsAppBridge(): void {
                 const result = await getBrowserAgentdClient().listWhatsAppInbound(afterId, 50)
                 for (const event of result.events) {
                     if (cancelled) return
-                    await ingestBrowserWhatsAppEvent(event)
+                    const hydrated = await ingestBrowserWhatsAppEvent(event)
+                    if (hydrated.message && !hydrated.alreadyHandled) {
+                        await new Promise<void>((resolve, reject) => {
+                            let handedOff = false
+                            const completion = (promise: Promise<void>) => {
+                                handedOff = true
+                                promise.then(resolve, reject)
+                            }
+                            window.dispatchEvent(new CustomEvent('app:submit-message', {
+                                detail: {
+                                    content: `📱 **WhatsApp** (${hydrated.message.from}): ${hydrated.message.content}`,
+                                    whatsappMessage: hydrated.message,
+                                    whatsappSessionId: hydrated.sessionId,
+                                    whatsappAlreadyHydrated: true,
+                                    whatsappGenerationRequestId: `whatsapp_${event.id}`,
+                                    whatsappEvent: {
+                                        providerEventId: event.providerEventId,
+                                        conversationId: event.conversationId,
+                                        payload: event.payload,
+                                    },
+                                    onComplete: completion,
+                                },
+                            }))
+                            if (!handedOff) reject(new Error('Browser WhatsApp agent is unavailable'))
+                        })
+                    }
                 }
                 afterId = result.nextAfterId
             } catch (error) {

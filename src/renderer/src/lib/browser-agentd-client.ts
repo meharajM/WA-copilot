@@ -468,6 +468,13 @@ export interface BrowserDraftSendResult {
   draft: BrowserDraft
 }
 
+export interface BrowserWhatsAppDraftResult {
+  accepted: boolean
+  duplicate: boolean
+  paused: boolean
+  draftId?: number
+}
+
 export interface BrowserAutonomyMetrics {
   inbound: number
   sent: number
@@ -616,6 +623,7 @@ export interface BrowserAgentdClient extends ChatClient {
   sendEmailDraft(id: string): Promise<BrowserEmailDraft>
   deleteEmailDraft(id: string): Promise<void>
   listWhatsAppInbound(afterId?: number, limit?: number): Promise<{ events: BrowserWhatsAppInboundEvent[]; nextAfterId: number }>
+  createWhatsAppDraft(event: { providerEventId: string; conversationId: string; payload: Record<string, unknown>; draftText: string }): Promise<BrowserWhatsAppDraftResult>
   getPersonaSettings(): Promise<PersonaSettings>
   savePersonaSettings(settings: PersonaSettings): Promise<PersonaSettings>
   getProductPreferences(): Promise<ProductPreferences>
@@ -959,6 +967,20 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     if (!isRecord(value) || value.success !== true || typeof value.providerMessageId !== 'string' || !value.providerMessageId) throw new Error('Invalid WhatsApp send response')
     return { providerMessageId: value.providerMessageId }
   }
+  const createWhatsAppDraft = async (event: { providerEventId: string; conversationId: string; payload: Record<string, unknown>; draftText: string }): Promise<BrowserWhatsAppDraftResult> => {
+    const value = await request<unknown>('/api/v1/whatsapp/events', {
+      method: 'POST',
+      body: JSON.stringify({ channel: 'whatsapp', ...event }),
+    }, true)
+    if (!isRecord(value) || typeof value.accepted !== 'boolean' || typeof value.duplicate !== 'boolean' || typeof value.paused !== 'boolean'
+      || (value.draftId !== undefined && !Number.isSafeInteger(value.draftId))) throw new Error('Invalid WhatsApp draft response')
+    return {
+      accepted: value.accepted,
+      duplicate: value.duplicate,
+      paused: value.paused,
+      ...(Number.isSafeInteger(value.draftId) ? { draftId: value.draftId as number } : {}),
+    }
+  }
   const getOllamaSettings = async () => readOllamaSettings(await request('/api/v1/settings/ollama'))
   const saveOllamaSettings = async (settings: BrowserOllamaSettings) => readOllamaSettings(await request('/api/v1/settings/ollama', { method: 'PUT', body: JSON.stringify(settings) }, true))
   const testOllama = async (): Promise<BrowserOllamaTestResult> => {
@@ -1273,6 +1295,7 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     disconnectWhatsApp,
     setWhatsAppTarget,
     sendWhatsAppText,
+    createWhatsAppDraft,
     getOllamaSettings,
     saveOllamaSettings,
     testOllama,

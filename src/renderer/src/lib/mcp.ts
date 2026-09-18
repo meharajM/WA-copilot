@@ -417,7 +417,7 @@ export async function executeToolCall(
                accountName: safeArgs?.accountName as string | undefined,
              }
            )
-           useDraftStore.getState().addDraft(draft)
+           void useDraftStore.getState().addDraft(draft).catch(() => undefined)
            return { result: 'Draft created successfully.' }
          }
 

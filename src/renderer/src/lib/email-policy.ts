@@ -336,10 +336,11 @@ export function createDraftResponse(
     inReplyTo?: string
     references?: string
     accountName?: string
-  }
+  },
+  draftId?: string,
 ): EmailDraft {
   return {
-    id: `draft_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
+    id: draftId || `draft_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
     responseText,
     originalFrom: originalEmail.from,
     originalSubject: originalEmail.subject,

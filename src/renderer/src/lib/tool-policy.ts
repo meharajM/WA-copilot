@@ -80,7 +80,7 @@ function enforceEmailSendPolicy(args: Record<string, unknown>): ToolPolicyResult
     }
   );
 
-  useDraftStore.getState().addDraft(draft);
+  void useDraftStore.getState().addDraft(draft).catch(() => undefined);
 
   return {
     action: "handled",

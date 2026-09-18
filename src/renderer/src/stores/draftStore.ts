@@ -22,7 +22,7 @@ interface DraftState {
   // ── Actions ─────────────────────────────────────────────────────────────
 
   /** Add a new draft (from confidence gate or manual creation) */
-  addDraft: (draft: EmailDraft) => void
+  addDraft: (draft: EmailDraft) => Promise<void>
 
   /** Approve a draft for sending */
   approveDraft: (draftId: string) => void
@@ -61,9 +61,9 @@ export const useDraftStore = create<DraftState>()(
     (set, get) => ({
       drafts: [],
 
-      addDraft: (draft) => {
-        set((state) => ({ drafts: [draft, ...state.drafts] }))
-        if (isBrowserProduct()) void getBrowserAgentdClient().saveEmailDraft(asBrowserDraft(draft)).catch(() => undefined)
+      addDraft: async (draft) => {
+        set((state) => ({ drafts: [draft, ...state.drafts.filter((candidate) => candidate.id !== draft.id)] }))
+        if (isBrowserProduct()) await getBrowserAgentdClient().saveEmailDraft(asBrowserDraft(draft))
       },
 
       approveDraft: (draftId) => {
