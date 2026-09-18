@@ -176,6 +176,29 @@ export interface BrowserDraftSendResult {
   draft: BrowserDraft
 }
 
+export interface BrowserAutonomyMetrics {
+  inbound: number
+  sent: number
+  escalated: number
+  drafts: number
+  failed: number
+  averageDecisionLatencyMs: number
+  llmCalls: number
+  averageLlmLatencyMs: number
+  groundedDecisionRate: number
+  deliveryUnknown: number
+  draftApprovalRate: number
+  averageDraftEditingTimeMs: number
+  estimatedCostPerResolvedConversation: number
+  reviewedDecisions: number
+  reviewAccuracy: number
+  escalationPrecision: number
+  unnecessaryEscalations: number
+  missedEscalations: number
+  recoveryDrills: number
+  averageRecoveryTimeMs: number
+}
+
 export interface BrowserKnowledgeDocument {
   id: number
   file_path: string
@@ -261,6 +284,7 @@ export interface BrowserAgentdClient extends ChatClient {
   listDrafts(limit?: number, status?: BrowserDraft['status']): Promise<BrowserDraft[]>
   updateDraftStatus(id: number, status: BrowserDraft['status']): Promise<BrowserDraft>
   sendWhatsAppDraft(id: number): Promise<BrowserDraftSendResult>
+  getAutonomyMetrics(days?: number): Promise<BrowserAutonomyMetrics>
   listKnowledge(limit?: number): Promise<BrowserKnowledgeDocument[]>
   ingestKnowledge(input: { fileName: string; filePath: string; fileType: string; content: string; size: number }): Promise<BrowserKnowledgeDocument>
   deleteKnowledge(id: number): Promise<boolean>
@@ -588,6 +612,12 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     if (!isRecord(value) || typeof value.providerMessageId !== 'string' || !value.providerMessageId || typeof value.duplicate !== 'boolean') throw new Error('Invalid WhatsApp draft send response')
     return { providerMessageId: value.providerMessageId, duplicate: value.duplicate, draft: readDraft(value.draft) }
   }
+  const getAutonomyMetrics = async (days = 14): Promise<BrowserAutonomyMetrics> => {
+    const value = await request<unknown>(`/api/v1/autonomy/metrics?days=${encodeURIComponent(String(Math.max(1, Math.min(90, Math.trunc(days)))))}`)
+    const fields = ['inbound', 'sent', 'escalated', 'drafts', 'failed', 'averageDecisionLatencyMs', 'llmCalls', 'averageLlmLatencyMs', 'groundedDecisionRate', 'deliveryUnknown', 'draftApprovalRate', 'averageDraftEditingTimeMs', 'estimatedCostPerResolvedConversation', 'reviewedDecisions', 'reviewAccuracy', 'escalationPrecision', 'unnecessaryEscalations', 'missedEscalations', 'recoveryDrills', 'averageRecoveryTimeMs']
+    if (!isRecord(value) || fields.some((field) => typeof value[field] !== 'number' || !Number.isFinite(value[field] as number))) throw new Error('Invalid agentd autonomy metrics response')
+    return value as unknown as BrowserAutonomyMetrics
+  }
   const readKnowledgeDocument = (value: unknown): BrowserKnowledgeDocument => {
     if (!isRecord(value) || !Number.isSafeInteger(value.id) || typeof value.file_path !== 'string' || typeof value.file_name !== 'string' || typeof value.created_at !== 'string') throw new Error('Invalid agentd knowledge document')
     return {
@@ -698,6 +728,7 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     listDrafts,
     updateDraftStatus,
     sendWhatsAppDraft,
+    getAutonomyMetrics,
     listKnowledge,
     ingestKnowledge,
     deleteKnowledge,

@@ -540,6 +540,7 @@ class AgentdServer {
       this.authorize(req)
       return json(res, 200, { runtime: 'agentd', paused: this.getState('paused', 'true') === 'true', queueDepth: this.db.prepare("SELECT COUNT(*) AS count FROM inbound_events WHERE status IN ('queued','processing')").get().count, events: this.db.prepare('SELECT COUNT(*) AS count FROM inbound_events').get().count })
     }
+    if (url.pathname === '/api/v1/autonomy/metrics' && req.method === 'GET') return this.autonomyMetrics(req, res, url)
     if (url.pathname === '/api/v1/logs' && ['GET', 'POST'].includes(req.method)) return this.auditLogs(req, res, url)
     if (url.pathname === '/api/v1/knowledge' && ['GET', 'POST'].includes(req.method)) return this.knowledge(req, res, url)
     const knowledgeMatch = /^\/api\/v1\/knowledge\/(\d+)$/.exec(url.pathname)
@@ -1665,6 +1666,44 @@ class AgentdServer {
       this.db.prepare('INSERT INTO operator_actions(action,created_at) VALUES (?,?)').run(paused ? 'pause_all' : 'resume_all', now)
     })()
     return json(res, 200, { paused, actor: actor.kind })
+  }
+
+  autonomyMetrics(req, res, url) {
+    this.authorize(req)
+    const requestedDays = Number.parseInt(url.searchParams.get('days') || '14', 10)
+    const days = Number.isSafeInteger(requestedDays) ? Math.min(Math.max(requestedDays, 1), 90) : 14
+    const since = Date.now() - days * 24 * 60 * 60 * 1000
+    const inbound = this.db.prepare('SELECT COUNT(*) AS count FROM inbound_events WHERE created_at >= ?').get(since).count
+    const draftCounts = this.db.prepare("SELECT status,COUNT(*) AS count FROM whatsapp_drafts WHERE created_at >= ? GROUP BY status").all(since)
+    const outboxCounts = this.db.prepare("SELECT status,COUNT(*) AS count FROM whatsapp_outbox WHERE created_at >= ? GROUP BY status").all(since)
+    const generationCounts = this.db.prepare("SELECT COUNT(*) AS count FROM chat_generations WHERE created_at >= ? AND status = 'completed'").get(since).count
+    const draftByStatus = Object.fromEntries(draftCounts.map((row) => [row.status, row.count]))
+    const outboxByStatus = Object.fromEntries(outboxCounts.map((row) => [row.status, row.count]))
+    const totalDrafts = Object.values(draftByStatus).reduce((sum, count) => sum + count, 0)
+    const approvedDrafts = (draftByStatus.approved || 0) + (draftByStatus.sent || 0)
+    return json(res, 200, {
+      inbound,
+      sent: outboxByStatus.sent || 0,
+      escalated: 0,
+      drafts: (draftByStatus.draft || 0) + (draftByStatus.approved || 0),
+      failed: outboxByStatus.failed || 0,
+      averageDecisionLatencyMs: 0,
+      llmCalls: generationCounts,
+      averageLlmLatencyMs: 0,
+      groundedDecisionRate: 0,
+      deliveryUnknown: outboxByStatus.pending || 0,
+      draftApprovalRate: totalDrafts ? approvedDrafts / totalDrafts : 0,
+      averageDraftEditingTimeMs: 0,
+      estimatedCostPerResolvedConversation: 0,
+      reviewedDecisions: 0,
+      reviewAccuracy: 0,
+      escalationPrecision: 0,
+      unnecessaryEscalations: 0,
+      missedEscalations: 0,
+      recoveryDrills: 0,
+      averageRecoveryTimeMs: 0,
+      days,
+    })
   }
 
   serveUi(requestPath, res) {

@@ -543,7 +543,7 @@ export const electron = {
             if (isBrowserProduct()) return browserAutonomyHealth()
             return null
         },
-        getMetrics: async (days = 14) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.getMetrics(days) : (isBrowserProduct() ? { inbound: 0, sent: 0, escalated: 0, drafts: (await getBrowserAgentdClient().listDrafts()).length, failed: 0, averageDecisionLatencyMs: 0, llmCalls: 0, averageLlmLatencyMs: 0, groundedDecisionRate: 0, deliveryUnknown: 0, draftApprovalRate: 0, averageDraftEditingTimeMs: 0, estimatedCostPerResolvedConversation: 0, reviewedDecisions: 0, reviewAccuracy: 0, escalationPrecision: 0, unnecessaryEscalations: 0, missedEscalations: 0, recoveryDrills: 0, averageRecoveryTimeMs: 0 } : null),
+        getMetrics: async (days = 14) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.getMetrics(days) : (isBrowserProduct() ? getBrowserAgentdClient().getAutonomyMetrics(days) : null),
         reconnectChannel: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.reconnectChannel() : (isBrowserProduct() ? browserAutonomyState() : null),
         start: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.start() : (isBrowserProduct() ? getBrowserAgentdClient().resumeAll().then(browserAutonomyState) : null),
         stop: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.stop() : (isBrowserProduct() ? getBrowserAgentdClient().pauseAll().then(browserAutonomyState) : null),
