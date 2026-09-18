@@ -28,7 +28,7 @@ export function EmptyState({ onNavigate }: { onNavigate?: (view: ViewMode) => vo
   const [ragStats, setRagStats] = useState<{ count: number; fileTypes: Record<string, number>; totalSize: number }>({ count: 0, fileTypes: {}, totalSize: 0 })
   const [memoryStats, setMemoryStats] = useState<{ entityCount: number; relationCount: number }>({ entityCount: 0, relationCount: 0 })
   const [intelligenceStats, setIntelligenceStats] = useState<{ totalQueries: number; resolvedQueries: number; autonomyRate: number; trainingCount: number; learningCount: number }>({ totalQueries: 0, resolvedQueries: 0, autonomyRate: 100, trainingCount: 0, learningCount: 0 })
-  interface EvolutionLog { id: number; type: string; event: string; details?: string; timestamp?: string }
+  interface EvolutionLog { id: number; type: string; event: string; details?: string | null; timestamp?: string }
   const [evolutionLogs, setEvolutionLogs] = useState<EvolutionLog[]>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -59,21 +59,37 @@ export function EmptyState({ onNavigate }: { onNavigate?: (view: ViewMode) => vo
                 }
             }
 
-            // 2. Fetch Memory Stats
-            const memoryRes = await electron.memory.getStats()
-            if (memoryRes.success && memoryRes.stats) {
-                setMemoryStats(memoryRes.stats)
-            }
+            // Memory and intelligence are daemon-owned in the browser product.
+            // Do not call the Electron bridge here: a browser tab has no IPC
+            // host, and a missing bridge would otherwise silently leave the
+            // dashboard showing stale/default metrics.
+            if (isBrowserProduct()) {
+                const client = getBrowserAgentdClient()
+                const [memory, intelligence, logs] = await Promise.all([
+                    client.getMemoryStats(),
+                    client.getIntelligenceStats(),
+                    client.listIntelligenceLogs(5),
+                ])
+                setMemoryStats(memory)
+                setIntelligenceStats(intelligence)
+                setEvolutionLogs(logs)
+            } else {
+                // Electron transition path: retain the existing IPC behavior
+                // until the browser parity gates are complete.
+                const memoryRes = await electron.memory.getStats()
+                if (memoryRes.success && memoryRes.stats) {
+                    setMemoryStats(memoryRes.stats)
+                }
 
-            // 3. Fetch Intelligence Stats & Logs
-            const intelRes = await electron.intelligence.getStats()
-            if (intelRes.success && intelRes.stats) {
-                setIntelligenceStats(intelRes.stats)
-            }
+                const intelRes = await electron.intelligence.getStats()
+                if (intelRes.success && intelRes.stats) {
+                    setIntelligenceStats(intelRes.stats)
+                }
 
-            const logsRes = await electron.intelligence.getLogs(5)
-            if (logsRes.success && logsRes.logs) {
-                setEvolutionLogs(logsRes.logs)
+                const logsRes = await electron.intelligence.getLogs(5)
+                if (logsRes.success && logsRes.logs) {
+                    setEvolutionLogs(logsRes.logs)
+                }
             }
         } catch (err) {
             console.error("Failed to fetch analytics:", err)

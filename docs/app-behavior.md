@@ -108,6 +108,7 @@ Pass evidence:
 
 - The dashboard view is the operational home screen.
 - It surfaces live-ish metrics derived from session, RAG, memory, and intelligence stats.
+- In the browser product, memory statistics and intelligence statistics/logs are read from authenticated `agentd` endpoints; the dashboard must not depend on Electron IPC. Electron remains the transition-client path only.
 - It offers at least:
   - WhatsApp connect or toggle action
   - knowledge upload
