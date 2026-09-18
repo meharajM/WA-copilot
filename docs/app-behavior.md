@@ -40,7 +40,7 @@ If older manuals, screenshots, or marketing copy disagree with the running code,
 
 ## Verification Order
 
-1. Startup and dependency gate
+1. Startup, daemon readiness, and pairing
 2. Navigation and session model
 3. Channel flows: WhatsApp, Email
 4. Knowledge and memory
@@ -71,15 +71,17 @@ Repository validation note:
 
 ### Launch and dependency gate
 
-- On app launch, missing system dependencies can block normal use with a full-screen dependency modal.
-- If no dependencies are missing, the modal dismisses automatically.
-- The dependency modal can re-check on window focus.
-- The dependency modal allows a local install script or a skip path.
+- Electron transition-client launch may show a full-screen dependency modal when host tools are missing. The modal can re-check on window focus and offers the existing install/skip path.
+- Edge/Chrome browser launch does not run the Electron dependency check, install tools, or inspect host binaries. The browser entry first checks authenticated loopback `agentd` readiness.
+- Tauri launch renders only native diagnostics/onboarding. It does not mount the product dependency modal or product workspace.
+- Browser readiness has three observable states: `Connecting to local agent…`, `Local service unavailable` (with `Retry connection`), and `Pair this browser` (with a six-digit owner-code form). Successful one-time pairing mounts the full browser workspace.
+- The browser does not start `agentd` itself. On Windows, start the native companion/service, then retry or pair from Edge/Chrome. The browser page never persists or receives the pairing code through a product API response.
 
 Pass evidence:
 
-- Missing dependencies are listed when present.
-- Running the install path or resolving dependencies clears the blocker.
+- Electron: missing dependencies are listed when present and the install path or resolving dependencies clears the blocker.
+- Browser: an unavailable daemon shows the explicit retry state; a live unpaired daemon shows the pairing form; successful pairing opens the product shell without a second native/product window.
+- Tauri: native diagnostics can report daemon health and expose the owner action to open the browser workspace; no product workspace is mounted in the native window.
 
 ### Main navigation
 
@@ -435,13 +437,8 @@ Pass evidence:
 - API keys are stored through secure storage, not plain text inputs only.
 - In Edge/Chrome, the supported local-model path is Ollama through the authenticated loopback `agentd` service. The browser sends only validated model/base-URL settings; `agentd` reads no Ollama secret and performs the local `/api/tags` and OpenAI-compatible chat calls. Browser Ollama URLs are restricted to `http://localhost`, `http://127.0.0.1`, or `http://[::1]`.
 - Tauri does not render this product settings card. It exposes only native-host diagnostics and OS capability controls; the browser owns the LLM UI.
-- In the browser product, the selector is limited to `auto`, Ollama, OpenAI/Compatible, and OpenRouter until the remaining provider adapters are moved into `agentd`; Electron retains its existing Gemini/on-device options during transition.
-- Current UI exposes cards for:
-  - Ollama
-  - OpenAI / Compatible
-  - Gemini
-  - OpenRouter
-- Current limitation: `browser` exists in the provider selector, but there is no dedicated settings card in this panel yet.
+- Browser UI exposes cards for Ollama, OpenAI / Compatible, and OpenRouter. Gemini and the on-device/browser provider remain Electron-only until their daemon adapters are migrated; they are not shown as selectable browser providers.
+- Electron UI retains its existing Ollama, OpenAI / Compatible, Gemini, OpenRouter, and on-device/browser options. `browser` remains a legacy provider value in shared settings but is filtered out of the browser selector and has no browser configuration card.
 
 Pass evidence:
 

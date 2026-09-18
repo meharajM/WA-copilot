@@ -73,6 +73,8 @@ Acceptance: Rust tests reject malformed or non-loopback descriptors; daemon API 
 
 Browser runbook: build the web bundle, start the independently supervised `agentd` with `AICA_AGENTD_UI_ROOT` pointing at that bundle, open the native companion and use its explicit “Show pairing code” owner action (the `npm run agentd:pair-code` helper remains available for headless/service setups), then open the daemon's `tauri.html` URL in Edge or Chrome. The browser pairing form never persists the code; the daemon owns the HttpOnly session and all durable product state.
 
+The browser settings surface currently exposes only the providers implemented by this daemon slice: `auto`, Ollama, OpenAI/Compatible, and OpenRouter. Gemini and the on-device/browser provider remain Electron-only and must not be presented as browser-ready until their agentd routes, credential tests, streaming/generation behavior, and Windows evidence are migrated.
+
 ## Work plan and acceptance gates
 
 ### Phase 0 — inventory and baseline (complete)

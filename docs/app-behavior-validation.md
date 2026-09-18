@@ -20,6 +20,8 @@ It should be treated as a shared contract for both testers and developers.
 
 The 2026-09-18 audit found and corrected browser Email drift: the contract now distinguishes daemon mailbox ingestion from browser review-session hydration, explicitly excludes automatic browser replies, and documents the transport-specific credential slots plus the legacy fallback.
 
+The follow-up runtime-boundary audit also corrected the launch contract: Edge/Chrome has an explicit agentd readiness/pairing state machine, while the Electron dependency modal is no longer described as a browser startup requirement. Gemini/on-device provider cards are documented as Electron-only until their agentd adapters exist.
+
 The main problems are in older support docs that still describe:
 
 - WhatsApp-only session assumptions
@@ -31,6 +33,9 @@ The main problems are in older support docs that still describe:
 
 ### Code checked
 
+- [src/renderer/src/BrowserProduct.tsx](/Users/meharaj/WA-copilot/src/renderer/src/BrowserProduct.tsx)
+- [src/renderer/src/components/SystemDependenciesSettings.tsx](/Users/meharaj/WA-copilot/src/renderer/src/components/SystemDependenciesSettings.tsx)
+- [src/renderer/src/components/settings/llm/LLMProviderSettings.tsx](/Users/meharaj/WA-copilot/src/renderer/src/components/settings/llm/LLMProviderSettings.tsx)
 - [src/renderer/src/hooks/useEmailBridge.ts](/Users/meharaj/WA-copilot/src/renderer/src/hooks/useEmailBridge.ts)
 - [src/renderer/src/components/SettingsPanel.tsx](/Users/meharaj/WA-copilot/src/renderer/src/components/SettingsPanel.tsx)
 - [src/renderer/src/components/chat/KnowledgeBrowser.tsx](/Users/meharaj/WA-copilot/src/renderer/src/components/chat/KnowledgeBrowser.tsx)
@@ -51,10 +56,41 @@ The main problems are in older support docs that still describe:
 - `npm run test:unit`
 - `npm run test:integration`
 - `npm run build`
+- `npm run lint` (0 errors; existing warnings only)
+- `node --test tests/unit/*.test.cjs` (103 passed, 2 Windows-only skips)
+- `npm run typecheck:renderer`
+- `npm run build:tauri:web -- --emptyOutDir`
+- `cargo test --manifest-path src-tauri/Cargo.toml --locked` (19 passed)
+- `node scripts/verify-tauri-resources.mjs --sidecar-root src-tauri/sidecar --ui-root dist --platform darwin --target-triple aarch64-apple-darwin`
 
-These were already run successfully in the current repo state before this validation summary was written.
+The current run completed these checks successfully; build tools emitted only their existing warnings.
+
+### Real-user browser smoke
+
+On 2026-09-18, the browser entry was opened at `http://127.0.0.1:5173/tauri.html?workspace=1` with no local daemon available. The UI showed `AICA / BROWSER WORKSPACE`, `Local service unavailable`, and `Retry connection`; activating retry kept the same fail-closed state and did not mount the product workspace. This passes the unavailable-service contract. Pairing and full workspace navigation require a running owner-supervised agentd instance and were not claimed by this smoke.
 
 ## Confirmed Alignment
+
+### Browser startup and native-host boundary
+
+`BrowserProduct` checks the authenticated local daemon before lazy-loading the product `App`. It renders a loading state, an explicit unavailable/retry state, or a one-time pairing form; it does not start the daemon and does not render product UI in the Tauri host. `SystemDependenciesSettings` independently skips Electron host-tool inspection in browser mode.
+
+Evidence:
+
+- [src/renderer/src/BrowserProduct.tsx](/Users/meharaj/WA-copilot/src/renderer/src/BrowserProduct.tsx):25
+- [src/renderer/src/tauri-main.tsx](/Users/meharaj/WA-copilot/src/renderer/src/tauri-main.tsx):8
+- [src/renderer/src/components/SystemDependenciesSettings.tsx](/Users/meharaj/WA-copilot/src/renderer/src/components/SystemDependenciesSettings.tsx):8
+- [docs/app-behavior.md](/Users/meharaj/WA-copilot/docs/app-behavior.md):74
+
+### Browser LLM provider boundary
+
+The browser settings component filters the provider selector to `auto`, Ollama, OpenAI/Compatible, and OpenRouter. Browser credentials and provider tests use authenticated agentd routes; Gemini and on-device/browser provider cards remain Electron-only. The docs now distinguish the browser card set from the Electron transition-client card set.
+
+Evidence:
+
+- [src/renderer/src/components/settings/llm/LLMProviderSettings.tsx](/Users/meharaj/WA-copilot/src/renderer/src/components/settings/llm/LLMProviderSettings.tsx):69
+- [src/renderer/src/lib/browser-agentd-client.ts](/Users/meharaj/WA-copilot/src/renderer/src/lib/browser-agentd-client.ts):251
+- [docs/app-behavior.md](/Users/meharaj/WA-copilot/docs/app-behavior.md):438
 
 ### Email gating and Gmail behavior
 

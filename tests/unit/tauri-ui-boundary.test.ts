@@ -40,6 +40,30 @@ describe('browser-first UI boundary', () => {
     expect(browser).toContain("React.lazy(() => import('./App'))")
   })
 
+  it('keeps browser startup daemon-gated and explicit about pairing states', () => {
+    const browser = readSource('BrowserProduct.tsx')
+    const dependencies = readSource('components/SystemDependenciesSettings.tsx')
+
+    expect(browser).toContain("client.readiness()")
+    expect(browser).toContain('Connecting to local agent…')
+    expect(browser).toContain('Local service unavailable')
+    expect(browser).toContain('Retry connection')
+    expect(browser).toContain('Pair this browser')
+    expect(browser).toContain('The code is used once and never stored in the browser.')
+    expect(browser).toContain("<FullWorkspace />")
+    expect(dependencies).toContain('if (browserRuntime) return;')
+    expect(dependencies).toContain('Browser mode does not install or inspect host tools.')
+  })
+
+  it('keeps Gemini and on-device providers out of the browser selector', () => {
+    const providers = readSource('components/settings/llm/LLMProviderSettings.tsx')
+    expect(providers).toContain("id === 'auto' || id === 'ollama' || id === 'openai' || id === 'openrouter'")
+    expect(providers).toContain("const showGemini = !browserRuntime")
+    expect(providers).toContain("client.hasCredential('openai_api_key')")
+    expect(providers).toContain("client.hasCredential('openrouter_api_key')")
+    expect(providers).toContain('Gemini is not yet exposed through the browser agentd API')
+  })
+
   it('registers only native capability commands in the Tauri host', () => {
     const native = readNativeSource('main.rs')
     const handler = native.slice(native.indexOf('.invoke_handler('), native.indexOf('.setup('))
