@@ -164,6 +164,19 @@ describe('browser-first UI boundary', () => {
     expect(electron).toContain('getBrowserAgentdClient().disconnectWhatsApp(clearAuth)')
   })
 
+  it('keeps browser autonomy state live without reviving Electron events', () => {
+    const electron = readSource('lib/electron.ts')
+    const onState = electron.indexOf('onState: (callback: (state: unknown) => void) => {')
+    const onDecision = electron.indexOf('onDecision:', onState)
+
+    expect(onState).toBeGreaterThan(-1)
+    expect(onDecision).toBeGreaterThan(onState)
+    expect(electron.slice(onState, onDecision)).toContain('browserAutonomyState()')
+    expect(electron.slice(onState, onDecision)).toContain('setTimeout')
+    expect(electron.slice(onState, onDecision)).toContain('clearTimeout')
+    expect(electron.slice(onState, onDecision)).toContain('window.electron?.autonomy')
+  })
+
   it('routes browser persona reads and writes through agentd', () => {
     const electron = readSource('lib/electron.ts')
     expect(electron).toContain('getBrowserAgentdClient().getPersonaSettings()')

@@ -628,7 +628,26 @@ export const electron = {
             // Auto mode stays paused until a provider-backed outbox exists.
             return getBrowserAgentdClient().pauseAll().then(browserAutonomyState)
         },
-        onState: (callback: (state: unknown) => void) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.onState(callback) : () => {},
+        onState: (callback: (state: unknown) => void) => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.onState(callback)
+            if (!isBrowserProduct()) return () => {}
+
+            // The browser has no Electron event emitter. Poll the authenticated
+            // daemon status so a second tab, the native companion, or a
+            // background worker can update the panel without a page reload.
+            let cancelled = false
+            let timer: ReturnType<typeof setTimeout> | null = null
+            const poll = async () => {
+                if (cancelled) return
+                try { callback(await browserAutonomyState()) } catch { /* state reads fail closed in the adapter */ }
+                if (!cancelled) timer = setTimeout(() => void poll(), 5_000)
+            }
+            void poll()
+            return () => {
+                cancelled = true
+                if (timer) clearTimeout(timer)
+            }
+        },
         onDecision: (callback: (data: unknown) => void) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.onDecision(callback) : () => {},
         onFailure: (callback: (data: unknown) => void) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.onFailure(callback) : () => {},
     },

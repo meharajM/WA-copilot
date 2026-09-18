@@ -234,6 +234,7 @@ Pass evidence:
 - The local Baileys worker normalizes bounded text and media captions into durable inbound events using stable provider message IDs. Self-messages and broadcast/system messages are ignored; media bytes are not downloaded into the browser path, so unsupported media remains fail-closed.
 - A failed channel send does not discard the local chat submission; the browser records the failure through its normal audit/error path so the operator can retry after fixing configuration.
 - Browser autonomy metrics come from authenticated agentd durable state (inbound events, draft/outbox statuses, and completed generations). Unsupported decision-review and recovery metrics remain explicitly zero until their agentd adapters are migrated; the UI must not present fabricated success activity.
+- The browser Autonomy panel refreshes its draft-only supervisor state from authenticated agentd status every five seconds while mounted, so pause/resume and queue changes made by another browser tab or the native companion become visible without a reload. Electron keeps its push-event subscription.
 
 Pass evidence:
 
