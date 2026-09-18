@@ -124,8 +124,8 @@ const isBrowserProduct = (): boolean => (
     typeof window !== 'undefined' && !window.electron && !isTauriRuntime()
 )
 
-const isAgentdProvider = (provider: LLMProviderType): provider is 'auto' | 'openai' | 'openrouter' | 'ollama' | 'gemini' => (
-    provider === 'auto' || provider === 'openai' || provider === 'openrouter' || provider === 'ollama' || provider === 'gemini'
+const isAgentdProvider = (provider: LLMProviderType): provider is 'auto' | 'openai' | 'openrouter' | 'ollama' | 'gemini' | 'browser' => (
+    provider === 'auto' || provider === 'openai' || provider === 'openrouter' || provider === 'ollama' || provider === 'gemini' || provider === 'browser'
 )
 
 const syncBrowserLlmSettings = (state: Pick<SettingsState, 'preferredProvider' | 'openaiModel' | 'geminiModel' | 'openrouterModel'>): void => {

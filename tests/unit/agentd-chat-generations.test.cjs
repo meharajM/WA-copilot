@@ -128,6 +128,38 @@ test('agentd generation returns safe errors and never accepts arbitrary provider
   fs.rmSync(dataDir, { recursive: true, force: true })
 })
 
+test('agentd never executes a browser WebGPU preference server-side', async () => {
+  const dataDir = makeTempDir('aica-agentd-generation-browser-')
+  const secret = 'w'.repeat(32)
+  const calls = []
+  const server = new AgentdServer({
+    dataDir,
+    secret,
+    logger: { log() {} },
+    credentials: credentials({ openrouter_api_key: 'must-not-be-used' }),
+    providerFetch: async url => {
+      calls.push(url)
+      return providerResponse('should not run')
+    },
+  })
+  const { origin } = await server.start()
+  const auth = { authorization: `Bearer ${secret}` }
+  assert.equal((await request(origin, 'POST', '/api/v1/sessions', { id: 'browser-provider' }, auth)).status, 201)
+  const settings = {
+    preferredProvider: 'browser',
+    openaiModel: 'gpt-4o-mini',
+    geminiModel: 'gemini-2.5-flash',
+    openrouterModel: 'openai/gpt-4o',
+  }
+  assert.equal((await request(origin, 'PUT', '/api/v1/settings/llm', settings, auth)).status, 200)
+  const result = await request(origin, 'POST', '/api/v1/sessions/browser-provider/generations', { requestId: 'browser-r1', content: 'hello' }, auth)
+  assert.equal(result.status, 503)
+  assert.deepEqual(result.body, { error: 'Provider unavailable' })
+  assert.deepEqual(calls, [])
+  await server.stop()
+  fs.rmSync(dataDir, { recursive: true, force: true })
+})
+
 test('generation admission fences provider discovery and leaves no orphan message during migration', async () => {
   const dataDir = makeTempDir('aica-agentd-generation-admission-')
   const secret = 'm'.repeat(32)

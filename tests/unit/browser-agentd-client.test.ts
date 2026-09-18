@@ -172,6 +172,28 @@ describe('browser agentd client', () => {
     expect(new Headers(mutation?.[1]?.headers).get('x-csrf-token')).toBe('csrf-token')
   })
 
+  it('persists the explicit browser provider without sending a credential', async () => {
+    const settings = {
+      preferredProvider: 'browser',
+      openaiModel: 'gpt-4o-mini',
+      geminiModel: 'gemini-2.5-flash',
+      openrouterModel: 'openai/gpt-4o',
+    }
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
+      if (url.endsWith('/api/v1/settings/llm')) return response(settings)
+      return response({ success: true })
+    })
+    const client = createBrowserAgentdClient({ origin: 'http://127.0.0.1:4141', fetch: fetcher })
+    await client.pair('123456')
+    await expect(client.getLlmSettings()).resolves.toEqual(settings)
+    await expect(client.saveLlmSettings(settings)).resolves.toEqual(settings)
+    const body = fetcher.mock.calls.find(([input, init]) => String(input).endsWith('/api/v1/settings/llm') && init?.method === 'PUT')?.[1]?.body
+    expect(String(body)).not.toContain('apiKey')
+    expect(new Headers(fetcher.mock.calls.find(([input, init]) => String(input).endsWith('/api/v1/settings/llm') && init?.method === 'PUT')?.[1]?.headers).get('x-csrf-token')).toBe('csrf-token')
+  })
+
   it('maps durable product preferences and audit logs through agentd', async () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)

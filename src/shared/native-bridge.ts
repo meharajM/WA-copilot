@@ -29,7 +29,7 @@ export interface NativeHealth {
   events?: number
 }
 
-export type LlmProvider = 'auto' | 'openai' | 'openrouter' | 'ollama' | 'gemini'
+export type LlmProvider = 'auto' | 'openai' | 'openrouter' | 'ollama' | 'gemini' | 'browser'
 export type SupportedLlmProvider = Exclude<LlmProvider, 'auto'>
 
 export interface LlmSettings {

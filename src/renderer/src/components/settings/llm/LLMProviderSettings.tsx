@@ -13,11 +13,13 @@ import {
     checkOpenAI,
     checkGemini,
     checkOpenRouter,
+    checkBrowserLLM,
 } from '../../../lib/llm'
 import { useSettingsStore, LLMProviderType } from '../../../stores/settingsStore'
 import { OllamaSettings } from './OllamaSettings'
 import { OpenAISettings } from './OpenAISettings'
 import { GeminiSettings } from './GeminiSettings'
+import { BrowserLLMSettings } from './BrowserLLMSettings'
 import { getBrowserAgentdClient } from '../../../lib/browser-agentd-client'
 import { isTauriRuntime } from '../../../lib/tauri-native-bridge'
 
@@ -48,6 +50,7 @@ const PROVIDERS: { id: LLMProviderType; label: string }[] = [
 
 export function LLMProviderSettings() {
     const settings = useSettingsStore()
+    const loadAgentdSettings = settings.loadAgentdSettings
     const browserRuntime = typeof window !== 'undefined' && !window.electron && !isTauriRuntime()
     const [providerStatus, setProviderStatus] = useState<ProviderStatusMap | null>(null)
     const [checking, setChecking] = useState(false)
@@ -74,6 +77,17 @@ export function LLMProviderSettings() {
             setChecking(true)
             try {
                 if (browserRuntime) {
+                    if (settings.preferredProvider === 'browser') {
+                        const browser = await checkBrowserLLM()
+                        setProviderStatus({
+                            ollama: { available: false },
+                            openai: { available: false },
+                            gemini: { available: false },
+                            openrouter: { available: false },
+                            browser,
+                        })
+                        return
+                    }
                     const client = getBrowserAgentdClient()
                     const [ollamaSettings, ollama, openai, gemini, openrouter] = await Promise.all([
                         client.getOllamaSettings(),
@@ -153,6 +167,7 @@ export function LLMProviderSettings() {
         settings.geminiApiKey, settings.geminiModel,
         settings.openrouterApiKey, settings.openrouterModel,
         settings.browserModel,
+        browserRuntime,
     ])
 
     // Debounced auto-check when relevant settings change
@@ -163,16 +178,17 @@ export function LLMProviderSettings() {
 
     useEffect(() => {
         if (!browserRuntime) return
-        void settings.loadAgentdSettings().catch((error) => {
+        void loadAgentdSettings().catch((error) => {
             console.warn('[LLMProviderSettings] Browser agentd settings unavailable:', error)
         })
-    }, [browserRuntime])
+    }, [browserRuntime, loadAgentdSettings])
 
     const p = settings.preferredProvider
     const showOllama = p === 'ollama' || p === 'auto'
     const showOpenAI = p === 'openai' || p === 'auto'
     const showGemini = p === 'gemini' || p === 'auto'
     const showOpenRouter = p === 'openrouter' || p === 'auto'
+    const showBrowser = p === 'browser'
 
     return (
         <div>
@@ -183,7 +199,7 @@ export function LLMProviderSettings() {
                 <div className="bg-[var(--color-card-elevated)] border border-[var(--color-border)] rounded-xl p-4">
                     <label className="block text-sm text-[var(--color-text-muted)] mb-3">Preferred Provider</label>
                     <div className="flex gap-2 flex-wrap">
-                        {PROVIDERS.filter(({ id }) => !browserRuntime || id === 'auto' || id === 'ollama' || id === 'openai' || id === 'gemini' || id === 'openrouter').map(({ id, label }) => (
+                        {PROVIDERS.filter(({ id }) => !browserRuntime || id === 'auto' || id === 'ollama' || id === 'openai' || id === 'gemini' || id === 'openrouter' || id === 'browser').map(({ id, label }) => (
                             <button
                                 key={id}
                                 onClick={() => settings.setPreferredProvider(id)}
@@ -232,6 +248,14 @@ export function LLMProviderSettings() {
                         available={providerStatus?.openrouter.available}
                         models={providerStatus?.openrouter.models}
                         error={providerStatus?.openrouter.error}
+                        checking={checking}
+                        onRefresh={checkProviders}
+                    />
+                )}
+                {showBrowser && (
+                    <BrowserLLMSettings
+                        available={providerStatus?.browser?.available}
+                        error={providerStatus?.browser?.error}
                         checking={checking}
                         onRefresh={checkProviders}
                     />

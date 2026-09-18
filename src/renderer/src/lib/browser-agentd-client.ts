@@ -251,7 +251,7 @@ const readCredentialPresence = (value: unknown): NativeResult & { exists: boolea
 const readLlmSettings = (value: unknown): LlmSettings => {
   if (!isRecord(value)
     || Object.keys(value).sort().join(',') !== 'geminiModel,openaiModel,openrouterModel,preferredProvider'
-    || !['auto', 'openai', 'openrouter', 'ollama', 'gemini'].includes(value.preferredProvider as string)
+    || !['auto', 'openai', 'openrouter', 'ollama', 'gemini', 'browser'].includes(value.preferredProvider as string)
     || typeof value.openaiModel !== 'string'
     || typeof value.geminiModel !== 'string'
     || typeof value.openrouterModel !== 'string') throw new Error('Invalid LLM settings response')

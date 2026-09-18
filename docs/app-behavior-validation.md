@@ -20,7 +20,7 @@ It should be treated as a shared contract for both testers and developers.
 
 The 2026-09-18 audit found and corrected browser Email drift: the contract now distinguishes daemon mailbox ingestion from browser review-session hydration, explicitly excludes automatic browser replies, and documents the transport-specific credential slots plus the legacy fallback.
 
-The follow-up runtime-boundary audit also corrected the launch contract: Edge/Chrome has an explicit agentd readiness/pairing state machine, while the Electron dependency modal is no longer described as a browser startup requirement. Gemini is now covered by the browser agentd provider slice; only on-device/browser execution remains Electron-only.
+The follow-up runtime-boundary audit also corrected the launch contract: Edge/Chrome has an explicit agentd readiness/pairing state machine, while the Electron dependency modal is no longer described as a browser startup requirement. Gemini is covered by the browser agentd provider slice, and explicit on-device/WebGPU execution is now available in the browser without changing the Tauri native-only boundary.
 
 The main problems are in older support docs that still describe:
 
@@ -36,6 +36,9 @@ The main problems are in older support docs that still describe:
 - [src/renderer/src/BrowserProduct.tsx](/Users/meharaj/WA-copilot/src/renderer/src/BrowserProduct.tsx)
 - [src/renderer/src/components/SystemDependenciesSettings.tsx](/Users/meharaj/WA-copilot/src/renderer/src/components/SystemDependenciesSettings.tsx)
 - [src/renderer/src/components/settings/llm/LLMProviderSettings.tsx](/Users/meharaj/WA-copilot/src/renderer/src/components/settings/llm/LLMProviderSettings.tsx)
+- [src/renderer/src/components/settings/llm/BrowserLLMSettings.tsx](/Users/meharaj/WA-copilot/src/renderer/src/components/settings/llm/BrowserLLMSettings.tsx)
+- [src/renderer/src/hooks/useLLMStatus.ts](/Users/meharaj/WA-copilot/src/renderer/src/hooks/useLLMStatus.ts)
+- [src/renderer/src/lib/llm/browser-llm.ts](/Users/meharaj/WA-copilot/src/renderer/src/lib/llm/browser-llm.ts)
 - [src/renderer/src/hooks/useEmailBridge.ts](/Users/meharaj/WA-copilot/src/renderer/src/hooks/useEmailBridge.ts)
 - [src/renderer/src/components/SettingsPanel.tsx](/Users/meharaj/WA-copilot/src/renderer/src/components/SettingsPanel.tsx)
 - [src/renderer/src/components/chat/KnowledgeBrowser.tsx](/Users/meharaj/WA-copilot/src/renderer/src/components/chat/KnowledgeBrowser.tsx)
@@ -62,6 +65,8 @@ The main problems are in older support docs that still describe:
 - `npm run build:tauri:web -- --emptyOutDir`
 - `cargo test --manifest-path src-tauri/Cargo.toml --locked` (19 passed)
 - `node scripts/verify-tauri-resources.mjs --sidecar-root src-tauri/sidecar --ui-root dist --platform darwin --target-triple aarch64-apple-darwin`
+- `npm exec vitest run tests/integration/llm-routing.test.ts tests/unit/tauri-ui-boundary.test.ts tests/unit/browser-agentd-client.test.ts`
+- `node --test tests/unit/agentd.test.cjs tests/unit/agentd-chat-generations.test.cjs tests/unit/agentd-settings-persona.test.cjs`
 
 The current run completed these checks successfully; build tools emitted only their existing warnings.
 
@@ -84,15 +89,18 @@ Evidence:
 
 ### Browser LLM provider boundary
 
-The browser settings component filters the provider selector to `auto`, Ollama, OpenAI/Compatible, Gemini, and OpenRouter. Browser credentials, provider tests, generation and streaming use authenticated agentd routes; Gemini model discovery is also daemon-backed. OpenAI/OpenRouter keep their configured model labels in this slice; only on-device/browser execution remains Electron-only. The docs now distinguish the browser card set from the Electron transition-client card set.
+The browser settings component exposes `auto`, Ollama, OpenAI/Compatible, Gemini, OpenRouter, and an explicit On-Device/WebGPU card. Browser credentials, remote provider tests, generation and streaming use authenticated agentd routes; Gemini model discovery is daemon-backed. The WebGPU card downloads only after an explicit user action, persists the selected model as a product preference, and routes generation through the existing browser WebLLM worker. The agentd `browser` preference is persistence-only and fails closed if it ever reaches the server generation route.
 
 Evidence:
 
 - [src/renderer/src/components/settings/llm/LLMProviderSettings.tsx](/Users/meharaj/WA-copilot/src/renderer/src/components/settings/llm/LLMProviderSettings.tsx):69
+- [src/renderer/src/components/settings/llm/BrowserLLMSettings.tsx](/Users/meharaj/WA-copilot/src/renderer/src/components/settings/llm/BrowserLLMSettings.tsx):1
 - [src/renderer/src/lib/browser-agentd-client.ts](/Users/meharaj/WA-copilot/src/renderer/src/lib/browser-agentd-client.ts):251
 - [docs/app-behavior.md](/Users/meharaj/WA-copilot/docs/app-behavior.md):438
 
 The Gemini browser slice was then verified independently: a fake-provider daemon test covered the fixed models probe, `x-goog-api-key` non-disclosure boundary, text/image request shape, non-streaming response parsing, SSE deltas, durable completion and retry-safe generation rows. No real Google credential was used.
+
+The WebGPU slice is covered by renderer routing and boundary tests plus the existing WebLLM manager contract. Headless CI cannot prove a real Windows WebGPU adapter or multi-gigabyte model download; Windows acceptance still requires a user-granted Edge/Chrome WebGPU smoke that downloads the lightweight model, selects it, completes a prompt, verifies the model remains cached after reload, and confirms switching back to `auto` uses agentd.
 
 ### Email gating and Gmail behavior
 

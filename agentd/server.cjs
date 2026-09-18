@@ -3192,7 +3192,12 @@ class AgentdServer {
     try { settings = parseLlmSettings(JSON.parse(this.getState('llm_settings', 'null'))) || LLM_SETTINGS_DEFAULTS } catch { settings = LLM_SETTINGS_DEFAULTS }
     let ollamaSettings
     try { ollamaSettings = parseOllamaSettings(JSON.parse(this.getState('ollama_settings', 'null'))) || OLLAMA_SETTINGS_DEFAULTS } catch { ollamaSettings = OLLAMA_SETTINGS_DEFAULTS }
-    const providers = settings.preferredProvider === 'auto' ? ['openai', 'openrouter', 'gemini', 'ollama'] : [settings.preferredProvider]
+    // Browser WebGPU is executed in the browser renderer, never by agentd.
+    // Keep an explicit browser choice fail-closed instead of treating it as an
+    // OpenRouter credential lookup through the shared server route.
+    const providers = settings.preferredProvider === 'auto'
+      ? ['openai', 'openrouter', 'gemini', 'ollama']
+      : settings.preferredProvider === 'browser' ? [] : [settings.preferredProvider]
     const configuredModels = { openai: settings.openaiModel, gemini: settings.geminiModel, openrouter: settings.openrouterModel, ollama: ollamaSettings.model }
     const requestedModel = body.model === undefined ? null : body.model
     let provider = null
@@ -3733,7 +3738,7 @@ function parseLlmSettings(value) {
   const legacy = keys.length === 3 && keys.join(',') === 'openaiModel,openrouterModel,preferredProvider'
   const current = keys.length === 4 && keys.join(',') === 'geminiModel,openaiModel,openrouterModel,preferredProvider'
   if ((!legacy && !current)
-    || !['auto', 'openai', 'openrouter', 'ollama', 'gemini'].includes(value.preferredProvider)
+    || !['auto', 'openai', 'openrouter', 'ollama', 'gemini', 'browser'].includes(value.preferredProvider)
     || !validModelName(value.openaiModel)
     || (current && !validGeminiModelName(value.geminiModel))
     || !validModelName(value.openrouterModel)) return null

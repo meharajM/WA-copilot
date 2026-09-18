@@ -55,9 +55,12 @@ describe('browser-first UI boundary', () => {
     expect(dependencies).toContain('Browser mode does not install or inspect host tools.')
   })
 
-  it('keeps on-device provider out of the browser selector while exposing daemon Gemini', () => {
+  it('exposes explicit browser WebGPU mode while keeping remote providers daemon-backed', () => {
     const providers = readSource('components/settings/llm/LLMProviderSettings.tsx')
-    expect(providers).toContain("id === 'auto' || id === 'ollama' || id === 'openai' || id === 'gemini' || id === 'openrouter'")
+    expect(providers).toContain("id === 'auto' || id === 'ollama' || id === 'openai' || id === 'gemini' || id === 'openrouter' || id === 'browser'")
+    expect(providers).toContain("const showBrowser = p === 'browser'")
+    expect(providers).toContain("checkBrowserLLM")
+    expect(providers).toContain("<BrowserLLMSettings")
     expect(providers).toContain("const showGemini = p === 'gemini' || p === 'auto'")
     expect(providers).toContain("client.hasCredential('openai_api_key')")
     expect(providers).toContain("client.hasCredential('openrouter_api_key')")

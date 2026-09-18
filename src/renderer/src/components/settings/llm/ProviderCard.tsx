@@ -8,9 +8,7 @@
 import React from 'react'
 import { Check, AlertCircle, Loader2 } from 'lucide-react'
 
-export type ProviderStatus =
-    | { available: true }
-    | { available: false; error?: string }
+export type ProviderStatus = { available: boolean; error?: string }
 
 interface ProviderCardProps {
     /** Card heading text e.g. "Google Gemini" */

@@ -380,6 +380,9 @@ test('agentd persists exact LLM preferences and probes only fixed providers with
   assert.equal((await request(origin, 'PUT', '/api/v1/settings/llm', { ...settings, apiKey: 'must-not-be-stored' }, auth)).status, 400)
   assert.equal((await request(origin, 'PUT', '/api/v1/settings/llm', { ...settings, openaiModel: ' ' }, auth)).status, 400)
   assert.equal((await request(origin, 'PUT', '/api/v1/settings/llm', { ...settings, preferredProvider: 'gemini' }, auth)).status, 200)
+  const browserSettings = { ...settings, preferredProvider: 'browser' }
+  assert.deepEqual((await request(origin, 'PUT', '/api/v1/settings/llm', browserSettings, auth)).body, browserSettings)
+  assert.deepEqual((await request(origin, 'GET', '/api/v1/settings/llm', undefined, auth)).body, browserSettings)
 
   assert.deepEqual((await request(origin, 'POST', '/api/v1/providers/openai/test', {}, auth)).body, {
     success: false,

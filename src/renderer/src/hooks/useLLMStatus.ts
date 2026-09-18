@@ -18,6 +18,7 @@
 import React, { useState, useCallback, useEffect } from "react";
 import {
     getAvailableProviders,
+    checkBrowserLLM,
     subscribeToWebLLMStatus,
     type WebLLMStatus,
 } from "../lib/llm";
@@ -85,6 +86,17 @@ export function useLLMStatus(currentView: string): { llmStatus: LLMStatus } {
                         ? ['openai', 'openrouter', 'gemini', 'ollama'] as const
                         : [saved.preferredProvider] as const;
                     for (const provider of preferred) {
+                        if (provider === 'browser') {
+                            const result = await checkBrowserLLM();
+                            if (result.available && result.isLoaded) {
+                                setLlmStatus({ provider: `On-Device (${result.model || saved.openaiModel})`, available: true });
+                            } else if (result.isLoading) {
+                                setLlmStatus({ provider: 'On-Device (Loading...)', available: false });
+                            } else {
+                                setLlmStatus({ provider: null, available: false });
+                            }
+                            return;
+                        }
                         if (provider === 'ollama') {
                             const result = await client.testOllama();
                             if (result.success) {
@@ -203,6 +215,10 @@ export function useLLMStatus(currentView: string): { llmStatus: LLMStatus } {
     // WebLLM fires events as the model downloads/loads. We update the status
     // immediately so the user sees "Loading 45%..." without waiting for the poll.
     useEffect(() => {
+        // In browser mode, the explicit on-device provider owns status updates.
+        // For auto/remote modes, do not let a stale WebLLM event overwrite the
+        // authenticated agentd provider status.
+        if (browserRuntime && settings.preferredProvider !== 'browser') return;
         const unsubscribe = subscribeToWebLLMStatus((status: WebLLMStatus) => {
             if (status.isLoaded && status.currentModel) {
                 setLlmStatus({ provider: `On-Device (${status.currentModel})`, available: true });
@@ -217,7 +233,7 @@ export function useLLMStatus(currentView: string): { llmStatus: LLMStatus } {
             }
         });
         return () => unsubscribe();
-    }, [checkLLM]);
+    }, [browserRuntime, checkLLM, settings.preferredProvider]);
 
     return { llmStatus };
 }

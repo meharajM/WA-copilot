@@ -390,14 +390,16 @@ export function useAgent(): UseAgentReturn {
             const abortSignal = startProcessing(originSessionId);
 
             try {
-                // The browser workspace uses the local agentd for provider
-                // credentials and generation. Tauri never mounts this product
-                // hook; Electron keeps its existing local AgentRuntime path.
+                // The browser workspace uses local agentd for provider
+                // credentials and generation, except explicit WebGPU on-device
+                // mode. Tauri never mounts this product hook; Electron keeps
+                // its existing local AgentRuntime path.
                 // The daemon persists the user message idempotently using the
                 // local message id as request id, so the chat-store write queue
                 // can safely replay the same message after this call.
                 const browserRuntime = typeof window !== 'undefined' && !window.electron && !isTauriRuntime();
-                if (browserRuntime && !targetJid && !isEmailFlow && !multimodalWhatsAppMessage) {
+                const localBrowserProvider = browserRuntime && settings.preferredProvider === 'browser';
+                if (browserRuntime && !localBrowserProvider && !targetJid && !isEmailFlow && !multimodalWhatsAppMessage) {
                     const client = getBrowserAgentdClient();
                     const requestId = addedUserMessage.id;
                     const daemonAttachments = attachments?.length
