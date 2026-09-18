@@ -21,7 +21,7 @@ import { useLogStore } from '../stores/logStore'
 import { useSettingsStore, Theme } from '../stores/settingsStore'
 import { useWhatsAppStore } from '../stores/whatsappStore'
 import { AutonomyPanel } from './AutonomyPanel'
-import { useMcpStore } from '../stores/mcpStore'
+import { isBrowserMcpUnavailable, useMcpStore } from '../stores/mcpStore'
 import { APP_INFO } from '../lib/constants'
 import { MemoryPreferencesPanel } from './settings/MemoryPreferencesPanel'
 import { ErrorBoundary } from './ErrorBoundary'
@@ -370,7 +370,15 @@ export function SettingsPanel({ onClose, initialSection = 'whatsapp' }: Settings
                 )}
 
                 {/* Business Tools Section (MCP) */}
-                {activeSection === 'tools' && (
+                {activeSection === 'tools' && isBrowserMcpUnavailable() && (
+                    <div className="space-y-4">
+                        <h3 className="text-xl font-bold text-[var(--color-text-primary)]">Business Tools &amp; Integrations</h3>
+                        <div role="status" className="rounded-xl border border-[var(--color-border)] bg-[var(--color-card-elevated)] p-6 text-sm text-[var(--color-text-muted)]">
+                            Arbitrary MCP server management and tool execution are unavailable in the browser until the authenticated agentd capability adapter is migrated. Memory and knowledge tools remain available through their authenticated routes.
+                        </div>
+                    </div>
+                )}
+                {activeSection === 'tools' && !isBrowserMcpUnavailable() && (
                     <div className="space-y-6">
                         <div className="flex items-center justify-between mb-4">
                             <div>

@@ -66,6 +66,11 @@ function getPersistenceKey(uid: string | null) {
 
 const isBrowserProduct = (): boolean => typeof window !== 'undefined' && !window.electron && !isTauriRuntime()
 
+/** Browser MCP is agentd-owned only; legacy renderer definitions are never read or written. */
+export function isBrowserMcpUnavailable(): boolean {
+    return isBrowserProduct()
+}
+
 function toBrowserServer(server: MCPServer): BrowserMcpServer {
     const envKeys = Object.keys(server.env || {}).filter((key) => /^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(key))
     return {
@@ -154,17 +159,6 @@ export const useMcpStore = create<McpState>()((set, get) => ({
             let stored = isBrowserProduct()
                 ? (await getBrowserAgentdClient().getMcpServers()).servers.map(fromBrowserServer)
                 : await electron.store.get<MCPServer[]>(storageKey)
-            // One-time continuity handoff for legacy browser-local MCP definitions.
-            // Values are stripped before agentd persistence; browser MCP execution remains gated.
-            if (isBrowserProduct() && (!stored || stored.length === 0)) {
-                const legacy = await electron.store.get<MCPServer[]>(storageKey)
-                if (Array.isArray(legacy) && legacy.length > 0) {
-                    stored = legacy
-                    await getBrowserAgentdClient().saveMcpServers(legacy.map(toBrowserServer))
-                    await electron.store.delete(storageKey)
-                }
-            }
-
             let initialServers: MCPServer[] = []
             const defaultServers = isBrowserProduct() ? [] : DEFAULT_MCP_SERVERS
 
@@ -273,6 +267,7 @@ export const useMcpStore = create<McpState>()((set, get) => ({
     },
 
     addServer: async (config) => {
+        if (isBrowserMcpUnavailable()) return
         const uid = get().activeUserId
         const storageKey = getPersistenceKey(uid)
 
@@ -294,6 +289,7 @@ export const useMcpStore = create<McpState>()((set, get) => ({
     },
 
     updateServer: async (id, config) => {
+        if (isBrowserMcpUnavailable()) return
         const uid = get().activeUserId
         const storageKey = getPersistenceKey(uid)
 
@@ -324,6 +320,7 @@ export const useMcpStore = create<McpState>()((set, get) => ({
     },
 
     removeServer: async (id) => {
+        if (isBrowserMcpUnavailable()) return
         const uid = get().activeUserId
         const storageKey = getPersistenceKey(uid)
 
@@ -341,6 +338,7 @@ export const useMcpStore = create<McpState>()((set, get) => ({
     },
 
     connectServer: async (id) => {
+        if (isBrowserMcpUnavailable()) return
         const server = get().servers.find(s => s.id === id)
         if (!server) return
 
@@ -409,6 +407,7 @@ export const useMcpStore = create<McpState>()((set, get) => ({
     },
 
     disconnectServer: async (id) => {
+        if (isBrowserMcpUnavailable()) return
         try {
             if (!isBrowserProduct()) await electron.mcp.disconnect(id)
             set(state => ({
@@ -423,6 +422,7 @@ export const useMcpStore = create<McpState>()((set, get) => ({
     },
 
     setAutoConnect: async (id, enabled) => {
+        if (isBrowserMcpUnavailable()) return
         const uid = get().activeUserId
         const storageKey = getPersistenceKey(uid)
 
@@ -436,6 +436,7 @@ export const useMcpStore = create<McpState>()((set, get) => ({
 
     // Sync from cloud (Firestore)
     syncServers: async (remoteServers) => {
+        if (isBrowserMcpUnavailable()) return
         const uid = get().activeUserId
         const storageKey = getPersistenceKey(uid)
 
