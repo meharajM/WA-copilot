@@ -56,6 +56,7 @@ export function DraftApprovalPanel() {
   };
 
   const handleApproveAndSend = async (draftId: string) => {
+    if (!isElectron()) return
     const draft = drafts.find((d) => d.id === draftId);
     if (!draft) return;
 
