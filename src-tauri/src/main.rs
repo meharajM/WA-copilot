@@ -16,7 +16,10 @@ use std::{
 #[cfg(windows)]
 use std::env;
 
-use agentd_api::{AgentdClient, ContinuityImport, ContinuityPreview, ContinuityRollback, CredentialExistsResult, NativeHealth, NativeResult};
+use agentd_api::{
+    AgentdClient, ContinuityImport, ContinuityPreview, ContinuityRollback, CredentialExistsResult,
+    NativeHealth, NativeResult,
+};
 use serde::Deserialize;
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder},
@@ -33,17 +36,16 @@ const AGENTD_ENTRY_RESOURCE: &str = "sidecar/agentd-http/index.cjs";
 const AGENTD_HELPER_RESOURCE: &str = "sidecar/aica-keyring-helper";
 const AGENTD_UI_RESOURCE: &str = "ui";
 
-struct AgentdProcess(Mutex<Option<Child>>);
-
-impl Drop for AgentdProcess {
-    fn drop(&mut self) {
-        let Ok(mut child) = self.0.lock() else { return };
-        if let Some(mut child) = child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-    }
+struct AgentdProcess {
+    // Keep handle owned by the application state; dropping a Rust Child does
+    // not terminate the process, so agentd survives client exit.
+    _child: Mutex<Option<Child>>,
 }
+
+// `agentd` is an independently supervised user service. Keep the Child handle
+// only while this host is alive so we can observe ownership, but never kill it
+// when the native window/tray exits. A later companion launch reuses the live
+// descriptor instead of starting a second writer.
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -120,7 +122,10 @@ async fn continuity_preview(
     client: State<'_, AgentdClient>,
     source_root: String,
 ) -> Result<ContinuityPreview, String> {
-    client.continuity_preview(source_root).await.map_err(|_| "Continuity preview failed".into())
+    client
+        .continuity_preview(source_root)
+        .await
+        .map_err(|_| "Continuity preview failed".into())
 }
 
 #[tauri::command]
@@ -128,7 +133,10 @@ async fn continuity_import(
     client: State<'_, AgentdClient>,
     preview_id: String,
 ) -> Result<ContinuityImport, String> {
-    client.continuity_import(&preview_id).await.map_err(|_| "Continuity staging failed".into())
+    client
+        .continuity_import(&preview_id)
+        .await
+        .map_err(|_| "Continuity staging failed".into())
 }
 
 #[tauri::command]
@@ -136,7 +144,10 @@ async fn continuity_rollback(
     client: State<'_, AgentdClient>,
     migration_id: String,
 ) -> Result<ContinuityRollback, String> {
-    client.continuity_rollback(&migration_id).await.map_err(|_| "Continuity rollback failed".into())
+    client
+        .continuity_rollback(&migration_id)
+        .await
+        .map_err(|_| "Continuity rollback failed".into())
 }
 
 #[tauri::command]
@@ -368,6 +379,10 @@ fn spawn_agentd<R: Runtime>(app: &AppHandle<R>, data_dir: &PathBuf) -> Result<Ch
         .map_err(|_| "Packaged agentd runtime could not start".to_string())
 }
 
+fn should_spawn_agentd(client: &AgentdClient) -> bool {
+    client.origin().is_err()
+}
+
 fn main() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -391,9 +406,16 @@ fn main() {
                 .path()
                 .app_data_dir()
                 .map_err(|_| "Agentd data directory unavailable")?;
-            let child = spawn_agentd(app.handle(), &data_dir)?;
-            app.manage(AgentdProcess(Mutex::new(Some(child))));
-            app.manage(AgentdClient::with_data_dir(data_dir));
+            let client = AgentdClient::with_data_dir(data_dir.clone());
+            let child = if should_spawn_agentd(&client) {
+                Some(spawn_agentd(app.handle(), &data_dir)?)
+            } else {
+                None
+            };
+            app.manage(AgentdProcess {
+                _child: Mutex::new(child),
+            });
+            app.manage(client);
             app.manage(Arc::new(AtomicBool::new(false)));
             create_tray(app.handle())?;
             Ok(())
@@ -450,5 +472,14 @@ mod tests {
         assert!(browser_workspace_url("https://example.test").is_err());
         assert!(browser_workspace_url("http://127.0.0.1:0").is_err());
         assert!(browser_workspace_url("http://127.0.0.1:4141/evil").is_err());
+    }
+
+    #[test]
+    fn existing_runtime_descriptor_prevents_second_agentd_spawn() {
+        // A client with no descriptor must request a child; a valid descriptor
+        // is consumed by `should_spawn_agentd` without starting another writer.
+        let missing =
+            AgentdClient::with_data_dir(PathBuf::from("/definitely/missing/aica-agentd-test"));
+        assert!(should_spawn_agentd(&missing));
     }
 }
