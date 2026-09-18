@@ -508,7 +508,7 @@ Pass evidence:
 
 ## Known Current Limitations
 
-- Browser Email inbound automation currently depends on `Enable Email Channel` and `Auto-Reply` being on, and consumes events already queued in agentd. The browser does not poll IMAP/Gmail yet; approved text-only drafts can deliver through the gated daemon SMTP route. This remains stricter than a passive "monitor-only" email mode.
+- Browser Email inbound polling is daemon-owned and starts only when `Enable Email Channel` is on, app-password mode is selected, IMAP TLS is enabled, and an IMAP host plus OS-stored `email_imap_password` exist. The worker uses UID-based durable deduplication, accepts bounded `text/plain` messages only, and queues normalized events for the browser; Auto-Reply controls response policy, not mailbox ingestion. STARTTLS is supported for non-993 IMAP endpoints. HTML, multipart, attachments, unsupported transfer encodings, malformed messages, and oversized messages fail closed. Approved text-only drafts can deliver through the separately gated daemon SMTP route. OAuth/Gmail API polling remains unavailable.
 - Browser knowledge imports are text-only and cannot open the original native file after indexing; Electron retains native parser and file-reveal behavior.
 - Browser audit logs are downloaded as redacted NDJSON; native log-folder reveal remains Electron-only.
 - Lead Directory supports non-WhatsApp sessions in the data model, but some copy still describes it as WhatsApp-only.

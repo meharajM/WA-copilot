@@ -8,6 +8,7 @@ const Database = require('better-sqlite3')
 const { isAllowedCredentialKey } = require('./keyring-credential-store.cjs')
 const continuityMigration = require('./continuity-migration.cjs')
 const { sendTextEmail } = require('./email-transport.cjs')
+const { EmailInboundWorker } = require('./email-inbound-worker.cjs')
 
 const SESSION_TTL_MS = 15 * 60 * 1000
 const PAIRING_TTL_MS = 5 * 60 * 1000
@@ -372,7 +373,7 @@ function redactPayload(value, key = '') {
 }
 
 class AgentdServer {
-  constructor({ dataDir, secret, uiRoot = null, logger = console, pairingCode = null, credentials = null, providerFetch = fetch, emailProbe = probeEmailTransport, emailSend = sendTextEmail } = {}) {
+  constructor({ dataDir, secret, uiRoot = null, logger = console, pairingCode = null, credentials = null, providerFetch = fetch, emailProbe = probeEmailTransport, emailSend = sendTextEmail, emailPoll = undefined } = {}) {
     if (!secret || typeof secret !== 'string' || secret.length < 32) throw new Error('A per-install bearer secret of at least 32 characters is required')
     this.dataDir = resolveDataDir(dataDir)
     this.secret = secret
@@ -382,6 +383,8 @@ class AgentdServer {
     this.providerFetch = providerFetch
     this.emailProbe = emailProbe
     this.emailSend = emailSend
+    this.emailPoll = emailPoll
+    this.emailInboundWorker = null
     this.server = null
     this.db = null
     this.lockDb = null
@@ -574,6 +577,7 @@ class AgentdServer {
       this.startedAt = Date.now()
       this.writePairingCode()
       this.writeRuntimeDescriptor()
+      this.startEmailInboundPolling()
       this.logger.log(`[agentd] listening at ${this.origin}`)
       return { origin: this.origin, pairingExpiresAt: this.pairingExpiresAt }
     } catch (error) {
@@ -678,6 +682,7 @@ class AgentdServer {
   }
 
   async stop() {
+    this.stopEmailInboundPolling()
     if (this.server) await new Promise(resolve => this.server.close(() => resolve()))
     this.server = null
     this.sessions.clear()
@@ -695,6 +700,51 @@ class AgentdServer {
 
   setState(key, value) {
     this.db.prepare('INSERT INTO agent_state(key,value,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at').run(key, value, Date.now())
+  }
+
+  getEmailSettings() {
+    try { return parseEmailSettings(JSON.parse(this.getState('email_settings', 'null'))) } catch { return null }
+  }
+
+  startEmailInboundPolling() {
+    const settings = this.getEmailSettings()
+    if (!this.credentials || this.emailInboundWorker || !settings?.enabled
+      || !['imap-smtp', 'gmail-api'].includes(settings.provider)
+      || settings.gmailAuthMode !== 'app-password' || !settings.imapTls || !settings.imapHost) return
+    this.emailInboundWorker = new EmailInboundWorker({
+      credentials: this.credentials,
+      getSettings: () => this.getEmailSettings(),
+      getCursor: () => Number.parseInt(this.getState('email_imap_last_uid', '0'), 10) || 0,
+      setCursor: uid => this.setState('email_imap_last_uid', String(uid)),
+      poll: this.emailPoll,
+      logger: this.logger,
+      onMessage: async (settings, message) => {
+        const providerEventId = `imap:${settings.accountName}:${message.uid}`
+        const from = message.payload.from || 'unknown'
+        const messageId = message.payload.messageId || providerEventId
+        this.ingestEmailInbound({
+          providerEventId,
+          conversationId: `email::${from}::${messageId}`,
+          payload: message.payload,
+        })
+      },
+    })
+    this.emailInboundWorker.start().catch(() => {})
+  }
+
+  stopEmailInboundPolling() {
+    this.emailInboundWorker?.stop()
+    this.emailInboundWorker = null
+  }
+
+  ingestEmailInbound(body) {
+    if (!parseEmailInbound(body)) throw new Error('Invalid email inbound event')
+    const payload = JSON.stringify(body.payload)
+    if (Buffer.byteLength(payload, 'utf8') > MAX_EMAIL_INBOUND_BODY_BYTES) throw new Error('Email inbound payload too large')
+    const existing = this.db.prepare('SELECT id FROM inbound_events WHERE channel = ? AND provider_event_id = ?').get('email', body.providerEventId)
+    if (existing) return { accepted: true, duplicate: true, id: existing.id }
+    const result = this.db.prepare('INSERT INTO inbound_events(channel,provider_event_id,conversation_id,payload,status,created_at) VALUES (?,?,?,?,?,?)').run('email', body.providerEventId, body.conversationId, payload, 'queued', Date.now())
+    return { accepted: true, duplicate: false, id: result.lastInsertRowid }
   }
 
   getState(key, fallback) {
@@ -1013,6 +1063,8 @@ class AgentdServer {
     const settings = parseEmailSettings(body)
     if (!settings) return json(res, 400, { error: 'Invalid email settings' })
     this.setState('email_settings', JSON.stringify(settings))
+    if (settings.enabled) this.startEmailInboundPolling()
+    else this.stopEmailInboundPolling()
     return json(res, 200, settings)
   }
 
@@ -1079,12 +1131,12 @@ class AgentdServer {
     if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
     const body = await readBody(req, MAX_EMAIL_INBOUND_BODY_BYTES)
     if (!parseEmailInbound(body)) return json(res, 400, { error: 'Invalid email inbound event' })
-    const payload = JSON.stringify(body.payload)
-    if (Buffer.byteLength(payload, 'utf8') > MAX_EMAIL_INBOUND_BODY_BYTES) return json(res, 413, { error: 'Email inbound payload too large' })
-    const existing = this.db.prepare('SELECT id FROM inbound_events WHERE channel = ? AND provider_event_id = ?').get('email', body.providerEventId)
-    if (existing) return json(res, 200, { accepted: true, duplicate: true, id: existing.id })
-    const result = this.db.prepare('INSERT INTO inbound_events(channel,provider_event_id,conversation_id,payload,status,created_at) VALUES (?,?,?,?,?,?)').run('email', body.providerEventId, body.conversationId, payload, 'queued', Date.now())
-    return json(res, 202, { accepted: true, duplicate: false, id: result.lastInsertRowid })
+    try {
+      const result = this.ingestEmailInbound(body)
+      return json(res, result.duplicate ? 200 : 202, result)
+    } catch (error) {
+      return json(res, /too large/i.test(error.message) ? 413 : 400, { error: error.message })
+    }
   }
 
   async acknowledgeEmailInbound(req, res) {
