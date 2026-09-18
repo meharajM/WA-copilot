@@ -160,6 +160,35 @@ test('chat-history refuses SQLite WAL and SHM sidecars during staging and cutove
   await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true }); fs.rmSync(sourceRoot, { recursive: true, force: true })
 })
 
+test('chat-history fails closed if the verified SQLite snapshot pathname is replaced before open', async () => {
+  const dataDir = makeTempDir('aica-agentd-chat-snapshot-replacement-')
+  const sourceRoot = sourceFixture({ content: 'verified content' })
+  const replacementRoot = sourceFixture({ content: 'replacement content' })
+  const secret = 'p'.repeat(32)
+  const server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
+  const { origin } = await server.start()
+  const { auth, preview } = await staged(server, origin, sourceRoot, secret)
+  const originalSnapshot = server.createChatHistorySnapshot.bind(server)
+  server.createChatHistorySnapshot = bytes => {
+    const snapshot = originalSnapshot(bytes)
+    const snapshotDir = path.dirname(snapshot.path)
+    // Simulate a pathname replacement after the verified bytes were copied but
+    // before better-sqlite3 opens the path. The pre-open hash must fail closed.
+    fs.chmodSync(snapshotDir, 0o700)
+    fs.unlinkSync(snapshot.path)
+    fs.copyFileSync(path.join(replacementRoot, 'chat_history.v2.db'), snapshot.path)
+    fs.chmodSync(snapshot.path, 0o400)
+    fs.chmodSync(snapshotDir, 0o500)
+    return snapshot
+  }
+  const confirmation = await request(origin, 'POST', '/api/v1/continuity/chat-history/confirm', { previewId: preview.previewId, scope: 'chat-history' }, auth)
+  assert.equal(confirmation.status, 409)
+  assert.match(confirmation.body.error, /snapshot changed/i)
+  assert.equal(server.db.prepare('SELECT COUNT(*) AS count FROM chat_sessions').get().count, 0)
+  await server.stop()
+  fs.rmSync(dataDir, { recursive: true, force: true }); fs.rmSync(sourceRoot, { recursive: true, force: true }); fs.rmSync(replacementRoot, { recursive: true, force: true })
+})
+
 test('chat-history applies the shared migration secret-key denylist to session metadata', async () => {
   const dataDir = makeTempDir('aica-agentd-chat-session-metadata-')
   const sourceRoot = sourceFixture()

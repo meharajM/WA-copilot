@@ -1556,9 +1556,48 @@ class AgentdServer {
     return { file, bytes, sourceHash: entry.sha256 }
   }
 
+  createChatHistorySnapshot(bytes) {
+    const snapshotDir = fs.mkdtempSync(path.join(this.dataDir, '.chat-history-snapshot-'))
+    let handle
+    let snapshotPath
+    try {
+      fs.chmodSync(snapshotDir, 0o700)
+      snapshotPath = path.join(snapshotDir, 'chat_history.v2.db')
+      handle = fs.openSync(snapshotPath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o600)
+      fs.writeFileSync(handle, bytes)
+      fs.fsyncSync(handle)
+      fs.closeSync(handle)
+      handle = undefined
+      fs.chmodSync(snapshotPath, 0o400)
+      // better-sqlite3 accepts a pathname, so keep the verified copy in a
+      // private, non-writable directory for the entire SQLite read.
+      fs.chmodSync(snapshotDir, 0o500)
+      let cleaned = false
+      return {
+        path: snapshotPath,
+        cleanup: () => {
+          if (cleaned) return
+          cleaned = true
+          try { fs.chmodSync(snapshotDir, 0o700) } catch {}
+          try { fs.unlinkSync(snapshotPath) } catch {}
+          try { fs.rmdirSync(snapshotDir) } catch {}
+        },
+      }
+    } catch (error) {
+      if (handle !== undefined) {
+        try { fs.closeSync(handle) } catch {}
+      }
+      try { fs.chmodSync(snapshotDir, 0o700) } catch {}
+      try { if (snapshotPath) fs.unlinkSync(snapshotPath) } catch {}
+      try { fs.rmdirSync(snapshotDir) } catch {}
+      throw error
+    }
+  }
+
   readChatHistoryInput(preview) {
     const staged = this.chatHistoryStagedPath(preview)
-    const sourceDb = new Database(staged.file, { readonly: true, fileMustExist: true })
+    const snapshot = this.createChatHistorySnapshot(staged.bytes)
+    let sourceDb
     const parseJson = (raw, label) => {
       if (raw === null || raw === undefined || raw === '') return null
       if (typeof raw !== 'string' || Buffer.byteLength(raw, 'utf8') > CHAT_HISTORY_MAX_METADATA_BYTES) throw Object.assign(new Error(`${label} is too large`), { statusCode: 413 })
@@ -1577,6 +1616,11 @@ class AgentdServer {
     }
     const bounded = (value, max, allowEmpty = false) => validBoundedText(value, max, allowEmpty) && Buffer.byteLength(value, 'utf8') <= max * 4
     try {
+      // Recheck the copy immediately before opening SQLite. Any replacement or
+      // reparse is rejected before better-sqlite3 can parse unverified bytes.
+      const snapshotBytes = readMigrationFile(snapshot.path)
+      if (!snapshotBytes.equals(staged.bytes)) throw Object.assign(new Error('Immutable chat-history snapshot changed'), { statusCode: 409 })
+      sourceDb = new Database(snapshot.path, { readonly: true, fileMustExist: true })
       const integrity = sourceDb.pragma('integrity_check')
       if (!Array.isArray(integrity) || integrity.some(row => row.integrity_check !== 'ok')) throw Object.assign(new Error('SQLite integrity check failed'), { statusCode: 400 })
       const tables = new Map(sourceDb.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name IN ('sessions','session_messages')").all().map(row => [row.name, row.sql]))
@@ -1625,7 +1669,9 @@ class AgentdServer {
         return { session_id: row.sessionId, message_id: row.id, role: row.role, content: row.content || '', attachments: null, metadata, created_at: row.timestamp }
       })
       return { ...staged, sessions: normalizedSessions, messages: normalizedMessages }
-    } finally { sourceDb.close() }
+    } finally {
+      try { sourceDb?.close() } finally { snapshot.cleanup() }
+    }
   }
 
   async settingsPersonaStatus(req, res) {
