@@ -108,3 +108,38 @@ test('agentd browser email test rejects OAuth and custom MCP instead of pretendi
   await server.stop()
   fs.rmSync(dataDir, { recursive: true, force: true })
 })
+
+test('agentd email inbound is durable, authenticated, bounded, and idempotent', async () => {
+  const dataDir = makeTempDir('aica-agentd-email-inbound-')
+  const secret = 'i'.repeat(32)
+  const server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
+  const { origin } = await server.start()
+  const auth = { authorization: `Bearer ${secret}` }
+  const event = {
+    providerEventId: '<msg-1@example.test>',
+    conversationId: 'email::sender@example.test::thread-1',
+    payload: {
+      from: 'sender@example.test', to: 'support@example.test', subject: 'Help', body: 'Hello',
+      bodyType: 'text', timestamp: 1_700_000_000_000, messageId: '<msg-1@example.test>', isFromMe: false,
+    },
+  }
+  const accepted = await request(origin, 'POST', '/api/v1/email/inbound', event, auth)
+  assert.equal(accepted.status, 202)
+  assert.deepEqual(accepted.body, { accepted: true, duplicate: false, id: 1 })
+  const duplicate = await request(origin, 'POST', '/api/v1/email/inbound', event, auth)
+  assert.equal(duplicate.status, 200)
+  assert.deepEqual(duplicate.body, { accepted: true, duplicate: true, id: 1 })
+  const listed = await request(origin, 'GET', '/api/v1/email/inbound?after_id=0&limit=20', undefined, auth)
+  assert.equal(listed.status, 200)
+  assert.equal(listed.body.events.length, 1)
+  assert.deepEqual(listed.body.events[0].payload, event.payload)
+  assert.equal(listed.body.nextAfterId, 1)
+  assert.equal((await request(origin, 'POST', '/api/v1/email/inbound', { ...event, providerEventId: 'bad', payload: { ...event.payload, bodyType: 'binary' } }, auth)).status, 400)
+  await server.stop()
+  const restarted = new AgentdServer({ dataDir, secret, logger: { log() {} } })
+  const recovered = await restarted.start()
+  const recoveredList = await request(recovered.origin, 'GET', '/api/v1/email/inbound?after_id=0', undefined, auth)
+  assert.equal(recoveredList.body.events.length, 1)
+  await restarted.stop()
+  fs.rmSync(dataDir, { recursive: true, force: true })
+})

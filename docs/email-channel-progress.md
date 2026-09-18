@@ -114,6 +114,17 @@ If you want a true end-to-end email smoke test:
 
 ## Current Work Status
 
+### Browser/agentd inbound slice
+
+Browser mode now exposes an authenticated, durable email ingress contract:
+
+- `POST /api/v1/email/inbound` accepts a normalized inbound event and persists it in agentd SQLite.
+- `providerEventId` is unique per email channel; retries return `duplicate: true` without creating another row.
+- `GET /api/v1/email/inbound?after_id=<id>&limit=<n>` reads queued events with a bounded cursor page (`n` capped at 50).
+- Payloads are bounded and require sender, body, body type, and timestamp. Credentials never enter the event payload.
+
+This slice stores real normalized events for a browser-side provider/poller to consume. It does not claim IMAP polling or Gmail OAuth parity; native Electron remains owner of those transports.
+
 - The `uvx ENOENT` failure was traced to the runtime spawn path, not the dependency installer itself.
 - `EmailChannelService` now expands PATH before spawning the MCP server.
 - The error now includes a clearer hint when `uvx` is still unavailable to the Electron process.

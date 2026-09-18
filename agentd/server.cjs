@@ -15,6 +15,8 @@ const MAX_PAIRING_ATTEMPTS = 5
 const MAX_BODY_BYTES = 256 * 1024
 const MAX_WHATSAPP_BODY_BYTES = 64 * 1024
 const MAX_WHATSAPP_PAYLOAD_BYTES = 32 * 1024
+const MAX_EMAIL_INBOUND_BODY_BYTES = 128 * 1024
+const MAX_EMAIL_INBOUND_BATCH = 50
 const MAX_DRAFT_TEXT_LENGTH = 4096
 const OUTBOX_QUARANTINED_ERROR = 'Quarantined by operator'
 const OUTBOX_CANCELLED_ERROR = 'Cancelled by operator'
@@ -661,6 +663,7 @@ class AgentdServer {
     if (url.pathname === '/api/v1/settings/ollama' && ['GET', 'PUT'].includes(req.method)) return this.ollamaSettings(req, res)
     if (url.pathname === '/api/v1/settings/email' && ['GET', 'PUT'].includes(req.method)) return this.emailSettings(req, res)
     if (url.pathname === '/api/v1/email/test' && req.method === 'POST') return this.testEmail(req, res)
+    if (url.pathname === '/api/v1/email/inbound' && ['GET', 'POST'].includes(req.method)) return this.emailInbound(req, res, url)
     if (url.pathname === '/api/v1/whatsapp/messages' && req.method === 'POST') return this.sendWhatsAppMessage(req, res)
     const providerTestMatch = /^\/api\/v1\/providers\/(openai|openrouter|ollama)\/test$/.exec(url.pathname)
     if (providerTestMatch && req.method === 'POST') return this.testProvider(req, res, providerTestMatch[1])
@@ -924,6 +927,37 @@ class AgentdServer {
       // Keep endpoint diagnostics generic: host and provider details stay out of logs/responses.
       return json(res, 502, { success: false, error: 'Email server could not be reached over the configured secure transport' })
     }
+  }
+
+  async emailInbound(req, res, url) {
+    this.authorize(req, { mutation: req.method === 'POST' })
+    if (req.method === 'GET') {
+      const requestedAfter = Number.parseInt(url.searchParams.get('after_id') || '0', 10)
+      const afterId = Number.isSafeInteger(requestedAfter) && requestedAfter >= 0 ? requestedAfter : 0
+      const requestedLimit = Number.parseInt(url.searchParams.get('limit') || '20', 10)
+      const limit = Number.isSafeInteger(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), MAX_EMAIL_INBOUND_BATCH) : 20
+      const rows = this.db.prepare('SELECT id,provider_event_id,conversation_id,payload,status,created_at FROM inbound_events WHERE channel = ? AND id > ? ORDER BY id ASC LIMIT ?').all('email', afterId, limit)
+      return json(res, 200, {
+        events: rows.map(row => ({
+          id: row.id,
+          providerEventId: row.provider_event_id,
+          conversationId: row.conversation_id,
+          payload: JSON.parse(row.payload),
+          status: row.status,
+          createdAt: row.created_at,
+        })),
+        nextAfterId: rows.length ? rows[rows.length - 1].id : afterId,
+      })
+    }
+    if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
+    const body = await readBody(req, MAX_EMAIL_INBOUND_BODY_BYTES)
+    if (!parseEmailInbound(body)) return json(res, 400, { error: 'Invalid email inbound event' })
+    const payload = JSON.stringify(body.payload)
+    if (Buffer.byteLength(payload, 'utf8') > MAX_EMAIL_INBOUND_BODY_BYTES) return json(res, 413, { error: 'Email inbound payload too large' })
+    const existing = this.db.prepare('SELECT id FROM inbound_events WHERE channel = ? AND provider_event_id = ?').get('email', body.providerEventId)
+    if (existing) return json(res, 200, { accepted: true, duplicate: true, id: existing.id })
+    const result = this.db.prepare('INSERT INTO inbound_events(channel,provider_event_id,conversation_id,payload,status,created_at) VALUES (?,?,?,?,?,?)').run('email', body.providerEventId, body.conversationId, payload, 'queued', Date.now())
+    return json(res, 202, { accepted: true, duplicate: false, id: result.lastInsertRowid })
   }
 
   async auditLogs(req, res, url) {
@@ -2203,6 +2237,22 @@ function parseEmailSettings(value) {
     autoReplyMode: value.autoReplyMode,
     draftMode: value.draftMode,
   }
+}
+
+function parseEmailInbound(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  if (!validBoundedText(value.providerEventId, 300) || !validBoundedText(value.conversationId, 500)) return null
+  const payload = value.payload
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null
+  if (!validBoundedText(payload.from, 320) || !validBoundedText(payload.to, 320, true)
+    || !validBoundedText(payload.subject, 998, true) || !validBoundedText(payload.body, 128 * 1024, true)
+    || !['text', 'html'].includes(payload.bodyType)
+    || !Number.isFinite(payload.timestamp) || payload.timestamp < 0
+    || (payload.messageId !== undefined && !validBoundedText(payload.messageId, 998, true))
+    || (payload.inReplyTo !== undefined && !validBoundedText(payload.inReplyTo, 998, true))
+    || (payload.references !== undefined && !validBoundedText(payload.references, 8192, true))
+    || (payload.isFromMe !== undefined && typeof payload.isFromMe !== 'boolean')) return null
+  return { providerEventId: value.providerEventId, conversationId: value.conversationId, payload }
 }
 
 async function readProviderResponse(response) {

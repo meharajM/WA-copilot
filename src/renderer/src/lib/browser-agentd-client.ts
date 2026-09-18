@@ -68,6 +68,26 @@ export interface BrowserMcpLifecycle {
   tools: string[]
 }
 
+export interface BrowserEmailInboundEvent {
+  id: number
+  providerEventId: string
+  conversationId: string
+  payload: {
+    from: string
+    to: string
+    subject: string
+    body: string
+    bodyType: 'text' | 'html'
+    timestamp: number
+    messageId?: string
+    inReplyTo?: string
+    references?: string
+    isFromMe?: boolean
+  }
+  status: 'queued' | 'draft' | 'processing' | 'completed'
+  createdAt: number
+}
+
 type Json = Record<string, unknown> | unknown[]
 
 const isRecord = (value: unknown): value is Record<string, unknown> => (
@@ -383,6 +403,8 @@ export interface BrowserAgentdClient extends ChatClient {
   getEmailSettings(): Promise<EmailSettings>
   saveEmailSettings(settings: EmailSettings): Promise<EmailSettings>
   testEmail(): Promise<BrowserEmailTestResult>
+  ingestEmailInbound(event: { providerEventId: string; conversationId: string; payload: BrowserEmailInboundEvent['payload'] }): Promise<{ accepted: true; duplicate: boolean; id: number }>
+  listEmailInbound(afterId?: number, limit?: number): Promise<{ events: BrowserEmailInboundEvent[]; nextAfterId: number }>
   getPersonaSettings(): Promise<PersonaSettings>
   savePersonaSettings(settings: PersonaSettings): Promise<PersonaSettings>
   getProductPreferences(): Promise<ProductPreferences>
@@ -683,6 +705,23 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     }
     return value as unknown as BrowserEmailTestResult
   }
+  const ingestEmailInbound = async (event: { providerEventId: string; conversationId: string; payload: BrowserEmailInboundEvent['payload'] }) => {
+    const value = await request<unknown>('/api/v1/email/inbound', { method: 'POST', body: JSON.stringify(event) }, true)
+    if (!isRecord(value) || value.accepted !== true || typeof value.duplicate !== 'boolean' || !Number.isSafeInteger(value.id)) throw new Error('Invalid email inbound response')
+    return { accepted: true as const, duplicate: value.duplicate, id: value.id as number }
+  }
+  const listEmailInbound = async (afterId = 0, limit = 20) => {
+    const value = await request<unknown>(`/api/v1/email/inbound?after_id=${encodeURIComponent(String(afterId))}&limit=${encodeURIComponent(String(limit))}`)
+    if (!isRecord(value) || !Array.isArray(value.events) || !Number.isSafeInteger(value.nextAfterId)) throw new Error('Invalid email inbound list response')
+    const events = value.events.filter((event): event is BrowserEmailInboundEvent => isRecord(event)
+      && Number.isSafeInteger(event.id) && typeof event.providerEventId === 'string' && typeof event.conversationId === 'string'
+      && isRecord(event.payload) && typeof event.payload.from === 'string' && typeof event.payload.to === 'string'
+      && typeof event.payload.subject === 'string' && typeof event.payload.body === 'string'
+      && (event.payload.bodyType === 'text' || event.payload.bodyType === 'html') && typeof event.payload.timestamp === 'number'
+      && ['queued', 'draft', 'processing', 'completed'].includes(event.status as string) && Number.isSafeInteger(event.createdAt))
+    if (events.length !== value.events.length) throw new Error('Invalid email inbound list response')
+    return { events, nextAfterId: value.nextAfterId as number }
+  }
   const getPersonaSettings = async () => readPersonaSettings(await request('/api/v1/settings/persona'))
   const savePersonaSettings = async (settings: PersonaSettings) => readPersonaSettings(await request('/api/v1/settings/persona', { method: 'PUT', body: JSON.stringify(settings) }, true))
   const getProductPreferences = async () => readProductPreferences(await request('/api/v1/settings/preferences'))
@@ -859,6 +898,8 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     getEmailSettings,
     saveEmailSettings,
     testEmail,
+    ingestEmailInbound,
+    listEmailInbound,
     getPersonaSettings,
     savePersonaSettings,
     getProductPreferences,
