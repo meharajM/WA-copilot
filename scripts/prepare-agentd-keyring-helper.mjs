@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { chmod, cp, mkdir } from 'node:fs/promises'
+import { chmod, cp, mkdir, rm } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { assertNodeHostMatchesRustTarget } from './tauri-target-validation.mjs'
@@ -36,6 +36,7 @@ const targetTriple = requestedTarget || hostTriple
 const executableExtension = targetTriple.includes('windows') ? '.exe' : ''
 const resourcesDirectory = join(tauriRoot, 'sidecar')
 const keyringHelperPath = join(resourcesDirectory, `aica-keyring-helper${executableExtension}`)
+const staleKeyringHelperPath = join(resourcesDirectory, `aica-keyring-helper${executableExtension ? '' : '.exe'}`)
 
 await mkdir(resourcesDirectory, { recursive: true })
 run(
@@ -43,6 +44,7 @@ run(
   ['build', '--release', '--locked', '--bin', 'aica-keyring-helper', '--target', targetTriple],
   { cwd: tauriRoot },
 )
+await rm(staleKeyringHelperPath, { force: true })
 await cp(
   join(tauriRoot, 'target', targetTriple, 'release', `aica-keyring-helper${executableExtension}`),
   keyringHelperPath,

@@ -27,6 +27,14 @@ test('Tauri package declares fixed agentd runtime, entrypoint, and keyring helpe
 test('Windows sidecar preparation preserves executable extensions', () => {
   const preparation = fs.readFileSync(path.join(root, 'scripts/prepare-tauri-agentd.mjs'), 'utf8')
   assert.match(preparation, /agentd-runtime\$\{process\.platform === 'win32' \? '\.exe' : ''\}/)
+  assert.match(preparation, /staleRuntimePath = join\(sidecarRoot, `agentd-runtime\$\{process\.platform === 'win32' \? '' : '\.exe'\}`\)/)
+  assert.match(preparation, /await rm\(staleRuntimePath, \{ force: true \}\)\s+await cp\(process\.execPath, runtimePath\)/)
+})
+
+test('Sidecar preparation removes stale opposite-platform executables', () => {
+  const keyring = fs.readFileSync(path.join(root, 'scripts/prepare-agentd-keyring-helper.mjs'), 'utf8')
+  assert.match(keyring, /staleKeyringHelperPath = join\(resourcesDirectory, `aica-keyring-helper\$\{executableExtension \? '' : '\.exe'\}`\)/)
+  assert.match(keyring, /await rm\(staleKeyringHelperPath, \{ force: true \}\)\s+await cp\(/)
 })
 
 test('packaged runner owns agentd startup and does not accept renderer-selected commands', () => {

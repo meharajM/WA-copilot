@@ -42,6 +42,8 @@ for (const dependency of ['better-sqlite3', 'bindings', 'file-uri-to-path']) {
 }
 
 const runtimePath = join(sidecarRoot, `agentd-runtime${process.platform === 'win32' ? '.exe' : ''}`)
+const staleRuntimePath = join(sidecarRoot, `agentd-runtime${process.platform === 'win32' ? '' : '.exe'}`)
+await rm(staleRuntimePath, { force: true })
 await cp(process.execPath, runtimePath)
 if (process.platform !== 'win32') await chmod(runtimePath, 0o755)
 
