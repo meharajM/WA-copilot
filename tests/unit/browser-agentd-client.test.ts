@@ -242,6 +242,28 @@ describe('browser agentd client', () => {
     expect(Object.prototype.hasOwnProperty.call(JSON.parse(String(put?.[1]?.body)), 'password')).toBe(false)
   })
 
+  it('lists queued email events and acknowledges them after hydration', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = []
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      calls.push({ url, init })
+      if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
+      if (url.includes('/api/v1/email/inbound?')) return response({
+        events: [{ id: 9, providerEventId: 'email-9', conversationId: 'sender@example.test::thread-9', payload: { from: 'sender@example.test', to: 'support@example.test', subject: 'Help', body: 'Hello', bodyType: 'text', timestamp: 42 }, status: 'queued', createdAt: 42 }],
+        nextAfterId: 9,
+      })
+      if (url.endsWith('/api/v1/email/inbound/ack')) return response({ acknowledgedIds: [9] })
+      return response({ success: true })
+    })
+    const client = createBrowserAgentdClient({ origin: 'http://127.0.0.1:4141', fetch: fetcher })
+    await client.pair('123456')
+    await expect(client.listEmailInbound(0, 10, 'queued')).resolves.toMatchObject({ nextAfterId: 9, events: [{ id: 9, status: 'queued' }] })
+    await expect(client.acknowledgeEmailInbound([9])).resolves.toEqual([9])
+    const ack = calls.find(call => call.url.endsWith('/api/v1/email/inbound/ack'))
+    expect(JSON.parse(String(ack?.init?.body))).toEqual({ eventIds: [9] })
+    expect(new Headers(ack?.init?.headers).get('x-csrf-token')).toBe('csrf-token')
+  })
+
   it('persists browser email drafts through authenticated agentd routes', async () => {
     const draft = {
       id: 'draft_email_1', responseText: 'Reply', originalFrom: 'customer@example.test', originalSubject: 'Question', replyTo: 'customer@example.test',

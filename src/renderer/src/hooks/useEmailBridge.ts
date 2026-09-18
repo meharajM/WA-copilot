@@ -130,11 +130,15 @@ export function useEmailBridge(): void {
         setConnectionState({ status: 'disconnected', error: null, lastSyncAt: null, unreadCount: 0 })
       } else {
         try {
-          const result = await getBrowserAgentdClient().listEmailInbound(afterId, 50)
+          const client = getBrowserAgentdClient()
+          const result = await client.listEmailInbound(afterId, 50, 'queued')
           let processed = 0
           if (config.autoReplyMode) {
             for (const event of result.events) {
               await ingestBrowserInboundEmail(event)
+              // Acknowledge only after durable session/message hydration. If the
+              // tab dies earlier, daemon keeps event queued for retry.
+              await client.acknowledgeEmailInbound([event.id])
               processed += 1
             }
             afterId = result.nextAfterId

@@ -743,6 +743,7 @@ class AgentdServer {
     if (url.pathname === '/api/v1/settings/ollama' && ['GET', 'PUT'].includes(req.method)) return this.ollamaSettings(req, res)
     if (url.pathname === '/api/v1/settings/email' && ['GET', 'PUT'].includes(req.method)) return this.emailSettings(req, res)
     if (url.pathname === '/api/v1/email/test' && req.method === 'POST') return this.testEmail(req, res)
+    if (url.pathname === '/api/v1/email/inbound/ack' && req.method === 'POST') return this.acknowledgeEmailInbound(req, res)
     if (url.pathname === '/api/v1/email/inbound' && ['GET', 'POST'].includes(req.method)) return this.emailInbound(req, res, url)
     if (url.pathname === '/api/v1/email/drafts' && ['GET', 'POST'].includes(req.method)) return this.emailDrafts(req, res, url)
     const emailDraftMatch = /^\/api\/v1\/email\/drafts\/([^/]+)$/.exec(url.pathname)
@@ -1042,7 +1043,11 @@ class AgentdServer {
       const afterId = Number.isSafeInteger(requestedAfter) && requestedAfter >= 0 ? requestedAfter : 0
       const requestedLimit = Number.parseInt(url.searchParams.get('limit') || '20', 10)
       const limit = Number.isSafeInteger(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), MAX_EMAIL_INBOUND_BATCH) : 20
-      const rows = this.db.prepare('SELECT id,provider_event_id,conversation_id,payload,status,created_at FROM inbound_events WHERE channel = ? AND id > ? ORDER BY id ASC LIMIT ?').all('email', afterId, limit)
+      const status = url.searchParams.get('status')
+      if (status && !['queued', 'processing', 'completed'].includes(status)) return json(res, 400, { error: 'Invalid email inbound status' })
+      const rows = status
+        ? this.db.prepare('SELECT id,provider_event_id,conversation_id,payload,status,created_at FROM inbound_events WHERE channel = ? AND id > ? AND status = ? ORDER BY id ASC LIMIT ?').all('email', afterId, status, limit)
+        : this.db.prepare('SELECT id,provider_event_id,conversation_id,payload,status,created_at FROM inbound_events WHERE channel = ? AND id > ? ORDER BY id ASC LIMIT ?').all('email', afterId, limit)
       return json(res, 200, {
         events: rows.map(row => ({
           id: row.id,
@@ -1064,6 +1069,36 @@ class AgentdServer {
     if (existing) return json(res, 200, { accepted: true, duplicate: true, id: existing.id })
     const result = this.db.prepare('INSERT INTO inbound_events(channel,provider_event_id,conversation_id,payload,status,created_at) VALUES (?,?,?,?,?,?)').run('email', body.providerEventId, body.conversationId, payload, 'queued', Date.now())
     return json(res, 202, { accepted: true, duplicate: false, id: result.lastInsertRowid })
+  }
+
+  async acknowledgeEmailInbound(req, res) {
+    this.authorize(req, { mutation: true })
+    if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
+    let body
+    try { body = await readBody(req, 16 * 1024) } catch (error) { return json(res, error.statusCode || 400, { error: error.message }) }
+    if (!body || typeof body !== 'object' || Array.isArray(body)
+      || Object.keys(body).some(key => key !== 'eventIds')
+      || !Array.isArray(body.eventIds) || body.eventIds.length < 1 || body.eventIds.length > MAX_EMAIL_INBOUND_BATCH
+      || body.eventIds.some(id => !Number.isSafeInteger(id) || id < 1)) {
+      return json(res, 400, { error: 'Invalid email inbound acknowledgement' })
+    }
+    const eventIds = [...new Set(body.eventIds)]
+    const placeholders = eventIds.map(() => '?').join(',')
+    const acknowledgedIds = this.db.transaction(() => {
+      const rows = this.db.prepare(`SELECT id,status FROM inbound_events WHERE channel = 'email' AND id IN (${placeholders})`).all(...eventIds)
+      const acknowledged = []
+      for (const row of rows) {
+        if (row.status === 'queued' || row.status === 'processing') {
+          this.db.prepare("UPDATE inbound_events SET status = 'completed' WHERE channel = 'email' AND id = ?").run(row.id)
+          acknowledged.push(row.id)
+        } else if (row.status === 'completed') {
+          // Idempotent replay after a browser retry or reload.
+          acknowledged.push(row.id)
+        }
+      }
+      return acknowledged.sort((a, b) => a - b)
+    })()
+    return json(res, 200, { acknowledgedIds })
   }
 
   async emailDrafts(req, res, url) {

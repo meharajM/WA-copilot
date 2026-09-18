@@ -241,6 +241,7 @@ Pass evidence:
 - Browser email drafts are persisted as bounded, authenticated `agentd` records. Reloading Edge/Chrome rehydrates the same pending/rejected/approved history; the browser does not use renderer `localStorage` as a second draft authority.
 - On the first browser startup after this migration, a legacy `aica-email-drafts-v1` renderer record is validated and handed off to agentd; the legacy key is removed only after every draft is accepted, so malformed or partially migrated data remains recoverable for owner review.
 - In browser mode, enabling the Email Channel persists the desired state and controls consumption of inbound events already queued in agentd; it does not start IMAP/Gmail polling or SMTP delivery while the daemon mailbox worker is unavailable.
+- When browser Auto-Reply is enabled, the page reads only queued normalized events and acknowledges each event through an authenticated agentd mutation after its session and message are durably hydrated. Acknowledgement is idempotent; an interrupted tab leaves the event queued for retry after reload. Completed events are not reprocessed by another browser tab.
 
 ### Provider and auth behavior
 
@@ -281,6 +282,7 @@ Pass evidence:
 - With `Auto-Reply` off, inbound email does not create an email session.
 - With `Auto-Reply` on and the channel enabled, inbound email can create a session.
 - Browser `Test Connection` reaches the local agentd endpoint, rejects missing credentials, and never returns the stored app password.
+- Browser inbound processing is restart-safe: an event remains queued until session/message persistence succeeds, then agentd marks it completed; duplicate acknowledgement does not create another chat message.
 - In browser mode, the Drafts panel allows review/edit/approve/reject, but its send action is visibly disabled until daemon-owned email delivery is migrated; it must not call an Electron IPC fallback or append a synthetic send failure to the draft text.
 
 ### Safety and reply behavior

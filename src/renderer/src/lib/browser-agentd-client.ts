@@ -508,7 +508,8 @@ export interface BrowserAgentdClient extends ChatClient {
   saveEmailSettings(settings: EmailSettings): Promise<EmailSettings>
   testEmail(): Promise<BrowserEmailTestResult>
   ingestEmailInbound(event: { providerEventId: string; conversationId: string; payload: BrowserEmailInboundEvent['payload'] }): Promise<{ accepted: true; duplicate: boolean; id: number }>
-  listEmailInbound(afterId?: number, limit?: number): Promise<{ events: BrowserEmailInboundEvent[]; nextAfterId: number }>
+  listEmailInbound(afterId?: number, limit?: number, status?: Extract<BrowserEmailInboundEvent['status'], 'queued' | 'processing' | 'completed'>): Promise<{ events: BrowserEmailInboundEvent[]; nextAfterId: number }>
+  acknowledgeEmailInbound(eventIds: number[]): Promise<number[]>
   listEmailDrafts(limit?: number, status?: BrowserEmailDraftStatus): Promise<BrowserEmailDraft[]>
   saveEmailDraft(draft: BrowserEmailDraft): Promise<BrowserEmailDraft>
   updateEmailDraft(id: string, update: { responseText?: string; status?: BrowserEmailDraftStatus }): Promise<BrowserEmailDraft>
@@ -823,8 +824,10 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     if (!isRecord(value) || value.accepted !== true || typeof value.duplicate !== 'boolean' || !Number.isSafeInteger(value.id)) throw new Error('Invalid email inbound response')
     return { accepted: true as const, duplicate: value.duplicate, id: value.id as number }
   }
-  const listEmailInbound = async (afterId = 0, limit = 20) => {
-    const value = await request<unknown>(`/api/v1/email/inbound?after_id=${encodeURIComponent(String(afterId))}&limit=${encodeURIComponent(String(limit))}`)
+  const listEmailInbound = async (afterId = 0, limit = 20, status?: Extract<BrowserEmailInboundEvent['status'], 'queued' | 'processing' | 'completed'>) => {
+    const query = new URLSearchParams({ after_id: String(afterId), limit: String(limit) })
+    if (status) query.set('status', status)
+    const value = await request<unknown>(`/api/v1/email/inbound?${query.toString()}`)
     if (!isRecord(value) || !Array.isArray(value.events) || !Number.isSafeInteger(value.nextAfterId)) throw new Error('Invalid email inbound list response')
     const events = value.events.filter((event): event is BrowserEmailInboundEvent => isRecord(event)
       && Number.isSafeInteger(event.id) && typeof event.providerEventId === 'string' && typeof event.conversationId === 'string'
@@ -834,6 +837,12 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
       && ['queued', 'draft', 'processing', 'completed'].includes(event.status as string) && Number.isSafeInteger(event.createdAt))
     if (events.length !== value.events.length) throw new Error('Invalid email inbound list response')
     return { events, nextAfterId: value.nextAfterId as number }
+  }
+  const acknowledgeEmailInbound = async (eventIds: number[]): Promise<number[]> => {
+    if (!eventIds.length || eventIds.some(id => !Number.isSafeInteger(id) || id < 1)) throw new Error('Invalid email inbound acknowledgement')
+    const value = await request<unknown>('/api/v1/email/inbound/ack', { method: 'POST', body: JSON.stringify({ eventIds }) }, true)
+    if (!isRecord(value) || !Array.isArray(value.acknowledgedIds) || value.acknowledgedIds.some(id => !Number.isSafeInteger(id) || id < 1)) throw new Error('Invalid email inbound acknowledgement response')
+    return value.acknowledgedIds as number[]
   }
   const listEmailDrafts = async (limit = 100, status?: BrowserEmailDraftStatus): Promise<BrowserEmailDraft[]> => {
     const query = new URLSearchParams({ limit: String(Math.max(1, Math.min(100, Math.trunc(limit)))) })
@@ -1054,6 +1063,7 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     testEmail,
     ingestEmailInbound,
     listEmailInbound,
+    acknowledgeEmailInbound,
     listEmailDrafts,
     saveEmailDraft,
     updateEmailDraft,
