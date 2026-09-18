@@ -1,8 +1,12 @@
 import { useEffect } from 'react'
 import electron, { isElectron } from '../lib/electron'
 import { useEmailStore } from '../stores/emailStore'
+import { useChatStore, type ChatSession } from '../stores/chatStore'
 import { buildEmailRuntimeConfig } from '../lib/email-runtime'
-import { normalizeEmailAddress, type EmailMessage } from '../lib/email-integration'
+import { generateEmailSessionKey, generateEmailSessionTitle, convertEmailToLLMMessage, normalizeEmailAddress, type EmailMessage } from '../lib/email-integration'
+import { BrowserAgentdError, getBrowserAgentdClient, type BrowserEmailInboundEvent } from '../lib/browser-agentd-client'
+import { isTauriRuntime } from '../lib/tauri-native-bridge'
+import type { ChatSession as AgentdChatSession } from '../../../shared/chat-protocol'
 
 interface EmailConnectionState {
   status: 'disconnected' | 'connecting' | 'connected' | 'error'
@@ -28,15 +32,84 @@ export function dispatchInboundEmailToAgent(email: EmailMessage): boolean {
   return true
 }
 
+const isBrowserProduct = (): boolean => typeof window !== 'undefined' && !window.electron && !isTauriRuntime()
+
+const stableEmailSessionId = (key: string): string => {
+  // FNV-1a keeps deterministic thread IDs within agentd's bounded ID grammar.
+  let hash = 2166136261
+  for (let index = 0; index < key.length; index += 1) hash = Math.imul(hash ^ key.charCodeAt(index), 16777619)
+  return `email_${(hash >>> 0).toString(16)}`
+}
+
+const toRendererSession = (session: AgentdChatSession): ChatSession => ({
+  id: session.id,
+  title: session.title,
+  createdAt: session.createdAt,
+  updatedAt: session.updatedAt,
+  status: session.status,
+  ...(session.channel ? { channel: session.channel as ChatSession['channel'] } : {}),
+  ...(session.contactId ? { contact_id: session.contactId } : {}),
+  ...(session.threadId ? { thread_id: session.threadId } : {}),
+  ...(session.workspacePath ? { workspacePath: session.workspacePath } : {}),
+  ...(session.topic ? { topic: session.topic } : {}),
+  messages: session.messages.map((message) => ({
+    id: message.id,
+    role: message.role,
+    content: message.content,
+    timestamp: message.timestamp,
+    ...(message.attachments?.length ? { attachments: message.attachments.map((attachment) => ({ name: attachment.name, path: '', type: attachment.type })) } : {}),
+  })),
+})
+
+const ingestBrowserInboundEmail = async (event: BrowserEmailInboundEvent): Promise<void> => {
+  const payload = event.payload
+  const email: EmailMessage = {
+    id: event.providerEventId,
+    from: payload.from,
+    to: payload.to,
+    subject: payload.subject,
+    body: payload.body,
+    bodyType: payload.bodyType,
+    timestamp: payload.timestamp,
+    isFromMe: payload.isFromMe === true,
+    ...(payload.messageId ? { messageId: payload.messageId } : {}),
+    ...(payload.inReplyTo ? { inReplyTo: payload.inReplyTo } : {}),
+    ...(payload.references ? { references: payload.references } : {}),
+  }
+  const sessionKey = generateEmailSessionKey(email)
+  let sessionId = stableEmailSessionId(sessionKey.key)
+  const client = getBrowserAgentdClient()
+  const sessions = await client.loadSessions()
+  let session = sessions.find((candidate) => candidate.id === sessionId)
+    || sessions.find((candidate) => candidate.channel === 'email' && candidate.contactId === sessionKey.sender && candidate.threadId === sessionKey.threadId)
+  if (!session) {
+    await client.createSession(sessionId, generateEmailSessionTitle(email), undefined, { channel: 'email', contactId: sessionKey.sender, threadId: sessionKey.threadId })
+  } else {
+    sessionId = session.id
+  }
+  const llmMessage = convertEmailToLLMMessage(email)
+  const content = typeof llmMessage.content === 'string'
+    ? llmMessage.content
+    : llmMessage.content.map((part) => 'text' in part ? part.text : '[Attachment]').join('\n')
+  try {
+    await client.appendMessage(sessionId, { id: `email_${event.id}`, role: 'user', content, timestamp: email.timestamp })
+  } catch (error) {
+    if (!(error instanceof BrowserAgentdError) || error.status !== 409) throw error
+  }
+  const refreshed = await client.loadSessions()
+  const activeSessionId = useChatStore.getState().activeSessionId
+  useChatStore.setState({
+    sessions: refreshed.map(toRendererSession),
+    activeSessionId: activeSessionId && refreshed.some((candidate) => candidate.id === activeSessionId) ? activeSessionId : sessionId,
+  })
+}
+
 export function useEmailBridge(): void {
   const config = useEmailStore((s) => s.config)
   const setConnectionState = useEmailStore((s) => s.setConnectionState)
 
   useEffect(() => {
-    if (!isElectron()) {
-      setConnectionState({ status: 'disconnected', error: null, lastSyncAt: null, unreadCount: 0 })
-      return
-    }
+    if (!isElectron()) return
     let cancelled = false
     electron.email.getState().then((state) => {
       if (!cancelled) {
@@ -45,6 +118,40 @@ export function useEmailBridge(): void {
     }).catch(console.error)
     return () => { cancelled = true }
   }, [setConnectionState])
+
+  useEffect(() => {
+    if (!isBrowserProduct()) return
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | null = null
+    let afterId = 0
+    const poll = async () => {
+      if (cancelled) return
+      if (!config.enabled) {
+        setConnectionState({ status: 'disconnected', error: null, lastSyncAt: null, unreadCount: 0 })
+      } else {
+        try {
+          const result = await getBrowserAgentdClient().listEmailInbound(afterId, 50)
+          let processed = 0
+          if (config.autoReplyMode) {
+            for (const event of result.events) {
+              await ingestBrowserInboundEmail(event)
+              processed += 1
+            }
+            afterId = result.nextAfterId
+          }
+          if (!cancelled) setConnectionState({ status: 'connected', error: config.autoReplyMode ? null : 'Inbound events are stored; enable Auto-Reply to create email sessions.', lastSyncAt: Date.now(), unreadCount: processed })
+        } catch (error) {
+          if (!cancelled) setConnectionState({ status: 'error', error: error instanceof Error ? error.message : 'Browser email inbox unavailable', lastSyncAt: null, unreadCount: 0 })
+        }
+      }
+      if (!cancelled) timer = setTimeout(() => void poll(), Math.max(30_000, config.pollingIntervalSeconds * 1000))
+    }
+    void poll()
+    return () => {
+      cancelled = true
+      if (timer) clearTimeout(timer)
+    }
+  }, [config.enabled, config.autoReplyMode, config.pollingIntervalSeconds, setConnectionState])
 
   useEffect(() => {
     if (!isElectron()) return
@@ -82,12 +189,7 @@ export function useEmailBridge(): void {
 
   useEffect(() => {
     const run = async () => {
-      if (!isElectron()) {
-        setConnectionState(config.enabled
-          ? { status: 'error', error: 'Email transport is not available in the browser yet; settings are saved by agentd.', lastSyncAt: null, unreadCount: 0 }
-          : { status: 'disconnected', error: null, lastSyncAt: null, unreadCount: 0 })
-        return
-      }
+      if (!isElectron()) return
       console.log('[EmailBridge] run', {
         enabled: config.enabled,
         provider: config.provider,

@@ -125,6 +125,8 @@ Browser mode now exposes an authenticated, durable email ingress contract:
 
 This slice stores real normalized events for a browser-side provider/poller to consume. It does not claim IMAP polling or Gmail OAuth parity; native Electron remains owner of those transports.
 
+When the browser Email channel is enabled and Auto-Reply is explicitly on, the browser polls this bounded cursor, creates or reuses the deterministic agentd-backed email session, and appends the normalized message once. With Auto-Reply off, events remain durable and the UI reports that they are stored but gated; they are not silently routed into an agent session. This is an ingress/session-continuity slice only: there is still no browser IMAP/Gmail worker, outbound delivery, draft approval/send path, or browser-side credential read.
+
 - The `uvx ENOENT` failure was traced to the runtime spawn path, not the dependency installer itself.
 - `EmailChannelService` now expands PATH before spawning the MCP server.
 - The error now includes a clearer hint when `uvx` is still unavailable to the Electron process.
