@@ -9,6 +9,7 @@ on:
       - 'src-tauri/**'
       - 'src/renderer/**'
       - 'src/shared/**'
+      - 'tests/**'
       - 'package.json'
       - 'package-lock.json'
       - 'vite.tauri.config.ts'
