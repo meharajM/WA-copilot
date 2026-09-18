@@ -43,6 +43,16 @@ export default function NativeHostDiagnostics() {
     finally { setBusy(null) }
   }
 
+  const openBrowserWorkspace = async () => {
+    setBusy('browser'); setError(null); setNotice(null)
+    try {
+      const result = await tauriNativeBridge.openBrowserWorkspace()
+      if (!result.success) throw new Error(result.error || 'Browser workspace unavailable')
+      setNotice('Opened the product workspace in your default browser')
+    } catch (reason) { setError(messageFrom(reason, 'Browser workspace unavailable')) }
+    finally { setBusy(null) }
+  }
+
   const checkCredential = async () => {
     setBusy('credential'); setError(null); setNotice(null)
     try {
@@ -65,8 +75,8 @@ export default function NativeHostDiagnostics() {
         <article className={`pilot-panel pilot-health ${healthy ? 'is-ready' : 'is-unavailable'}`}>
           <div className="pilot-panel-heading"><div><p className="pilot-label">01 / local service</p><h2>Agentd status</h2></div><span className="pilot-status" role="status">{healthy ? 'READY' : 'UNAVAILABLE'}</span></div>
           <p className="pilot-copy">The daemon owns product data, workflows and credentials. Its lifetime is independent from this window.</p><p className="pilot-health-readout">{health.error || 'Native companion connected to agentd.'}</p>
-          <p className="pilot-path" title={agentdOrigin || undefined}>{agentdOrigin ? `Open this URL in Edge or Chrome: ${agentdOrigin}` : 'Browser workspace URL unavailable until agentd is ready'}</p>
-          <button type="button" className="pilot-button" onClick={() => void refresh()} disabled={busy !== null}>Refresh status</button>
+          <p className="pilot-path" title={agentdOrigin || undefined}>{agentdOrigin ? `Browser workspace: ${agentdOrigin}` : 'Browser workspace URL unavailable until agentd is ready'}</p>
+          <div className="pilot-actions"><button type="button" className="pilot-button pilot-button-primary" onClick={() => void openBrowserWorkspace()} disabled={busy !== null || !agentdOrigin}>{busy === 'browser' ? 'Opening…' : 'Open browser workspace'}</button><button type="button" className="pilot-button" onClick={() => void refresh()} disabled={busy !== null}>Refresh status</button></div>
         </article>
         <article className="pilot-panel">
           <div className="pilot-panel-heading"><div><p className="pilot-label">02 / file access</p><h2>Owner-selected paths</h2></div><span className="pilot-index">OS PICKER</span></div>

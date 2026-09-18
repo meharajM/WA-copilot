@@ -25,7 +25,7 @@ If older manuals, screenshots, or marketing copy disagree with the running code,
 - The supported product workspace is rendered in the user's web browser (Windows Edge or Chrome are the primary targets) and talks to the local authenticated `agentd` service over loopback HTTP.
 - The Tauri companion is a lightweight native host for OS-only capabilities such as keychain access, file/folder dialogs, service lifecycle and diagnostics. It must not render a second product workspace or own business workflows.
 - In a real Tauri runtime, the only rendered surface is the native-host diagnostics/onboarding screen. Chat, settings, channels, Brain/knowledge, memory, approvals and all other product screens are browser-only; no query parameter can opt a Tauri window into them.
-- The expected Windows flow is: start the native companion/service, open the displayed loopback URL in Edge or Chrome, pair once, and keep using the browser tab. Closing the browser or companion does not stop `agentd`.
+- The expected Windows flow is: start the native companion/service, choose `Open browser workspace` from the native diagnostics/tray, pair once in Edge or Chrome, and keep using the browser tab. The companion also displays the bounded loopback URL for manual copy. Closing the browser or companion does not stop `agentd`.
 - Closing the browser or companion does not stop `agentd`; explicit agent controls own processing state.
 - Electron remains a transition client until browser plus `agentd` feature/data parity is evidenced.
 

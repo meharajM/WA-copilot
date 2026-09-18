@@ -339,21 +339,83 @@ fn open_main_window<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
+fn browser_workspace_url(origin: &str) -> Result<String, String> {
+    if !origin.starts_with("http://127.0.0.1:")
+        || origin["http://127.0.0.1:".len()..]
+            .parse::<u16>()
+            .ok()
+            .filter(|port| *port > 0)
+            .is_none()
+    {
+        return Err("Agentd origin is not a valid loopback workspace URL".into());
+    }
+    Ok(format!("{origin}/tauri.html"))
+}
+
+fn open_external_url(url: &str) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        Command::new("cmd")
+            .args(["/C", "start", "", url])
+            .spawn()
+            .map_err(|_| "Could not open the browser workspace".to_string())?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg(url)
+            .spawn()
+            .map_err(|_| "Could not open the browser workspace".to_string())?;
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        Command::new("xdg-open")
+            .arg(url)
+            .spawn()
+            .map_err(|_| "Could not open the browser workspace".to_string())?;
+    }
+    Ok(())
+}
+
+fn open_browser_workspace_for_app<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    let origin = app
+        .state::<AgentdClient>()
+        .origin()
+        .map_err(|_| "Agentd workspace URL unavailable".to_string())?;
+    let url = browser_workspace_url(&origin)?;
+    open_external_url(&url)
+}
+
+#[tauri::command]
+fn open_browser_workspace(client: State<'_, AgentdClient>) -> Result<(), String> {
+    let origin = client
+        .origin()
+        .map_err(|_| "Agentd workspace URL unavailable".to_string())?;
+    let url = browser_workspace_url(&origin)?;
+    open_external_url(&url)
+}
+
 fn request_quit<R: Runtime>(app: &AppHandle<R>) {
     app.state::<Arc<AtomicBool>>().store(true, Ordering::SeqCst);
     app.exit(0);
 }
 
 fn create_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
-    let open = MenuItemBuilder::with_id("open", "Open AICA Native Host").build(app)?;
+    let open = MenuItemBuilder::with_id("open", "Open native diagnostics").build(app)?;
+    let browser = MenuItemBuilder::with_id("browser", "Open browser workspace").build(app)?;
     let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
-    let menu = MenuBuilder::new(app).items(&[&open, &quit]).build()?;
+    let menu = MenuBuilder::new(app)
+        .items(&[&browser, &open, &quit])
+        .build()?;
     let icon = tauri::image::Image::new_owned(vec![46, 120, 220, 255].repeat(16 * 16), 16, 16);
     tauri::tray::TrayIconBuilder::with_id("aica-tray")
         .icon(icon)
         .menu(&menu)
         .on_menu_event(|app, event| match event.id().as_ref() {
             "open" => open_main_window(app),
+            "browser" => {
+                let _ = open_browser_workspace_for_app(app);
+            }
             "quit" => request_quit(app),
             _ => {}
         })
@@ -421,6 +483,7 @@ fn main() {
             app_version,
             agentd_health,
             agentd_origin,
+            open_browser_workspace,
             get_llm_settings,
             save_llm_settings,
             get_whatsapp_settings,
@@ -491,5 +554,16 @@ mod tests {
                 filters: None,
             }
         )));
+    }
+
+    #[test]
+    fn browser_workspace_url_is_loopback_only() {
+        assert_eq!(
+            browser_workspace_url("http://127.0.0.1:4141").unwrap(),
+            "http://127.0.0.1:4141/tauri.html"
+        );
+        assert!(browser_workspace_url("https://example.test").is_err());
+        assert!(browser_workspace_url("http://127.0.0.1:0").is_err());
+        assert!(browser_workspace_url("http://127.0.0.1:4141/evil").is_err());
     }
 }

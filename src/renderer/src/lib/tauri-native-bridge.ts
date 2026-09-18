@@ -16,6 +16,7 @@ export const TAURI_COMMANDS = {
   appVersion: 'app_version',
   agentdHealth: 'agentd_health',
   agentdOrigin: 'agentd_origin',
+  openBrowserWorkspace: 'open_browser_workspace',
   getLlmSettings: 'get_llm_settings',
   saveLlmSettings: 'save_llm_settings',
   getWhatsAppSettings: 'get_whatsapp_settings',
@@ -169,6 +170,7 @@ export const createTauriNativeBridge = (
 ): NativeBridge & {
   appVersion: () => Promise<string>
   agentdOrigin: () => Promise<string>
+  openBrowserWorkspace: () => Promise<NativeResult>
   getLlmSettings: () => Promise<LlmSettings>
   saveLlmSettings: (settings: LlmSettings) => Promise<LlmSettings>
   getWhatsAppSettings: () => Promise<WhatsAppSettings>
@@ -197,6 +199,15 @@ export const createTauriNativeBridge = (
     const value = await invoke<unknown>(TAURI_COMMANDS.agentdOrigin)
     if (typeof value !== 'string' || !/^http:\/\/127\.0\.0\.1:\d+$/.test(value)) throw new Error('Invalid agentd origin response')
     return value
+  }
+
+  const openBrowserWorkspace = async (): Promise<NativeResult> => {
+    try {
+      await invoke<unknown>(TAURI_COMMANDS.openBrowserWorkspace)
+      return { success: true }
+    } catch (error) {
+      return failed(error instanceof Error ? error.message : error, 'Could not open the browser workspace')
+    }
   }
 
   const selectFile = async (options?: FileSelectionOptions): Promise<string | null> => {
@@ -278,6 +289,7 @@ export const createTauriNativeBridge = (
     deleteCredential,
     appVersion,
     agentdOrigin,
+    openBrowserWorkspace,
     getLlmSettings,
     saveLlmSettings,
     getWhatsAppSettings,

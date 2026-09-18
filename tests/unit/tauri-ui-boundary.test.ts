@@ -22,6 +22,7 @@ describe('browser-first UI boundary', () => {
     expect(host).not.toContain("from './BrowserProduct'")
     expect(host).not.toContain('ChatView')
     expect(host).toContain('Native capabilities')
+    expect(host).toContain('Open browser workspace')
     expect(host).toContain('Product UI runs in the browser')
   })
 

@@ -29,6 +29,7 @@ describe('tauri native bridge', () => {
     const invoke = vi.fn(async (command: string) => {
       if (command === TAURI_COMMANDS.appVersion) return '1.2.3'
       if (command === TAURI_COMMANDS.agentdOrigin) return 'http://127.0.0.1:4141'
+      if (command === TAURI_COMMANDS.openBrowserWorkspace) return null
       if (command === TAURI_COMMANDS.agentdHealth) return { status: 'ready', version: 'agentd protocol v1', paused: false, queueDepth: 2, events: 4 }
       if (command === TAURI_COMMANDS.getLlmSettings) return defaultSettings
       if (command === TAURI_COMMANDS.saveLlmSettings) return defaultSettings
@@ -44,6 +45,7 @@ describe('tauri native bridge', () => {
 
     await expect(bridge.appVersion()).resolves.toBe('1.2.3')
     await expect(bridge.agentdOrigin()).resolves.toBe('http://127.0.0.1:4141')
+    await expect(bridge.openBrowserWorkspace()).resolves.toEqual({ success: true })
     await expect(bridge.health()).resolves.toMatchObject({ status: 'ready', paused: false, queueDepth: 2, events: 4 })
     await expect(bridge.getLlmSettings()).resolves.toEqual(defaultSettings)
     await expect(bridge.saveLlmSettings(defaultSettings)).resolves.toEqual(defaultSettings)
@@ -58,6 +60,7 @@ describe('tauri native bridge', () => {
 
     expect(invoke).toHaveBeenCalledWith(TAURI_COMMANDS.credentialSet, { key: 'openai_api_key', value: 'secret' })
     expect(invoke).toHaveBeenCalledWith(TAURI_COMMANDS.providerTest, { provider: 'openrouter' })
+    expect(invoke).toHaveBeenCalledWith(TAURI_COMMANDS.openBrowserWorkspace, undefined)
     expect(invoke).not.toHaveBeenCalledWith(expect.stringMatching(/get.*credential|credential.*read/i), expect.anything())
   })
 
