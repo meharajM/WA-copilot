@@ -113,7 +113,7 @@ const readCredentialExists = (value: unknown): NativeResult & { exists: boolean 
 const readLlmSettings = (value: unknown): LlmSettings => {
   if (!isRecord(value)
     || Object.keys(value).sort().join(',') !== 'openaiModel,openrouterModel,preferredProvider'
-    || !['auto', 'openai', 'openrouter'].includes(value.preferredProvider as string)
+    || !['auto', 'openai', 'openrouter', 'ollama'].includes(value.preferredProvider as string)
     || typeof value.openaiModel !== 'string'
     || !value.openaiModel.trim()
     || [...value.openaiModel].length > 128
@@ -260,7 +260,7 @@ export const createTauriNativeBridge = (
   }
 
   const testProvider = async (provider: SupportedLlmProvider): Promise<ProviderTestResult> => {
-    if (provider !== 'openai' && provider !== 'openrouter') return unsupported('Provider')
+    if (provider !== 'openai' && provider !== 'openrouter' && provider !== 'ollama') return unsupported('Provider')
     try {
       return readProviderTest(await invoke<unknown>(TAURI_COMMANDS.providerTest, { provider }))
     } catch (error) {

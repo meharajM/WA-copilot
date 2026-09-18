@@ -60,6 +60,10 @@ const LLM_SETTINGS_DEFAULTS = Object.freeze({
   openaiModel: 'gpt-4o-mini',
   openrouterModel: 'anthropic/claude-3-haiku',
 })
+const OLLAMA_SETTINGS_DEFAULTS = Object.freeze({
+  baseUrl: 'http://127.0.0.1:11434',
+  model: 'qwen2.5:3b',
+})
 const PERSONA_DEFAULTS = Object.freeze({
   name: 'AIConsumerAgent',
   industry: 'Tech Support',
@@ -243,11 +247,11 @@ class AgentdServer {
           PRIMARY KEY(session_id, message_id)
         );
           CREATE INDEX IF NOT EXISTS chat_messages_session_created_idx ON chat_messages(session_id, created_at, message_id);
-        CREATE TABLE IF NOT EXISTS chat_generations (
+      CREATE TABLE IF NOT EXISTS chat_generations (
           request_id TEXT PRIMARY KEY,
           session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
           model TEXT NOT NULL,
-          provider TEXT NOT NULL CHECK(provider IN ('openai','openrouter')),
+          provider TEXT NOT NULL CHECK(provider IN ('openai','openrouter','ollama')),
           assistant_message_id TEXT,
           response_text TEXT,
           status TEXT NOT NULL CHECK(status IN ('processing','completed')),
@@ -300,6 +304,25 @@ class AgentdServer {
         CREATE INDEX IF NOT EXISTS memory_relations_from_idx ON memory_relations(from_entity_id);
         CREATE INDEX IF NOT EXISTS memory_relations_to_idx ON memory_relations(to_entity_id);
       `)
+      const generationSchema = this.db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'chat_generations'").get()?.sql || ''
+      if (generationSchema && !generationSchema.includes("'ollama'")) {
+        this.db.transaction(() => {
+          this.db.exec('ALTER TABLE chat_generations RENAME TO chat_generations_legacy')
+          this.db.exec(`CREATE TABLE chat_generations (
+            request_id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+            model TEXT NOT NULL,
+            provider TEXT NOT NULL CHECK(provider IN ('openai','openrouter','ollama')),
+            assistant_message_id TEXT,
+            response_text TEXT,
+            status TEXT NOT NULL CHECK(status IN ('processing','completed')),
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+          )`)
+          this.db.exec('INSERT INTO chat_generations(request_id,session_id,model,provider,assistant_message_id,response_text,status,created_at,updated_at) SELECT request_id,session_id,model,provider,assistant_message_id,response_text,status,created_at,updated_at FROM chat_generations_legacy')
+          this.db.exec('DROP TABLE chat_generations_legacy')
+        })()
+      }
       const chatColumns = this.db.prepare('PRAGMA table_info(chat_messages)').all()
       if (!chatColumns.some((column) => column.name === 'attachments')) this.db.exec('ALTER TABLE chat_messages ADD COLUMN attachments TEXT')
       const sessionColumns = this.db.prepare('PRAGMA table_info(chat_sessions)').all()
@@ -498,9 +521,10 @@ class AgentdServer {
     if (url.pathname === '/api/v1/settings/persona' && ['GET', 'PUT'].includes(req.method)) return this.personaSettings(req, res)
     if (url.pathname === '/api/v1/settings/preferences' && ['GET', 'PUT'].includes(req.method)) return this.productPreferences(req, res)
     if (url.pathname === '/api/v1/settings/whatsapp' && ['GET', 'PUT'].includes(req.method)) return this.whatsappSettings(req, res)
+    if (url.pathname === '/api/v1/settings/ollama' && ['GET', 'PUT'].includes(req.method)) return this.ollamaSettings(req, res)
     if (url.pathname === '/api/v1/settings/email' && ['GET', 'PUT'].includes(req.method)) return this.emailSettings(req, res)
     if (url.pathname === '/api/v1/whatsapp/messages' && req.method === 'POST') return this.sendWhatsAppMessage(req, res)
-    const providerTestMatch = /^\/api\/v1\/providers\/(openai|openrouter)\/test$/.exec(url.pathname)
+    const providerTestMatch = /^\/api\/v1\/providers\/(openai|openrouter|ollama)\/test$/.exec(url.pathname)
     if (providerTestMatch && req.method === 'POST') return this.testProvider(req, res, providerTestMatch[1])
     if (url.pathname === '/api/v1/status' && req.method === 'GET') {
       this.authorize(req)
@@ -907,6 +931,38 @@ class AgentdServer {
     return json(res, 200, settings)
   }
 
+  async ollamaSettings(req, res) {
+    this.authorize(req, { mutation: req.method === 'PUT' })
+    if (req.method === 'GET') {
+      let stored = null
+      try { stored = JSON.parse(this.getState('ollama_settings', 'null')) } catch {}
+      return json(res, 200, parseOllamaSettings(stored) || OLLAMA_SETTINGS_DEFAULTS)
+    }
+    if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
+    const body = await readBody(req, 8 * 1024)
+    const settings = parseOllamaSettings(body)
+    if (!settings) return json(res, 400, { error: 'Invalid Ollama settings' })
+    this.setState('ollama_settings', JSON.stringify(settings))
+    return json(res, 200, settings)
+  }
+
+  async ollamaModels() {
+    let stored = null
+    try { stored = JSON.parse(this.getState('ollama_settings', 'null')) } catch {}
+    const settings = parseOllamaSettings(stored) || OLLAMA_SETTINGS_DEFAULTS
+    const response = await this.providerFetch(`${settings.baseUrl}/api/tags`, {
+      method: 'GET',
+      redirect: 'manual',
+      signal: AbortSignal.timeout(3000),
+    })
+    if (!response.ok || response.redirected) throw new Error('Ollama request failed')
+    const payload = await readProviderResponse(response)
+    const models = Array.isArray(payload?.models)
+      ? payload.models.map((item) => item && typeof item.name === 'string' ? item.name : '').filter(validModelName).slice(0, 100)
+      : []
+    return { settings, models }
+  }
+
   async sendWhatsAppMessage(req, res) {
     this.authorize(req, { mutation: true })
     if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
@@ -961,6 +1017,14 @@ class AgentdServer {
     if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
     const body = await readBody(req, 1024)
     if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 0) return json(res, 400, { error: 'Provider test accepts no input' })
+    if (provider === 'ollama') {
+      try {
+        const { models } = await this.ollamaModels()
+        return json(res, 200, { success: true, modelCount: models.length, models })
+      } catch {
+        return json(res, 200, { success: false, error: 'Ollama provider test failed' })
+      }
+    }
     const credentialKey = provider === 'openai' ? 'openai_api_key' : 'openrouter_api_key'
     let response
     try {
@@ -1233,12 +1297,29 @@ class AgentdServer {
 
     let settings
     try { settings = parseLlmSettings(JSON.parse(this.getState('llm_settings', 'null'))) || LLM_SETTINGS_DEFAULTS } catch { settings = LLM_SETTINGS_DEFAULTS }
-    const providers = settings.preferredProvider === 'auto' ? ['openai', 'openrouter'] : [settings.preferredProvider]
-    const configuredModels = { openai: settings.openaiModel, openrouter: settings.openrouterModel }
+    let ollamaSettings
+    try { ollamaSettings = parseOllamaSettings(JSON.parse(this.getState('ollama_settings', 'null'))) || OLLAMA_SETTINGS_DEFAULTS } catch { ollamaSettings = OLLAMA_SETTINGS_DEFAULTS }
+    const providers = settings.preferredProvider === 'auto' ? ['openai', 'openrouter', 'ollama'] : [settings.preferredProvider]
+    const configuredModels = { openai: settings.openaiModel, openrouter: settings.openrouterModel, ollama: ollamaSettings.model }
     const requestedModel = body.model === undefined ? null : body.model
     let provider = null
     let apiKey = null
     for (const candidate of providers) {
+      if (candidate === 'ollama') {
+        try {
+          const response = await this.providerFetch(`${ollamaSettings.baseUrl}/api/tags`, {
+            method: 'GET',
+            redirect: 'manual',
+            signal: AbortSignal.timeout(3000),
+          })
+          if (!response.ok || response.redirected) continue
+          const payload = await readProviderResponse(response)
+          if (!Array.isArray(payload?.models) || !payload.models.length) continue
+          provider = 'ollama'
+          break
+        } catch {}
+        continue
+      }
       const credentialKey = candidate === 'openai' ? 'openai_api_key' : 'openrouter_api_key'
       let candidateKey = null
       try { candidateKey = await this.credentials?.get(credentialKey) } catch {}
@@ -1248,7 +1329,7 @@ class AgentdServer {
         break
       }
     }
-    if (!provider || !apiKey) return json(res, 503, { error: 'Provider unavailable' })
+    if (!provider || (provider !== 'ollama' && !apiKey)) return json(res, 503, { error: 'Provider unavailable' })
     const model = requestedModel || configuredModels[provider]
     if (!validModelName(model)) return json(res, 400, { error: 'Invalid model' })
 
@@ -1311,9 +1392,12 @@ class AgentdServer {
     if (wantsStream) res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-store', connection: 'keep-alive', 'x-accel-buffering': 'no' })
     let response
     try {
-      response = await this.providerFetch(PROVIDER_CHAT_ENDPOINTS[provider], {
+      const endpoint = provider === 'ollama'
+        ? `${ollamaSettings.baseUrl}/v1/chat/completions`
+        : PROVIDER_CHAT_ENDPOINTS[provider]
+      response = await this.providerFetch(endpoint, {
         method: 'POST',
-        headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json', ...(wantsStream ? { accept: 'text/event-stream' } : {}) },
+        headers: { ...(provider === 'ollama' ? {} : { authorization: `Bearer ${apiKey}` }), 'content-type': 'application/json', ...(wantsStream ? { accept: 'text/event-stream' } : {}) },
         body: providerBody,
         redirect: 'manual',
         signal: providerController.signal,
@@ -1533,7 +1617,7 @@ function parseLlmSettings(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   const keys = Object.keys(value).sort()
   if (keys.length !== 3 || keys.join(',') !== 'openaiModel,openrouterModel,preferredProvider'
-    || !['auto', 'openai', 'openrouter'].includes(value.preferredProvider)
+    || !['auto', 'openai', 'openrouter', 'ollama'].includes(value.preferredProvider)
     || !validModelName(value.openaiModel)
     || !validModelName(value.openrouterModel)) return null
   return {
@@ -1541,6 +1625,20 @@ function parseLlmSettings(value) {
     openaiModel: value.openaiModel,
     openrouterModel: value.openrouterModel,
   }
+}
+
+function parseOllamaSettings(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const keys = Object.keys(value).sort()
+  if (keys.length !== 2 || keys.join(',') !== 'baseUrl,model'
+    || !validModelName(value.model)
+    || typeof value.baseUrl !== 'string' || value.baseUrl.length > 256) return null
+  let parsed
+  try { parsed = new URL(value.baseUrl) } catch { return null }
+  if (parsed.protocol !== 'http:' || parsed.username || parsed.password || parsed.search || parsed.hash
+    || !['localhost', '127.0.0.1', '[::1]', '::1'].includes(parsed.hostname)) return null
+  const baseUrl = `${parsed.protocol}//${parsed.hostname}${parsed.port ? `:${parsed.port}` : ''}`
+  return { baseUrl, model: value.model }
 }
 
 function parsePersonaSettings(value) {
@@ -1739,4 +1837,4 @@ async function readProviderStream(response, onDelta) {
   return content
 }
 
-module.exports = { AgentdServer, PAIRING_TTL_MS, resolveDataDir, parseWhatsAppSettings, WHATSAPP_SETTINGS_DEFAULTS, parseProductPreferences, PRODUCT_PREFERENCES_DEFAULTS }
+module.exports = { AgentdServer, PAIRING_TTL_MS, resolveDataDir, parseWhatsAppSettings, WHATSAPP_SETTINGS_DEFAULTS, parseOllamaSettings, OLLAMA_SETTINGS_DEFAULTS, parseProductPreferences, PRODUCT_PREFERENCES_DEFAULTS }

@@ -124,8 +124,8 @@ const isBrowserProduct = (): boolean => (
     typeof window !== 'undefined' && !window.electron && !isTauriRuntime()
 )
 
-const isAgentdProvider = (provider: LLMProviderType): provider is 'auto' | 'openai' | 'openrouter' => (
-    provider === 'auto' || provider === 'openai' || provider === 'openrouter'
+const isAgentdProvider = (provider: LLMProviderType): provider is 'auto' | 'openai' | 'openrouter' | 'ollama' => (
+    provider === 'auto' || provider === 'openai' || provider === 'openrouter' || provider === 'ollama'
 )
 
 const syncBrowserLlmSettings = (state: Pick<SettingsState, 'preferredProvider' | 'openaiModel' | 'openrouterModel'>): void => {
@@ -135,6 +135,11 @@ const syncBrowserLlmSettings = (state: Pick<SettingsState, 'preferredProvider' |
         openaiModel: state.openaiModel,
         openrouterModel: state.openrouterModel,
     }).catch((error) => console.warn('[Settings] Failed to persist browser LLM settings:', error))
+}
+
+const syncBrowserOllamaSettings = (state: Pick<SettingsState, 'ollamaModel' | 'ollamaBaseUrl'>): void => {
+    if (!isBrowserProduct()) return
+    void getBrowserAgentdClient().saveOllamaSettings({ model: state.ollamaModel, baseUrl: state.ollamaBaseUrl }).catch((error) => console.warn('[Settings] Failed to persist browser Ollama settings:', error))
 }
 
 const browserPreferencesFrom = (state: Pick<SettingsState, keyof ProductPreferences>): ProductPreferences => ({
@@ -207,8 +212,8 @@ export const useSettingsStore = create<SettingsState>()(
                 set({ preferredProvider: provider })
                 syncBrowserLlmSettings({ ...get(), preferredProvider: provider })
             },
-            setOllamaModel: (model) => set({ ollamaModel: model }),
-            setOllamaBaseUrl: (url) => set({ ollamaBaseUrl: url }),
+            setOllamaModel: (model) => { set({ ollamaModel: model }); syncBrowserOllamaSettings({ ...get(), ollamaModel: model }) },
+            setOllamaBaseUrl: (url) => { set({ ollamaBaseUrl: url }); syncBrowserOllamaSettings({ ...get(), ollamaBaseUrl: url }) },
             setOpenaiApiKey: async (key) => {
                 set({ openaiApiKey: key })
                 if (isBrowserProduct()) return
@@ -294,11 +299,13 @@ export const useSettingsStore = create<SettingsState>()(
             loadAgentdSettings: async () => {
                 if (!isBrowserProduct()) return
                 const client = getBrowserAgentdClient()
-                const [saved, preferences] = await Promise.all([client.getLlmSettings(), client.getProductPreferences()])
+                const [saved, ollama, preferences] = await Promise.all([client.getLlmSettings(), client.getOllamaSettings(), client.getProductPreferences()])
                 set({
                     preferredProvider: saved.preferredProvider,
                     openaiModel: saved.openaiModel,
                     openrouterModel: saved.openrouterModel,
+                    ollamaModel: ollama.model,
+                    ollamaBaseUrl: ollama.baseUrl,
                     // Credential values are intentionally never read back from agentd.
                     openaiApiKey: '',
                     openrouterApiKey: '',

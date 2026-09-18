@@ -75,12 +75,19 @@ export function LLMProviderSettings() {
             try {
                 if (browserRuntime) {
                     const client = getBrowserAgentdClient()
-                    const [openai, openrouter] = await Promise.all([
+                    const [ollamaSettings, ollama, openai, openrouter] = await Promise.all([
+                        client.getOllamaSettings(),
+                        client.testOllama(),
                         client.hasCredential('openai_api_key'),
                         client.hasCredential('openrouter_api_key'),
                     ])
                     setProviderStatus({
-                        ollama: { available: false, error: 'Ollama is not yet exposed through the browser agentd API' },
+                        ollama: {
+                            available: ollama.success,
+                            model: ollamaSettings.model,
+                            models: ollama.models || [ollamaSettings.model],
+                            ...(ollama.success ? {} : { error: ollama.error || 'Ollama is not responding' }),
+                        },
                         openai: {
                             available: openai.success && openai.exists,
                             model: settings.openaiModel,
@@ -155,7 +162,7 @@ export function LLMProviderSettings() {
     }, [browserRuntime])
 
     const p = settings.preferredProvider
-    const showOllama = !browserRuntime && (p === 'ollama' || p === 'auto')
+    const showOllama = p === 'ollama' || p === 'auto'
     const showOpenAI = p === 'openai' || p === 'auto'
     const showGemini = !browserRuntime && (p === 'gemini' || p === 'auto')
     const showOpenRouter = p === 'openrouter' || p === 'auto'
@@ -169,7 +176,7 @@ export function LLMProviderSettings() {
                 <div className="bg-[var(--color-card-elevated)] border border-[var(--color-border)] rounded-xl p-4">
                     <label className="block text-sm text-[var(--color-text-muted)] mb-3">Preferred Provider</label>
                     <div className="flex gap-2 flex-wrap">
-                        {PROVIDERS.filter(({ id }) => !browserRuntime || id === 'auto' || id === 'openai' || id === 'openrouter').map(({ id, label }) => (
+                        {PROVIDERS.filter(({ id }) => !browserRuntime || id === 'auto' || id === 'ollama' || id === 'openai' || id === 'openrouter').map(({ id, label }) => (
                             <button
                                 key={id}
                                 onClick={() => settings.setPreferredProvider(id)}

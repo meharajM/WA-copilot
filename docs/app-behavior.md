@@ -375,6 +375,9 @@ Pass evidence:
   - `browser`
 - Provider availability is checked from the settings panel.
 - API keys are stored through secure storage, not plain text inputs only.
+- In Edge/Chrome, the supported local-model path is Ollama through the authenticated loopback `agentd` service. The browser sends only validated model/base-URL settings; `agentd` reads no Ollama secret and performs the local `/api/tags` and OpenAI-compatible chat calls. Browser Ollama URLs are restricted to `http://localhost`, `http://127.0.0.1`, or `http://[::1]`.
+- Tauri does not render this product settings card. It exposes only native-host diagnostics and OS capability controls; the browser owns the LLM UI.
+- In the browser product, the selector is limited to `auto`, Ollama, OpenAI/Compatible, and OpenRouter until the remaining provider adapters are moved into `agentd`; Electron retains its existing Gemini/on-device options during transition.
 - Current UI exposes cards for:
   - Ollama
   - OpenAI / Compatible

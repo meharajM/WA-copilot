@@ -75,7 +75,7 @@ const readCredentialPresence = (value: unknown): NativeResult & { exists: boolea
 const readLlmSettings = (value: unknown): LlmSettings => {
   if (!isRecord(value)
     || Object.keys(value).sort().join(',') !== 'openaiModel,openrouterModel,preferredProvider'
-    || !['auto', 'openai', 'openrouter'].includes(value.preferredProvider as string)
+    || !['auto', 'openai', 'openrouter', 'ollama'].includes(value.preferredProvider as string)
     || typeof value.openaiModel !== 'string'
     || typeof value.openrouterModel !== 'string') throw new Error('Invalid LLM settings response')
   return value as unknown as LlmSettings
@@ -88,6 +88,15 @@ const readWhatsAppSettings = (value: unknown): WhatsAppSettings => {
     || typeof value.whatsapp_cloud_phone_number_id !== 'string'
     || typeof value.whatsapp_cloud_api_version !== 'string') throw new Error('Invalid WhatsApp settings response')
   return value as unknown as WhatsAppSettings
+}
+
+const readOllamaSettings = (value: unknown): BrowserOllamaSettings => {
+  if (!isRecord(value)
+    || Object.keys(value).sort().join(',') !== 'baseUrl,model'
+    || typeof value.baseUrl !== 'string'
+    || !/^http:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/.test(value.baseUrl)
+    || typeof value.model !== 'string' || !value.model.trim() || value.model.length > 128) throw new Error('Invalid Ollama settings response')
+  return { baseUrl: value.baseUrl, model: value.model }
 }
 
 const readEmailSettings = (value: unknown): EmailSettings => {
@@ -197,6 +206,18 @@ export interface BrowserWhatsAppSendResult {
   providerMessageId: string
 }
 
+export interface BrowserOllamaSettings {
+  baseUrl: string
+  model: string
+}
+
+export interface BrowserOllamaTestResult {
+  success: boolean
+  modelCount?: number
+  models?: string[]
+  error?: string
+}
+
 const normaliseOrigin = (origin: string): string => {
   const url = new URL(origin)
   if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('Agentd origin must use HTTP(S)')
@@ -214,6 +235,9 @@ export interface BrowserAgentdClient extends ChatClient {
   getWhatsAppSettings(): Promise<WhatsAppSettings>
   saveWhatsAppSettings(settings: WhatsAppSettings): Promise<WhatsAppSettings>
   sendWhatsAppText(to: string, text: string): Promise<BrowserWhatsAppSendResult>
+  getOllamaSettings(): Promise<BrowserOllamaSettings>
+  saveOllamaSettings(settings: BrowserOllamaSettings): Promise<BrowserOllamaSettings>
+  testOllama(): Promise<BrowserOllamaTestResult>
   getEmailSettings(): Promise<EmailSettings>
   saveEmailSettings(settings: EmailSettings): Promise<EmailSettings>
   getPersonaSettings(): Promise<PersonaSettings>
@@ -486,6 +510,15 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     if (!isRecord(value) || value.success !== true || typeof value.providerMessageId !== 'string' || !value.providerMessageId) throw new Error('Invalid WhatsApp send response')
     return { providerMessageId: value.providerMessageId }
   }
+  const getOllamaSettings = async () => readOllamaSettings(await request('/api/v1/settings/ollama'))
+  const saveOllamaSettings = async (settings: BrowserOllamaSettings) => readOllamaSettings(await request('/api/v1/settings/ollama', { method: 'PUT', body: JSON.stringify(settings) }, true))
+  const testOllama = async (): Promise<BrowserOllamaTestResult> => {
+    const value = await request<unknown>('/api/v1/providers/ollama/test', { method: 'POST', body: '{}' }, true)
+    if (!isRecord(value) || typeof value.success !== 'boolean') throw new Error('Invalid Ollama provider test response')
+    if (!value.success) return { success: false, error: errorText(value.error, 'Ollama provider test failed') }
+    if (!Number.isSafeInteger(value.modelCount) || (value.modelCount as number) < 0 || (value.models !== undefined && (!Array.isArray(value.models) || value.models.some((item) => typeof item !== 'string')))) throw new Error('Invalid Ollama provider test response')
+    return { success: true, modelCount: value.modelCount as number, ...(Array.isArray(value.models) ? { models: value.models as string[] } : {}) }
+  }
   const getEmailSettings = async () => readEmailSettings(await request('/api/v1/settings/email'))
   const saveEmailSettings = async (settings: EmailSettings) => readEmailSettings(await request('/api/v1/settings/email', { method: 'PUT', body: JSON.stringify(settings) }, true))
   const getPersonaSettings = async () => readPersonaSettings(await request('/api/v1/settings/persona'))
@@ -628,6 +661,9 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     getWhatsAppSettings,
     saveWhatsAppSettings,
     sendWhatsAppText,
+    getOllamaSettings,
+    saveOllamaSettings,
+    testOllama,
     getEmailSettings,
     saveEmailSettings,
     getPersonaSettings,

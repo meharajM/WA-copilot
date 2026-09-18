@@ -451,6 +451,7 @@ pub enum PreferredProvider {
     Auto,
     Openai,
     Openrouter,
+    Ollama,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -699,6 +700,7 @@ impl CredentialKey {
 enum Provider {
     Openai,
     Openrouter,
+    Ollama,
 }
 
 impl Provider {
@@ -706,6 +708,7 @@ impl Provider {
         match value {
             "openai" => Ok(Self::Openai),
             "openrouter" => Ok(Self::Openrouter),
+            "ollama" => Ok(Self::Ollama),
             _ => Err(()),
         }
     }
@@ -763,6 +766,7 @@ impl Route {
             }
             Self::ProviderTest(Provider::Openai) => "/api/v1/providers/openai/test".into(),
             Self::ProviderTest(Provider::Openrouter) => "/api/v1/providers/openrouter/test".into(),
+            Self::ProviderTest(Provider::Ollama) => "/api/v1/providers/ollama/test".into(),
             Self::ChatSessions => "/api/v1/sessions".into(),
             Self::ChatSessionsCreate => "/api/v1/sessions".into(),
             Self::ChatSession(id) => format!("/api/v1/sessions/{id}"),
@@ -1288,6 +1292,11 @@ mod tests {
             Route::ProviderTest(Provider::Openrouter).path(),
             "/api/v1/providers/openrouter/test"
         );
+        assert_eq!(
+            Route::ProviderTest(Provider::Ollama).path(),
+            "/api/v1/providers/ollama/test"
+        );
+        assert!(Provider::parse("ollama").is_ok());
         assert_eq!(Route::ChatSessions.method(), Method::GET);
         assert_eq!(Route::ChatSessionsCreate.method(), Method::POST);
         assert_eq!(

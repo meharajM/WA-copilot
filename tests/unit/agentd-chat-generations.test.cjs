@@ -1,7 +1,9 @@
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const http = require('node:http')
+const path = require('node:path')
 const test = require('node:test')
+const Database = require('better-sqlite3')
 const { AgentdServer } = require('../../agentd/server.cjs')
 const { makeTempDir } = require('./temp-dir.cjs')
 
@@ -236,6 +238,94 @@ test('agentd aborts provider work on browser cancellation and allows retry', asy
   const retry = await rawRequest(origin, 'POST', '/api/v1/sessions/cancel1/generations', { requestId: 'cancel-r1', content: 'hello' }, auth)
   assert.equal(retry.status, 200)
   assert.equal(retry.text.includes('retry answer'), true)
+  await server.stop()
+  fs.rmSync(dataDir, { recursive: true, force: true })
+})
+
+test('agentd routes browser generation to a local Ollama loopback service without credentials', async () => {
+  const dataDir = makeTempDir('aica-agentd-ollama-')
+  const secret = 'o'.repeat(32)
+  const calls = []
+  const server = new AgentdServer({
+    dataDir,
+    secret,
+    logger: { log() {} },
+    credentials: credentials(),
+    providerFetch: async (url, options) => {
+      calls.push({ url, options })
+      if (url.endsWith('/api/tags')) return new Response(JSON.stringify({ models: [{ name: 'qwen2.5:3b' }] }), { status: 200, headers: { 'content-type': 'application/json' } })
+      assert.equal(url, 'http://127.0.0.1:11434/v1/chat/completions')
+      assert.equal(options.headers.authorization, undefined)
+      return providerResponse('local answer')
+    },
+  })
+  const { origin } = await server.start()
+  const auth = { authorization: `Bearer ${secret}` }
+  assert.equal((await request(origin, 'PUT', '/api/v1/settings/ollama', { baseUrl: 'http://127.0.0.1:11434', model: 'qwen2.5:3b' }, auth)).status, 200)
+  assert.equal((await request(origin, 'PUT', '/api/v1/settings/llm', { preferredProvider: 'ollama', openaiModel: 'gpt-4o-mini', openrouterModel: 'anthropic/claude-3-haiku' }, auth)).status, 200)
+  assert.equal((await request(origin, 'POST', '/api/v1/sessions', { id: 'ollama1', title: 'Local' }, auth)).status, 201)
+  const generated = await request(origin, 'POST', '/api/v1/sessions/ollama1/generations', { requestId: 'ollama-r1', content: 'hello local' }, auth)
+  assert.equal(generated.status, 200)
+  assert.equal(generated.body.generation.provider, 'ollama')
+  assert.equal(generated.body.message.content, 'local answer')
+  assert.equal(calls.filter(call => call.url.endsWith('/api/tags')).length, 1)
+  assert.equal(calls.filter(call => call.url.endsWith('/v1/chat/completions')).length, 1)
+  await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true })
+})
+
+test('agentd keeps Ollama configuration loopback-only and exposes safe model discovery', async () => {
+  const dataDir = makeTempDir('aica-agentd-ollama-settings-')
+  const secret = 'p'.repeat(32)
+  const server = new AgentdServer({
+    dataDir,
+    secret,
+    logger: { log() {} },
+    providerFetch: async url => {
+      assert.equal(url, 'http://localhost:11434/api/tags')
+      return new Response(JSON.stringify({ models: [{ name: 'llama3.2:3b' }, { name: 'bad model\nname' }] }), { status: 200, headers: { 'content-type': 'application/json' } })
+    },
+  })
+  const { origin } = await server.start()
+  const auth = { authorization: `Bearer ${secret}` }
+  assert.equal((await request(origin, 'PUT', '/api/v1/settings/ollama', { baseUrl: 'https://evil.example', model: 'llama3.2:3b' }, auth)).status, 400)
+  assert.equal((await request(origin, 'PUT', '/api/v1/settings/ollama', { baseUrl: 'http://localhost:11434', model: 'llama3.2:3b' }, auth)).status, 200)
+  const tested = await request(origin, 'POST', '/api/v1/providers/ollama/test', {}, auth)
+  assert.deepEqual(tested.body, { success: true, modelCount: 1, models: ['llama3.2:3b'] })
+  await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true })
+})
+
+test('agentd upgrades legacy generation rows without losing provider history', async () => {
+  const dataDir = makeTempDir('aica-agentd-generation-legacy-')
+  const legacy = new Database(path.join(dataDir, 'agentd.db'))
+  legacy.exec(`CREATE TABLE chat_sessions (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  INSERT INTO chat_sessions VALUES ('legacy', 'Legacy chat', 10, 20);
+  CREATE TABLE chat_generations (
+    request_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    model TEXT NOT NULL,
+    provider TEXT NOT NULL CHECK(provider IN ('openai','openrouter')),
+    assistant_message_id TEXT,
+    response_text TEXT,
+    status TEXT NOT NULL CHECK(status IN ('processing','completed')),
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  INSERT INTO chat_generations VALUES ('legacy-r1', 'legacy', 'gpt-4o-mini', 'openai', 'assistant_legacy-r1', 'legacy answer', 'completed', 30, 40);`)
+  legacy.close()
+
+  const server = new AgentdServer({ dataDir, secret: 'm'.repeat(32), logger: { log() {} } })
+  await server.start()
+  const db = new Database(path.join(dataDir, 'agentd.db'), { readonly: true })
+  const row = db.prepare('SELECT request_id,provider,response_text FROM chat_generations WHERE request_id = ?').get('legacy-r1')
+  const schema = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'chat_generations'").get().sql
+  db.close()
+  assert.deepEqual(row, { request_id: 'legacy-r1', provider: 'openai', response_text: 'legacy answer' })
+  assert.match(schema, /ollama/)
   await server.stop()
   fs.rmSync(dataDir, { recursive: true, force: true })
 })
