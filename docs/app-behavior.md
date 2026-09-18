@@ -132,7 +132,21 @@ Pass evidence:
 - If no workspace is set and a file has a native path, the parent folder becomes the session workspace.
 - In the browser, supported text and small image attachments are bounded and persisted through `agentd`; the browser directory picker records a workspace reference without exposing arbitrary native paths to page JavaScript.
 - Voice input is supported through the speech hook.
-- In Electron, offline/native speech is the default path.
+- In Electron, offline/native Vosk speech remains the default path and keeps its
+  model-download/setup flow.
+- In the browser product (including Windows Edge/Chrome), voice input uses the
+  browser Web Speech API when `SpeechRecognition` or
+  `webkitSpeechRecognition` is available. Browser speech is browser/provider-
+  controlled and may require network access; it does not download or execute
+  Vosk models in the browser.
+- Browser voice starts only after the user presses the microphone control, so
+  microphone permission is not requested at page load. A browser that does not
+  expose Web Speech API keeps the microphone control disabled and remains fully
+  usable for text input. Permission, missing-device, unsupported-language and
+  speech-service errors show actionable text instead of silently retrying.
+- The browser path does not open a second `getUserMedia` stream for a level
+  meter; the Web Speech API owns microphone capture. Native Vosk visualization
+  remains unchanged in Electron.
 - Agent execution writes user messages immediately, then streams assistant/tool progress into the owning session.
 - In the browser product, assistant text arrives through authenticated `agentd` SSE events. Canceling a generation aborts daemon/provider work, leaves no partial assistant message, and allows retry with the same request id; cancellation is not shown as an error message.
 - Background memory reflection runs asynchronously after submission.
@@ -142,6 +156,9 @@ Pass evidence:
 - Text submit creates or updates the correct session.
 - Attachments appear in the session and do not break submit.
 - Voice transcript populates the input when supported.
+- In browser QA, grant microphone permission only after clicking the mic; verify
+  interim text, final text, stop/restart, configured `speechLang`, and fallback
+  to text when permission or browser support is unavailable.
 
 ## WhatsApp Channel
 
@@ -433,6 +450,7 @@ Pass evidence:
 - Audit Logs show the local log path.
 - A reveal/open-folder action is available.
 - The UI states logs are local and append-only.
+- In the browser product, audit entries are redacted before durable SQLite persistence in `agentd` and can be downloaded as NDJSON; browser UI never receives a native database path.
 
 Pass evidence:
 
@@ -442,6 +460,7 @@ Pass evidence:
 ## About and System Info
 
 - About shows product name, version, status, platform, and engine labels.
+- In the browser product, version, host platform, runtime and engine labels come from the authenticated `agentd` system-info route; Electron retains its native app/platform labels.
 - It is informational, not a primary configuration surface.
 
 Pass evidence:
