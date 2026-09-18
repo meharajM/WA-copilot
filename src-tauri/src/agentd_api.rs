@@ -1758,10 +1758,7 @@ mod tests {
         assert!(CredentialKey::parse("whatsapp_cloud_access_token").is_ok());
         assert!(CredentialKey::parse("whatsapp_cloud_app_secret").is_ok());
         assert!(CredentialKey::parse("whatsapp_cloud_verify_token").is_ok());
-        for later_slice_key in [
-            "email_imap_password",
-            "gmail_oauth_client_id",
-        ] {
+        for later_slice_key in ["email_imap_password", "gmail_oauth_client_id"] {
             assert!(CredentialKey::parse(later_slice_key).is_err());
         }
         assert!(CredentialKey::parse("arbitrary").is_err());

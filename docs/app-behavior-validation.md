@@ -22,7 +22,7 @@ The 2026-09-18 audit found and corrected browser Email drift: the contract now d
 
 The follow-up runtime-boundary audit also corrected the launch contract: Edge/Chrome has an explicit agentd readiness/pairing state machine, while the Electron dependency modal is no longer described as a browser startup requirement. Gemini is covered by the browser agentd provider slice, and explicit on-device/WebGPU execution is now available in the browser without changing the Tauri native-only boundary. The WhatsApp bridge now clears a legacy persisted Electron autonomous-mode flag at startup and gates browser ingress only on Response Permission, so an old renderer value cannot briefly activate browser polling.
 
-The older support-doc drift identified by the first audit is now corrected in the checked-in HTML manuals, email progress note, and architecture overview. The code-first follow-up also corrected `docs/tester_flow.html`, which had incorrectly presented the legacy Electron flow, PDF ingestion, and Browser MCP/Playwright as browser capabilities. The browser MCP boundary is now a supervised agentd worker for approved external servers; internal/native command definitions remain fail-closed. The remaining limitations are implementation gates (for example browser media delivery and Windows release evidence), not competing product-contract descriptions.
+The older support-doc drift identified by the first audit is now corrected in the checked-in HTML manuals, email progress note, and architecture overview. The code-first follow-up also corrected `docs/tester_flow.html`, which had incorrectly presented the legacy Electron flow, PDF ingestion, and Browser MCP/Playwright as browser capabilities. The browser MCP boundary is now a supervised agentd worker for approved external servers; internal/native command definitions remain fail-closed. The native companion now supervises and restarts a child daemon that it started, while still preserving the independent daemon lifetime. Automatic service installation, recovery after the companion exits, and Windows release evidence remain implementation gates, not competing product-contract descriptions.
 
 ## Validation Scope
 
@@ -65,6 +65,7 @@ The older support-doc drift identified by the first audit is now corrected in th
 - `node scripts/verify-tauri-resources.mjs --sidecar-root src-tauri/sidecar --ui-root dist --platform darwin --target-triple aarch64-apple-darwin`
 - `npm exec vitest run tests/integration/llm-routing.test.ts tests/unit/tauri-ui-boundary.test.ts tests/unit/browser-agentd-client.test.ts`
 - `node --test tests/unit/agentd.test.cjs tests/unit/agentd-chat-generations.test.cjs tests/unit/agentd-settings-persona.test.cjs`
+- `cargo test --manifest-path src-tauri/Cargo.toml --locked` also covers the native supervisor build and descriptor ownership guards; the supervisor restart loop is conservative and target-specific Windows runtime behavior still requires the Windows runner.
 
 The current run completed these checks successfully; build tools emitted only their existing warnings.
 

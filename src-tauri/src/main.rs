@@ -11,6 +11,8 @@ use std::{
     path::PathBuf,
     process::{Child, Command, Stdio},
     sync::Mutex,
+    thread::{self, JoinHandle},
+    time::{Duration, Instant},
 };
 
 #[cfg(windows)]
@@ -41,16 +43,28 @@ const AGENTD_MIGRATION_READER_RESOURCE: &str = "sidecar/aica-migration-reader.ex
 const AGENTD_MIGRATION_READER_RESOURCE: &str = "sidecar/aica-migration-reader";
 const AGENTD_UI_RESOURCE: &str = "ui";
 
+const AGENTD_SUPERVISION_POLL: Duration = Duration::from_millis(500);
+const AGENTD_RESTART_BACKOFF: Duration = Duration::from_secs(2);
+
 struct AgentdProcess {
-    // Keep handle owned by the application state; dropping a Rust Child does
-    // not terminate the process, so agentd survives client exit.
-    _child: Mutex<Option<Child>>,
+    stop: Arc<AtomicBool>,
+    supervisor: Mutex<Option<JoinHandle<()>>>,
 }
 
-// `agentd` is an independently supervised user service. Keep the Child handle
-// only while this host is alive so we can observe ownership, but never kill it
-// when the native window/tray exits. A later companion launch reuses the live
-// descriptor instead of starting a second writer.
+impl Drop for AgentdProcess {
+    fn drop(&mut self) {
+        // The native host is not the daemon's lifetime owner. Stop the monitor
+        // thread, but deliberately do not kill or wait on the child: agentd is
+        // expected to keep serving the browser after the companion exits.
+        self.stop.store(true, Ordering::SeqCst);
+        let _ = self.supervisor.get_mut().ok().and_then(Option::take);
+    }
+}
+
+// `agentd` is an independently supervised user service. The companion watches
+// a child it started and restarts it after a clean crash, while descriptor
+// validation prevents a second writer when another live service owns the data
+// directory. A later companion launch reuses that live descriptor.
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -491,6 +505,72 @@ fn should_spawn_agentd(client: &AgentdClient) -> bool {
     client.origin().is_err()
 }
 
+fn supervise_agentd<R: Runtime + 'static>(
+    app: AppHandle<R>,
+    data_dir: PathBuf,
+    initial_child: Option<Child>,
+    stop: Arc<AtomicBool>,
+) -> JoinHandle<()> {
+    thread::Builder::new()
+        .name("aica-agentd-supervisor".into())
+        .spawn(move || {
+            let client = AgentdClient::with_data_dir(data_dir.clone());
+            let mut child = initial_child;
+            let mut restart_after = Instant::now();
+
+            while !stop.load(Ordering::SeqCst) {
+                if let Some(process) = child.as_mut() {
+                    match process.try_wait() {
+                        Ok(None) => {
+                            thread::sleep(AGENTD_SUPERVISION_POLL);
+                            continue;
+                        }
+                        Ok(Some(status)) => {
+                            eprintln!("[aica] agentd exited ({status}); scheduling restart");
+                            child = None;
+                            restart_after = Instant::now() + AGENTD_RESTART_BACKOFF;
+                        }
+                        Err(error) => {
+                            eprintln!("[aica] agentd supervision stopped: {error}");
+                            break;
+                        }
+                    }
+                }
+
+                if Instant::now() < restart_after {
+                    thread::sleep(AGENTD_SUPERVISION_POLL);
+                    continue;
+                }
+
+                // A separate companion/service may have claimed the runtime
+                // between the child exit and this check. Never start another
+                // writer while its private descriptor still validates.
+                if !should_spawn_agentd(&client) {
+                    thread::sleep(AGENTD_SUPERVISION_POLL);
+                    continue;
+                }
+                if stop.load(Ordering::SeqCst) {
+                    break;
+                }
+
+                match spawn_agentd(&app, &data_dir) {
+                    Ok(next) => {
+                        child = Some(next);
+                        restart_after = Instant::now() + AGENTD_RESTART_BACKOFF;
+                    }
+                    Err(error) => {
+                        eprintln!("[aica] agentd restart failed: {error}");
+                        restart_after = Instant::now() + AGENTD_RESTART_BACKOFF;
+                        thread::sleep(AGENTD_SUPERVISION_POLL);
+                    }
+                }
+            }
+            // Dropping Child does not terminate it; this is intentional so a
+            // companion shutdown leaves the independently running service up.
+        })
+        .expect("agentd supervisor thread could not start")
+}
+
 fn main() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -529,11 +609,15 @@ fn main() {
             } else {
                 None
             };
+            let stop = Arc::new(AtomicBool::new(false));
+            let supervisor =
+                supervise_agentd(app.handle().clone(), data_dir.clone(), child, stop.clone());
             app.manage(AgentdProcess {
-                _child: Mutex::new(child),
+                stop: stop.clone(),
+                supervisor: Mutex::new(Some(supervisor)),
             });
             app.manage(client);
-            app.manage(Arc::new(AtomicBool::new(false)));
+            app.manage(stop);
             create_tray(app.handle())?;
             Ok(())
         })
