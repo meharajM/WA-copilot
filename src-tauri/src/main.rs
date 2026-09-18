@@ -35,6 +35,10 @@ const AGENTD_RUNTIME_RESOURCE: &str = "sidecar/agentd-runtime.exe";
 const AGENTD_RUNTIME_RESOURCE: &str = "sidecar/agentd-runtime";
 const AGENTD_ENTRY_RESOURCE: &str = "sidecar/agentd-http/index.cjs";
 const AGENTD_HELPER_RESOURCE: &str = "sidecar/aica-keyring-helper";
+#[cfg(windows)]
+const AGENTD_MIGRATION_READER_RESOURCE: &str = "sidecar/aica-migration-reader.exe";
+#[cfg(not(windows))]
+const AGENTD_MIGRATION_READER_RESOURCE: &str = "sidecar/aica-migration-reader";
 const AGENTD_UI_RESOURCE: &str = "ui";
 
 struct AgentdProcess {
@@ -455,12 +459,14 @@ fn spawn_agentd<R: Runtime>(app: &AppHandle<R>, data_dir: &PathBuf) -> Result<Ch
     let entry = resource_file(app, AGENTD_ENTRY_RESOURCE)?;
     let helper = resource_file(app, AGENTD_HELPER_RESOURCE)
         .or_else(|_| resource_file(app, "sidecar/aica-keyring-helper.exe"))?;
+    let migration_reader = resource_file(app, AGENTD_MIGRATION_READER_RESOURCE)?;
     let mut command = Command::new(runtime);
     command
         .arg(entry)
         .env_clear()
         .env("AICA_AGENTD_DATA_DIR", data_dir)
         .env("AICA_AGENTD_KEYRING_HELPER", helper)
+        .env("AICA_AGENTD_MIGRATION_READER", migration_reader)
         .current_dir(data_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())

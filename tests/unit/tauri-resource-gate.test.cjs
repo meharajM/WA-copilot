@@ -14,6 +14,7 @@ async function fixture() {
   const files = [
     'agentd-runtime.exe',
     'aica-keyring-helper.exe',
+    'aica-migration-reader.exe',
     'agentd-http/index.cjs',
     'agentd-http/server.cjs',
     'agentd-http/keyring-credential-store.cjs',

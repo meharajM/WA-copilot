@@ -18,6 +18,7 @@
         "build:tauri:win": "tauri build --target x86_64-pc-windows-msvc",
         "build:tauri:web": "vite build --config vite.tauri.config.ts",
         "prepare:agentd:keyring-helper": "node scripts/prepare-agentd-keyring-helper.mjs",
+        "prepare:agentd:migration-reader": "node scripts/prepare-agentd-migration-reader.mjs",
         "prepare:tauri:agentd": "node scripts/prepare-tauri-agentd.mjs",
         "preview": "electron-vite preview",
         "typecheck": "tsc --noEmit",

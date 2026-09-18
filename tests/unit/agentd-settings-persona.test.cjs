@@ -216,7 +216,7 @@ migrationTest('settings PUT routes are fenced while cutover owns the migration h
   await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true })
 })
 
-windowsMigrationTest('Windows settings/persona cutover fails closed without no-reparse descriptor support', async () => {
+windowsMigrationTest('Windows settings/persona cutover uses native no-reparse reader when packaged', async () => {
   const dataDir = makeTempDir('aica-agentd-settings-windows-gate-')
   const sourceRoot = sourceFixture()
   const secret = 'w'.repeat(32)
@@ -226,6 +226,8 @@ windowsMigrationTest('Windows settings/persona cutover fails closed without no-r
   const preview = await request(origin, 'POST', '/api/v1/continuity/preview', { sourceRoot }, bearer)
   await request(origin, 'POST', '/api/v1/continuity/import', { previewId: preview.body.previewId, ownerConfirmation: 'IMPORT_ELECTRON_DATA' }, bearer)
   const confirmed = await request(origin, 'POST', '/api/v1/continuity/settings-persona/confirm', { previewId: preview.body.previewId, scope: 'settings-persona' }, bearer)
-  assert.equal(confirmed.status, 503)
+  const reader = process.env.AICA_AGENTD_MIGRATION_READER || path.join(__dirname, '../../src-tauri/sidecar/aica-migration-reader.exe')
+  assert.equal(confirmed.status, fs.existsSync(reader) ? 200 : 503)
+  if (fs.existsSync(reader)) assert.equal(confirmed.body.state, 'confirmed')
   await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true }); fs.rmSync(sourceRoot, { recursive: true, force: true })
 })

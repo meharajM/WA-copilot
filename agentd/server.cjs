@@ -1,5 +1,6 @@
 const crypto = require('node:crypto')
 const fs = require('node:fs')
+const { execFileSync } = require('node:child_process')
 const http = require('node:http')
 const net = require('node:net')
 const path = require('node:path')
@@ -353,7 +354,16 @@ function writePrivateFileAtomically(filename, contents) {
 
 function readMigrationFile(filename, maxBytes = null) {
   if (process.platform === 'win32' && fs.constants.O_NOFOLLOW === undefined) {
-    throw Object.assign(new Error('Settings migration requires trusted native no-reparse file access on Windows'), { statusCode: 503 })
+    const reader = process.env.AICA_AGENTD_MIGRATION_READER || path.resolve(__dirname, '..', `aica-migration-reader${process.platform === 'win32' ? '.exe' : ''}`)
+    if (!fs.existsSync(reader)) throw Object.assign(new Error('Settings migration requires trusted native no-reparse file access on Windows'), { statusCode: 503 })
+    try {
+      const args = [filename]
+      if (Number.isSafeInteger(maxBytes) && maxBytes >= 0) args.push(String(maxBytes))
+      return execFileSync(reader, args, { stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: Number.isSafeInteger(maxBytes) && maxBytes >= 0 ? maxBytes + 1 : 64 * 1024 * 1024 + 1 })
+    } catch (error) {
+      if (error?.status === 3) throw Object.assign(new Error('Migration file is too large'), { statusCode: 413 })
+      throw Object.assign(new Error('Migration file unavailable'), { statusCode: 409 })
+    }
   }
   const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0)
   let handle

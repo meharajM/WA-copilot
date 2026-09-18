@@ -6,6 +6,7 @@ const test = require('node:test')
 const root = path.resolve(__dirname, '../..')
 const config = JSON.parse(fs.readFileSync(path.join(root, 'src-tauri/tauri.conf.json'), 'utf8'))
 const rust = fs.readFileSync(path.join(root, 'src-tauri/src/main.rs'), 'utf8')
+const agentdApi = fs.readFileSync(path.join(root, 'src-tauri/src/agentd_api.rs'), 'utf8')
 const runner = fs.readFileSync(path.join(root, 'scripts/tauri-agentd-runner.cjs'), 'utf8')
 const windowsWorkflow = fs.readFileSync(path.join(root, '.github/workflows/tauri-windows.yml'), 'utf8')
 
@@ -14,14 +15,19 @@ test('Tauri package declares fixed agentd runtime, entrypoint, and keyring helpe
     'sidecar/agentd-runtime*': 'sidecar/',
     'sidecar/agentd-http': 'sidecar/agentd-http',
     'sidecar/aica-keyring-helper*': 'sidecar/',
+    'sidecar/aica-migration-reader*': 'sidecar/',
     '../dist/': 'ui/',
   })
   assert.match(rust, /const AGENTD_RUNTIME_RESOURCE: &str = "sidecar\/agentd-runtime"/)
   assert.match(rust, /const AGENTD_RUNTIME_RESOURCE: &str = "sidecar\/agentd-runtime\.exe"/)
   assert.match(rust, /const AGENTD_ENTRY_RESOURCE: &str = "sidecar\/agentd-http\/index\.cjs"/)
   assert.match(rust, /const AGENTD_HELPER_RESOURCE: &str = "sidecar\/aica-keyring-helper"/)
+  assert.match(rust, /const AGENTD_MIGRATION_READER_RESOURCE: &str = "sidecar\/aica-migration-reader\.exe"/)
+  assert.match(rust, /AICA_AGENTD_MIGRATION_READER/)
   assert.match(rust, /const AGENTD_UI_RESOURCE: &str = "ui"/)
   assert.match(rust, /AICA_AGENTD_UI_ROOT/)
+  assert.match(agentdApi, /fn reject_reparse_path\(path: &Path\)/)
+  assert.match(agentdApi, /let source_for_agentd = source_path\.to_path_buf\(\)/)
 })
 
 test('Windows sidecar preparation preserves executable extensions', () => {
@@ -35,6 +41,12 @@ test('Sidecar preparation removes stale opposite-platform executables', () => {
   const keyring = fs.readFileSync(path.join(root, 'scripts/prepare-agentd-keyring-helper.mjs'), 'utf8')
   assert.match(keyring, /staleKeyringHelperPath = join\(resourcesDirectory, `aica-keyring-helper\$\{executableExtension \? '' : '\.exe'\}`\)/)
   assert.match(keyring, /await rm\(staleKeyringHelperPath, \{ force: true \}\)\s+await cp\(/)
+})
+
+test('Windows package stages a native migration reader', () => {
+  const preparation = fs.readFileSync(path.join(root, 'scripts/prepare-agentd-migration-reader.mjs'), 'utf8')
+  assert.match(preparation, /aica-migration-reader\$\{executableExtension\}/)
+  assert.match(preparation, /--bin', 'aica-migration-reader'/)
 })
 
 test('packaged runner owns agentd startup and does not accept renderer-selected commands', () => {
@@ -58,13 +70,16 @@ test('Windows CI runs target-specific native host tests before packaging', () =>
 
 test('Windows CI verifies prepared sidecar and browser resources before packaging', () => {
   const keyring = windowsWorkflow.indexOf('npm run prepare:agentd:keyring-helper')
+  const migrationReader = windowsWorkflow.indexOf('npm run prepare:agentd:migration-reader')
   const sidecar = windowsWorkflow.indexOf('npm run prepare:tauri:agentd')
   const resourceGate = windowsWorkflow.indexOf('node scripts/verify-tauri-resources.mjs')
   const bundle = windowsWorkflow.indexOf('npm run build:tauri:win')
   assert.notEqual(keyring, -1)
+  assert.notEqual(migrationReader, -1)
   assert.notEqual(sidecar, -1)
   assert.notEqual(resourceGate, -1)
   assert.ok(keyring < resourceGate, 'keyring helper must be prepared before resource verification')
+  assert.ok(migrationReader < resourceGate, 'migration reader must be prepared before resource verification')
   assert.ok(sidecar < resourceGate, 'agentd sidecar must be prepared before resource verification')
   assert.ok(resourceGate < bundle, 'resource verification must run before packaging')
 })

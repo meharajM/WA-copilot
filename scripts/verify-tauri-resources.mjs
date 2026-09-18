@@ -58,11 +58,13 @@ export async function verifyTauriResources({
   const extension = platform === 'win32' ? '.exe' : ''
   const runtime = join(sidecar, `agentd-runtime${extension}`)
   const helper = join(sidecar, `aica-keyring-helper${extension}`)
+  const migrationReader = join(sidecar, `aica-migration-reader${extension}`)
   const betterSqliteRoot = join(sidecar, 'agentd-http', 'node_modules', 'better-sqlite3')
   const oppositeExtension = extension ? '' : '.exe'
   const requiredFiles = [
     runtime,
     helper,
+    migrationReader,
     join(sidecar, 'agentd-http', 'index.cjs'),
     join(sidecar, 'agentd-http', 'server.cjs'),
     join(sidecar, 'agentd-http', 'keyring-credential-store.cjs'),
@@ -74,7 +76,7 @@ export async function verifyTauriResources({
   for (const path of requiredFiles) {
     if (!(await isFile(path))) errors.push(`missing staged resource: ${relative(process.cwd(), path)}`)
   }
-  for (const path of [join(sidecar, `agentd-runtime${oppositeExtension}`), join(sidecar, `aica-keyring-helper${oppositeExtension}`)]) {
+  for (const path of [join(sidecar, `agentd-runtime${oppositeExtension}`), join(sidecar, `aica-keyring-helper${oppositeExtension}`), join(sidecar, `aica-migration-reader${oppositeExtension}`)]) {
     if (await isFile(path)) errors.push(`unexpected platform resource: ${relative(process.cwd(), path)}`)
   }
   if (!(await findAsset(ui, '.js'))) errors.push(`missing staged browser JavaScript asset under: ${relative(process.cwd(), ui)}`)

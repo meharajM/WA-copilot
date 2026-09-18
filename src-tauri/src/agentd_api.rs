@@ -176,6 +176,31 @@ fn non_empty_env(name: &str) -> Option<String> {
     env::var(name).ok().filter(|value| !value.is_empty())
 }
 
+#[cfg(windows)]
+fn reject_reparse_path(path: &Path) -> Result<(), ()> {
+    use std::os::windows::fs::MetadataExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+
+    if !path.is_absolute() {
+        return Err(());
+    }
+    let mut current = Some(path);
+    while let Some(candidate) = current {
+        let metadata = std::fs::symlink_metadata(candidate).map_err(|_| ())?;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(());
+        }
+        let Some(parent) = candidate.parent() else {
+            break;
+        };
+        if parent == candidate {
+            break;
+        }
+        current = Some(parent);
+    }
+    Ok(())
+}
+
 fn open_private_descriptor(path: &std::path::Path) -> Result<File, ()> {
     #[cfg(unix)]
     let file = {
@@ -1013,7 +1038,14 @@ impl AgentdClient {
     }
 
     pub async fn continuity_preview(&self, source_root: String) -> Result<ContinuityPreview, ()> {
-        let source = Path::new(&source_root).canonicalize().map_err(|_| ())?;
+        let source_path = Path::new(&source_root);
+        #[cfg(windows)]
+        reject_reparse_path(source_path)?;
+        let source = source_path.canonicalize().map_err(|_| ())?;
+        #[cfg(windows)]
+        let source_for_agentd = source_path.to_path_buf();
+        #[cfg(not(windows))]
+        let source_for_agentd = source.clone();
         if !source.is_dir() || source_root.len() > MAX_WORKSPACE_PATH_BYTES * 4 {
             return Err(());
         }
@@ -1026,8 +1058,8 @@ impl AgentdClient {
         if source == target || source.starts_with(&target) || target.starts_with(&source) {
             return Err(());
         }
-        let body =
-            serde_json::to_vec(&serde_json::json!({ "sourceRoot": source })).map_err(|_| ())?;
+        let body = serde_json::to_vec(&serde_json::json!({ "sourceRoot": source_for_agentd }))
+            .map_err(|_| ())?;
         self.request(Route::ContinuityPreview, Some(&body)).await
     }
 

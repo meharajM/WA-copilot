@@ -5,8 +5,8 @@
   "version": "1.0.0",
   "identifier": "com.aica.tauri-pilot",
   "build": {
-    "beforeDevCommand": "npm run prepare:agentd:keyring-helper && npm run prepare:tauri:agentd && npm run dev:tauri:web",
-    "beforeBuildCommand": "npm run build:tauri:web && npm run prepare:agentd:keyring-helper && npm run prepare:tauri:agentd",
+    "beforeDevCommand": "npm run prepare:agentd:keyring-helper && npm run prepare:agentd:migration-reader && npm run prepare:tauri:agentd && npm run dev:tauri:web",
+    "beforeBuildCommand": "npm run build:tauri:web && npm run prepare:agentd:keyring-helper && npm run prepare:agentd:migration-reader && npm run prepare:tauri:agentd",
     "devUrl": "http://127.0.0.1:5173/tauri.html",
     "frontendDist": "../dist"
   },
@@ -34,6 +34,7 @@
       "sidecar/agentd-runtime*": "sidecar/",
       "sidecar/agentd-http": "sidecar/agentd-http",
       "sidecar/aica-keyring-helper*": "sidecar/",
+      "sidecar/aica-migration-reader*": "sidecar/",
       "../dist/": "ui/"
     }
   }
