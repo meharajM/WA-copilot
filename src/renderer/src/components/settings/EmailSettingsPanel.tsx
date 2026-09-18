@@ -8,7 +8,7 @@
  */
 
 import React, { useEffect, useMemo, useState } from 'react'
-import { useEmailStore, type EmailProvider, type GmailAuthMode } from '../../stores/emailStore'
+import { flushEmailSettingsPersistence, useEmailStore, type EmailProvider, type GmailAuthMode } from '../../stores/emailStore'
 import { Card } from '../primitives/Card'
 import electron from '../../lib/electron'
 import { buildEmailRuntimeConfig } from '../../lib/email-runtime'
@@ -212,6 +212,9 @@ export function EmailSettingsPanel() {
         if (!imap.success || !smtp.success) throw new Error('Email credential could not be stored securely')
       }
     }
+    // Setter persistence is asynchronous in browser mode. Flush before tests
+    // or a success toast can race agentd and read the previous configuration.
+    await flushEmailSettingsPersistence()
   }
 
   const handleGoogleOAuthSignIn = async () => {

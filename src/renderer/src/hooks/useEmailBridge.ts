@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import electron, { isElectron } from '../lib/electron'
-import { useEmailStore } from '../stores/emailStore'
+import { flushEmailSettingsPersistence, useEmailStore } from '../stores/emailStore'
 import { useChatStore, type ChatSession } from '../stores/chatStore'
 import { buildEmailRuntimeConfig } from '../lib/email-runtime'
 import { generateEmailSessionKey, generateEmailSessionTitle, convertEmailToLLMMessage, normalizeEmailAddress, type EmailMessage } from '../lib/email-integration'
@@ -124,6 +124,10 @@ export function useEmailBridge(): void {
     let cancelled = false
     let timer: ReturnType<typeof setTimeout> | null = null
     const poll = async () => {
+      if (cancelled) return
+      // Enable/Auto-Reply toggles persist through an async agentd queue. Do
+      // not report connected or claim events until that mutation is durable.
+      await flushEmailSettingsPersistence()
       if (cancelled) return
       if (!config.enabled) {
         setConnectionState({ status: 'disconnected', error: null, lastSyncAt: null, unreadCount: 0 })

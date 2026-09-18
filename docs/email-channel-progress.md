@@ -28,7 +28,7 @@ Electron flow:
 Browser flow:
 
 1. User configures settings in Edge/Chrome.
-2. The browser persists non-secret settings and write-only credentials through authenticated agentd routes.
+2. The browser persists non-secret settings and write-only credentials through authenticated agentd routes. Form writes are serialized and flushed before Test Connection or Save Setup reports success, so rapid edits cannot restore stale settings.
 3. `Test Connection` runs a bounded IMAP/SMTP transport probe; the daemon mailbox worker separately starts only when Enable, app-password, IMAP TLS/host, and OS-credential gates pass.
 4. The daemon polls bounded text/plain IMAP or Gmail API messages using durable cursors and queues normalized inbound events; the browser claims them only when `Enable Email Channel` and `Auto-Reply` are both on.
 5. Browser drafts and session records remain agentd-owned. `Auto-Reply` only hydrates review sessions in this slice; it does not invoke the LLM or send automatic replies. Rich MIME/attachments and native file/credential operations remain outside the browser slice; approved text-only SMTP/Gmail drafts use the daemon route.

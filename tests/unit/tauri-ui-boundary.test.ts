@@ -136,6 +136,8 @@ describe('browser-first UI boundary', () => {
 
     expect(emailSettings).toContain("client.setCredential('email_imap_password', value)")
     expect(emailSettings).toContain("client.setCredential('email_smtp_password', value)")
+    expect(readSource('stores/emailStore.ts')).toContain('flushEmailSettingsPersistence')
+    expect(readSource('hooks/useEmailBridge.ts')).toContain('await flushEmailSettingsPersistence()')
     expect(emailSettings).toContain('does not generate or send automatic replies')
     expect(drafts).toContain('gated text-only IMAP/Gmail polling')
     expect(drafts).not.toContain('IMAP polling, OAuth, attachments, and insecure SMTP remain unavailable.')

@@ -126,6 +126,32 @@ const browserStorage: StateStorage = {
   removeItem: async () => undefined,
 }
 
+// Browser settings are durable agentd state, not renderer state. Serialize
+// writes so rapid form edits cannot finish out of order and overwrite newer
+// values. Keep this queue module-local; it is only a transport concern.
+let browserHydrationPromise: Promise<void> = Promise.resolve()
+let browserHydrated = !isBrowserProduct()
+let browserDirtyBeforeHydration = false
+let applyingBrowserSettings = false
+let browserSaveQueue: Promise<void> = Promise.resolve()
+
+const queueBrowserSettingsSave = (config: EmailConfig): void => {
+  if (!isBrowserProduct() || !browserHydrated) return
+  const queued = browserSaveQueue
+    .catch(() => undefined)
+    .then(() => getBrowserAgentdClient().saveEmailSettings(config))
+    .then(() => undefined)
+  browserSaveQueue = queued
+  void queued.catch(() => undefined)
+}
+
+/** Wait until browser email settings writes have reached authenticated agentd. */
+export const flushEmailSettingsPersistence = async (): Promise<void> => {
+  if (!isBrowserProduct()) return
+  await browserHydrationPromise
+  await browserSaveQueue
+}
+
 export const useEmailStore = create<EmailState>()(
   persist(
     (set) => ({
@@ -201,13 +227,24 @@ export const useEmailStore = create<EmailState>()(
 )
 
 if (isBrowserProduct()) {
-  let hydrated = false
-  void getBrowserAgentdClient().getEmailSettings().then((config) => {
-    useEmailStore.setState({ config })
-    hydrated = true
-  }).catch(() => { hydrated = true })
+  browserHydrationPromise = getBrowserAgentdClient().getEmailSettings().then((config) => {
+    if (!browserDirtyBeforeHydration) {
+      applyingBrowserSettings = true
+      useEmailStore.setState({ config })
+      applyingBrowserSettings = false
+    }
+    browserHydrated = true
+    if (browserDirtyBeforeHydration) queueBrowserSettingsSave(useEmailStore.getState().config)
+  }).catch(() => {
+    browserHydrated = true
+    if (browserDirtyBeforeHydration) queueBrowserSettingsSave(useEmailStore.getState().config)
+  })
   useEmailStore.subscribe((state, previous) => {
-    if (!hydrated || state.config === previous.config) return
-    void getBrowserAgentdClient().saveEmailSettings(state.config).catch(() => undefined)
+    if (state.config === previous.config || applyingBrowserSettings) return
+    if (!browserHydrated) {
+      browserDirtyBeforeHydration = true
+      return
+    }
+    queueBrowserSettingsSave(state.config)
   })
 }

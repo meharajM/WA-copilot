@@ -141,6 +141,7 @@ The WebGPU slice is covered by renderer routing and boundary tests plus the exis
 - Google OAuth is only used when Gmail auth mode is set to Google sign-in and OAuth is actually connected.
 - Daemon-ingested inbound email remains queued when `Auto-Reply` is off; when it is on, the browser hydrates a review session but does not run automatic reply generation.
 - Browser app-password writes use agentd's `email_imap_password` and `email_smtp_password` slots; `email_mcp_password` is retained only as a read-only continuity fallback.
+- Browser email form writes are serialized and flushed before connection-test or save success is reported, preventing an out-of-order loopback response from restoring stale settings.
 
 Evidence:
 
