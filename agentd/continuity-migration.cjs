@@ -3,6 +3,9 @@ const fs = require('node:fs')
 const path = require('node:path')
 const Database = require('better-sqlite3')
 
+const MANIFEST_VERSION = 1
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
 // This module deliberately stages into a new directory. It never replaces the
 // live agentd database or reads credentials. Cutover remains a separate,
 // schema-aware release gate.
@@ -16,6 +19,97 @@ const SECRET_SCHEMA = /(?:^|[^a-z])(secret|token|password|passwd|api[_-]?(?:key|
 
 function fail(message, statusCode = 400) {
   throw Object.assign(new Error(message), { statusCode })
+}
+
+function digest(bytes) {
+  return crypto.createHash('sha256').update(bytes).digest('hex')
+}
+
+function writeAtomically(filename, bytes) {
+  const temporary = `${filename}.${crypto.randomUUID()}.tmp`
+  let handle
+  try {
+    handle = fs.openSync(temporary, 'wx', 0o600)
+    fs.writeFileSync(handle, bytes)
+    fs.fsyncSync(handle)
+    fs.closeSync(handle)
+    handle = undefined
+    fs.renameSync(temporary, filename)
+    fs.chmodSync(filename, 0o600)
+  } catch (error) {
+    if (handle !== undefined) {
+      try { fs.closeSync(handle) } catch {}
+    }
+    try { fs.unlinkSync(temporary) } catch {}
+    throw error
+  }
+}
+
+function writeNewAtomically(filename, bytes) {
+  const temporary = `${filename}.${crypto.randomUUID()}.tmp`
+  let handle
+  try {
+    handle = fs.openSync(temporary, 'wx', 0o600)
+    fs.writeFileSync(handle, bytes)
+    fs.fsyncSync(handle)
+    fs.closeSync(handle)
+    handle = undefined
+    // Hard-linking a fully written temporary file makes destination creation
+    // exclusive on both Unix and Windows; a concurrent destination cannot be
+    // replaced by rename semantics.
+    fs.linkSync(temporary, filename)
+    fs.unlinkSync(temporary)
+    fs.chmodSync(filename, 0o600)
+  } catch (error) {
+    if (handle !== undefined) {
+      try { fs.closeSync(handle) } catch {}
+    }
+    try { fs.unlinkSync(temporary) } catch {}
+    throw error
+  }
+}
+
+function stagedFile(root, id) {
+  if (typeof id !== 'string' || !/^[a-z0-9-]+$/.test(id)) fail('Invalid staged store id', 409)
+  const filename = path.join(root, id)
+  let listed
+  try { listed = fs.lstatSync(filename) } catch (error) {
+    if (error.code === 'ENOENT') fail(`Missing staged migration file: ${id}`, 409)
+    throw error
+  }
+  if (!listed.isFile() || listed.isSymbolicLink()) fail(`Unsafe staged migration file: ${id}`, 409)
+  return filename
+}
+
+function validateStagedSnapshot(stagingRoot, preview) {
+  let rootStat
+  try { rootStat = fs.lstatSync(stagingRoot) } catch (error) {
+    if (error.code === 'ENOENT') fail('Migration staging disappeared', 409)
+    throw error
+  }
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) fail('Unsafe migration staging path', 409)
+  const manifestPath = path.join(stagingRoot, 'manifest.json')
+  let manifestStat
+  try { manifestStat = fs.lstatSync(manifestPath) } catch (error) {
+    if (error.code === 'ENOENT') fail('Migration manifest is incomplete', 409)
+    throw error
+  }
+  if (!manifestStat.isFile() || manifestStat.isSymbolicLink()) fail('Unsafe migration manifest', 409)
+  let persisted
+  try { persisted = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) } catch { fail('Invalid migration manifest', 409) }
+  if (persisted.version !== MANIFEST_VERSION || persisted.previewId !== preview.previewId
+    || JSON.stringify(persisted.manifest) !== JSON.stringify(preview.manifest)) {
+    fail('Staged migration manifest does not match preview', 409)
+  }
+  for (const entry of preview.manifest.entries) {
+    const bytes = fs.readFileSync(stagedFile(stagingRoot, entry.id))
+    if (bytes.length !== entry.byteSize || digest(bytes) !== entry.sha256) fail(`Staged migration file changed: ${entry.id}`, 409)
+  }
+  const allowed = new Set(['manifest.json', ...preview.manifest.entries.map(entry => entry.id)])
+  for (const filename of fs.readdirSync(stagingRoot)) {
+    if (!allowed.has(filename)) fail(`Unexpected staged migration file: ${filename}`, 409)
+  }
+  return true
 }
 
 function rootPath(input, targetRoot) {
@@ -83,7 +177,7 @@ function inspect(sourceRoot, targetRoot) {
       schemaVersion: store.schemaVersion,
       requiresReauthentication: store.requiresReauthentication,
       byteSize: bytes.length,
-      sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+      sha256: digest(bytes),
     })
   }
   if (!entries.length) fail('No allowlisted Electron stores found', 404)
@@ -97,14 +191,21 @@ function createPreview(sourceRoot, targetRoot) {
 }
 
 function importPreview(preview, targetRoot) {
-  const latest = inspect(preview.manifest.sourceRoot, targetRoot)
-  if (JSON.stringify(latest.entries) !== JSON.stringify(preview.manifest.entries)) fail('Source changed after preview', 409)
+  if (!preview || typeof preview !== 'object' || !UUID.test(preview.previewId) || !preview.manifest || !Array.isArray(preview.manifest.entries)) fail('Invalid migration preview', 400)
   const stagingRoot = path.join(targetRoot, '.migration-staging', preview.previewId)
   const stagingParent = path.dirname(stagingRoot)
   if (fs.existsSync(stagingParent)) {
     const parentStat = fs.lstatSync(stagingParent)
     if (!parentStat.isDirectory() || parentStat.isSymbolicLink()) fail('Unsafe migration staging path')
   } else fs.mkdirSync(stagingParent, { recursive: false, mode: 0o700 })
+  if (fs.existsSync(stagingRoot)) {
+    // A native request may time out after the snapshot is complete. Validate
+    // and return it instead of copying again or requiring a second preview.
+    validateStagedSnapshot(stagingRoot, preview)
+    return { migrationId: preview.previewId, state: 'staged', entries: preview.manifest.entries }
+  }
+  const latest = inspect(preview.manifest.sourceRoot, targetRoot)
+  if (JSON.stringify(latest.entries) !== JSON.stringify(preview.manifest.entries)) fail('Source changed after preview', 409)
   fs.mkdirSync(stagingRoot, { recursive: false, mode: 0o700 })
   try {
     for (const entry of preview.manifest.entries) {
@@ -113,10 +214,9 @@ function importPreview(preview, targetRoot) {
       const bytes = fs.readFileSync(source)
       const sourceAfterRead = fs.lstatSync(source)
       if (!sourceAfterRead.isFile() || sourceAfterRead.isSymbolicLink() || bytes.length !== entry.byteSize || crypto.createHash('sha256').update(bytes).digest('hex') !== entry.sha256) fail(`Source changed after preview: ${entry.id}`, 409)
-      fs.writeFileSync(destination, bytes, { flag: 'wx', mode: 0o600 })
-      fs.chmodSync(destination, 0o600)
+      writeNewAtomically(destination, bytes)
     }
-    fs.writeFileSync(path.join(stagingRoot, 'manifest.json'), JSON.stringify({ ...preview, stagedAt: Date.now() }) + '\n', { flag: 'wx', mode: 0o600 })
+    writeAtomically(path.join(stagingRoot, 'manifest.json'), Buffer.from(JSON.stringify({ version: MANIFEST_VERSION, ...preview, stagedAt: Date.now() }) + '\n'))
     return { migrationId: preview.previewId, state: 'staged', entries: preview.manifest.entries }
   } catch (error) {
     fs.rmSync(stagingRoot, { recursive: true, force: true })

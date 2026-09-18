@@ -928,14 +928,18 @@ class AgentdServer {
       return json(res, 403, { error: 'Explicit owner confirmation required' })
     }
     const result = continuityMigration.importPreview(preview, this.dataDir)
-    this.continuityPreviews.delete(preview.previewId)
+    // Keep the short-lived preview so a native caller can safely retry after a
+    // lost response. The migration helper validates the existing staged
+    // snapshot and remains idempotent; the TTL still bounds replay lifetime.
     return json(res, 200, { ...result, secretsExcluded: true, liveDataChanged: false })
   }
 
   async continuityRollback(req, res) {
     this.authorizeNative(req)
     const body = await readBody(req, 8 * 1024)
-    return json(res, 200, continuityMigration.rollback(body.migrationId, this.dataDir))
+    const result = continuityMigration.rollback(body.migrationId, this.dataDir)
+    this.continuityPreviews.delete(body.migrationId)
+    return json(res, 200, result)
   }
 
   async llmSettings(req, res) {
