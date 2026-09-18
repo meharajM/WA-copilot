@@ -36,7 +36,10 @@ function sourceFixture() {
   return sourceRoot
 }
 
-test('native settings/persona cutover is schema-aware, transactional, fenced, and idempotent', async () => {
+const migrationTest = process.platform === 'win32' ? test.skip : test
+const windowsMigrationTest = process.platform === 'win32' ? test : test.skip
+
+migrationTest('native settings/persona cutover is schema-aware, transactional, fenced, and idempotent', async () => {
   const dataDir = makeTempDir('aica-agentd-settings-persona-')
   const sourceRoot = sourceFixture()
   const secret = 's'.repeat(32)
@@ -86,7 +89,7 @@ test('native settings/persona cutover is schema-aware, transactional, fenced, an
   fs.rmSync(sourceRoot, { recursive: true, force: true })
 })
 
-test('settings/persona rejects duplicate or unknown Electron settings fields', async () => {
+migrationTest('settings/persona rejects duplicate or unknown Electron settings fields', async () => {
   const dataDir = makeTempDir('aica-agentd-settings-schema-')
   const sourceRoot = sourceFixture()
   const secret = 's'.repeat(32)
@@ -105,7 +108,7 @@ test('settings/persona rejects duplicate or unknown Electron settings fields', a
   await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true })
 })
 
-test('cutover status survives restart and rollback rejects tampered backups', async () => {
+migrationTest('cutover status survives restart and rollback rejects tampered backups', async () => {
   const dataDir = makeTempDir('aica-agentd-settings-restart-')
   const sourceRoot = sourceFixture()
   const secret = 's'.repeat(32)
@@ -128,7 +131,7 @@ test('cutover status survives restart and rollback rejects tampered backups', as
   await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true }); fs.rmSync(sourceRoot, { recursive: true, force: true })
 })
 
-test('cutover refuses malformed or secret-bearing prior settings before creating a backup', async () => {
+migrationTest('cutover refuses malformed or secret-bearing prior settings before creating a backup', async () => {
   const dataDir = makeTempDir('aica-agentd-settings-unsafe-prior-')
   const sourceRoot = sourceFixture()
   const secret = 'u'.repeat(32)
@@ -149,7 +152,7 @@ test('cutover refuses malformed or secret-bearing prior settings before creating
   await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true }); fs.rmSync(sourceRoot, { recursive: true, force: true })
 })
 
-test('restart converts an interrupted applying cutover with a backup reference into manual recovery', async () => {
+migrationTest('restart converts an interrupted applying cutover with a backup reference into manual recovery', async () => {
   const dataDir = makeTempDir('aica-agentd-settings-applying-restart-')
   const sourceRoot = sourceFixture()
   const secret = 'v'.repeat(32)
@@ -170,7 +173,7 @@ test('restart converts an interrupted applying cutover with a backup reference i
   await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true }); fs.rmSync(sourceRoot, { recursive: true, force: true })
 })
 
-test('confirmed cutover restart requires fresh native confirmation', async () => {
+migrationTest('confirmed cutover restart requires fresh native confirmation', async () => {
   const dataDir = makeTempDir('aica-agentd-settings-token-restart-')
   const sourceRoot = sourceFixture()
   const secret = 'x'.repeat(32)
@@ -195,7 +198,7 @@ test('confirmed cutover restart requires fresh native confirmation', async () =>
   await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true }); fs.rmSync(sourceRoot, { recursive: true, force: true })
 })
 
-test('settings PUT routes are fenced while cutover owns the migration hold', async () => {
+migrationTest('settings PUT routes are fenced while cutover owns the migration hold', async () => {
   const dataDir = makeTempDir('aica-agentd-settings-put-fence-')
   const secret = 'z'.repeat(32)
   const server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
@@ -211,4 +214,18 @@ test('settings PUT routes are fenced while cutover owns the migration hold', asy
   }
   for (const [pathname, body] of Object.entries(bodies)) assert.equal((await request(origin, 'PUT', pathname, body, bearer)).status, 409)
   await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true })
+})
+
+windowsMigrationTest('Windows settings/persona cutover fails closed without no-reparse descriptor support', async () => {
+  const dataDir = makeTempDir('aica-agentd-settings-windows-gate-')
+  const sourceRoot = sourceFixture()
+  const secret = 'w'.repeat(32)
+  const server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
+  const { origin } = await server.start()
+  const bearer = { authorization: `Bearer ${secret}` }
+  const preview = await request(origin, 'POST', '/api/v1/continuity/preview', { sourceRoot }, bearer)
+  await request(origin, 'POST', '/api/v1/continuity/import', { previewId: preview.body.previewId, ownerConfirmation: 'IMPORT_ELECTRON_DATA' }, bearer)
+  const confirmed = await request(origin, 'POST', '/api/v1/continuity/settings-persona/confirm', { previewId: preview.body.previewId, scope: 'settings-persona' }, bearer)
+  assert.equal(confirmed.status, 503)
+  await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true }); fs.rmSync(sourceRoot, { recursive: true, force: true })
 })
