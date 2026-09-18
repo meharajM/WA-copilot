@@ -183,11 +183,18 @@ Pass evidence:
 - If the generated response indicates escalation, the admin/personal phone is notified.
 - Successful customer resolutions are logged to intelligence stats.
 
+### Browser-first transport
+
+- Edge/Chrome owns the product workflow. When WhatsApp Cloud transport is selected and configured, an explicit user send from the browser chat input uses the authenticated `agentd` Cloud API route; the access token stays in the native OS credential store and never reaches the page.
+- Browser sends fail closed when Cloud transport or credentials are unavailable. QR/WhatsApp Web automation and autonomous direct-send remain unavailable until their provider-backed daemon adapters and outbox safety gates are migrated.
+- A failed channel send does not discard the local chat submission; the browser records the failure through its normal audit/error path so the operator can retry after fixing configuration.
+
 Pass evidence:
 
 - Non-text customer media does not enter the normal autonomous handling path.
 - Long-running requests send exactly one courtesy notification.
 - Escalations notify the admin channel.
+- A configured Cloud send reaches Meta through `agentd`, while no credential value appears in browser responses, logs or persisted renderer state.
 
 ### Resolution audit
 

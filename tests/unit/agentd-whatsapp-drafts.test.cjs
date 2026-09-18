@@ -74,3 +74,57 @@ test('concurrent WhatsApp retries and legacy endpoint ordering stay idempotent',
   assert.equal(transitions.filter(result => result.status === 409).length, 1)
   await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true })
 })
+
+test('browser-authenticated explicit WhatsApp sends use Cloud transport without returning secrets', async () => {
+  const dataDir = makeTempDir('aica-agentd-wa-send-')
+  const secret = 'w'.repeat(32)
+  const calls = []
+  const credentials = {
+    async get(key) { assert.equal(key, 'whatsapp_cloud_access_token'); return 'cloud-secret-token' },
+    async exists() { return true },
+    async set() {},
+    async delete() {},
+  }
+  const server = new AgentdServer({
+    dataDir,
+    secret,
+    credentials,
+    providerFetch: async (url, init) => {
+      calls.push({ url, init })
+      return new Response(JSON.stringify({ messages: [{ id: 'wamid.123' }] }), { status: 200, headers: { 'content-type': 'application/json' } })
+    },
+    logger: { log() {} },
+  })
+  const { origin } = await server.start()
+  const auth = { authorization: `Bearer ${secret}` }
+  const configured = await request(origin, 'PUT', '/api/v1/settings/whatsapp', {
+    whatsapp_transport: 'cloud',
+    whatsapp_cloud_phone_number_id: '1234567890',
+    whatsapp_cloud_api_version: 'v23.0',
+  }, auth)
+  assert.equal(configured.status, 200)
+  const sent = await request(origin, 'POST', '/api/v1/whatsapp/messages', { to: '+1 (415) 555-1212', text: 'hello from browser' }, auth)
+  assert.deepEqual(sent.body, { success: true, providerMessageId: 'wamid.123' })
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].url, 'https://graph.facebook.com/v23.0/1234567890/messages')
+  assert.equal(calls[0].init.headers.Authorization, 'Bearer cloud-secret-token')
+  assert.deepEqual(JSON.parse(calls[0].init.body), {
+    messaging_product: 'whatsapp', to: '14155551212', type: 'text', text: { body: 'hello from browser' },
+  })
+  assert.equal(JSON.stringify(sent.body).includes('cloud-secret-token'), false)
+  await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true })
+})
+
+test('browser WhatsApp send stays fail-closed when transport/configuration is unavailable', async () => {
+  const dataDir = makeTempDir('aica-agentd-wa-send-guard-')
+  const secret = 'g'.repeat(32)
+  const server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
+  const { origin } = await server.start()
+  const auth = { authorization: `Bearer ${secret}` }
+  assert.equal((await request(origin, 'POST', '/api/v1/whatsapp/messages', { to: '14155551212', text: 'hello' }, auth)).status, 409)
+  assert.equal((await request(origin, 'PUT', '/api/v1/settings/whatsapp', {
+    whatsapp_transport: 'cloud', whatsapp_cloud_phone_number_id: '1234567890', whatsapp_cloud_api_version: 'v23.0',
+  }, auth)).status, 200)
+  assert.equal((await request(origin, 'POST', '/api/v1/whatsapp/messages', { to: 'not-a-number', text: 'hello' }, auth)).status, 400)
+  await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true })
+})

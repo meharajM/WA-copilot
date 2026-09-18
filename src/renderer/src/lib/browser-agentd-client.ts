@@ -193,6 +193,10 @@ export interface BrowserMemoryExport {
   metadata: Record<string, unknown>
 }
 
+export interface BrowserWhatsAppSendResult {
+  providerMessageId: string
+}
+
 const normaliseOrigin = (origin: string): string => {
   const url = new URL(origin)
   if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('Agentd origin must use HTTP(S)')
@@ -209,6 +213,7 @@ export interface BrowserAgentdClient extends ChatClient {
   saveLlmSettings(settings: LlmSettings): Promise<LlmSettings>
   getWhatsAppSettings(): Promise<WhatsAppSettings>
   saveWhatsAppSettings(settings: WhatsAppSettings): Promise<WhatsAppSettings>
+  sendWhatsAppText(to: string, text: string): Promise<BrowserWhatsAppSendResult>
   getEmailSettings(): Promise<EmailSettings>
   saveEmailSettings(settings: EmailSettings): Promise<EmailSettings>
   getPersonaSettings(): Promise<PersonaSettings>
@@ -475,6 +480,12 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
   const saveLlmSettings = async (settings: LlmSettings) => readLlmSettings(await request('/api/v1/settings/llm', { method: 'PUT', body: JSON.stringify(settings) }, true))
   const getWhatsAppSettings = async () => readWhatsAppSettings(await request('/api/v1/settings/whatsapp'))
   const saveWhatsAppSettings = async (settings: WhatsAppSettings) => readWhatsAppSettings(await request('/api/v1/settings/whatsapp', { method: 'PUT', body: JSON.stringify(settings) }, true))
+  const sendWhatsAppText = async (to: string, text: string): Promise<BrowserWhatsAppSendResult> => {
+    if (!to.trim() || !text.trim()) throw new Error('WhatsApp recipient and message are required')
+    const value = await request<unknown>('/api/v1/whatsapp/messages', { method: 'POST', body: JSON.stringify({ to, text }) }, true)
+    if (!isRecord(value) || value.success !== true || typeof value.providerMessageId !== 'string' || !value.providerMessageId) throw new Error('Invalid WhatsApp send response')
+    return { providerMessageId: value.providerMessageId }
+  }
   const getEmailSettings = async () => readEmailSettings(await request('/api/v1/settings/email'))
   const saveEmailSettings = async (settings: EmailSettings) => readEmailSettings(await request('/api/v1/settings/email', { method: 'PUT', body: JSON.stringify(settings) }, true))
   const getPersonaSettings = async () => readPersonaSettings(await request('/api/v1/settings/persona'))
@@ -616,6 +627,7 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     saveLlmSettings,
     getWhatsAppSettings,
     saveWhatsAppSettings,
+    sendWhatsAppText,
     getEmailSettings,
     saveEmailSettings,
     getPersonaSettings,

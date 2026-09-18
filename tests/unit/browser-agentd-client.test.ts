@@ -186,6 +186,23 @@ describe('browser agentd client', () => {
     expect(Object.prototype.hasOwnProperty.call(JSON.parse(String(put?.[1]?.body)), 'password')).toBe(false)
   })
 
+  it('sends explicit browser WhatsApp text through the authenticated Cloud route', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = []
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      calls.push({ url, init })
+      if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
+      if (url.endsWith('/api/v1/whatsapp/messages')) return response({ success: true, providerMessageId: 'wamid.123' })
+      return response({ success: true })
+    })
+    const client = createBrowserAgentdClient({ origin: 'http://127.0.0.1:4141', fetch: fetcher })
+    await client.pair('123456')
+    await expect(client.sendWhatsAppText('+1 (415) 555-1212', 'hello')).resolves.toEqual({ providerMessageId: 'wamid.123' })
+    const send = calls.find(call => call.url.endsWith('/api/v1/whatsapp/messages'))!
+    expect(JSON.parse(String(send.init?.body))).toEqual({ to: '+1 (415) 555-1212', text: 'hello' })
+    expect(new Headers(send.init?.headers).get('x-csrf-token')).toBe('csrf-token')
+  })
+
   it('maps draft-only autonomy controls to authenticated agentd routes', async () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)

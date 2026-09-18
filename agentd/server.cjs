@@ -499,6 +499,7 @@ class AgentdServer {
     if (url.pathname === '/api/v1/settings/preferences' && ['GET', 'PUT'].includes(req.method)) return this.productPreferences(req, res)
     if (url.pathname === '/api/v1/settings/whatsapp' && ['GET', 'PUT'].includes(req.method)) return this.whatsappSettings(req, res)
     if (url.pathname === '/api/v1/settings/email' && ['GET', 'PUT'].includes(req.method)) return this.emailSettings(req, res)
+    if (url.pathname === '/api/v1/whatsapp/messages' && req.method === 'POST') return this.sendWhatsAppMessage(req, res)
     const providerTestMatch = /^\/api\/v1\/providers\/(openai|openrouter)\/test$/.exec(url.pathname)
     if (providerTestMatch && req.method === 'POST') return this.testProvider(req, res, providerTestMatch[1])
     if (url.pathname === '/api/v1/status' && req.method === 'GET') {
@@ -904,6 +905,55 @@ class AgentdServer {
     if (!settings) return json(res, 400, { error: 'Invalid WhatsApp settings' })
     this.setState('whatsapp_settings', JSON.stringify(settings))
     return json(res, 200, settings)
+  }
+
+  async sendWhatsAppMessage(req, res) {
+    this.authorize(req, { mutation: true })
+    if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
+    const body = await readBody(req, 16 * 1024)
+    const keys = Object.keys(body || {}).sort()
+    if (!body || typeof body !== 'object' || Array.isArray(body)
+      || keys.length !== 2 || keys[0] !== 'text' || keys[1] !== 'to'
+      || typeof body.to !== 'string' || typeof body.text !== 'string'
+      || !body.to.trim() || !body.text.trim()
+      || [...body.to].length > 32 || [...body.text].length > MAX_DRAFT_TEXT_LENGTH) {
+      return json(res, 400, { error: 'Invalid WhatsApp message' })
+    }
+
+    let storedSettings = null
+    try { storedSettings = JSON.parse(this.getState('whatsapp_settings', 'null')) } catch {}
+    const settings = parseWhatsAppSettings(storedSettings) || WHATSAPP_SETTINGS_DEFAULTS
+    if (settings.whatsapp_transport !== 'cloud') return json(res, 409, { error: 'WhatsApp Cloud transport is not enabled' })
+    if (!/^\d{5,32}$/.test(settings.whatsapp_cloud_phone_number_id)
+      || !/^v\d+(?:\.\d+)?$/.test(settings.whatsapp_cloud_api_version)) {
+      return json(res, 409, { error: 'WhatsApp Cloud transport is not configured' })
+    }
+
+    if (!/^\+?[0-9\s().-]{8,32}$/.test(body.to.trim())) return json(res, 400, { error: 'Invalid WhatsApp recipient' })
+    const recipient = body.to.replace(/\D/g, '')
+    if (!/^\d{8,15}$/.test(recipient)) return json(res, 400, { error: 'Invalid WhatsApp recipient' })
+    const text = body.text.trim()
+    let accessToken
+    try { accessToken = await this.credentials?.get('whatsapp_cloud_access_token') } catch {}
+    if (typeof accessToken !== 'string' || !accessToken) return json(res, 409, { error: 'WhatsApp Cloud credentials are not configured' })
+
+    let response
+    try {
+      response = await this.providerFetch(`https://graph.facebook.com/${settings.whatsapp_cloud_api_version}/${settings.whatsapp_cloud_phone_number_id}/messages`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messaging_product: 'whatsapp', to: recipient, type: 'text', text: { body: text } }),
+        redirect: 'manual',
+        signal: AbortSignal.timeout(10_000),
+      })
+      const payload = await readProviderResponse(response)
+      const providerMessageId = payload?.messages?.[0]?.id
+      if (!response.ok || typeof providerMessageId !== 'string' || !providerMessageId) throw new Error('WhatsApp Cloud provider request failed')
+      return json(res, 200, { success: true, providerMessageId })
+    } catch {
+      try { await response?.body?.cancel() } catch {}
+      return json(res, 502, { success: false, error: 'WhatsApp Cloud message failed' })
+    }
   }
 
   async testProvider(req, res, provider) {
