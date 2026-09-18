@@ -493,6 +493,7 @@ Pass evidence:
 ## Command Palette
 
 - Command palette opens with `Cmd/Ctrl+K`.
+- Shortcut labels use `Ctrl` on Windows/Linux browser sessions and `Cmd` on macOS, while the handler accepts either modifier for cross-platform parity.
 - It supports at least:
   - clear chat
   - toggle sidebar
@@ -510,6 +511,7 @@ Pass evidence:
 
 - Browser Email inbound polling is daemon-owned and starts only when `Enable Email Channel` is on, app-password mode is selected, IMAP TLS is enabled, and an IMAP host plus OS-stored `email_imap_password` exist. The worker uses UID-based durable deduplication, accepts bounded `text/plain` messages only, and queues normalized events for the browser; Auto-Reply controls response policy, not mailbox ingestion. STARTTLS is supported for non-993 IMAP endpoints. HTML, multipart, attachments, unsupported transfer encodings, malformed messages, and oversized messages fail closed. Approved text-only drafts can deliver through the separately gated daemon SMTP route. OAuth/Gmail API polling remains unavailable.
 - Browser knowledge imports are text-only and cannot open the original native file after indexing; Electron retains native parser and file-reveal behavior.
+- The browser Autonomy panel does not render Electron-only WhatsApp Web automation, native backup staging, reconnect, or local-retention controls; those controls remain in the Electron transition client until agentd adapters are migrated.
 - Browser audit logs are downloaded as redacted NDJSON; native log-folder reveal remains Electron-only.
 - Lead Directory supports non-WhatsApp sessions in the data model, but some copy still describes it as WhatsApp-only.
 - The LLM provider selector includes `browser`, but there is no dedicated browser-provider configuration card in the panel yet.

@@ -17,6 +17,7 @@ describe('browser command palette parity contract', () => {
     const palette = readRenderer('components/CommandPalette.tsx')
 
     expect(palette).toContain("e.key === 'k' && (e.metaKey || e.ctrlKey)")
+    expect(palette).toContain("const modifier = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform) ? 'Cmd' : 'Ctrl'")
     expect(palette).toContain("if (e.key === 'Escape') setOpen(false)")
     expect(palette).toContain('<span>Clear Chat</span>')
     expect(palette).toContain('<span>Toggle Sidebar</span>')

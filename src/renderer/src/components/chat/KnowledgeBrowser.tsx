@@ -145,7 +145,7 @@ export function KnowledgeBrowser() {
                         </div>
                         <div>
                             <h1 className="text-2xl font-bold">Knowledge Brain</h1>
-                            <p className="text-gray-400 text-sm">Manage the documents and visual data your agent learns from.</p>
+                            <p className="text-gray-400 text-sm">Manage the bounded text files your agent learns from.</p>
                         </div>
                     </div>
                     <button 
@@ -201,7 +201,7 @@ export function KnowledgeBrowser() {
                             <FileText className="w-8 h-8 text-gray-600" />
                         </div>
                         <h3 className="text-lg font-bold text-gray-400">Empty Brain</h3>
-                        <p className="text-gray-500 text-sm max-w-xs">ToIndex documents, spreadsheets or images. The higher the coverage, the smarter the agent.</p>
+                        <p className="text-gray-500 text-sm max-w-xs">Index bounded text, Markdown, CSV, JSON, XML, HTML, or log files. Binary conversion is not available in the browser yet.</p>
                     </div>
                 ) : (
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">

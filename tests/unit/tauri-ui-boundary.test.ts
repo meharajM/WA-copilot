@@ -64,4 +64,21 @@ describe('browser-first UI boundary', () => {
     expect(actions).toContain('if (result.error) throw new Error(result.error)')
     expect(actions).not.toContain("electron.mcp.callTool('internal-rag', 'rag_save_correction'")
   })
+
+  it('does not expose Electron-only autonomy controls in the browser workspace', () => {
+    const autonomy = readSource('components/AutonomyPanel.tsx')
+
+    expect(autonomy).toContain("!browserRuntime && webState")
+    expect(autonomy).toContain("!browserRuntime && <button")
+    expect(autonomy).not.toContain("browserRuntime ? electron.whatsapp.web")
+  })
+
+  it('describes browser knowledge as bounded text instead of binary or visual ingestion', () => {
+    const knowledge = readSource('components/chat/KnowledgeBrowser.tsx')
+
+    expect(knowledge).toContain('bounded text files')
+    expect(knowledge).toContain('Binary conversion is not available in the browser yet.')
+    expect(knowledge).not.toContain('visual data')
+    expect(knowledge).not.toContain('ToIndex documents, spreadsheets or images')
+  })
 })
