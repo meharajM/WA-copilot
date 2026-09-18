@@ -2,7 +2,6 @@ import { create } from 'zustand'
 import { persist, createJSONStorage, type StateStorage } from 'zustand/middleware'
 import type { ExecutionPlan } from '../lib/agent-protocol'
 import type { ChatClient, ChatMessage } from '../../../shared/chat-protocol'
-import { createTauriChatClient } from '../lib/tauri-chat-client'
 import { getBrowserAgentdClient } from '../lib/browser-agentd-client'
 import { isTauriRuntime } from '../lib/tauri-native-bridge'
 
@@ -221,7 +220,8 @@ const createElectronChatStorage = (): StateStorage => ({
 })
 
 export const createChatStorage = (chatClient?: ChatClient): StateStorage => {
-    if (chatClient || isTauriRuntime()) return createTauriChatStorage(chatClient || createTauriChatClient())
+    if (isTauriRuntime()) throw new Error('The Tauri native companion does not mount the product workspace')
+    if (chatClient) return createTauriChatStorage(chatClient)
     const browserStorage = createTauriChatStorage(getBrowserAgentdClient())
     const electronStorage = createElectronChatStorage()
     const activeStorage = (): StateStorage => (typeof window !== 'undefined' && !window.electron) ? browserStorage : electronStorage

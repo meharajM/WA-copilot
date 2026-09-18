@@ -36,7 +36,7 @@ import { BotIdentityPanel } from './settings/BotIdentityPanel'
 import { EmailSettingsPanel } from './settings/EmailSettingsPanel'
 import { Mail } from 'lucide-react'
 import electron from '../lib/electron'
-import { isTauriRuntime, tauriNativeBridge } from '../lib/tauri-native-bridge'
+import { isTauriRuntime } from '../lib/tauri-native-bridge'
 import { getBrowserAgentdClient } from '../lib/browser-agentd-client'
 import type { WhatsAppSettings } from '../../../shared/native-bridge'
 
@@ -70,7 +70,9 @@ export function SettingsPanel({ onClose, initialSection = 'whatsapp' }: Settings
     const [cloudSaveMessage, setCloudSaveMessage] = useState('')
     const tauriRuntime = isTauriRuntime()
     const browserRuntime = typeof window !== 'undefined' && !window.electron && !tauriRuntime
-    const nativeApi = tauriRuntime ? tauriNativeBridge : browserRuntime ? getBrowserAgentdClient() : null
+    // Tauri is a native capability host only; product settings always use the
+    // authenticated browser/agentd API. This panel is not mounted by Tauri.
+    const nativeApi = browserRuntime ? getBrowserAgentdClient() : null
 
     // MCP Tools State
     const mcp = useMcpStore()

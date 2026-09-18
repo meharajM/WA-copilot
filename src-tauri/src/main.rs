@@ -16,10 +16,7 @@ use std::{
 #[cfg(windows)]
 use std::env;
 
-use agentd_api::{
-    AgentdClient, CredentialExistsResult, LlmSettings, NativeHealth, NativeResult,
-    ProviderTestResult,
-};
+use agentd_api::{AgentdClient, CredentialExistsResult, NativeHealth, NativeResult};
 use serde::Deserialize;
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder},
@@ -87,46 +84,6 @@ async fn agentd_origin(client: State<'_, AgentdClient>) -> Result<String, String
 }
 
 #[tauri::command]
-async fn get_llm_settings(client: State<'_, AgentdClient>) -> Result<LlmSettings, String> {
-    client
-        .llm_settings()
-        .await
-        .map_err(|_| "LLM settings unavailable; agentd may be stopped".into())
-}
-
-#[tauri::command]
-async fn save_llm_settings(
-    client: State<'_, AgentdClient>,
-    settings: LlmSettings,
-) -> Result<LlmSettings, String> {
-    client
-        .set_llm_settings(settings)
-        .await
-        .map_err(str::to_owned)
-}
-
-#[tauri::command]
-async fn get_whatsapp_settings(
-    client: State<'_, AgentdClient>,
-) -> Result<agentd_api::WhatsAppSettings, String> {
-    client
-        .whatsapp_settings()
-        .await
-        .map_err(|_| "WhatsApp settings unavailable; agentd may be stopped".into())
-}
-
-#[tauri::command]
-async fn save_whatsapp_settings(
-    client: State<'_, AgentdClient>,
-    settings: agentd_api::WhatsAppSettings,
-) -> Result<agentd_api::WhatsAppSettings, String> {
-    client
-        .set_whatsapp_settings(settings)
-        .await
-        .map_err(str::to_owned)
-}
-
-#[tauri::command]
 async fn credential_set(
     client: State<'_, AgentdClient>,
     key: String,
@@ -149,104 +106,6 @@ async fn credential_delete(
     key: String,
 ) -> Result<NativeResult, String> {
     Ok(client.delete_credential(&key).await)
-}
-
-#[tauri::command]
-async fn provider_test(
-    client: State<'_, AgentdClient>,
-    provider: String,
-) -> Result<ProviderTestResult, String> {
-    Ok(client.test_provider(&provider).await)
-}
-
-#[tauri::command]
-async fn chat_load_sessions(
-    client: State<'_, AgentdClient>,
-) -> Result<Vec<agentd_api::ChatSession>, String> {
-    let summaries = client
-        .chat_sessions()
-        .await
-        .map_err(|_| "Chat sessions unavailable; agentd may be stopped".to_string())?;
-    let mut sessions = Vec::with_capacity(summaries.sessions.len());
-    for summary in summaries.sessions {
-        let session = client
-            .chat_session(&summary.id)
-            .await
-            .map_err(|_| "Chat session history unavailable".to_string())?;
-        sessions.push(agentd_api::ChatSession {
-            id: session.session.id,
-            title: session.session.title,
-            created_at: session.session.created_at,
-            updated_at: session.session.updated_at,
-            workspace_path: session.session.workspace_path,
-            messages: session.messages,
-        });
-    }
-    Ok(sessions)
-}
-
-#[tauri::command]
-async fn chat_create_session(
-    client: State<'_, AgentdClient>,
-    id: Option<String>,
-    title: Option<String>,
-    workspace_path: Option<String>,
-) -> Result<agentd_api::ChatSessionSummary, String> {
-    client
-        .create_chat_session(id.as_deref(), title.as_deref(), workspace_path.as_deref())
-        .await
-        .map_err(|_| "Chat session creation unavailable".to_string())
-}
-
-#[tauri::command]
-async fn chat_update_session_workspace(
-    client: State<'_, AgentdClient>,
-    session_id: String,
-    workspace_path: Option<String>,
-) -> Result<agentd_api::ChatSessionSummary, String> {
-    client
-        .update_chat_session_workspace(&session_id, workspace_path.as_deref())
-        .await
-        .map_err(|_| "Chat workspace update unavailable".to_string())
-}
-
-#[tauri::command]
-async fn chat_append_message(
-    client: State<'_, AgentdClient>,
-    session_id: String,
-    message_id: Option<String>,
-    role: String,
-    content: String,
-) -> Result<agentd_api::ChatMessageResponse, String> {
-    client
-        .append_chat_message(&session_id, message_id.as_deref(), &role, &content)
-        .await
-        .map_err(|_| "Chat message persistence unavailable".to_string())
-}
-
-#[tauri::command]
-async fn chat_delete_session(
-    client: State<'_, AgentdClient>,
-    session_id: String,
-) -> Result<(), String> {
-    client
-        .delete_chat_session(&session_id)
-        .await
-        .map_err(|_| "Chat session deletion unavailable".to_string())
-}
-
-#[tauri::command]
-async fn chat_generate(
-    client: State<'_, AgentdClient>,
-    session_id: String,
-    request_id: String,
-    content: String,
-    model: Option<String>,
-) -> Result<agentd_api::ChatGenerationResponse, String> {
-    client
-        .generate_chat(&session_id, &request_id, &content, model.as_deref())
-        .await
-        .map_err(|_| "Chat generation unavailable; provider may be unavailable".to_string())
 }
 
 #[tauri::command]
@@ -486,20 +345,9 @@ fn main() {
             agentd_health,
             agentd_origin,
             open_browser_workspace,
-            get_llm_settings,
-            save_llm_settings,
-            get_whatsapp_settings,
-            save_whatsapp_settings,
             credential_set,
             credential_exists,
             credential_delete,
-            provider_test,
-            chat_load_sessions,
-            chat_create_session,
-            chat_update_session_workspace,
-            chat_append_message,
-            chat_delete_session,
-            chat_generate,
             select_file,
             select_folder
         ])

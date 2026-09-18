@@ -3,13 +3,9 @@ import {
   credentialKeys,
   type CredentialKey,
   type FileSelectionOptions,
-  type LlmSettings,
   type NativeBridge,
   type NativeHealth,
   type NativeResult,
-  type ProviderTestResult,
-  type SupportedLlmProvider,
-  type WhatsAppSettings,
 } from '../../../shared/native-bridge'
 
 export const TAURI_COMMANDS = {
@@ -17,14 +13,9 @@ export const TAURI_COMMANDS = {
   agentdHealth: 'agentd_health',
   agentdOrigin: 'agentd_origin',
   openBrowserWorkspace: 'open_browser_workspace',
-  getLlmSettings: 'get_llm_settings',
-  saveLlmSettings: 'save_llm_settings',
-  getWhatsAppSettings: 'get_whatsapp_settings',
-  saveWhatsAppSettings: 'save_whatsapp_settings',
   credentialSet: 'credential_set',
   credentialExists: 'credential_exists',
   credentialDelete: 'credential_delete',
-  providerTest: 'provider_test',
   selectFile: 'select_file',
   selectFolder: 'select_folder',
 } as const
@@ -111,54 +102,6 @@ const readCredentialExists = (value: unknown): NativeResult & { exists: boolean 
   return { ...readResult(value), exists: value.exists }
 }
 
-const readLlmSettings = (value: unknown): LlmSettings => {
-  if (!isRecord(value)
-    || Object.keys(value).sort().join(',') !== 'openaiModel,openrouterModel,preferredProvider'
-    || !['auto', 'openai', 'openrouter', 'ollama'].includes(value.preferredProvider as string)
-    || typeof value.openaiModel !== 'string'
-    || !value.openaiModel.trim()
-    || [...value.openaiModel].length > 128
-    || typeof value.openrouterModel !== 'string'
-    || !value.openrouterModel.trim()
-    || [...value.openrouterModel].length > 128) {
-    throw new Error('Invalid LLM settings response')
-  }
-  return {
-    preferredProvider: value.preferredProvider as LlmSettings['preferredProvider'],
-    openaiModel: value.openaiModel,
-    openrouterModel: value.openrouterModel,
-  }
-}
-
-const readWhatsAppSettings = (value: unknown): WhatsAppSettings => {
-  if (!isRecord(value)
-    || Object.keys(value).sort().join(',') !== 'whatsapp_cloud_api_version,whatsapp_cloud_phone_number_id,whatsapp_transport'
-    || !['baileys', 'cloud', 'web'].includes(value.whatsapp_transport as string)
-    || typeof value.whatsapp_cloud_phone_number_id !== 'string'
-    || [...value.whatsapp_cloud_phone_number_id].length > 128
-    || typeof value.whatsapp_cloud_api_version !== 'string'
-    || !value.whatsapp_cloud_api_version.trim()
-    || [...value.whatsapp_cloud_api_version].length > 32) {
-    throw new Error('Invalid WhatsApp settings response')
-  }
-  return {
-    whatsapp_transport: value.whatsapp_transport as WhatsAppSettings['whatsapp_transport'],
-    whatsapp_cloud_phone_number_id: value.whatsapp_cloud_phone_number_id,
-    whatsapp_cloud_api_version: value.whatsapp_cloud_api_version,
-  }
-}
-
-const readProviderTest = (value: unknown): ProviderTestResult => {
-  if (!isRecord(value) || typeof value.success !== 'boolean') {
-    return { success: false, error: 'Invalid provider test response' }
-  }
-  if (!value.success) return { success: false, error: errorText(value.error, 'Provider test failed') }
-  if (!Number.isSafeInteger(value.modelCount) || (value.modelCount as number) < 0) {
-    return { success: false, error: 'Invalid provider test response' }
-  }
-  return { success: true, modelCount: value.modelCount as number }
-}
-
 const readSelection = (value: unknown): string | null => {
   if (value === null) return null
   if (typeof value === 'string' && value.length > 0) return value
@@ -171,11 +114,6 @@ export const createTauriNativeBridge = (
   appVersion: () => Promise<string>
   agentdOrigin: () => Promise<string>
   openBrowserWorkspace: () => Promise<NativeResult>
-  getLlmSettings: () => Promise<LlmSettings>
-  saveLlmSettings: (settings: LlmSettings) => Promise<LlmSettings>
-  getWhatsAppSettings: () => Promise<WhatsAppSettings>
-  saveWhatsAppSettings: (settings: WhatsAppSettings) => Promise<WhatsAppSettings>
-  testProvider: (provider: SupportedLlmProvider) => Promise<ProviderTestResult>
 } => {
   const invoke = async <T>(command: string, args?: Record<string, unknown>): Promise<T> => (
     dependencies.invoke<T>(command, args)
@@ -226,22 +164,6 @@ export const createTauriNativeBridge = (
     }
   }
 
-  const getLlmSettings = async (): Promise<LlmSettings> => readLlmSettings(
-    await invoke<unknown>(TAURI_COMMANDS.getLlmSettings),
-  )
-
-  const saveLlmSettings = async (settings: LlmSettings): Promise<LlmSettings> => readLlmSettings(
-    await invoke<unknown>(TAURI_COMMANDS.saveLlmSettings, { settings }),
-  )
-
-  const getWhatsAppSettings = async (): Promise<WhatsAppSettings> => readWhatsAppSettings(
-    await invoke<unknown>(TAURI_COMMANDS.getWhatsAppSettings),
-  )
-
-  const saveWhatsAppSettings = async (settings: WhatsAppSettings): Promise<WhatsAppSettings> => readWhatsAppSettings(
-    await invoke<unknown>(TAURI_COMMANDS.saveWhatsAppSettings, { settings }),
-  )
-
   const setCredential = async (key: CredentialKey, value: string): Promise<NativeResult> => {
     if (!isCredentialKey(key)) return unsupported('Credential key')
     if (!value) return { success: false, error: 'Credential value cannot be empty' }
@@ -270,15 +192,6 @@ export const createTauriNativeBridge = (
     }
   }
 
-  const testProvider = async (provider: SupportedLlmProvider): Promise<ProviderTestResult> => {
-    if (provider !== 'openai' && provider !== 'openrouter' && provider !== 'ollama') return unsupported('Provider')
-    try {
-      return readProviderTest(await invoke<unknown>(TAURI_COMMANDS.providerTest, { provider }))
-    } catch (error) {
-      return { success: false, error: errorText(error instanceof Error ? error.message : error, 'Provider test failed') }
-    }
-  }
-
   return {
     runtime: 'tauri',
     health,
@@ -290,11 +203,6 @@ export const createTauriNativeBridge = (
     appVersion,
     agentdOrigin,
     openBrowserWorkspace,
-    getLlmSettings,
-    saveLlmSettings,
-    getWhatsAppSettings,
-    saveWhatsAppSettings,
-    testProvider,
   }
 }
 

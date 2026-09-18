@@ -39,9 +39,7 @@ import { useWhatsAppStore } from "../stores/whatsappStore";
 import { useEmailStore } from "../stores/emailStore";
 import { useDraftStore } from "../stores/draftStore";
 import electron from "../lib/electron";
-import { createTauriChatClient } from "../lib/tauri-chat-client";
 import { getBrowserAgentdClient } from "../lib/browser-agentd-client";
-import { isTauriRuntime } from "../lib/tauri-native-bridge";
 import { type LLMMessage } from "../lib/types";
 import { resolveWhatsAppTarget, setWhatsAppTyping, setWhatsAppPaused, getWhatsAppSystemPrompt, sendWhatsAppResponse, resolveWhatsAppMessageToLLM } from "../lib/whatsapp-integration";
 import { getEmailSystemPrompt, normalizeSubject, type EmailMessage } from "../lib/email-integration";
@@ -391,16 +389,15 @@ export function useAgent(): UseAgentReturn {
             const abortSignal = startProcessing(originSessionId);
 
             try {
-                // The local agentd owns provider credentials and generation for
-                // both the browser workspace and the native companion. Keep the
-                // full workspace on the same typed daemon path instead of loading
-                // the Electron-only AgentRuntime and its tool graph.
+                // The browser workspace uses the local agentd for provider
+                // credentials and generation. Tauri never mounts this product
+                // hook; Electron keeps its existing local AgentRuntime path.
                 // The daemon persists the user message idempotently using the
                 // local message id as request id, so the chat-store write queue
                 // can safely replay the same message after this call.
-                const browserRuntime = typeof window !== 'undefined' && !window.electron && !isTauriRuntime();
-                if ((isTauriRuntime() || browserRuntime) && !targetJid && !isEmailFlow && !multimodalWhatsAppMessage) {
-                    const client = isTauriRuntime() ? createTauriChatClient() : getBrowserAgentdClient();
+                const browserRuntime = typeof window !== 'undefined' && !window.electron;
+                if (browserRuntime && !targetJid && !isEmailFlow && !multimodalWhatsAppMessage) {
+                    const client = getBrowserAgentdClient();
                     const requestId = addedUserMessage.id;
                     const daemonAttachments = attachments?.length
                         ? browserRuntime
