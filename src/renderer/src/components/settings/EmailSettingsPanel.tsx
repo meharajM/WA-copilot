@@ -411,7 +411,7 @@ export function EmailSettingsPanel() {
                 </div>
                 <p className="mt-1 text-xs text-[var(--color-text-dim)]">
                   {provider === 'gmail-api'
-                    ? 'Recommended: local Gmail app-password flow'
+                    ? (browserRuntime ? 'Recommended: agentd app-password transport probe' : 'Recommended: local Gmail app-password flow')
                     : provider === 'imap-smtp'
                       ? 'Generic provider with manual server settings'
                       : 'Preset server values with safe defaults'}
@@ -440,7 +440,7 @@ export function EmailSettingsPanel() {
                 value={localPassword}
                 onChange={(e) => setLocalPassword(e.target.value)}
                 className="w-full bg-[var(--color-bg-dark)] border border-[var(--color-border)] rounded-lg px-4 py-2 text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-brand-teal)]"
-                placeholder="Securely stored in OS keychain"
+                placeholder={browserRuntime ? 'Write-only through local agentd' : 'Securely stored in OS keychain'}
               />
               <p className="text-xs text-[var(--color-text-dim)] mt-1 flex items-center gap-1"><Shield size={12} />Secure storage enabled</p>
             </div>
@@ -455,7 +455,9 @@ export function EmailSettingsPanel() {
                 : 'Gmail stays client-side here. The recommended path is an app password over IMAP/SMTP.'}
             </p>
             <p className="text-xs text-[var(--color-text-dim)]">
-              Google sign-in remains optional if runtime OAuth is configured, but it is not required for the local bridge.
+              {browserRuntime
+                ? 'Google Sign-In is unavailable in browser mode. Use App Password until the native OAuth flow is migrated.'
+                : 'Google sign-in remains optional if runtime OAuth is configured, but it is not required for the local bridge.'}
             </p>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <button
@@ -478,12 +480,14 @@ export function EmailSettingsPanel() {
                 }`}
               >
                 <p className="text-sm font-semibold text-[var(--color-text-primary)]">Google Sign-In</p>
-                <p className="mt-1 text-xs text-[var(--color-text-dim)]">Only use this when app-managed Gmail OAuth is configured.</p>
+                <p className="mt-1 text-xs text-[var(--color-text-dim)]">{browserRuntime ? 'Native OAuth migration is pending; this mode cannot be tested in browser mode.' : 'Only use this when app-managed Gmail OAuth is configured.'}</p>
               </button>
             </div>
             {localGmailAuthMode === 'app-password' && (
               <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg p-3 text-xs text-[var(--color-text-dim)]">
-                Gmail preset values are already loaded. Use a Gmail app password and keep Draft Mode on for the first end-to-end run.
+                {browserRuntime
+                  ? 'Gmail preset values are already loaded. Use an app password for the bounded transport probe; mailbox polling and delivery remain disabled in browser mode.'
+                  : 'Gmail preset values are already loaded. Use a Gmail app password and keep Draft Mode on for the first end-to-end run.'}
               </div>
             )}
             {localGmailAuthMode === 'google-oauth' && (
