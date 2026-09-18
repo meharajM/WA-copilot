@@ -82,9 +82,9 @@ The renderer process houses the React UI and the autonomous agent logic.
 *   **Conversations (`ChatView.tsx`)**: Manual intervention interface for omnichannel sessions including WhatsApp and email.
 
 #### State Management (`/stores`)
-*   **`useChatStore`**: Manages omnichannel chat sessions, messages, and channel/contact metadata.
-*   **`useWhatsAppStore`**: Tracks connection status, QR codes, response permission, and autonomous bot mode.
-*   **`useMcpStore`**: Maintains the registry of connected **Model Context Protocol** servers.
+*   **`useChatStore`**: Manages omnichannel chat sessions, messages, and channel/contact metadata. In the browser workspace, the durable session source is the authenticated `agentd` API; the store is a renderer projection, not a second database.
+*   **`useWhatsAppStore`**: Tracks connection status, QR codes, response permission, and the legacy autonomous-bot flag. Browser mode clears/ignores the autonomous flag and uses response permission only for review and explicit sends; the Electron transition client retains the existing autonomous path.
+*   **`useMcpStore`**: Maintains the Electron transition-client registry of connected **Model Context Protocol** servers. Browser mode exposes only migrated agentd memory/knowledge tools and read-only continuity metadata until a supervised MCP worker exists.
 
 #### Agent Subsystem (`/lib`)
 This is the "brain" of the application, orchestrating the LLM reasoning loop.
@@ -98,21 +98,29 @@ This is the "brain" of the application, orchestrating the LLM reasoning loop.
 
 ## Data Flow: Inbound Customer Message
 
-1.  **Reception**: Customer message is received by `Baileys` in the Main process via WebSocket.
-2.  **Ingestion**: If the message contains a document, it is automatically converted via `markitdown` and indexed into the **RAG Engine**.
-3.  **IPC Dispatch**: The message is emitted via IPC to the Renderer.
-4.  **Session Mapping**: `useWhatsAppBridge` identifies the sender's JID and assigns the message to a specific `ChatSession`.
-5.  **Agent Trigger**: If inbound WhatsApp handling is enabled through response permission or autonomous bot mode, the `AgentRuntime` starts the reasoning loop.
-6.  **RAG Lookup**: The agent performs a `rag_search` to find business-specific answers.
-7.  **Proactive Monitoring**: If execution exceeds 60 seconds, `useAgent` dispatches a courtesy "Still working..." message to the customer.
-8.  **Escalation (Optional)**: If the query is unresolved (no RAG match), the agent calls `whatsapp_notify_admin`.
-9.  **Response**: Once a final response is generated, it is dispatched via IPC to the Main process and delivered to the customer.
-10. **Persistence**: The interaction is simultaneously committed to the SQLite DB and mirrored to the filesystem for sovereignty.
+The repository currently has two deliberately different runtime paths while the browser migration is completed:
+
+### Electron transition client
+
+1. **Reception**: Customer messages are received by the Electron main-process Baileys service.
+2. **Ingestion**: Supported Electron document/media handling stays in the legacy native pipeline, including the existing parser/RAG integrations.
+3. **IPC dispatch**: The main process emits bounded events to the renderer.
+4. **Session mapping**: `useWhatsAppBridge` maps the sender JID to a channel-bound `ChatSession`.
+5. **Agent trigger**: When the Electron response-permission/autonomous gates allow it, `AgentRuntime` runs the existing reasoning loop.
+6. **Delivery and audit**: Tool calls, courtesy/escalation behavior, provider delivery, SQLite persistence and the legacy filesystem mirror remain Electron-owned.
+
+### Browser workspace
+
+1. **Reception**: The lazy `agentd` Baileys worker owns the local WhatsApp socket and persists normalized inbound events in daemon SQLite. It ignores self, broadcast/system and caption-less media messages; bounded text and media captions are the only browser ingress.
+2. **Claim and hydrate**: When the browser's WhatsApp response-permission gate is enabled, `useWhatsAppBridge` polls the authenticated event queue, creates/reuses the deterministic agentd-backed session, and appends the message idempotently. The browser never receives auth files or a native path.
+3. **No autonomous execution yet**: Browser `Autonomous Bot Mode` is disabled/cleared. This slice does not invoke the Electron `AgentRuntime`, confidence policy, courtesy/escalation loop or autonomous direct-send path.
+4. **Explicit delivery**: Text sends and approved text-only drafts use authenticated agentd routes. The daemon owns transport credentials, outbox state and duplicate suppression; media delivery, WhatsApp Web automation and autonomous direct-send remain fail-closed until their adapters are migrated.
+5. **Persistence**: Browser sessions, events and outbox records are durable in agentd SQLite. The browser store is only a projection and no longer writes a competing Electron database.
 
 ## Security & Privacy
-*   **Zero-Cloud Retention**: All chat logs and RAG indices are stored in the app's `userData` folder. No third-party servers see business knowledge except the selected LLM provider.
-*   **Local Inference**: When using WebLLM or Ollama, zero message content leaves the host machine.
-*   **App Isolation**: Each customer JID is treated as a separate context, preventing cross-customer data leakage.
+*   **Local ownership**: Browser product records, credentials and channel auth remain on the user's machine under the supervised `agentd` data directory; the Tauri companion exposes only typed native capabilities and never becomes a generic product proxy.
+*   **Provider boundary**: Cloud LLM use still sends the requested prompt/attachments to the selected provider. WebLLM WebGPU and loopback Ollama are local-model paths, subject to the browser/daemon runtime selected by the user.
+*   **App isolation**: Each customer conversation is mapped to a bounded channel/contact session, with authenticated daemon routes and per-session writes preventing cross-customer leakage.
 
 ## Future Roadmap (Phase 3+)
 The architecture is prepared for **Headless Execution**. By extraction of the `AgentRuntime` logic into a Node.js microservice or dedicated Worker thread, the agent can continue responding to WhatsApp messages even when the UI window is closed or the machine is under significant load.

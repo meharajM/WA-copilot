@@ -22,12 +22,7 @@ The 2026-09-18 audit found and corrected browser Email drift: the contract now d
 
 The follow-up runtime-boundary audit also corrected the launch contract: Edge/Chrome has an explicit agentd readiness/pairing state machine, while the Electron dependency modal is no longer described as a browser startup requirement. Gemini is covered by the browser agentd provider slice, and explicit on-device/WebGPU execution is now available in the browser without changing the Tauri native-only boundary.
 
-The main problems are in older support docs that still describe:
-
-- WhatsApp-only session assumptions
-- a single master "Bot Mode" concept
-- Brain View as a combined memory-plus-RAG inspection surface
-- email inbound behavior as if passive monitoring always creates sessions
+The older support-doc drift identified by the first audit is now corrected in the checked-in HTML manual, email progress note, and architecture overview. The remaining limitations are implementation gates (for example browser media delivery and supervised MCP execution), not competing product-contract descriptions.
 
 ## Validation Scope
 
@@ -52,6 +47,8 @@ The main problems are in older support docs that still describe:
 - [docs/tester_install.html](/Users/meharaj/WA-copilot/docs/tester_install.html)
 - [docs/email-channel-progress.md](/Users/meharaj/WA-copilot/docs/email-channel-progress.md)
 - [architecture.md](/Users/meharaj/WA-copilot/architecture.md)
+- [agentd/whatsapp-baileys.cjs](/Users/meharaj/WA-copilot/agentd/whatsapp-baileys.cjs)
+- [src/renderer/src/hooks/useWhatsAppBridge.ts](/Users/meharaj/WA-copilot/src/renderer/src/hooks/useWhatsAppBridge.ts)
 
 ### Test surface checked
 
@@ -73,6 +70,8 @@ The current run completed these checks successfully; build tools emitted only th
 ### Real-user browser smoke
 
 On 2026-09-18, the browser entry was opened at `http://127.0.0.1:5173/tauri.html?workspace=1` with no local daemon available. The UI showed `AICA / BROWSER WORKSPACE`, `Local service unavailable`, and `Retry connection`; activating retry kept the same fail-closed state and did not mount the product workspace. This passes the unavailable-service contract. Pairing and full workspace navigation require a running owner-supervised agentd instance and were not claimed by this smoke.
+
+The same audit also ran an isolated owner-supervised agentd on a temporary loopback port with a disposable pairing code. The browser pairing form accepted the one-time code, mounted the full product workspace, navigated through the sidebar and Settings, and showed the explicit `On-Device (WebGPU)` provider card with user-initiated model-download controls. The in-app browser surface did not expose `navigator.gpu`, so no real WebGPU adapter or model download was claimed. The native Tauri surface showed diagnostics, service status, owner pairing, picker and credential-presence controls only; it did not mount the product workspace.
 
 ## Confirmed Alignment
 
@@ -156,13 +155,13 @@ Evidence:
 - [docs/app-behavior.md](/Users/meharaj/WA-copilot/docs/app-behavior.md):287
 - [docs/app-behavior.md](/Users/meharaj/WA-copilot/docs/app-behavior.md):416
 
-## Doc Drift Findings
+## Historical Doc Drift Findings
 
-### Finding 1: `docs/tester_install.html` is materially stale
+### Finding 1: `docs/tester_install.html` was materially stale — resolved
 
 Severity: medium
 
-The HTML tester manual still presents an older product model in several places:
+The HTML tester manual previously presented an older product model in several places. It now describes:
 
 - `All Chats` is described as active WhatsApp-only sessions, but the runtime/session model is now omnichannel.
 - `Lead Directory` is described as auto-extracting customer names, phone numbers, and lead status in a stronger CRM sense than the current table actually implements.
@@ -199,7 +198,7 @@ Evidence:
 - [src/renderer/src/hooks/useEmailBridge.ts](/Users/meharaj/WA-copilot/src/renderer/src/hooks/useEmailBridge.ts):33
 - [docs/app-behavior.md](/Users/meharaj/WA-copilot/docs/app-behavior.md):216
 
-### Finding 3: `architecture.md` still describes the pre-split WhatsApp model
+### Finding 3: `architecture.md` described the pre-split WhatsApp model — resolved
 
 Severity: low
 
@@ -209,7 +208,7 @@ The architecture overview still describes:
 - `useWhatsAppStore` as exposing a single master `Bot Mode`
 - inbound agent triggering as a single-switch decision
 
-That was likely correct earlier, but it is no longer the best description of the current product contract.
+The overview now documents separate Electron-transition and browser/agentd inbound flows, the browser response-permission gate, and the explicit browser limitations.
 
 Evidence:
 
@@ -221,12 +220,12 @@ Evidence:
 
 ## Recommended Source-of-Truth Order
 
-Until the older docs are cleaned up, use this order:
+Use this order:
 
 1. [docs/app-behavior.md](/Users/meharaj/WA-copilot/docs/app-behavior.md)
 2. Current implementation in renderer/main code
 3. Focused progress docs such as [docs/email-channel-progress.md](/Users/meharaj/WA-copilot/docs/email-channel-progress.md), but only after checking them against the behavior contract
-4. Older narrative/manual docs such as [docs/tester_install.html](/Users/meharaj/WA-copilot/docs/tester_install.html)
+4. Older narrative/manual docs such as [docs/tester_install.html](/Users/meharaj/WA-copilot/docs/tester_install.html), which now link back to the behavior contract for any detail not covered by the quick-start flow
 
 ## Resolved Direction
 
