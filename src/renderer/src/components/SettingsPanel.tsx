@@ -82,6 +82,7 @@ export function SettingsPanel({ onClose, initialSection = 'whatsapp' }: Settings
 
     // MCP Tools State
     const mcp = useMcpStore()
+    const browserMcpUnavailable = isBrowserMcpUnavailable()
     const [showMcpForm, setShowMcpForm] = useState(false)
     const [editingMcpId, setEditingMcpId] = useState<string | null>(null)
     const [expandedMcp, setExpandedMcp] = useState<string | null>(null)
@@ -377,15 +378,15 @@ export function SettingsPanel({ onClose, initialSection = 'whatsapp' }: Settings
                 )}
 
                 {/* Business Tools Section (MCP) */}
-                {activeSection === 'tools' && isBrowserMcpUnavailable() && (
+                {activeSection === 'tools' && browserMcpUnavailable && (
                     <div className="space-y-4">
                         <h3 className="text-xl font-bold text-[var(--color-text-primary)]">Business Tools &amp; Integrations</h3>
                         <div role="status" className="rounded-xl border border-[var(--color-border)] bg-[var(--color-card-elevated)] p-6 text-sm text-[var(--color-text-muted)]">
-                            Arbitrary MCP server management and tool execution are unavailable in the browser until the authenticated agentd capability adapter is migrated. Memory and knowledge tools remain available through their authenticated routes.
+                            The local agentd MCP capability is unavailable. Start or update the native companion, then reload this browser workspace. Memory and knowledge tools remain available through their authenticated routes.
                         </div>
                     </div>
                 )}
-                {activeSection === 'tools' && !isBrowserMcpUnavailable() && (
+                {activeSection === 'tools' && !browserMcpUnavailable && (
                     <div className="space-y-6">
                         <div className="flex items-center justify-between mb-4">
                             <div>
@@ -408,7 +409,7 @@ export function SettingsPanel({ onClose, initialSection = 'whatsapp' }: Settings
                         </div>
                         {browserRuntime && (
                             <div className="rounded-lg border border-amber-400/30 bg-amber-400/10 px-4 py-3 text-xs text-amber-100" role="status">
-                                Browser mode saves MCP definitions in agentd, but does not start or execute arbitrary MCP servers yet. Connect actions stay unavailable until the supervised agentd worker is migrated.
+                                Browser MCP servers run under the supervised local agentd worker. Only approved transports and packages are allowed; environment values stay in the OS credential store and never return to this page.
                             </div>
                         )}
 

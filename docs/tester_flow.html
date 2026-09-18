@@ -174,8 +174,8 @@
                 </tr>
                 <tr>
                     <td><b>Browser MCP</b></td>
-                    <td><span class="status-dot status-roadmap"></span><b>Unavailable</b></td>
-                    <td>Browser exposes only authenticated lifecycle and sanitized server metadata. Arbitrary add/edit/connect/list/call execution is not migrated; Electron retains its transition path.</td>
+                    <td><span class="status-dot status-beta"></span><b>Supervised</b></td>
+                    <td>Browser management and tool calls use the paired agentd worker for approved uvx, SSE, and HTTP servers. Credentials stay in the OS-backed daemon; internal Playwright/filesystem/native definitions fail closed. Electron retains its transition path.</td>
                 </tr>
                 <tr>
                     <td><b>Social Bridges</b></td>
@@ -221,7 +221,7 @@
                     <div class="flow-card-title">🧠 Provider and channel workers</div>
                 </div>
                 <div class="flow-card-body">
-                    Browser chat streams through authenticated agentd providers; bounded knowledge and memory routes are available, while unsupported binary and arbitrary MCP operations fail closed.
+                    Browser chat streams through authenticated agentd providers; bounded knowledge and memory routes are available, while unsupported binary and disallowed/internal MCP operations fail closed.
                 </div>
             </div>
 

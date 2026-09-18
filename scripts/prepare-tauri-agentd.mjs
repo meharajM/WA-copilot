@@ -40,19 +40,29 @@ await cp(join(projectRoot, 'agentd', 'keyring-credential-store.cjs'), join(stage
 await cp(join(projectRoot, 'agentd', 'gmail-oauth.cjs'), join(stageRoot, 'gmail-oauth.cjs'))
 await cp(join(projectRoot, 'agentd', 'gmail-api.cjs'), join(stageRoot, 'gmail-api.cjs'))
 await cp(join(projectRoot, 'agentd', 'whatsapp-baileys.cjs'), join(stageRoot, 'whatsapp-baileys.cjs'))
+await cp(join(projectRoot, 'agentd', 'continuity-migration.cjs'), join(stageRoot, 'continuity-migration.cjs'))
+await cp(join(projectRoot, 'agentd', 'email-transport.cjs'), join(stageRoot, 'email-transport.cjs'))
+await cp(join(projectRoot, 'agentd', 'email-inbound-worker.cjs'), join(stageRoot, 'email-inbound-worker.cjs'))
+await cp(join(projectRoot, 'agentd', 'mcp-worker.cjs'), join(stageRoot, 'mcp-worker.cjs'))
 await cp(join(projectRoot, 'package.json'), join(stageRoot, 'package.json'))
 await cp(join(projectRoot, 'scripts', 'tauri-agentd-runner.cjs'), join(stageRoot, 'index.cjs'))
 
 // Stage only the dependency closure used by agentd. Baileys loads lazily on
 // connect, but its packages must still exist in the packaged sidecar.
 const dependencies = new Map()
-const requiredDependencies = new Set(['better-sqlite3', 'bindings', 'file-uri-to-path', '@whiskeysockets/baileys'])
+const requiredDependencies = new Set(['better-sqlite3', 'bindings', 'file-uri-to-path', '@whiskeysockets/baileys', '@modelcontextprotocol/sdk'])
 const queue = [...requiredDependencies]
 while (queue.length) {
   const dependency = queue.shift()
   if (dependencies.has(dependency)) continue
   let resolved
-  try { resolved = projectRequire.resolve(dependency) } catch (error) {
+  for (const candidate of [dependency, dependency === '@modelcontextprotocol/sdk' ? `${dependency}/client` : null].filter(Boolean)) {
+    try {
+      resolved = projectRequire.resolve(candidate)
+      break
+    } catch {}
+  }
+  if (!resolved) {
     if (requiredDependencies.has(dependency)) throw new Error(`Missing agentd dependency: ${dependency}`)
     continue
   }

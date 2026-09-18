@@ -13,6 +13,7 @@ const { WhatsAppBaileysService } = require('./whatsapp-baileys.cjs')
 const continuityMigration = require('./continuity-migration.cjs')
 const { sendTextEmail } = require('./email-transport.cjs')
 const { EmailInboundWorker, pollMailbox } = require('./email-inbound-worker.cjs')
+const { McpWorker, MCP_LIFECYCLE } = require('./mcp-worker.cjs')
 
 const SESSION_TTL_MS = 15 * 60 * 1000
 const PAIRING_TTL_MS = 5 * 60 * 1000
@@ -170,25 +171,6 @@ const PLATFORM_LABEL = Object.freeze({ win32: 'Windows', darwin: 'macOS', linux:
 const AGENTD_ENGINE = `Node.js ${process.versions.node}`
 
 const EMAIL_PROBE_TIMEOUT_MS = 10 * 1000
-const MCP_LIFECYCLE = Object.freeze({
-  runtime: 'agentd',
-  management: 'unavailable',
-  execution: 'unavailable',
-  reason: 'Arbitrary MCP server management and tool execution are not migrated to agentd',
-  transports: [],
-  tools: [],
-})
-
-function projectMcpServer(server) {
-  return {
-    id: String(server.id).slice(0, 128),
-    name: String(server.name).slice(0, MAX_MCP_NAME_LENGTH),
-    description: String(server.description || '').slice(0, MAX_MCP_DESCRIPTION_LENGTH),
-    type: ['stdio', 'sse', 'http'].includes(server.type) ? server.type : 'stdio',
-    execution: 'unavailable',
-    autoConnect: false,
-  }
-}
 const EMAIL_DRAFT_STATUSES = Object.freeze(['pending_review', 'approved', 'rejected', 'escalated', 'sent', 'failed'])
 const MAX_MCP_SERVERS = 50
 const MAX_MCP_NAME_LENGTH = 128
@@ -472,7 +454,7 @@ function redactPayload(value, key = '') {
 }
 
 class AgentdServer {
-  constructor({ dataDir, secret, uiRoot = null, logger = console, pairingCode = null, credentials = null, providerFetch = fetch, emailProbe = probeEmailTransport, emailSend = sendTextEmail, emailPoll = undefined, gmailPoll: configuredGmailPoll = undefined, whatsappService = null } = {}) {
+  constructor({ dataDir, secret, uiRoot = null, logger = console, pairingCode = null, credentials = null, providerFetch = fetch, emailProbe = probeEmailTransport, emailSend = sendTextEmail, emailPoll = undefined, gmailPoll: configuredGmailPoll = undefined, whatsappService = null, mcpWorker = null } = {}) {
     if (!secret || typeof secret !== 'string' || secret.length < 32) throw new Error('A per-install bearer secret of at least 32 characters is required')
     this.dataDir = resolveDataDir(dataDir)
     this.secret = secret
@@ -485,6 +467,7 @@ class AgentdServer {
     this.emailPoll = emailPoll
     this.gmailPoll = configuredGmailPoll
     this.emailInboundWorker = null
+    this.mcpWorker = mcpWorker || new McpWorker({ logger, credentials })
     this.gmailOAuth = new GmailOAuthService({ credentials, fetchImpl: providerFetch, logger })
     this.whatsappBaileys = whatsappService || new WhatsAppBaileysService({
       dataDir: this.dataDir,
@@ -856,6 +839,7 @@ class AgentdServer {
 
   async stop() {
     this.stopEmailInboundPolling()
+    try { await this.mcpWorker?.closeAll() } catch {}
     try { await this.whatsappBaileys?.disconnect(false) } catch {}
     if (this.server) await new Promise(resolve => this.server.close(() => resolve()))
     this.server = null
@@ -1024,9 +1008,16 @@ class AgentdServer {
     if (url.pathname === '/api/v1/system-info' && req.method === 'GET') return this.systemInfo(req, res)
     if (url.pathname === '/api/v1/mcp' && req.method === 'GET') {
       this.authorize(req)
-      return json(res, 200, MCP_LIFECYCLE)
+      return json(res, 200, this.mcpWorker.lifecycle())
     }
     if (url.pathname === '/api/v1/mcp/servers' && ['GET', 'PUT'].includes(req.method)) return this.mcpServers(req, res)
+    const mcpConnectMatch = /^\/api\/v1\/mcp\/servers\/([^/]+)\/(connect|disconnect|tools)$/.exec(url.pathname)
+    if (mcpConnectMatch && ((mcpConnectMatch[2] === 'tools' && req.method === 'GET') || (['connect', 'disconnect'].includes(mcpConnectMatch[2]) && req.method === 'POST'))) {
+      return this.mcpServerAction(req, res, decodeURIComponent(mcpConnectMatch[1]), mcpConnectMatch[2])
+    }
+    const mcpCallMatch = /^\/api\/v1\/mcp\/servers\/([^/]+)\/call$/.exec(url.pathname)
+    if (mcpCallMatch && req.method === 'POST') return this.mcpCall(req, res, decodeURIComponent(mcpCallMatch[1]))
+    if (url.pathname === '/api/v1/mcp/cancel' && req.method === 'POST') return this.mcpCancel(req, res)
     if (url.pathname === '/api/v1/continuity/status' && req.method === 'GET') return this.continuityStatus(req, res)
     if (url.pathname === '/api/v1/continuity/preview' && req.method === 'POST') return this.continuityPreview(req, res)
     if (url.pathname === '/api/v1/continuity/credentials/preview' && req.method === 'POST') return this.credentialContinuityPreview(req, res)
@@ -1114,23 +1105,84 @@ class AgentdServer {
     const read = () => {
       let stored = []
       try { stored = JSON.parse(this.getState('mcp_servers', '[]')) } catch {}
-      const parsed = parseMcpServers(stored)
-      return parsed || []
+      return parseMcpServers(stored) || []
     }
+    const project = server => this.mcpWorker.projectRuntime(server)
     if (req.method === 'GET') {
       this.authorize(req)
-      return json(res, 200, { servers: read().map(projectMcpServer), execution: 'unavailable', reason: MCP_LIFECYCLE.reason })
+      return json(res, 200, { servers: read().map(project), execution: MCP_LIFECYCLE.execution, reason: MCP_LIFECYCLE.reason })
     }
-    // Definitions are continuity metadata. Only the native owner may write them;
-    // the browser receives a read-only projection and has no PUT path.
-    this.authorizeNative(req)
+    this.authorize(req, { mutation: true })
     if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
     let body
     try { body = await readBody(req) } catch (error) { return json(res, error.statusCode || 400, { error: error.message }) }
     const servers = parseMcpServers(body?.servers)
     if (!servers) return json(res, 400, { error: 'Invalid MCP server configuration' })
+    const previous = read()
+    const nextIds = new Set(servers.map(server => server.id))
+    await Promise.all(previous.filter(server => !nextIds.has(server.id)).map(server => this.mcpWorker.disconnect(server.id)))
+    for (const server of servers) {
+      const old = previous.find(item => item.id === server.id)
+      if (old && JSON.stringify(old) !== JSON.stringify(server)) await this.mcpWorker.disconnect(server.id)
+    }
     this.setState('mcp_servers', JSON.stringify(servers))
-    return json(res, 200, { servers: servers.map(projectMcpServer), execution: 'unavailable', reason: MCP_LIFECYCLE.reason })
+    return json(res, 200, { servers: servers.map(project), execution: MCP_LIFECYCLE.execution, reason: MCP_LIFECYCLE.reason })
+  }
+
+  async mcpServerAction(req, res, serverId, action) {
+    this.authorize(req, { mutation: action !== 'tools' })
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(serverId)) return json(res, 400, { error: 'Invalid MCP server ID' })
+    let stored = []
+    try { stored = JSON.parse(this.getState('mcp_servers', '[]')) } catch {}
+    const servers = parseMcpServers(stored) || []
+    const server = servers.find(item => item.id === serverId)
+    if (!server) return json(res, 404, { error: 'MCP server not found' })
+    try {
+      if (action === 'connect') await this.mcpWorker.connect(server)
+      else if (action === 'disconnect') await this.mcpWorker.disconnect(server.id)
+      else {
+        const tools = this.mcpWorker.listTools(server)
+        return json(res, 200, { server: this.mcpWorker.projectRuntime(server), tools })
+      }
+      return json(res, 200, { server: this.mcpWorker.projectRuntime(server) })
+    } catch (error) {
+      this.logger.warn?.('[agentd] MCP operation failed', { serverId, action, error: error instanceof Error ? error.message : 'MCP operation failed' })
+      return json(res, 409, { error: error instanceof Error ? error.message : 'MCP operation failed' })
+    }
+  }
+
+  async mcpCall(req, res, serverId) {
+    this.authorize(req, { mutation: true })
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(serverId)) return json(res, 400, { error: 'Invalid MCP server ID' })
+    let body
+    try { body = await readBody(req, 128 * 1024) } catch (error) { return json(res, error.statusCode || 400, { error: error.message }) }
+    if (!body || typeof body.toolName !== 'string' || !/^[A-Za-z0-9._-]{1,128}$/.test(body.toolName) || body.toolName === 'evaluate' || body.toolName === 'browser_run_code') return json(res, 400, { error: 'Invalid or disallowed MCP tool name' })
+    const args = body.args === undefined ? {} : body.args
+    if (!args || typeof args !== 'object' || Array.isArray(args)) return json(res, 400, { error: 'MCP arguments must be an object' })
+    try {
+      if (Buffer.byteLength(JSON.stringify(args), 'utf8') > 64 * 1024) return json(res, 413, { error: 'MCP arguments exceed 64KB' })
+    } catch { return json(res, 400, { error: 'MCP arguments are not serializable' }) }
+    const requestId = body.requestId === undefined ? crypto.randomUUID() : body.requestId
+    if (typeof requestId !== 'string' || !/^[A-Za-z0-9._:-]{1,100}$/.test(requestId)) return json(res, 400, { error: 'Invalid MCP request ID' })
+    let stored = []
+    try { stored = JSON.parse(this.getState('mcp_servers', '[]')) } catch {}
+    const server = (parseMcpServers(stored) || []).find(item => item.id === serverId)
+    if (!server) return json(res, 404, { error: 'MCP server not found' })
+    try {
+      const result = await this.mcpWorker.call(server, body.toolName, args, requestId)
+      return json(res, 200, { result, requestId })
+    } catch (error) {
+      this.logger.warn?.('[agentd] MCP tool call failed', { serverId, toolName: body.toolName, requestId, error: error instanceof Error ? error.message : 'MCP tool call failed' })
+      return json(res, 409, { error: error instanceof Error ? error.message : 'MCP tool call failed', requestId })
+    }
+  }
+
+  async mcpCancel(req, res) {
+    this.authorize(req, { mutation: true })
+    let body
+    try { body = await readBody(req, 16 * 1024) } catch (error) { return json(res, error.statusCode || 400, { error: error.message }) }
+    if (typeof body?.requestId !== 'string' || !/^[A-Za-z0-9._:-]{1,100}$/.test(body.requestId)) return json(res, 400, { error: 'Invalid MCP request ID' })
+    return json(res, 200, { cancelled: await this.mcpWorker.cancel(body.requestId) })
   }
 
   async continuityStatus(req, res) {

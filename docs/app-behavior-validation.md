@@ -22,7 +22,7 @@ The 2026-09-18 audit found and corrected browser Email drift: the contract now d
 
 The follow-up runtime-boundary audit also corrected the launch contract: Edge/Chrome has an explicit agentd readiness/pairing state machine, while the Electron dependency modal is no longer described as a browser startup requirement. Gemini is covered by the browser agentd provider slice, and explicit on-device/WebGPU execution is now available in the browser without changing the Tauri native-only boundary. The WhatsApp bridge now clears a legacy persisted Electron autonomous-mode flag at startup and gates browser ingress only on Response Permission, so an old renderer value cannot briefly activate browser polling.
 
-The older support-doc drift identified by the first audit is now corrected in the checked-in HTML manuals, email progress note, and architecture overview. The code-first follow-up also corrected `docs/tester_flow.html`, which had incorrectly presented the legacy Electron flow, PDF ingestion, and Browser MCP/Playwright as browser capabilities. The remaining limitations are implementation gates (for example browser media delivery and supervised MCP execution), not competing product-contract descriptions.
+The older support-doc drift identified by the first audit is now corrected in the checked-in HTML manuals, email progress note, and architecture overview. The code-first follow-up also corrected `docs/tester_flow.html`, which had incorrectly presented the legacy Electron flow, PDF ingestion, and Browser MCP/Playwright as browser capabilities. The browser MCP boundary is now a supervised agentd worker for approved external servers; internal/native command definitions remain fail-closed. The remaining limitations are implementation gates (for example browser media delivery and Windows release evidence), not competing product-contract descriptions.
 
 ## Validation Scope
 
@@ -89,19 +89,25 @@ Evidence:
 
 ### Browser MCP boundary
 
-The implementation was checked before updating the docs. Browser MCP access is
-currently metadata-only: the paired browser can read the bounded lifecycle and
-sanitized server identity projection, but it cannot add, edit, remove, connect,
-list tools, call tools, or auto-connect arbitrary servers. Environment values are
-never returned. Electron retains its existing MCP client during the transition,
-and Tauri exposes no MCP UI or generic native command proxy.
+The implementation was checked before updating the docs. Browser MCP access now
+uses the paired agentd worker for bounded management and execution: the browser
+can add, edit, remove, configure auto-connect, connect, disconnect, list tools,
+call allowlisted tools, and cancel calls for approved external servers.
+Environment values are never returned; supported credential names are resolved
+inside the OS-backed daemon. Stdio is restricted to the approved `uvx` packages,
+SSE/HTTP endpoints are validated, and schemas, arguments, results, timeouts and
+rates are bounded. Legacy internal Playwright/filesystem/native definitions fail
+closed rather than being proxied to the page. Electron retains its existing MCP
+client during the transition, and Tauri exposes no generic MCP/native command
+proxy.
 
 Evidence:
 
 - [agentd/server.cjs](/Users/meharaj/WA-copilot/agentd/server.cjs): MCP lifecycle and sanitized server routes
 - [src/renderer/src/lib/browser-agentd-client.ts](/Users/meharaj/WA-copilot/src/renderer/src/lib/browser-agentd-client.ts): browser lifecycle/server validators
-- [src/renderer/src/stores/mcpStore.ts](/Users/meharaj/WA-copilot/src/renderer/src/stores/mcpStore.ts): browser actions fail closed and ignore legacy renderer state
-- [src/renderer/src/components/SettingsPanel.tsx](/Users/meharaj/WA-copilot/src/renderer/src/components/SettingsPanel.tsx): explicit unavailable state
+- [agentd/mcp-worker.cjs](/Users/meharaj/WA-copilot/agentd/mcp-worker.cjs): supervised transport/policy boundary, credential lookup, bounded calls and cancellation
+- [src/renderer/src/stores/mcpStore.ts](/Users/meharaj/WA-copilot/src/renderer/src/stores/mcpStore.ts): browser state and mutations stay agentd-owned; Electron remains unchanged
+- [src/renderer/src/components/SettingsPanel.tsx](/Users/meharaj/WA-copilot/src/renderer/src/components/SettingsPanel.tsx): supervised-worker status and explicit unsupported-definition errors
 - [docs/app-behavior.md](/Users/meharaj/WA-copilot/docs/app-behavior.md):395
 
 ### Browser LLM provider boundary
@@ -244,9 +250,10 @@ The technical reference called the application an Electron-first product, listed
 PDF ingestion as browser-ready, and marked Browser MCP/Playwright as a beta
 feature. The current browser implementation instead uses Edge/Chrome with a
 paired local `agentd` service; browser knowledge ingestion is bounded to the
-document types listed in the behavior contract, and arbitrary MCP execution is
-explicitly unavailable. The manual now labels the transition boundary and uses
-the current browser/agentd behavior.
+document types listed in the behavior contract, and MCP execution is available
+only through the supervised approved-server policy. Internal Playwright/native
+definitions remain unavailable. The manual now labels the transition boundary
+and uses the current browser/agentd behavior.
 
 Evidence:
 

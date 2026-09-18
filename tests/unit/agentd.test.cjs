@@ -561,7 +561,7 @@ test('agentd serves the browser bundle with executable asset MIME types', async 
   fs.rmSync(uiRoot, { recursive: true, force: true })
 })
 
-test('agentd exposes authenticated MCP lifecycle metadata without enabling execution', async () => {
+test('agentd exposes the supervised MCP lifecycle only after authentication', async () => {
   const dataDir = makeTempDir('aica-agentd-mcp-lifecycle-')
   const server = new AgentdServer({ dataDir, secret: 's'.repeat(32), pairingCode: '246810', logger: { log() {} } })
   const { origin } = await server.start()
@@ -569,11 +569,11 @@ test('agentd exposes authenticated MCP lifecycle metadata without enabling execu
   const response = await request(origin, 'GET', '/api/v1/mcp', undefined, { authorization: `Bearer ${'s'.repeat(32)}` })
   assert.deepEqual(response.body, {
     runtime: 'agentd',
-    management: 'unavailable',
-    execution: 'unavailable',
-    reason: 'Arbitrary MCP server management and tool execution are not migrated to agentd',
-    transports: [],
-    tools: [],
+    management: 'available',
+    execution: 'available',
+    reason: 'Approved MCP servers run under the supervised agentd worker',
+    transports: ['stdio', 'sse', 'http'],
+    tools: ['connect', 'disconnect', 'listTools', 'callTool', 'cancel'],
   })
   await server.stop()
   fs.rmSync(dataDir, { recursive: true, force: true })
@@ -588,7 +588,7 @@ test('agentd persists MCP definitions but exposes only a sanitized browser proje
   const browserPair = await request(origin, 'POST', '/api/v1/pair', { code: fs.readFileSync(path.join(dataDir, 'agentd.pairing-code'), 'utf8').trim() }, { origin })
   const browserCookie = browserPair.headers['set-cookie'][0].split(';')[0]
   const browserPut = await request(origin, 'PUT', '/api/v1/mcp/servers', { servers: [] }, { origin, cookie: browserCookie, 'x-csrf-token': browserPair.body.csrfToken })
-  assert.equal(browserPut.status, 401)
+  assert.equal(browserPut.status, 200)
   const servers = [{
     id: 'mcp_local',
     name: 'Local test server',
@@ -601,15 +601,47 @@ test('agentd persists MCP definitions but exposes only a sanitized browser proje
     envKeys: ['API_TOKEN'],
   }]
   const saved = await request(origin, 'PUT', '/api/v1/mcp/servers', { servers }, auth)
-  assert.deepEqual(saved.body.servers, [{ id: 'mcp_local', name: 'Local test server', description: 'Bounded config', type: 'stdio', execution: 'unavailable', autoConnect: false }])
+  assert.deepEqual(saved.body.servers, [{ id: 'mcp_local', name: 'Local test server', description: 'Bounded config', type: 'stdio', command: 'node', args: ['server.mjs'], allowedTools: ['lookup'], envKeys: ['API_TOKEN'], execution: 'available', connected: false, tools: [], autoConnect: false }])
   assert.equal(JSON.stringify(saved.body).includes('secret-value'), false)
-  assert.deepEqual((await request(origin, 'GET', '/api/v1/mcp/servers', undefined, auth)).body.servers, [{ id: 'mcp_local', name: 'Local test server', description: 'Bounded config', type: 'stdio', execution: 'unavailable', autoConnect: false }])
+  assert.deepEqual((await request(origin, 'GET', '/api/v1/mcp/servers', undefined, auth)).body.servers, [{ id: 'mcp_local', name: 'Local test server', description: 'Bounded config', type: 'stdio', command: 'node', args: ['server.mjs'], allowedTools: ['lookup'], envKeys: ['API_TOKEN'], execution: 'available', connected: false, tools: [], autoConnect: false }])
   for (const invalid of [
     [{ ...servers[0], id: 'bad id' }],
     [{ ...servers[0], type: 'stdio', command: '' }],
     [{ ...servers[0], envKeys: ['BAD-NAME'] }],
     [{ ...servers[0], url: 'http://user:password@example.com/sse', type: 'sse', command: undefined, args: undefined }],
   ]) assert.equal((await request(origin, 'PUT', '/api/v1/mcp/servers', { servers: invalid }, auth)).status, 400)
+  await server.stop()
+  fs.rmSync(dataDir, { recursive: true, force: true })
+})
+
+test('agentd routes browser MCP management and calls through the supervised worker boundary', async () => {
+  const dataDir = makeTempDir('aica-agentd-mcp-routes-')
+  const tool = { name: 'convert_to_markdown', description: 'Convert a document', inputSchema: { type: 'object' } }
+  let connected = false
+  const calls = []
+  const mcpWorker = {
+    lifecycle: () => ({ runtime: 'agentd', management: 'available', execution: 'available', reason: 'fake worker', transports: ['stdio', 'sse', 'http'], tools: ['connect', 'disconnect', 'listTools', 'callTool', 'cancel'] }),
+    projectRuntime: server => ({ id: server.id, name: server.name, description: server.description, type: server.type, command: server.command, args: server.args, allowedTools: server.allowedTools, envKeys: server.envKeys, execution: 'available', connected, tools: connected ? [tool] : [], autoConnect: server.autoConnect }),
+    connect: async () => { connected = true },
+    disconnect: async () => { connected = false },
+    listTools: () => connected ? [tool] : [],
+    call: async (server, toolName, args, requestId) => { calls.push({ serverId: server.id, toolName, args, requestId }); return { converted: true } },
+    cancel: async requestId => requestId === 'request-1',
+    closeAll: async () => {},
+  }
+  const server = new AgentdServer({ dataDir, secret: 's'.repeat(32), pairingCode: '864210', mcpWorker, logger: { log() {}, warn() {} } })
+  const { origin } = await server.start()
+  const pair = await request(origin, 'POST', '/api/v1/pair', { code: '864210' }, { origin })
+  const browser = { origin, cookie: pair.headers['set-cookie'][0].split(';')[0], 'x-csrf-token': pair.body.csrfToken }
+  const definition = { id: 'mcp_safe', name: 'Safe converter', description: 'Approved', type: 'stdio', command: 'uvx', args: ['markitdown-mcp[all]'], allowedTools: ['convert_to_markdown'], envKeys: ['OPENAI_API_KEY'], autoConnect: false }
+  assert.equal((await request(origin, 'PUT', '/api/v1/mcp/servers', { servers: [definition] }, browser)).status, 200)
+  assert.equal((await request(origin, 'POST', '/api/v1/mcp/servers/mcp_safe/connect', {}, browser)).body.server.connected, true)
+  assert.deepEqual((await request(origin, 'GET', '/api/v1/mcp/servers/mcp_safe/tools', undefined, browser)).body.tools, [tool])
+  const call = await request(origin, 'POST', '/api/v1/mcp/servers/mcp_safe/call', { toolName: 'convert_to_markdown', args: { file: 'notes.md' }, requestId: 'request-1' }, browser)
+  assert.deepEqual(call.body, { result: { converted: true }, requestId: 'request-1' })
+  assert.deepEqual(calls, [{ serverId: 'mcp_safe', toolName: 'convert_to_markdown', args: { file: 'notes.md' }, requestId: 'request-1' }])
+  assert.deepEqual((await request(origin, 'POST', '/api/v1/mcp/cancel', { requestId: 'request-1' }, browser)).body, { cancelled: true })
+  assert.equal((await request(origin, 'POST', '/api/v1/mcp/servers/mcp_safe/disconnect', {}, { origin, cookie: browser.cookie })).status, 403)
   await server.stop()
   fs.rmSync(dataDir, { recursive: true, force: true })
 })

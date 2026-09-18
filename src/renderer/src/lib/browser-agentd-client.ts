@@ -69,11 +69,17 @@ export interface BrowserGmailOAuthStatus {
 
 export interface BrowserMcpLifecycle {
   runtime: 'agentd'
-  management: 'unavailable'
-  execution: 'unavailable'
+  management: 'available' | 'unavailable'
+  execution: 'available' | 'unavailable'
   reason: string
   transports: string[]
   tools: string[]
+}
+
+export interface BrowserMcpTool {
+  name: string
+  description: string
+  inputSchema: Record<string, unknown>
 }
 
 export interface BrowserMcpServer {
@@ -81,8 +87,16 @@ export interface BrowserMcpServer {
   name: string
   description: string
   type: 'stdio' | 'sse' | 'http'
-  execution: 'unavailable'
-  autoConnect: false
+  command?: string
+  args?: string[]
+  url?: string
+  allowedTools?: string[]
+  envKeys?: string[]
+  execution: 'available' | 'unavailable'
+  connected: boolean
+  tools: BrowserMcpTool[]
+  autoConnect: boolean
+  error?: string
 }
 
 export interface BrowserEmailInboundEvent {
@@ -176,8 +190,8 @@ const readNativeHealth = (value: unknown): NativeHealth => {
 const readMcpLifecycle = (value: unknown): BrowserMcpLifecycle => {
   if (!isRecord(value)
     || value.runtime !== 'agentd'
-    || value.management !== 'unavailable'
-    || value.execution !== 'unavailable'
+    || !['available', 'unavailable'].includes(value.management as string)
+    || !['available', 'unavailable'].includes(value.execution as string)
     || typeof value.reason !== 'string'
     || !Array.isArray(value.transports) || value.transports.some(item => typeof item !== 'string')
     || !Array.isArray(value.tools) || value.tools.some(item => typeof item !== 'string')) {
@@ -186,24 +200,44 @@ const readMcpLifecycle = (value: unknown): BrowserMcpLifecycle => {
   return value as unknown as BrowserMcpLifecycle
 }
 
-const readMcpServers = (value: unknown): { servers: BrowserMcpServer[]; execution: 'unavailable'; reason: string } => {
-  if (!isRecord(value) || value.execution !== 'unavailable' || typeof value.reason !== 'string' || !Array.isArray(value.servers)) throw new Error('Invalid agentd MCP server response')
+const readMcpServers = (value: unknown): { servers: BrowserMcpServer[]; execution: 'available' | 'unavailable'; reason: string } => {
+  if (!isRecord(value) || !['available', 'unavailable'].includes(value.execution as string) || typeof value.reason !== 'string' || !Array.isArray(value.servers)) throw new Error('Invalid agentd MCP server response')
   const servers = value.servers.map((item) => {
     if (!isRecord(item) || typeof item.id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(item.id)
       || typeof item.name !== 'string' || !item.name.trim() || item.name.length > 128
       || typeof item.description !== 'string' || item.description.length > 512
       || !['stdio', 'sse', 'http'].includes(item.type as string)
-      || item.execution !== 'unavailable' || item.autoConnect !== false) throw new Error('Invalid agentd MCP server response')
+      || !['available', 'unavailable'].includes(item.execution as string)
+      || typeof item.connected !== 'boolean' || typeof item.autoConnect !== 'boolean'
+      || !Array.isArray(item.tools)) throw new Error('Invalid agentd MCP server response')
+    if (item.command !== undefined && (typeof item.command !== 'string' || item.command.length > 256)) throw new Error('Invalid agentd MCP server response')
+    if (item.args !== undefined && (!Array.isArray(item.args) || item.args.length > 32 || item.args.some(arg => typeof arg !== 'string' || arg.length > 512))) throw new Error('Invalid agentd MCP server response')
+    if (item.url !== undefined && (typeof item.url !== 'string' || item.url.length > 2048)) throw new Error('Invalid agentd MCP server response')
+    if (item.allowedTools !== undefined && (!Array.isArray(item.allowedTools) || item.allowedTools.length > 128 || item.allowedTools.some(tool => typeof tool !== 'string' || tool.length > 128))) throw new Error('Invalid agentd MCP server response')
+    if (item.envKeys !== undefined && (!Array.isArray(item.envKeys) || item.envKeys.length > 64 || item.envKeys.some(key => typeof key !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(key)))) throw new Error('Invalid agentd MCP server response')
+    const tools = item.tools.map((tool): BrowserMcpTool => {
+      if (!isRecord(tool) || typeof tool.name !== 'string' || !/^[A-Za-z0-9._-]{1,128}$/.test(tool.name)
+        || typeof tool.description !== 'string' || !isRecord(tool.inputSchema)) throw new Error('Invalid agentd MCP server response')
+      return { name: tool.name, description: tool.description, inputSchema: tool.inputSchema }
+    })
     return {
       id: item.id,
       name: item.name,
       description: item.description,
       type: item.type as BrowserMcpServer['type'],
-      execution: 'unavailable' as const,
-      autoConnect: false as const,
+      ...(typeof item.command === 'string' ? { command: item.command } : {}),
+      ...(Array.isArray(item.args) ? { args: item.args as string[] } : {}),
+      ...(typeof item.url === 'string' ? { url: item.url } : {}),
+      ...(Array.isArray(item.allowedTools) ? { allowedTools: item.allowedTools as string[] } : {}),
+      ...(Array.isArray(item.envKeys) ? { envKeys: item.envKeys as string[] } : {}),
+      execution: item.execution as BrowserMcpServer['execution'],
+      connected: item.connected as boolean,
+      tools,
+      autoConnect: item.autoConnect as boolean,
+      ...(typeof item.error === 'string' ? { error: item.error } : {}),
     }
   })
-  return { servers, execution: 'unavailable', reason: value.reason }
+  return { servers, execution: value.execution as 'available' | 'unavailable', reason: value.reason }
 }
 
 const readContinuityStatus = (value: unknown): BrowserContinuityStatus => {
@@ -577,7 +611,13 @@ export interface BrowserAgentdClient extends ChatClient {
   deleteCredential(key: CredentialKey): Promise<NativeResult>
   testProvider(provider: 'openai' | 'openrouter' | 'gemini'): Promise<ProviderTestResult>
   getMcpLifecycle(): Promise<BrowserMcpLifecycle>
-  getMcpServers(): Promise<{ servers: BrowserMcpServer[]; execution: 'unavailable'; reason: string }>
+  getMcpServers(): Promise<{ servers: BrowserMcpServer[]; execution: 'available' | 'unavailable'; reason: string }>
+  saveMcpServers(servers: Array<Record<string, unknown>>): Promise<{ servers: BrowserMcpServer[]; execution: 'available' | 'unavailable'; reason: string }>
+  connectMcpServer(serverId: string): Promise<BrowserMcpServer>
+  disconnectMcpServer(serverId: string): Promise<BrowserMcpServer>
+  listMcpTools(serverId: string): Promise<{ server: BrowserMcpServer; tools: BrowserMcpTool[] }>
+  callMcpTool(serverId: string, toolName: string, args: Record<string, unknown>, requestId?: string): Promise<{ result: unknown; requestId: string }>
+  cancelMcpTool(requestId: string): Promise<boolean>
 }
 
 export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = {}): BrowserAgentdClient {
@@ -600,6 +640,9 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
   const requestResponse = async (path: string, init: RequestInit = {}, mutation = false): Promise<Response> => {
     const headers = new Headers(init.headers)
     if (init.body && !headers.has('content-type')) headers.set('content-type', 'application/json')
+    // A second client instance can be created by a lazy browser chunk after
+    // pairing. Refresh the memory-only shared slot before protecting a write.
+    if (mutation && !csrfToken) csrfToken = readSharedCsrf()
     if (mutation && csrfToken) headers.set('x-csrf-token', csrfToken)
     return fetcher(new URL(path, `${baseOrigin}/`).toString(), {
       ...init,
@@ -633,6 +676,43 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
   const status = async (): Promise<NativeHealth> => readNativeHealth(await request('/api/v1/status'))
   const getMcpLifecycle = async (): Promise<BrowserMcpLifecycle> => readMcpLifecycle(await request('/api/v1/mcp'))
   const getMcpServers = async () => readMcpServers(await request('/api/v1/mcp/servers'))
+  const readMcpServer = (value: unknown): BrowserMcpServer => {
+    const parsed = readMcpServers({ servers: [value], execution: 'available', reason: 'ok' })
+    return parsed.servers[0]
+  }
+  const saveMcpServers = async (servers: Array<Record<string, unknown>>) => readMcpServers(await request('/api/v1/mcp/servers', { method: 'PUT', body: JSON.stringify({ servers }) }, true))
+  const connectMcpServer = async (serverId: string): Promise<BrowserMcpServer> => {
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(serverId)) throw new Error('Invalid MCP server ID')
+    const value = await request<unknown>(`/api/v1/mcp/servers/${encodeURIComponent(serverId)}/connect`, { method: 'POST', body: '{}' }, true)
+    if (!isRecord(value) || !value.server) throw new Error('Invalid MCP connect response')
+    return readMcpServer(value.server)
+  }
+  const disconnectMcpServer = async (serverId: string): Promise<BrowserMcpServer> => {
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(serverId)) throw new Error('Invalid MCP server ID')
+    const value = await request<unknown>(`/api/v1/mcp/servers/${encodeURIComponent(serverId)}/disconnect`, { method: 'POST', body: '{}' }, true)
+    if (!isRecord(value) || !value.server) throw new Error('Invalid MCP disconnect response')
+    return readMcpServer(value.server)
+  }
+  const listMcpTools = async (serverId: string): Promise<{ server: BrowserMcpServer; tools: BrowserMcpTool[] }> => {
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(serverId)) throw new Error('Invalid MCP server ID')
+    const value = await request<unknown>(`/api/v1/mcp/servers/${encodeURIComponent(serverId)}/tools`)
+    if (!isRecord(value) || !value.server || !Array.isArray(value.tools)) throw new Error('Invalid MCP tools response')
+    const server = readMcpServer(value.server)
+    const tools = readMcpServers({ servers: [{ ...server, tools: value.tools }], execution: 'available', reason: 'ok' }).servers[0].tools
+    return { server, tools }
+  }
+  const callMcpTool = async (serverId: string, toolName: string, args: Record<string, unknown>, requestId?: string): Promise<{ result: unknown; requestId: string }> => {
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(serverId) || !/^[A-Za-z0-9._-]{1,128}$/.test(toolName)) throw new Error('Invalid MCP tool request')
+    const value = await request<unknown>(`/api/v1/mcp/servers/${encodeURIComponent(serverId)}/call`, { method: 'POST', body: JSON.stringify({ toolName, args, ...(requestId ? { requestId } : {}) }) }, true)
+    if (!isRecord(value) || typeof value.requestId !== 'string' || !Object.prototype.hasOwnProperty.call(value, 'result')) throw new Error('Invalid MCP tool response')
+    return { result: value.result, requestId: value.requestId }
+  }
+  const cancelMcpTool = async (requestId: string): Promise<boolean> => {
+    if (!/^[A-Za-z0-9._:-]{1,100}$/.test(requestId)) throw new Error('Invalid MCP request ID')
+    const value = await request<unknown>('/api/v1/mcp/cancel', { method: 'POST', body: JSON.stringify({ requestId }) }, true)
+    if (!isRecord(value) || typeof value.cancelled !== 'boolean') throw new Error('Invalid MCP cancellation response')
+    return value.cancelled
+  }
   const getContinuityStatus = async (): Promise<BrowserContinuityStatus> => readContinuityStatus(await request('/api/v1/continuity/status'))
 
   const readiness = async (): Promise<'ready' | 'pairing' | 'unavailable'> => {
@@ -1198,6 +1278,12 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     testProvider,
     getMcpLifecycle,
     getMcpServers,
+    saveMcpServers,
+    connectMcpServer,
+    disconnectMcpServer,
+    listMcpTools,
+    callMcpTool,
+    cancelMcpTool,
   }
 }
 

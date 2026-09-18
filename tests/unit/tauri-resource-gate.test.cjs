@@ -17,6 +17,10 @@ async function fixture() {
     'aica-migration-reader.exe',
     'agentd-http/index.cjs',
     'agentd-http/server.cjs',
+    'agentd-http/continuity-migration.cjs',
+    'agentd-http/email-transport.cjs',
+    'agentd-http/email-inbound-worker.cjs',
+    'agentd-http/mcp-worker.cjs',
     'agentd-http/keyring-credential-store.cjs',
     'agentd-http/node_modules/better-sqlite3/package.json',
     'agentd-http/node_modules/better-sqlite3/build/Release/better_sqlite3.node',
@@ -24,6 +28,7 @@ async function fixture() {
     'agentd-http/node_modules/file-uri-to-path/package.json',
     'agentd-http/node_modules/@whiskeysockets/baileys/package.json',
     'agentd-http/node_modules/libsignal/package.json',
+    'agentd-http/node_modules/@modelcontextprotocol/sdk/package.json',
   ]
   for (const file of files) {
     const target = path.join(sidecar, file)

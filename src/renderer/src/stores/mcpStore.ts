@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import electron from '../lib/electron'
 import { STORAGE_KEYS } from '../lib/constants'
-import { getBrowserAgentdClient, type BrowserMcpServer } from '../lib/browser-agentd-client'
+import { getBrowserAgentdClient, type BrowserMcpLifecycle, type BrowserMcpServer, type BrowserMcpTool } from '../lib/browser-agentd-client'
 import { isTauriRuntime } from '../lib/tauri-native-bridge'
 
 // Types
@@ -14,6 +14,7 @@ export interface MCPServer {
     args?: string[]
     url?: string
     env?: Record<string, string> // Local-only secrets
+    envKeys?: string[] // Browser-safe names resolved from agentd's credential store
     allowedTools?: string[]
     connected: boolean
     tools: MCPTool[]
@@ -31,6 +32,7 @@ interface McpState {
     servers: MCPServer[]
     initialized: boolean
     activeUserId: string | null
+    browserMcpLifecycle: BrowserMcpLifecycle | null
 
     // Actions
     initialize: (uid?: string | null) => Promise<void>
@@ -68,7 +70,9 @@ const isBrowserProduct = (): boolean => typeof window !== 'undefined' && !window
 
 /** Browser MCP is agentd-owned only; legacy renderer definitions are never read or written. */
 export function isBrowserMcpUnavailable(): boolean {
-    return isBrowserProduct()
+    if (!isBrowserProduct()) return false
+    const lifecycle = useMcpStore.getState().browserMcpLifecycle
+    return !lifecycle || lifecycle.management !== 'available' || lifecycle.execution !== 'available'
 }
 
 function fromBrowserServer(server: BrowserMcpServer): MCPServer {
@@ -77,10 +81,30 @@ function fromBrowserServer(server: BrowserMcpServer): MCPServer {
         name: server.name,
         description: server.description,
         type: server.type,
-        autoConnect: false,
-        connected: false,
-        tools: [],
-        error: 'MCP execution is unavailable in browser mode',
+        ...(server.command !== undefined ? { command: server.command } : {}),
+        ...(server.args !== undefined ? { args: server.args } : {}),
+        ...(server.url !== undefined ? { url: server.url } : {}),
+        ...(server.allowedTools !== undefined ? { allowedTools: server.allowedTools } : {}),
+        ...(server.envKeys !== undefined ? { envKeys: server.envKeys } : {}),
+        autoConnect: server.autoConnect,
+        connected: server.connected,
+        tools: server.tools.map((tool: BrowserMcpTool) => ({ name: tool.name, description: tool.description, inputSchema: tool.inputSchema })),
+        ...(server.error ? { error: server.error } : {}),
+    }
+}
+
+function toBrowserServer(server: MCPServer): Record<string, unknown> {
+    return {
+        id: server.id,
+        name: server.name,
+        description: server.description,
+        type: server.type,
+        ...(server.command !== undefined ? { command: server.command } : {}),
+        ...(server.args !== undefined ? { args: server.args } : {}),
+        ...(server.url !== undefined ? { url: server.url } : {}),
+        ...(server.allowedTools !== undefined ? { allowedTools: server.allowedTools } : {}),
+        ...(server.envKeys !== undefined ? { envKeys: server.envKeys } : {}),
+        autoConnect: server.autoConnect,
     }
 }
 
@@ -132,6 +156,7 @@ export const useMcpStore = create<McpState>()((set, get) => ({
     servers: [],
     initialized: false,
     activeUserId: null,
+    browserMcpLifecycle: null,
 
     initialize: async (uid = null) => {
         // Force re-initialization if uid changes or if not initialized
@@ -144,9 +169,22 @@ export const useMcpStore = create<McpState>()((set, get) => ({
         try {
             console.log(`[mcpStore] Initializing for user: ${uid || 'anonymous'} (Key: ${storageKey})`)
 
-            let stored = isBrowserProduct()
-                ? (await getBrowserAgentdClient().getMcpServers()).servers.map(fromBrowserServer)
-                : await electron.store.get<MCPServer[]>(storageKey)
+            let stored: MCPServer[]
+            if (isBrowserProduct()) {
+                try {
+                    const client = getBrowserAgentdClient()
+                    const lifecycle = await client.getMcpLifecycle()
+                    const response = await client.getMcpServers()
+                    set({ browserMcpLifecycle: lifecycle })
+                    stored = response.servers.map(fromBrowserServer)
+                } catch (error) {
+                    set({ browserMcpLifecycle: { runtime: 'agentd', management: 'unavailable', execution: 'unavailable', reason: error instanceof Error ? error.message : 'MCP agent unavailable', transports: [], tools: [] } })
+                    stored = []
+                }
+            } else {
+                set({ browserMcpLifecycle: null })
+                stored = await electron.store.get<MCPServer[]>(storageKey)
+            }
             let initialServers: MCPServer[] = []
             const defaultServers = isBrowserProduct() ? [] : DEFAULT_MCP_SERVERS
 
@@ -179,7 +217,7 @@ export const useMcpStore = create<McpState>()((set, get) => ({
                         // Reset runtime state but KEEP cached tools for lazy-connect
                         connected: false,
                         tools: updated.tools || [],
-                        error: isBrowserProduct() ? (updated.error || 'MCP execution is unavailable in browser mode') : undefined
+                        error: isBrowserProduct() ? updated.error : undefined
                     } as MCPServer;
                 });
 
@@ -222,7 +260,7 @@ export const useMcpStore = create<McpState>()((set, get) => ({
 
             // Lazy connect: Only auto-connect on startup if we don't have cached tool schemas.
             // This prevents spawning expensive Node/Python child processes for unused servers.
-            const autoConnectServers = isBrowserProduct() ? [] : initialServers.filter(s => s.autoConnect && s.tools.length === 0)
+            const autoConnectServers = initialServers.filter(s => s.autoConnect && s.tools.length === 0 && (!isBrowserProduct() || !isBrowserMcpUnavailable()))
             for (const server of autoConnectServers) {
                 // Connect sequentially to avoid overwhelming
                 get().connectServer(server.id).catch(console.error)
@@ -253,7 +291,7 @@ export const useMcpStore = create<McpState>()((set, get) => ({
     },
 
     addServer: async (config) => {
-        if (isBrowserMcpUnavailable()) return
+        if (isBrowserMcpUnavailable()) throw new Error(useMcpStore.getState().browserMcpLifecycle?.reason || 'MCP execution is unavailable')
         const uid = get().activeUserId
         const storageKey = getPersistenceKey(uid)
 
@@ -267,14 +305,15 @@ export const useMcpStore = create<McpState>()((set, get) => ({
 
         const newServers = [...get().servers, server]
         set({ servers: newServers })
-        await electron.store.set(storageKey, newServers)
+        if (isBrowserProduct()) await getBrowserAgentdClient().saveMcpServers(newServers.map(toBrowserServer))
+        else await electron.store.set(storageKey, newServers)
 
         // Auto-connect new server
-        get().connectServer(server.id)
+         void get().connectServer(server.id).catch(() => undefined)
     },
 
     updateServer: async (id, config) => {
-        if (isBrowserMcpUnavailable()) return
+        if (isBrowserMcpUnavailable()) throw new Error(useMcpStore.getState().browserMcpLifecycle?.reason || 'MCP execution is unavailable')
         const uid = get().activeUserId
         const storageKey = getPersistenceKey(uid)
 
@@ -295,16 +334,17 @@ export const useMcpStore = create<McpState>()((set, get) => ({
         newServers[index] = updatedServer
 
         set({ servers: newServers })
-        await electron.store.set(storageKey, newServers)
+        if (isBrowserProduct()) await getBrowserAgentdClient().saveMcpServers(newServers.map(toBrowserServer))
+        else await electron.store.set(storageKey, newServers)
 
         // Reconnect if it was connected or auto-connect is on
         if (updatedServer.autoConnect) {
-            get().connectServer(id)
+             void get().connectServer(id).catch(() => undefined)
         }
     },
 
     removeServer: async (id) => {
-        if (isBrowserMcpUnavailable()) return
+        if (isBrowserMcpUnavailable()) throw new Error(useMcpStore.getState().browserMcpLifecycle?.reason || 'MCP execution is unavailable')
         const uid = get().activeUserId
         const storageKey = getPersistenceKey(uid)
 
@@ -317,11 +357,12 @@ export const useMcpStore = create<McpState>()((set, get) => ({
 
         const newServers = currentServers.filter(s => s.id !== id)
         set({ servers: newServers })
-        await electron.store.set(storageKey, newServers)
+        if (isBrowserProduct()) await getBrowserAgentdClient().saveMcpServers(newServers.map(toBrowserServer))
+        else await electron.store.set(storageKey, newServers)
     },
 
     connectServer: async (id) => {
-        if (isBrowserMcpUnavailable()) return
+        if (isBrowserMcpUnavailable()) throw new Error(useMcpStore.getState().browserMcpLifecycle?.reason || 'MCP execution is unavailable')
         const server = get().servers.find(s => s.id === id)
         if (!server) return
 
@@ -334,8 +375,9 @@ export const useMcpStore = create<McpState>()((set, get) => ({
             }))
 
             if (isBrowserProduct()) {
-                const lifecycle = await getBrowserAgentdClient().getMcpLifecycle()
-                throw new Error(lifecycle.reason)
+                const connected = fromBrowserServer(await getBrowserAgentdClient().connectMcpServer(id))
+                set(state => ({ servers: state.servers.map(s => s.id === id ? connected : s) }))
+                return
             }
 
             const result = await electron.mcp.connect({
@@ -390,22 +432,27 @@ export const useMcpStore = create<McpState>()((set, get) => ({
     },
 
     disconnectServer: async (id) => {
-        if (isBrowserMcpUnavailable()) return
+        if (isBrowserMcpUnavailable()) throw new Error(useMcpStore.getState().browserMcpLifecycle?.reason || 'MCP execution is unavailable')
         try {
-            if (!isBrowserProduct()) await electron.mcp.disconnect(id)
-            set(state => ({
-                servers: state.servers.map(s =>
-                    // Keep tools cached for lazy load later
-                    s.id === id ? { ...s, connected: false } : s
-                )
-            }))
+            if (isBrowserProduct()) {
+                const disconnected = fromBrowserServer(await getBrowserAgentdClient().disconnectMcpServer(id))
+                set(state => ({ servers: state.servers.map(s => s.id === id ? disconnected : s) }))
+            } else {
+                await electron.mcp.disconnect(id)
+                set(state => ({
+                    servers: state.servers.map(s =>
+                        // Keep tools cached for lazy load later
+                        s.id === id ? { ...s, connected: false } : s
+                    )
+                }))
+            }
         } catch (error) {
             console.error('Disconnect failed:', error)
         }
     },
 
     setAutoConnect: async (id, enabled) => {
-        if (isBrowserMcpUnavailable()) return
+        if (isBrowserMcpUnavailable()) throw new Error(useMcpStore.getState().browserMcpLifecycle?.reason || 'MCP execution is unavailable')
         const uid = get().activeUserId
         const storageKey = getPersistenceKey(uid)
 
@@ -413,12 +460,13 @@ export const useMcpStore = create<McpState>()((set, get) => ({
             s.id === id ? { ...s, autoConnect: enabled } : s
         )
         set({ servers: newServers })
-            await electron.store.set(storageKey, newServers)
+        if (isBrowserProduct()) await getBrowserAgentdClient().saveMcpServers(newServers.map(toBrowserServer))
+        else await electron.store.set(storageKey, newServers)
     },
 
     // Sync from cloud (Firestore)
     syncServers: async (remoteServers) => {
-        if (isBrowserMcpUnavailable()) return
+        if (isBrowserProduct()) return
         const uid = get().activeUserId
         const storageKey = getPersistenceKey(uid)
 

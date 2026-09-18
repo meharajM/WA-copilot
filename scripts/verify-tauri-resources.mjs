@@ -68,12 +68,17 @@ export async function verifyTauriResources({
     migrationReader,
     join(sidecar, 'agentd-http', 'index.cjs'),
     join(sidecar, 'agentd-http', 'server.cjs'),
+    join(sidecar, 'agentd-http', 'continuity-migration.cjs'),
+    join(sidecar, 'agentd-http', 'email-transport.cjs'),
+    join(sidecar, 'agentd-http', 'email-inbound-worker.cjs'),
+    join(sidecar, 'agentd-http', 'mcp-worker.cjs'),
     join(sidecar, 'agentd-http', 'keyring-credential-store.cjs'),
     join(betterSqliteRoot, 'package.json'),
     join(sidecar, 'agentd-http', 'node_modules', 'bindings', 'package.json'),
     join(sidecar, 'agentd-http', 'node_modules', 'file-uri-to-path', 'package.json'),
     join(agentdNodeModules, '@whiskeysockets', 'baileys', 'package.json'),
     join(agentdNodeModules, 'libsignal', 'package.json'),
+    join(agentdNodeModules, '@modelcontextprotocol', 'sdk', 'package.json'),
     join(ui, 'tauri.html'),
   ]
   for (const path of requiredFiles) {

@@ -53,7 +53,7 @@ export function findServerForTool(toolName: string): MCPServer | null {
   return useMcpStore.getState().findServerForTool(toolName);
 }
 
-/** Browser MCP currently exposes lifecycle metadata only; Electron keeps full MCP ownership. */
+/** Browser MCP uses the authenticated supervised agentd worker; Electron keeps its existing client. */
 export async function getBrowserMcpLifecycle() {
   if (!isBrowserProduct()) return null;
   return getBrowserAgentdClient().getMcpLifecycle();
@@ -261,10 +261,13 @@ export async function executeToolCall(
   const server = isBrowserProduct() && (toolName.startsWith('rag_') || toolName.startsWith('memory_')) ? null : findServerForTool(toolName);
   if (isBrowserProduct() && server) {
     try {
-      const lifecycle = await getBrowserMcpLifecycle();
-      return { result: null, error: lifecycle?.reason || 'Browser MCP tool execution is unavailable' };
+      const requestId = typeof globalThis.crypto?.randomUUID === 'function'
+        ? globalThis.crypto.randomUUID()
+        : `mcp_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+      const result = await getBrowserAgentdClient().callMcpTool(server.id, toolName, safeArgs, requestId);
+      return { result: result.result };
     } catch (error) {
-      return { result: null, error: `Browser MCP adapter unavailable: ${error instanceof Error ? error.message : String(error)}` };
+      return { result: null, error: `Browser MCP tool call failed: ${error instanceof Error ? error.message : String(error)}` };
     }
   }
   if (!server) {

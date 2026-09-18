@@ -555,15 +555,15 @@ describe('browser agentd client', () => {
       const url = String(input)
       if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
       if (url.endsWith('/api/v1/mcp')) return response({
-        runtime: 'agentd', management: 'unavailable', execution: 'unavailable',
-        reason: 'Arbitrary MCP server management and tool execution are not migrated to agentd',
-        transports: [], tools: [],
+        runtime: 'agentd', management: 'available', execution: 'available',
+        reason: 'Approved MCP servers run under the supervised agentd worker',
+        transports: ['stdio', 'sse', 'http'], tools: ['connect', 'disconnect', 'listTools', 'callTool', 'cancel'],
       })
       return response({ success: true })
     })
     const client = createBrowserAgentdClient({ origin: 'http://127.0.0.1:4141', fetch: fetcher })
     await client.pair('123456')
-    await expect(client.getMcpLifecycle()).resolves.toMatchObject({ runtime: 'agentd', execution: 'unavailable' })
+    await expect(client.getMcpLifecycle()).resolves.toMatchObject({ runtime: 'agentd', execution: 'available' })
   })
 
   it('reads only a sanitized browser MCP projection', async () => {
@@ -571,19 +571,17 @@ describe('browser agentd client', () => {
       const url = String(input)
       if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
       if (url.endsWith('/api/v1/mcp/servers')) return response({
-        servers: [{ id: 'mcp_local', name: 'Local', description: '', type: 'stdio', execution: 'unavailable', autoConnect: false, command: 'node', args: ['server.mjs'], url: 'https://secret.example', allowedTools: ['lookup'], env: { API_TOKEN: 'secret' } }],
-        execution: 'unavailable', reason: 'execution unavailable',
+        servers: [{ id: 'mcp_local', name: 'Local', description: '', type: 'stdio', execution: 'available', autoConnect: false, connected: false, tools: [], command: 'uvx', args: ['markitdown-mcp[all]'], url: 'https://secret.example', allowedTools: ['lookup'], envKeys: ['OPENAI_API_KEY'], env: { API_TOKEN: 'secret' } }],
+        execution: 'available', reason: 'execution available',
       })
       return response({ success: true })
     })
     const client = createBrowserAgentdClient({ origin: 'http://127.0.0.1:4141', fetch: fetcher })
     await client.pair('123456')
-    await expect(client.getMcpServers()).resolves.toMatchObject({ servers: [{ id: 'mcp_local', execution: 'unavailable', autoConnect: false }] })
+    await expect(client.getMcpServers()).resolves.toMatchObject({ servers: [{ id: 'mcp_local', execution: 'available', autoConnect: false }] })
     const result = await client.getMcpServers()
-    expect(result.servers[0]).not.toHaveProperty('command')
-    expect(result.servers[0]).not.toHaveProperty('url')
-    expect(result.servers[0]).not.toHaveProperty('allowedTools')
-    expect(result.servers[0]).not.toHaveProperty('envKeys')
+    expect(result.servers[0]).toMatchObject({ command: 'uvx', args: ['markitdown-mcp[all]'], url: 'https://secret.example', allowedTools: ['lookup'], envKeys: ['OPENAI_API_KEY'], connected: false, tools: [] })
+    expect(result.servers[0]).not.toHaveProperty('env')
     expect(fetcher.mock.calls.some(([input, init]) => String(input).endsWith('/api/v1/mcp/servers') && init?.method === 'PUT')).toBe(false)
   })
 })
