@@ -76,6 +76,7 @@ export const createTauriChatStorage = (chatClient: ChatClient): StateStorage => 
                     channel: session.channel || null,
                     contactId: session.contactId || null,
                     threadId: session.threadId || null,
+                    topic: session.topic || null,
                 }))
                 for (const message of session.messages) knownMessages.add(message.id)
             }
@@ -127,6 +128,7 @@ export const createTauriChatStorage = (chatClient: ChatClient): StateStorage => 
                                 ...(session.channel ? { channel: session.channel } : {}),
                                 ...(session.contact_id ? { contactId: session.contact_id } : {}),
                                 ...(session.thread_id ? { threadId: session.thread_id } : {}),
+                                ...(session.topic ? { topic: session.topic } : {}),
                             }
                             if (session.workspacePath) await chatClient.createSession(session.id, session.title, session.workspacePath, metadata)
                             else await chatClient.createSession(session.id, session.title, undefined, metadata)
@@ -137,6 +139,7 @@ export const createTauriChatStorage = (chatClient: ChatClient): StateStorage => 
                                 channel: session.channel || null,
                                 contactId: session.contact_id || null,
                                 threadId: session.thread_id || null,
+                                topic: session.topic || null,
                             }))
                         } else {
                             const metadata = {
@@ -144,12 +147,14 @@ export const createTauriChatStorage = (chatClient: ChatClient): StateStorage => 
                                 ...(session.channel ? { channel: session.channel } : {}),
                                 ...(session.contact_id ? { contactId: session.contact_id } : {}),
                                 ...(session.thread_id ? { threadId: session.thread_id } : {}),
+                                ...(session.topic ? { topic: session.topic } : {}),
                             }
                             const metadataKey = JSON.stringify({
                                 status: session.status || 'active',
                                 channel: session.channel || null,
                                 contactId: session.contact_id || null,
                                 threadId: session.thread_id || null,
+                                topic: session.topic || null,
                             })
                             const workspaceChanged = knownWorkspaces.get(session.id) !== (session.workspacePath || null)
                             if (workspaceChanged || knownMetadata.get(session.id) !== metadataKey) {

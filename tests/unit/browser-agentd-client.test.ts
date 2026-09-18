@@ -68,8 +68,8 @@ describe('browser agentd client', () => {
     await expect(client.loadSessions()).resolves.toMatchObject([{ id: 'chat_1', status: 'resolved', channel: 'email', contact_id: 'alice@example.com', thread_id: 'thread-1', messages: [{ id: 'm1' }] }])
     await client.createSession('chat_2', 'New')
     await client.createSession('chat_3', 'Workspace', 'browser://workspace/Support')
-    await client.createSession('chat_4', 'Customer email', undefined, { status: 'resolved', channel: 'email', contactId: 'alice@example.com', threadId: 'thread-1' })
-    await client.updateSessionWorkspace('chat_3', null, { status: 'resolved', channel: 'email', contactId: 'bob@example.com', threadId: 'thread-2' })
+    await client.createSession('chat_4', 'Customer email', undefined, { status: 'resolved', channel: 'email', contactId: 'alice@example.com', threadId: 'thread-1', topic: 'Product Queries' })
+    await client.updateSessionWorkspace('chat_3', null, { status: 'resolved', channel: 'email', contactId: 'bob@example.com', threadId: 'thread-2', topic: 'Technical Support' })
     await client.appendMessage('chat_1', { id: 'm2', role: 'user', content: 'next', timestamp: 40 })
     const events: string[] = []
     await client.generate({ sessionId: 'chat_1', requestId: 'r1', content: 'hello' }, event => events.push(event.type))
@@ -77,10 +77,10 @@ describe('browser agentd client', () => {
     const mutation = calls.find(call => call.url.endsWith('/api/v1/sessions') && call.init?.method === 'POST')!
     expect(new Headers(mutation.init?.headers).get('x-csrf-token')).toBe('csrf-token')
     const metadataMutation = calls.find(call => call.url.endsWith('/api/v1/sessions') && call.init?.method === 'POST' && String(call.init?.body).includes('alice@example.com'))!
-    expect(JSON.parse(String(metadataMutation.init?.body))).toMatchObject({ status: 'resolved', channel: 'email', contactId: 'alice@example.com', threadId: 'thread-1' })
+    expect(JSON.parse(String(metadataMutation.init?.body))).toMatchObject({ status: 'resolved', channel: 'email', contactId: 'alice@example.com', threadId: 'thread-1', topic: 'Product Queries' })
     expect(calls.some(call => call.url.endsWith('/api/v1/sessions/chat_3') && call.init?.method === 'PATCH')).toBe(true)
     const metadataUpdate = calls.find(call => call.url.endsWith('/api/v1/sessions/chat_3') && call.init?.method === 'PATCH')!
-    expect(JSON.parse(String(metadataUpdate.init?.body))).toMatchObject({ workspacePath: null, status: 'resolved', channel: 'email', contactId: 'bob@example.com', threadId: 'thread-2' })
+    expect(JSON.parse(String(metadataUpdate.init?.body))).toMatchObject({ workspacePath: null, status: 'resolved', channel: 'email', contactId: 'bob@example.com', threadId: 'thread-2', topic: 'Technical Support' })
     expect(JSON.stringify(calls).includes('agentd_session')).toBe(false)
   })
 

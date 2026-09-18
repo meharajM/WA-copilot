@@ -77,6 +77,7 @@ export const readSession = (value: unknown): ChatSession => {
     ...(typeof value.contactId === 'string' && value.contactId ? { contact_id: value.contactId } : {}),
     ...(typeof value.threadId === 'string' && value.threadId ? { thread_id: value.threadId } : {}),
     ...(typeof value.workspacePath === 'string' && value.workspacePath ? { workspacePath: value.workspacePath } : {}),
+    ...(typeof value.topic === 'string' && value.topic ? { topic: value.topic } : {}),
     messages: value.messages.map(readMessage),
   }
 }

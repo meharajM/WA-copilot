@@ -498,6 +498,7 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
         ...(metadata?.channel ? { channel: metadata.channel } : {}),
         ...(metadata?.contactId ? { contactId: metadata.contactId } : {}),
         ...(metadata?.threadId ? { threadId: metadata.threadId } : {}),
+        ...(metadata?.topic ? { topic: metadata.topic } : {}),
       }),
     }, true)
   }
@@ -511,6 +512,7 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
         ...(metadata?.channel ? { channel: metadata.channel } : {}),
         ...(metadata?.contactId ? { contactId: metadata.contactId } : {}),
         ...(metadata?.threadId ? { threadId: metadata.threadId } : {}),
+        ...(metadata?.topic ? { topic: metadata.topic } : {}),
       }),
     }, true)
   }

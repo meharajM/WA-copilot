@@ -156,21 +156,36 @@ export function EmptyState({ onNavigate }: { onNavigate?: (view: ViewMode) => vo
     if (analyzing) return
     setAnalyzing(true)
     try {
-      // Lazy load LLM to avoid heavy imports until clicked
-      const { chat } = await import('../../lib/llm')
-      
       // Find up to 5 un-analyzed completed sessions
       const unanalyzed = sessions.filter(s => (s.messages.length > 2 || s.status === 'resolved') && !s.topic).slice(0, 5)
       
       for (const session of unanalyzed) {
         if (session.messages.length === 0) continue
         const conversationText = session.messages.map(m => `${m.role.toUpperCase()}: ${m.content}`).join('\n')
-        
-        const response = await chat([
-            { role: 'user', content: `Analyze the following customer support conversation and categorize it into exactly ONE of these short topics: "Product Queries", "Order Status", "Returns/Refunds", "Technical Support", or "Other". Reply with ONLY the exact topic name, nothing else.\n\nConversation:\n${conversationText}` }
-        ], [], undefined, undefined, undefined, undefined, true) // subAgent mode
+        const prompt = `Analyze the following customer support conversation and categorize it into exactly ONE of these short topics: "Product Queries", "Order Status", "Returns/Refunds", "Technical Support", or "Other". Reply with ONLY the exact topic name, nothing else.\n\nConversation:\n${conversationText}`
+        let responseText = ''
+        if (isBrowserProduct()) {
+          const client = getBrowserAgentdClient()
+          const analysisSessionId = `topic_${crypto.randomUUID().replaceAll('-', '')}`
+          const requestId = `topic_request_${crypto.randomUUID().replaceAll('-', '')}`
+          await client.createSession(analysisSessionId, 'Topic analysis')
+          try {
+            await client.appendMessage(analysisSessionId, { id: `${requestId}_user`, role: 'user', content: prompt, timestamp: Date.now() })
+            await client.generate({ sessionId: analysisSessionId, requestId, content: prompt }, (event) => {
+              if (event.type === 'assistant.delta') responseText += event.delta
+              if (event.type === 'error') throw new Error(event.message)
+            })
+          } finally {
+            await client.deleteSession(analysisSessionId).catch(() => undefined)
+          }
+        } else {
+          // Electron transition path keeps its existing provider behavior.
+          const { chat } = await import('../../lib/llm')
+          const response = await chat([{ role: 'user', content: prompt }], [], undefined, undefined, undefined, undefined, true)
+          responseText = response.content
+        }
 
-        let parsedTopic = response.content.trim()
+        let parsedTopic = responseText.trim()
         // Basic cleanup just in case the LLM was chatty
         if (parsedTopic.includes('Product')) parsedTopic = 'Product Queries'
         else if (parsedTopic.includes('Order')) parsedTopic = 'Order Status'

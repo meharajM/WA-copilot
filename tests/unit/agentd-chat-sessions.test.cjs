@@ -35,6 +35,7 @@ test('agentd chat sessions require auth, persist across restart, and isolate mes
     channel: 'email',
     contactId: 'alice@example.com',
     threadId: 'thread-1',
+    topic: 'Product Queries',
   }, bearer)
   assert.equal(created.status, 201)
   assert.equal(created.body.session.id, 'one')
@@ -43,13 +44,15 @@ test('agentd chat sessions require auth, persist across restart, and isolate mes
     channel: created.body.session.channel,
     contactId: created.body.session.contactId,
     threadId: created.body.session.threadId,
-  }, { status: 'resolved', channel: 'email', contactId: 'alice@example.com', threadId: 'thread-1' })
+    topic: created.body.session.topic,
+  }, { status: 'resolved', channel: 'email', contactId: 'alice@example.com', threadId: 'thread-1', topic: 'Product Queries' })
   const updated = await request(origin, 'PATCH', '/api/v1/sessions/one', {
     workspacePath: 'browser://workspace/Support',
     status: 'active',
     channel: 'whatsapp',
     contactId: '123@s.whatsapp.net',
     threadId: 'thread-2',
+    topic: 'Technical Support',
   }, bearer)
   assert.equal(updated.status, 200)
   assert.deepEqual({
@@ -58,7 +61,8 @@ test('agentd chat sessions require auth, persist across restart, and isolate mes
     contactId: updated.body.session.contactId,
     threadId: updated.body.session.threadId,
     workspacePath: updated.body.session.workspacePath,
-  }, { status: 'active', channel: 'whatsapp', contactId: '123@s.whatsapp.net', threadId: 'thread-2', workspacePath: 'browser://workspace/Support' })
+    topic: updated.body.session.topic,
+  }, { status: 'active', channel: 'whatsapp', contactId: '123@s.whatsapp.net', threadId: 'thread-2', workspacePath: 'browser://workspace/Support', topic: 'Technical Support' })
   assert.equal((await request(origin, 'POST', '/api/v1/sessions/one/messages', { id: 'm1', role: 'user', content: 'hello' }, bearer)).status, 201)
   assert.equal((await request(origin, 'POST', '/api/v1/sessions/two/messages', { id: 'm1', role: 'user', content: 'wrong session' }, bearer)).status, 404)
   assert.equal((await request(origin, 'GET', '/api/v1/sessions/one', undefined, bearer)).body.messages[0].content, 'hello')
@@ -76,7 +80,8 @@ test('agentd chat sessions require auth, persist across restart, and isolate mes
     contactId: session.body.session.contactId,
     threadId: session.body.session.threadId,
     workspacePath: session.body.session.workspacePath,
-  }, { status: 'active', channel: 'whatsapp', contactId: '123@s.whatsapp.net', threadId: 'thread-2', workspacePath: 'browser://workspace/Support' })
+    topic: session.body.session.topic,
+  }, { status: 'active', channel: 'whatsapp', contactId: '123@s.whatsapp.net', threadId: 'thread-2', workspacePath: 'browser://workspace/Support', topic: 'Technical Support' })
   await recovered.stop()
   fs.rmSync(dataDir, { recursive: true, force: true })
 })
@@ -167,6 +172,7 @@ test('agentd chat routes enforce bounded identifiers, content, fields, and CSRF'
   assert.equal((await request(origin, 'POST', '/api/v1/sessions', { id: 'valid', unknown: 'secret' }, bearer)).status, 400)
   assert.equal((await request(origin, 'POST', '/api/v1/sessions', { id: 'bad-channel', channel: 'mcp' }, bearer)).status, 400)
   assert.equal((await request(origin, 'POST', '/api/v1/sessions', { id: 'bad-contact', contactId: 'x'.repeat(513) }, bearer)).status, 400)
+  assert.equal((await request(origin, 'POST', '/api/v1/sessions', { id: 'bad-topic', topic: 'secret prompt' }, bearer)).status, 400)
   assert.equal((await request(origin, 'POST', '/api/v1/sessions', { id: 'valid' }, bearer)).status, 201)
   assert.equal((await request(origin, 'POST', '/api/v1/sessions/valid/messages', { id: 'm', role: 'user', content: 'x'.repeat(32 * 1024 + 1) }, bearer)).status, 400)
   assert.equal((await request(origin, 'POST', '/api/v1/sessions/valid/messages', { id: 'm', role: 'user', content: 'x', secret: 'must-not-persist' }, bearer)).status, 400)

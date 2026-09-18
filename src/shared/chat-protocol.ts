@@ -24,6 +24,7 @@ export interface ChatSessionSummary {
   contactId?: string
   threadId?: string
   workspacePath?: string
+  topic?: string
 }
 
 export interface ChatSessionMetadata {
@@ -31,6 +32,7 @@ export interface ChatSessionMetadata {
   channel?: string
   contactId?: string
   threadId?: string
+  topic?: string
 }
 
 export interface ChatSession extends ChatSessionSummary {
