@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { CredentialKey, NativeHealth } from '../../shared/native-bridge'
-import { tauriNativeBridge, type NativeChatHistoryCutover, type NativeContinuityPreview, type NativeCredentialContinuityPreview, type NativeSettingsPersonaCutover } from './lib/tauri-native-bridge'
+import { tauriNativeBridge, type NativeChatHistoryCutover, type NativeContinuityPreview, type NativeCredentialContinuityPreview, type NativeServiceStatus, type NativeSettingsPersonaCutover } from './lib/tauri-native-bridge'
 
 const CREDENTIALS: Array<{ key: CredentialKey; label: string }> = [
   { key: 'openai_api_key', label: 'OpenAI key' },
@@ -16,6 +16,7 @@ export default function NativeHostDiagnostics() {
   const [agentdOrigin, setAgentdOrigin] = useState<string | null>(null)
   const [pairingCode, setPairingCode] = useState<string | null>(null)
   const [health, setHealth] = useState<NativeHealth>({ status: 'unavailable', error: 'Checking agentd…' })
+  const [service, setService] = useState<NativeServiceStatus | null>(null)
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
   const [credential, setCredential] = useState<CredentialKey>('openai_api_key')
   const [credentialState, setCredentialState] = useState<'unknown' | 'present' | 'missing'>('unknown')
@@ -33,11 +34,36 @@ export default function NativeHostDiagnostics() {
     catch (reason) { setHealth({ status: 'unavailable', error: messageFrom(reason, 'Native host unavailable') }) }
   }
 
+  const refreshService = async () => {
+    try { setService(await tauriNativeBridge.serviceStatus()) }
+    catch (reason) { setService({ supported: true, installed: false, running: false, taskName: 'AICA Native Companion', message: messageFrom(reason, 'Windows service status unavailable') }) }
+  }
+
   useEffect(() => {
     void tauriNativeBridge.appVersion().then(setVersion).catch(() => setVersion('unavailable'))
     void tauriNativeBridge.agentdOrigin().then((origin) => setAgentdOrigin(`${origin}/tauri.html`)).catch(() => setAgentdOrigin(null))
     void refresh()
+    void refreshService()
   }, [])
+
+  const installService = async () => {
+    setBusy('service-install'); setError(null); setNotice(null)
+    try {
+      setService(await tauriNativeBridge.serviceInstall())
+      setNotice('AICA will start with this Windows user and recover the local service after a companion failure')
+    } catch (reason) { setError(messageFrom(reason, 'Windows service registration failed')) }
+    finally { setBusy(null) }
+  }
+
+  const uninstallService = async () => {
+    if (!window.confirm('Remove AICA automatic startup for this Windows user? The browser workspace and current agentd process will remain available until stopped.')) return
+    setBusy('service-uninstall'); setError(null); setNotice(null)
+    try {
+      setService(await tauriNativeBridge.serviceUninstall())
+      setNotice('AICA automatic startup was removed for this Windows user')
+    } catch (reason) { setError(messageFrom(reason, 'Windows service removal failed')) }
+    finally { setBusy(null) }
+  }
 
   const choose = async (kind: 'file' | 'folder') => {
     setBusy(kind); setError(null); setNotice(null)
@@ -211,25 +237,31 @@ export default function NativeHostDiagnostics() {
           {pairingCode && <p className="pilot-pairing-code" aria-live="polite"><span>Browser pairing code</span><strong>{pairingCode}</strong></p>}
         </article>
         <article className="pilot-panel">
-          <div className="pilot-panel-heading"><div><p className="pilot-label">02 / file access</p><h2>Owner-selected paths</h2></div><span className="pilot-index">OS PICKER</span></div>
+          <div className="pilot-panel-heading"><div><p className="pilot-label">02 / Windows lifecycle</p><h2>Sign-in service</h2></div><span className="pilot-index">USER SERVICE</span></div>
+          <p className="pilot-copy">Register the lightweight native companion for this Windows user. It starts the local agentd service at sign-in, keeps the browser workspace independent, and retries after a companion failure.</p>
+          <p className="pilot-health-readout" role="status">{service?.message || 'Checking Windows service registration…'}</p>
+          {service?.supported && <div className="pilot-actions"><button type="button" className="pilot-button pilot-button-primary" onClick={() => void installService()} disabled={busy !== null}>{busy === 'service-install' ? 'Registering…' : service.installed ? 'Re-register service' : 'Install sign-in service'}</button>{service.installed && <button type="button" className="pilot-button" onClick={() => void uninstallService()} disabled={busy !== null}>{busy === 'service-uninstall' ? 'Removing…' : 'Remove sign-in service'}</button>}<span className="pilot-key-state" role="status">{service.installed ? (service.running ? 'Registered · running' : 'Registered') : 'Not registered'}</span></div>}
+        </article>
+        <article className="pilot-panel">
+          <div className="pilot-panel-heading"><div><p className="pilot-label">03 / file access</p><h2>Owner-selected paths</h2></div><span className="pilot-index">OS PICKER</span></div>
           <p className="pilot-copy">Choose a path for an owner-approved native workflow. Product uploads use the browser picker; arbitrary filesystem access is not exposed.</p>
           <div className="pilot-actions"><button type="button" className="pilot-button pilot-button-primary" onClick={() => void choose('file')} disabled={busy !== null}>{busy === 'file' ? 'Opening…' : 'Choose file'}</button><button type="button" className="pilot-button" onClick={() => void choose('folder')} disabled={busy !== null}>{busy === 'folder' ? 'Opening…' : 'Choose folder'}</button></div>
           <p className="pilot-path" aria-live="polite">{selectedPath || 'No path selected yet'}</p>
         </article>
         <article className="pilot-panel">
-          <div className="pilot-panel-heading"><div><p className="pilot-label">03 / credential store</p><h2>Presence only</h2></div><span className="pilot-index">OS STORE</span></div>
+          <div className="pilot-panel-heading"><div><p className="pilot-label">04 / credential store</p><h2>Presence only</h2></div><span className="pilot-index">OS STORE</span></div>
           <p className="pilot-copy">Check whether a provider credential exists. Values never enter this window.</p>
           <div className="pilot-form-row"><label htmlFor="native-credential">Credential</label><select id="native-credential" value={credential} onChange={(event) => { setCredential(event.target.value as CredentialKey); setCredentialState('unknown') }} disabled={busy !== null}>{CREDENTIALS.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}</select></div>
           <div className="pilot-actions"><button type="button" className="pilot-button pilot-button-primary" onClick={() => void checkCredential()} disabled={busy !== null}>{busy === 'credential' ? 'Checking…' : 'Check presence'}</button><span className="pilot-key-state" role="status">{credentialState === 'present' ? 'Stored' : credentialState === 'missing' ? 'Not stored' : 'Not checked'}</span></div>
         </article>
         <article className="pilot-panel">
-          <div className="pilot-panel-heading"><div><p className="pilot-label">04 / continuity</p><h2>Stage Electron data</h2></div><span className="pilot-index">OWNER ACTION</span></div>
+          <div className="pilot-panel-heading"><div><p className="pilot-label">05 / continuity</p><h2>Stage Electron data</h2></div><span className="pilot-index">OWNER ACTION</span></div>
           <p className="pilot-copy">Preview and stage only allowlisted, non-secret stores. Live cutovers require separate owner confirmation; credentials require separate reauthentication.</p>
           <div className="pilot-actions"><button type="button" className="pilot-button pilot-button-primary" onClick={() => void previewContinuity()} disabled={busy !== null}>{busy === 'continuity-preview' ? 'Validating…' : 'Preview Electron data'}</button></div>
           {continuityPreview && <div className="pilot-continuity" aria-live="polite"><p>{continuityPreview.entries.map(entry => `${entry.id} (${entry.byteSize} bytes)`).join(' · ')}</p><p className="pilot-copy">Review this list before staging. Credentials and OAuth migration remain deferred. Chat history and settings/persona cutovers run independently.</p><div className="pilot-actions"><button type="button" className="pilot-button pilot-button-primary" onClick={() => void stageContinuity()} disabled={busy !== null || Boolean(migrationId)}>{busy === 'continuity-import' ? 'Staging…' : 'Stage validated data'}</button>{migrationId && !settingsPersonaCutover && <button type="button" className="pilot-button" onClick={() => void confirmSettingsPersona()} disabled={busy !== null}>{busy === 'settings-persona-confirm' ? 'Confirming…' : 'Confirm settings/persona'}</button>}{migrationId && (!chatHistoryCutover || (chatHistoryCutover.state === 'confirmed' && !chatHistoryCutover.confirmationToken && chatHistoryCutover.requiresReconfirmation)) && <button type="button" className="pilot-button" onClick={() => void confirmChatHistory()} disabled={busy !== null}>{busy === 'chat-history-confirm' ? 'Confirming…' : chatHistoryCutover ? 'Confirm chat history again' : 'Confirm chat history'}</button>}{migrationId && !settingsPersonaCutover?.backupSha256 && !chatHistoryCutover?.backupSha256 && <button type="button" className="pilot-button" onClick={() => void rollbackContinuity()} disabled={busy !== null}>{busy === 'continuity-rollback' ? 'Rolling back…' : 'Rollback staging'}</button>}</div>{settingsPersonaCutover && <div className="pilot-actions"><span className="pilot-key-state" role="status">Settings/persona: {settingsPersonaCutover.state}</span>{settingsPersonaCutover.confirmationToken && <button type="button" className="pilot-button pilot-button-primary" onClick={() => void applySettingsPersona()} disabled={busy !== null}>{busy === 'settings-persona-apply' ? 'Applying…' : 'Apply metadata cutover'}</button>}{settingsPersonaCutover.state === 'applied' && <button type="button" className="pilot-button" onClick={() => void rollbackSettingsPersona()} disabled={busy !== null}>{busy === 'settings-persona-rollback' ? 'Rolling back…' : 'Rollback metadata'}</button>}</div>}{chatHistoryCutover && <div className="pilot-actions"><span className="pilot-key-state" role="status">Chat history: {chatHistoryCutover.state}</span>{chatHistoryCutover.confirmationToken && <button type="button" className="pilot-button pilot-button-primary" onClick={() => void applyChatHistory()} disabled={busy !== null}>{busy === 'chat-history-apply' ? 'Applying…' : 'Apply chat history'}</button>}{chatHistoryCutover.backupSha256 && chatHistoryCutover.state !== 'rolled-back' && <button type="button" className="pilot-button" onClick={() => void rollbackChatHistory()} disabled={busy !== null}>{busy === 'chat-history-rollback' ? 'Rolling back…' : 'Rollback chat history'}</button>}<button type="button" className="pilot-button" onClick={() => void refreshChatHistoryStatus()} disabled={busy !== null}>{busy === 'chat-history-status' ? 'Refreshing…' : 'Refresh chat-history status'}</button></div>}</div>}
         </article>
         <article className="pilot-panel">
-          <div className="pilot-panel-heading"><div><p className="pilot-label">05 / credential continuity</p><h2>Reauthentication only</h2></div><span className="pilot-index">NO SECRET READ</span></div>
+          <div className="pilot-panel-heading"><div><p className="pilot-label">06 / credential continuity</p><h2>Reauthentication only</h2></div><span className="pilot-index">NO SECRET READ</span></div>
           <p className="pilot-copy">Electron safe-storage values cannot be transferred safely. Review which credentials need to be entered again through the browser's secure agentd flow; no values are shown or copied.</p>
           <div className="pilot-actions"><button type="button" className="pilot-button pilot-button-primary" onClick={() => void previewCredentialContinuity()} disabled={busy !== null}>{busy === 'credential-continuity-preview' ? 'Inspecting…' : 'Review credentials needing reauthentication'}</button></div>
           {credentialContinuityPreview && <div className="pilot-continuity" aria-live="polite"><p className="pilot-key-state" role="status">Reauthentication required · values excluded</p>{credentialContinuityPreview.stores.map(store => <p key={store.id} className="pilot-copy">{store.id}: {store.entries.length ? store.entries.map(entry => `${entry.key}${entry.scope === 'user' ? ' (user-scoped)' : ''}${entry.supported ? '' : ' (unsupported)'}`).join(' · ') : 'No recognized credentials'}</p>)}</div>}

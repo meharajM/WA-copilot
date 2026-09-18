@@ -14,6 +14,9 @@ export const TAURI_COMMANDS = {
   agentdOrigin: 'agentd_origin',
   agentdPairingCode: 'agentd_pairing_code',
   openBrowserWorkspace: 'open_browser_workspace',
+  serviceStatus: 'service_status',
+  serviceInstall: 'service_install',
+  serviceUninstall: 'service_uninstall',
   credentialSet: 'credential_set',
   credentialExists: 'credential_exists',
   credentialDelete: 'credential_delete',
@@ -231,6 +234,14 @@ export interface NativeCredentialContinuityPreview {
   note: string
 }
 
+export interface NativeServiceStatus {
+  supported: boolean
+  installed: boolean
+  running: boolean
+  taskName: string
+  message: string | null
+}
+
 const readContinuityPreview = (value: unknown): NativeContinuityPreview => {
   if (!isRecord(value) || typeof value.previewId !== 'string' || typeof value.createdAt !== 'number'
     || value.source !== 'electron' || value.target !== 'agentd-staging' || value.secretsExcluded !== true
@@ -284,6 +295,18 @@ const readCredentialContinuityPreview = (value: unknown): NativeCredentialContin
   return value as unknown as NativeCredentialContinuityPreview
 }
 
+const readServiceStatus = (value: unknown): NativeServiceStatus => {
+  if (!isRecord(value)
+    || typeof value.supported !== 'boolean'
+    || typeof value.installed !== 'boolean'
+    || typeof value.running !== 'boolean'
+    || typeof value.taskName !== 'string'
+    || (value.message !== null && typeof value.message !== 'string')) {
+    throw new Error('Invalid native service status response')
+  }
+  return value as unknown as NativeServiceStatus
+}
+
 export const createTauriNativeBridge = (
   dependencies: TauriBridgeDependencies = defaultDependencies,
 ): NativeBridge & {
@@ -291,6 +314,9 @@ export const createTauriNativeBridge = (
   agentdOrigin: () => Promise<string>
   agentdPairingCode: () => Promise<string>
   openBrowserWorkspace: () => Promise<NativeResult>
+  serviceStatus: () => Promise<NativeServiceStatus>
+  serviceInstall: () => Promise<NativeServiceStatus>
+  serviceUninstall: () => Promise<NativeServiceStatus>
   continuityPreview: (sourceRoot: string) => Promise<NativeContinuityPreview>
   continuityImport: (previewId: string) => Promise<NativeContinuityImport>
   continuityRollback: (migrationId: string) => Promise<NativeContinuityRollback>
@@ -342,6 +368,18 @@ export const createTauriNativeBridge = (
       return failed(error instanceof Error ? error.message : error, 'Could not open the browser workspace')
     }
   }
+
+  const serviceStatus = async (): Promise<NativeServiceStatus> => (
+    readServiceStatus(await invoke<unknown>(TAURI_COMMANDS.serviceStatus))
+  )
+
+  const serviceInstall = async (): Promise<NativeServiceStatus> => (
+    readServiceStatus(await invoke<unknown>(TAURI_COMMANDS.serviceInstall))
+  )
+
+  const serviceUninstall = async (): Promise<NativeServiceStatus> => (
+    readServiceStatus(await invoke<unknown>(TAURI_COMMANDS.serviceUninstall))
+  )
 
   const continuityPreview = async (sourceRoot: string): Promise<NativeContinuityPreview> => {
     if (!sourceRoot.trim()) throw new Error('Electron data folder is required')
@@ -425,6 +463,9 @@ export const createTauriNativeBridge = (
     agentdOrigin,
     agentdPairingCode,
     openBrowserWorkspace,
+    serviceStatus,
+    serviceInstall,
+    serviceUninstall,
     continuityPreview,
     continuityImport,
     continuityRollback,

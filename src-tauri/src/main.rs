@@ -17,13 +17,17 @@ use std::{
 
 #[cfg(windows)]
 use std::env;
+#[cfg(windows)]
+use std::ffi::OsStr;
+#[cfg(windows)]
+use std::process::Output;
 
 use agentd_api::{
     AgentdClient, ChatHistoryCutover, ContinuityImport, ContinuityPreview, ContinuityRollback,
     CredentialContinuityPreview, CredentialExistsResult, NativeHealth, NativeResult,
     SettingsPersonaCutover,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder},
     AppHandle, Manager, Runtime, State, WebviewUrl, WebviewWindowBuilder, WindowEvent,
@@ -45,6 +49,7 @@ const AGENTD_UI_RESOURCE: &str = "ui";
 
 const AGENTD_SUPERVISION_POLL: Duration = Duration::from_millis(500);
 const AGENTD_RESTART_BACKOFF: Duration = Duration::from_secs(2);
+const WINDOWS_COMPANION_TASK_NAME: &str = "AICA Native Companion";
 
 struct AgentdProcess {
     stop: Arc<AtomicBool>,
@@ -416,6 +421,242 @@ fn open_browser_workspace(client: State<'_, AgentdClient>) -> Result<(), String>
     open_external_url(&url)
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeServiceStatus {
+    supported: bool,
+    installed: bool,
+    running: bool,
+    task_name: &'static str,
+    message: Option<String>,
+}
+
+impl NativeServiceStatus {
+    fn unsupported() -> Self {
+        Self {
+            supported: false,
+            installed: false,
+            running: false,
+            task_name: WINDOWS_COMPANION_TASK_NAME,
+            message: Some("Per-user service registration is supported on Windows only".into()),
+        }
+    }
+}
+
+fn windows_task_xml(executable: &str, user_id: &str) -> String {
+    fn escape(value: &str) -> String {
+        value
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+            .replace('\'', "&apos;")
+    }
+
+    let executable = escape(executable);
+    let user_id = escape(user_id);
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>Starts the AICA native companion and local agentd service for the signed-in user.</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <Delay>PT10S</Delay>
+      <UserId>{user_id}</UserId>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>{user_id}</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <RestartOnFailure>
+      <Interval>PT1M</Interval>
+      <Count>3</Count>
+    </RestartOnFailure>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{executable}</Command>
+      <Arguments>--background</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"#
+    )
+}
+
+#[cfg(windows)]
+fn current_windows_user() -> Result<String, String> {
+    let output = Command::new("whoami.exe")
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|_| "Windows user identity unavailable".to_string())?;
+    if !output.status.success() {
+        return Err("Windows user identity unavailable".into());
+    }
+    let user = String::from_utf8(output.stdout)
+        .map_err(|_| "Windows user identity unavailable".to_string())?
+        .trim()
+        .to_owned();
+    if user.is_empty()
+        || user.len() > 256
+        || user
+            .chars()
+            .any(|character| matches!(character, '\r' | '\n'))
+    {
+        return Err("Windows user identity unavailable".into());
+    }
+    Ok(user)
+}
+
+#[cfg(windows)]
+fn run_schtasks(args: &[&OsStr]) -> Result<Output, String> {
+    let system_root = env::var_os("SystemRoot")
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "Windows system root unavailable".to_string())?;
+    let executable = PathBuf::from(system_root).join("System32").join("schtasks.exe");
+    if !fs::metadata(&executable)
+        .map(|metadata| metadata.is_file())
+        .unwrap_or(false)
+    {
+        return Err("Windows Task Scheduler is unavailable".into());
+    }
+    Command::new(executable)
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|_| "Windows Task Scheduler is unavailable".to_string())
+}
+
+#[cfg(windows)]
+fn windows_service_status() -> Result<NativeServiceStatus, String> {
+    let task = OsStr::new(WINDOWS_COMPANION_TASK_NAME);
+    let output = run_schtasks(&[
+        OsStr::new("/Query"),
+        OsStr::new("/TN"),
+        task,
+        OsStr::new("/FO"),
+        OsStr::new("LIST"),
+        OsStr::new("/NH"),
+    ])?;
+    if !output.status.success() {
+        return Ok(NativeServiceStatus {
+            supported: true,
+            installed: false,
+            running: false,
+            task_name: WINDOWS_COMPANION_TASK_NAME,
+            message: Some("Not registered for Windows sign-in".into()),
+        });
+    }
+    let detail = String::from_utf8_lossy(&output.stdout).to_ascii_lowercase();
+    Ok(NativeServiceStatus {
+        supported: true,
+        installed: true,
+        running: detail.contains("running"),
+        task_name: WINDOWS_COMPANION_TASK_NAME,
+        message: Some("Registered for this Windows user".into()),
+    })
+}
+
+fn native_service_status() -> Result<NativeServiceStatus, String> {
+    #[cfg(windows)]
+    {
+        return windows_service_status();
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(NativeServiceStatus::unsupported())
+    }
+}
+
+#[tauri::command]
+fn service_status() -> Result<NativeServiceStatus, String> {
+    native_service_status()
+}
+
+#[cfg(windows)]
+fn install_windows_service(app: &AppHandle) -> Result<NativeServiceStatus, String> {
+    let executable = std::env::current_exe()
+        .map_err(|_| "Native companion executable unavailable".to_string())?;
+    let executable = executable
+        .to_str()
+        .ok_or_else(|| "Native companion executable path is not valid Unicode".to_string())?;
+    let user_id = current_windows_user()?;
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| "Agentd data directory unavailable".to_string())?;
+    fs::create_dir_all(&data_dir).map_err(|_| "Agentd data directory unavailable".to_string())?;
+    let xml_path = data_dir.join("aica-companion-task.xml");
+    fs::write(&xml_path, windows_task_xml(executable, &user_id))
+        .map_err(|_| "Could not prepare Windows service registration".to_string())?;
+    let task_name = OsStr::new(WINDOWS_COMPANION_TASK_NAME);
+    let xml_path_arg = xml_path
+        .to_str()
+        .ok_or_else(|| "Windows service definition path is not valid Unicode".to_string())?;
+    let output = run_schtasks(&[
+        OsStr::new("/Create"),
+        OsStr::new("/TN"),
+        task_name,
+        OsStr::new("/XML"),
+        OsStr::new(xml_path_arg),
+        OsStr::new("/F"),
+    ]);
+    let _ = fs::remove_file(&xml_path);
+    let output = output?;
+    if !output.status.success() {
+        return Err("Windows service registration failed".into());
+    }
+    windows_service_status()
+}
+
+#[cfg(not(windows))]
+fn install_windows_service(_app: &AppHandle) -> Result<NativeServiceStatus, String> {
+    Ok(NativeServiceStatus::unsupported())
+}
+
+#[tauri::command]
+fn service_install(app: AppHandle) -> Result<NativeServiceStatus, String> {
+    install_windows_service(&app)
+}
+
+#[cfg(windows)]
+fn uninstall_windows_service() -> Result<NativeServiceStatus, String> {
+    let output = run_schtasks(&[
+        OsStr::new("/Delete"),
+        OsStr::new("/TN"),
+        OsStr::new(WINDOWS_COMPANION_TASK_NAME),
+        OsStr::new("/F"),
+    ])?;
+    if !output.status.success() {
+        return Err("Windows service removal failed".into());
+    }
+    windows_service_status()
+}
+
+#[cfg(not(windows))]
+fn uninstall_windows_service() -> Result<NativeServiceStatus, String> {
+    Ok(NativeServiceStatus::unsupported())
+}
+
+#[tauri::command]
+fn service_uninstall() -> Result<NativeServiceStatus, String> {
+    uninstall_windows_service()
+}
+
 fn request_quit<R: Runtime>(app: &AppHandle<R>) {
     app.state::<Arc<AtomicBool>>().store(true, Ordering::SeqCst);
     app.exit(0);
@@ -580,6 +821,9 @@ fn main() {
             agentd_origin,
             agentd_pairing_code,
             open_browser_workspace,
+            service_status,
+            service_install,
+            service_uninstall,
             credential_set,
             credential_exists,
             credential_delete,
@@ -619,6 +863,14 @@ fn main() {
             app.manage(client);
             app.manage(stop);
             create_tray(app.handle())?;
+            if std::env::args_os()
+                .skip(1)
+                .any(|argument| argument == "--background")
+            {
+                if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+                    let _ = window.hide();
+                }
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -682,5 +934,77 @@ mod tests {
         let missing =
             AgentdClient::with_data_dir(PathBuf::from("/definitely/missing/aica-agentd-test"));
         assert!(should_spawn_agentd(&missing));
+    }
+
+    #[test]
+    fn windows_service_definition_is_user_scoped_and_escaped() {
+        let xml = windows_task_xml(r"C:\Program Files\AICA & Host\aica.exe", r"DOMAIN\owner");
+        assert!(xml.contains("<LogonType>InteractiveToken</LogonType>"));
+        assert!(xml.contains("<RestartOnFailure>"));
+        assert!(xml.contains("--background"));
+        assert!(xml.contains("C:\\Program Files\\AICA &amp; Host\\aica.exe"));
+        assert!(xml.contains("DOMAIN\\owner"));
+        assert!(!xml.contains("AICA & Host\\aica.exe</Command>"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_task_scheduler_registration_round_trip() {
+        let task_name = format!("AICA Native Companion Test {}", std::process::id());
+        let xml_path =
+            std::env::temp_dir().join(format!("aica-companion-task-{}.xml", std::process::id()));
+        let executable = std::env::current_exe().expect("test executable path");
+        let executable = executable
+            .to_str()
+            .expect("test executable path is Unicode");
+        let user = current_windows_user().expect("Windows user identity");
+        std::fs::write(&xml_path, windows_task_xml(executable, &user)).expect("write task XML");
+
+        let _ = run_schtasks(&[
+            OsStr::new("/Delete"),
+            OsStr::new("/TN"),
+            OsStr::new(&task_name),
+            OsStr::new("/F"),
+        ]);
+        let create = run_schtasks(&[
+            OsStr::new("/Create"),
+            OsStr::new("/TN"),
+            OsStr::new(&task_name),
+            OsStr::new("/XML"),
+            OsStr::new(xml_path.to_str().expect("temporary path is Unicode")),
+            OsStr::new("/F"),
+        ])
+        .expect("schtasks create");
+        assert!(
+            create.status.success(),
+            "schtasks create failed: {}",
+            String::from_utf8_lossy(&create.stderr)
+        );
+
+        let query = run_schtasks(&[
+            OsStr::new("/Query"),
+            OsStr::new("/TN"),
+            OsStr::new(&task_name),
+        ])
+        .expect("schtasks query");
+        assert!(
+            query.status.success(),
+            "schtasks query failed: {}",
+            String::from_utf8_lossy(&query.stderr)
+        );
+
+        let delete = run_schtasks(&[
+            OsStr::new("/Delete"),
+            OsStr::new("/TN"),
+            OsStr::new(&task_name),
+            OsStr::new("/F"),
+        ])
+        .expect("schtasks delete");
+        assert!(
+            delete.status.success(),
+            "schtasks delete failed: {}",
+            String::from_utf8_lossy(&delete.stderr)
+        );
+        let _ = std::fs::remove_file(xml_path);
     }
 }

@@ -20,9 +20,9 @@ It should be treated as a shared contract for both testers and developers.
 
 The 2026-09-18 audit found and corrected browser Email drift: the contract now distinguishes daemon mailbox ingestion from browser review-session hydration, explicitly excludes automatic browser replies, and documents the transport-specific credential slots plus the legacy fallback.
 
-The follow-up runtime-boundary audit also corrected the launch contract: Edge/Chrome has an explicit agentd readiness/pairing state machine, while the Electron dependency modal is no longer described as a browser startup requirement. Gemini is covered by the browser agentd provider slice, and explicit on-device/WebGPU execution is now available in the browser without changing the Tauri native-only boundary. WhatsApp browser UI state now lives in authenticated agentd settings with a one-time legacy renderer migration; the autonomous flag is never persisted or restored, and browser ingress remains gated only by Response Permission.
+The follow-up runtime-boundary audit also corrected the launch contract: Edge/Chrome has an explicit agentd readiness/pairing state machine, while the Electron dependency modal is no longer described as a browser startup requirement. Gemini is covered by the browser agentd provider slice, and explicit on-device/WebGPU execution is now available in the browser without changing the Tauri native-only boundary. WhatsApp browser UI state now lives in authenticated agentd settings with a one-time legacy renderer migration; the autonomous flag is never persisted or restored, and browser ingress remains gated only by Response Permission. Windows native diagnostics now includes an owner-triggered, least-privilege per-user sign-in service registration with bounded failure restart settings; installer enrollment and packaged Windows evidence remain release gates.
 
-The older support-doc drift identified by the first audit is now corrected in the checked-in HTML manuals, email progress note, and architecture overview. The code-first follow-up also corrected `docs/tester_flow.html`, which had incorrectly presented the legacy Electron flow, PDF ingestion, and Browser MCP/Playwright as browser capabilities. The browser MCP boundary is now a supervised agentd worker for approved external servers; internal/native command definitions remain fail-closed. The native companion now supervises and restarts a child daemon that it started, while still preserving the independent daemon lifetime. Automatic service installation, recovery after the companion exits, and Windows release evidence remain implementation gates, not competing product-contract descriptions.
+The older support-doc drift identified by the first audit is now corrected in the checked-in HTML manuals, email progress note, and architecture overview. The code-first follow-up also corrected `docs/tester_flow.html`, which had incorrectly presented the legacy Electron flow, PDF ingestion, and Browser MCP/Playwright as browser capabilities. The browser MCP boundary is now a supervised agentd worker for approved external servers; internal/native command definitions remain fail-closed. The native companion now supervises and restarts a child daemon that it started, while still preserving the independent daemon lifetime. Explicit Windows per-user service registration is implemented; installer enrollment, recovery after intentional user quit, and Windows release evidence remain implementation gates, not competing product-contract descriptions.
 
 ## Validation Scope
 
@@ -50,6 +50,8 @@ The older support-doc drift identified by the first audit is now corrected in th
 - [architecture.md](/Users/meharaj/WA-copilot/architecture.md)
 - [agentd/whatsapp-baileys.cjs](/Users/meharaj/WA-copilot/agentd/whatsapp-baileys.cjs)
 - [src/renderer/src/hooks/useWhatsAppBridge.ts](/Users/meharaj/WA-copilot/src/renderer/src/hooks/useWhatsAppBridge.ts)
+- [src/renderer/src/NativeHostDiagnostics.tsx](/Users/meharaj/WA-copilot/src/renderer/src/NativeHostDiagnostics.tsx)
+- [src/renderer/src/lib/tauri-native-bridge.ts](/Users/meharaj/WA-copilot/src/renderer/src/lib/tauri-native-bridge.ts)
 - [src/renderer/src/stores/whatsappStore.ts](/Users/meharaj/WA-copilot/src/renderer/src/stores/whatsappStore.ts)
 - [src/renderer/src/lib/browser-agentd-client.ts](/Users/meharaj/WA-copilot/src/renderer/src/lib/browser-agentd-client.ts)
 - [agentd/server.cjs](/Users/meharaj/WA-copilot/agentd/server.cjs)
@@ -70,6 +72,7 @@ The older support-doc drift identified by the first audit is now corrected in th
 - `npx vitest run tests/unit/whatsapp-browser-persistence.test.ts`
 - `node --test tests/unit/agentd.test.cjs tests/unit/agentd-chat-generations.test.cjs tests/unit/agentd-settings-persona.test.cjs`
 - `cargo test --manifest-path src-tauri/Cargo.toml --locked` also covers the native supervisor build and descriptor ownership guards; the supervisor restart loop is conservative and target-specific Windows runtime behavior still requires the Windows runner.
+- On Windows, the same Rust test binary additionally registers, queries, and removes a disposable current-user Task Scheduler definition; macOS/Linux runs validate XML escaping and the fixed native command boundary without claiming Windows runtime behavior.
 
 The current run completed these checks successfully; build tools emitted only their existing warnings.
 
@@ -167,6 +170,14 @@ Evidence:
 - [src/renderer/src/lib/browser-agentd-client.ts](/Users/meharaj/WA-copilot/src/renderer/src/lib/browser-agentd-client.ts):928
 - [agentd/server.cjs](/Users/meharaj/WA-copilot/agentd/server.cjs):2719
 - [tests/unit/whatsapp-browser-persistence.test.ts](/Users/meharaj/WA-copilot/tests/unit/whatsapp-browser-persistence.test.ts):9
+
+The native diagnostics boundary also exposes only fixed service lifecycle commands. Windows registration targets the current signed-in user, writes a short-lived private XML definition, invokes the fixed `schtasks.exe` path with bounded arguments, and removes the temporary definition; no arbitrary executable, shell command, or browser-selected path is accepted.
+
+Evidence:
+
+- [src/renderer/src/NativeHostDiagnostics.tsx](/Users/meharaj/WA-copilot/src/renderer/src/NativeHostDiagnostics.tsx):43
+- [src/renderer/src/lib/tauri-native-bridge.ts](/Users/meharaj/WA-copilot/src/renderer/src/lib/tauri-native-bridge.ts):17
+- [src-tauri/src/main.rs](/Users/meharaj/WA-copilot/src-tauri/src/main.rs):446
 
 ### Brain View vs memory settings
 

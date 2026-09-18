@@ -63,11 +63,15 @@ Canonical product protocol decision: use the existing `agentd/server.cjs` loopba
 
 ### Execution record — companion crash recovery
 
-The Tauri companion now owns a small supervisor thread for the packaged child it starts. It reaps an exited child, waits with bounded backoff, validates the private runtime descriptor, and starts a replacement only when no other live daemon owns the data directory. It never kills or waits on `agentd` during companion shutdown, so the browser-first service lifetime remains independent. Recovery after the companion itself exits, OS user-service registration and Windows packaged runtime smoke remain release gates.
+The Tauri companion now owns a small supervisor thread for the packaged child it starts. It reaps an exited child, waits with bounded backoff, validates the private runtime descriptor, and starts a replacement only when no other live daemon owns the data directory. It never kills or waits on `agentd` during companion shutdown, so the browser-first service lifetime remains independent. Recovery after the companion itself exits and Windows packaged runtime smoke remain release gates.
+
+### Execution record — Windows per-user service registration
+
+The native diagnostics surface now offers an explicit Windows-only install/remove action for the signed-in user's lightweight companion. Registration uses a fixed Task Scheduler XML definition with an interactive-token, least-privilege principal, a logon trigger, `--background` startup and bounded failure restart settings. The temporary XML is written under the private agentd data directory, passed only to the fixed `schtasks.exe` commands, and deleted after registration; non-Windows hosts return an explicit unsupported status. The companion hides its diagnostics window for the background launch while retaining the tray and agentd supervisor, so the browser remains the only product workspace. Rust tests cover XML escaping on every host and Task Scheduler register/query/remove on Windows; automatic installer enrollment, signed install/upgrade and full Windows packaged evidence remain release gates.
 
 ### Execution record — independent agentd lifetime
 
-The native host no longer kills its `agentd` child when the Tauri window or tray exits. On launch it first validates the private runtime descriptor and reuses a live daemon; only a missing or stale descriptor causes a new child to start. While the companion remains alive, its supervisor reaps and restarts a child it started after a crash without competing with another valid descriptor. This preserves one-writer ownership and makes the documented browser/native-client lifecycle true. Service installation, recovery after companion exit and Windows user-service supervision remain release gates.
+The native host no longer kills its `agentd` child when the Tauri window or tray exits. On launch it first validates the private runtime descriptor and reuses a live daemon; only a missing or stale descriptor causes a new child to start. While the companion remains alive, its supervisor reaps and restarts a child it started after a crash without competing with another valid descriptor. This preserves one-writer ownership and makes the documented browser/native-client lifecycle true. Windows per-user registration is now available through the native diagnostics owner action; installer enrollment, recovery after intentional user quit and packaged Windows evidence remain release gates.
 
 ### Task 1 — authenticated browser/agentd settings slice
 

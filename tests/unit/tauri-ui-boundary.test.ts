@@ -32,6 +32,8 @@ describe('browser-first UI boundary', () => {
     expect(host).toContain('Rollback chat history')
     expect(host).toContain('Review credentials needing reauthentication')
     expect(host).toContain('values excluded')
+    expect(host).toContain('Install sign-in service')
+    expect(host).toContain('Remove sign-in service')
     expect(host).not.toContain('confirmationToken}</')
   })
 
@@ -79,6 +81,9 @@ describe('browser-first UI boundary', () => {
     expect(handler).toContain('select_file')
     expect(handler).toContain('select_folder')
     expect(handler).toContain('open_browser_workspace')
+    expect(handler).toContain('service_status')
+    expect(handler).toContain('service_install')
+    expect(handler).toContain('service_uninstall')
     expect(handler).toContain('chat_history_confirm')
     expect(handler).toContain('chat_history_apply')
     expect(handler).toContain('chat_history_status')

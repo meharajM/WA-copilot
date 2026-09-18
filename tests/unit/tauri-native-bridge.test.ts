@@ -13,6 +13,9 @@ describe('tauri native bridge', () => {
       'agentd_origin',
       'agentd_pairing_code',
       'open_browser_workspace',
+      'service_status',
+      'service_install',
+      'service_uninstall',
       'credential_set',
       'credential_exists',
       'credential_delete',
@@ -59,6 +62,22 @@ describe('tauri native bridge', () => {
     expect(invoke).toHaveBeenCalledWith(TAURI_COMMANDS.credentialSet, { key: 'openai_api_key', value: 'secret' })
     expect(invoke).toHaveBeenCalledWith(TAURI_COMMANDS.openBrowserWorkspace, undefined)
     expect(invoke).not.toHaveBeenCalledWith(expect.stringMatching(/get.*credential|credential.*read/i), expect.anything())
+  })
+
+  it('keeps Windows service registration typed and owner-controlled', async () => {
+    const invoke = vi.fn(async (command: string) => {
+      if ([TAURI_COMMANDS.serviceStatus, TAURI_COMMANDS.serviceInstall, TAURI_COMMANDS.serviceUninstall].includes(command)) {
+        return { supported: true, installed: command !== TAURI_COMMANDS.serviceUninstall, running: false, taskName: 'AICA Native Companion', message: 'Registered for this Windows user' }
+      }
+      return null
+    })
+    const bridge = createTauriNativeBridge({ invoke })
+
+    await expect(bridge.serviceStatus()).resolves.toMatchObject({ supported: true, taskName: 'AICA Native Companion' })
+    await expect(bridge.serviceInstall()).resolves.toMatchObject({ installed: true })
+    await expect(bridge.serviceUninstall()).resolves.toMatchObject({ installed: false })
+    expect(invoke).toHaveBeenCalledWith(TAURI_COMMANDS.serviceInstall, undefined)
+    expect(invoke).toHaveBeenCalledWith(TAURI_COMMANDS.serviceUninstall, undefined)
   })
 
   it('fails closed on malformed host responses and unavailable agentd', async () => {
