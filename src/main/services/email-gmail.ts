@@ -10,6 +10,14 @@ export interface ParsedInboundGmailMessage {
   inReplyTo?: string
   references?: string
   isFromMe: boolean
+  attachments?: EmailAttachmentMetadata[]
+}
+
+export interface EmailAttachmentMetadata {
+  id: string
+  name?: string
+  mimeType?: string
+  size?: number
 }
 
 function parseEmailAddress(input: unknown): string {
@@ -97,6 +105,35 @@ export function extractGmailBody(payload: Record<string, unknown> | null): strin
   return htmlFallback
 }
 
+export function extractGmailAttachments(
+  payload: Record<string, unknown> | null,
+  output: EmailAttachmentMetadata[] = [],
+  seen = new Set<string>(),
+  depth = 0,
+): EmailAttachmentMetadata[] {
+  if (!payload || output.length >= 20 || depth > 8) return output
+  const body = payload.body && typeof payload.body === 'object' ? payload.body as Record<string, unknown> : {}
+  const attachmentId = typeof body.attachmentId === 'string' && /^[A-Za-z0-9_-]{1,256}$/.test(body.attachmentId) ? body.attachmentId : ''
+  const name = typeof payload.filename === 'string' ? payload.filename.trim().slice(0, 256) : ''
+  const mimeType = typeof payload.mimeType === 'string' ? payload.mimeType.trim().slice(0, 128) : ''
+  const size = typeof body.size === 'number' ? body.size : Number(body.size)
+  if (attachmentId && !seen.has(attachmentId)) {
+    seen.add(attachmentId)
+    output.push({
+      id: attachmentId,
+      ...(name ? { name } : {}),
+      ...(mimeType ? { mimeType } : {}),
+      ...(Number.isSafeInteger(size) && size >= 0 ? { size } : {}),
+    })
+  }
+  const parts = Array.isArray(payload.parts) ? payload.parts as Array<Record<string, unknown>> : []
+  for (const part of parts) {
+    if (output.length >= 20) break
+    extractGmailAttachments(part, output, seen, depth + 1)
+  }
+  return output
+}
+
 export function toInboundGmailMessage(
   item: Record<string, unknown>,
   ownerEmail?: string | null
@@ -122,6 +159,7 @@ export function toInboundGmailMessage(
       ? internalDateRaw
       : Date.now()
   const normalizedOwnerEmail = parseEmailAddress(ownerEmail)
+  const attachments = extractGmailAttachments(payload)
 
   return {
     id: String(item.id || `gmail_${Date.now()}`),
@@ -135,5 +173,6 @@ export function toInboundGmailMessage(
     inReplyTo: readHeader(headers, 'In-Reply-To'),
     references: readHeader(headers, 'References'),
     isFromMe: labelIds.includes('SENT') || (!!normalizedOwnerEmail && from === normalizedOwnerEmail),
+    ...(attachments.length ? { attachments } : {}),
   }
 }

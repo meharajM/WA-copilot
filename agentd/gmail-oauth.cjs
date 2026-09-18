@@ -24,9 +24,9 @@ function boundedOrigin(origin) {
   return value.origin
 }
 
-async function readJson(response) {
+async function readJson(response, maxBytes = MAX_RESPONSE_BYTES) {
   const length = Number(response.headers?.get?.('content-length'))
-  if (Number.isFinite(length) && length > MAX_RESPONSE_BYTES) throw new Error('Google response too large')
+  if (Number.isFinite(length) && length > maxBytes) throw new Error('Google response too large')
   if (!response.body) return {}
   const reader = response.body.getReader()
   const chunks = []
@@ -36,7 +36,7 @@ async function readJson(response) {
       const next = await reader.read()
       if (next.done) break
       size += next.value.byteLength
-      if (size > MAX_RESPONSE_BYTES) {
+      if (size > maxBytes) {
         await reader.cancel()
         throw new Error('Google response too large')
       }
@@ -205,8 +205,9 @@ class GmailOAuthService {
     return readJson(response)
   }
 
-  async request(pathname, init = {}) {
+  async request(pathname, init = {}, maxResponseBytes = MAX_RESPONSE_BYTES) {
     if (!/^\/[A-Za-z0-9_?=&./:%-]{1,512}$/.test(pathname)) throw new Error('Invalid Gmail API path')
+    if (!Number.isSafeInteger(maxResponseBytes) || maxResponseBytes < MAX_RESPONSE_BYTES || maxResponseBytes > 16 * 1024 * 1024) throw new Error('Invalid Gmail response limit')
     const accessToken = await this.getAccessToken()
     if (!accessToken) throw new Error('Gmail OAuth token missing')
     const response = await this.fetchImpl(`${GMAIL_API_ROOT}${pathname}`, {
@@ -215,7 +216,7 @@ class GmailOAuthService {
       signal: AbortSignal.timeout(15_000),
       headers: { ...(init.headers || {}), authorization: `Bearer ${accessToken}` },
     })
-    const payload = await readJson(response)
+    const payload = await readJson(response, maxResponseBytes)
     if (!response.ok) {
       if (response.status === 401 || response.status === 403) this.requiresReauthentication = true
       throw new Error('Gmail API request failed')

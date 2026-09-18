@@ -75,6 +75,29 @@ export interface BrowserEmailTestResult {
   oauth?: { signedIn: boolean; email: string | null }
 }
 
+export interface BrowserEmailAttachment {
+  inboundId: string
+  messageId: string
+  id: string
+  name?: string
+  mimeType?: string
+  size?: number
+  receivedAt: number
+}
+
+export interface BrowserEmailAttachmentScan {
+  safe: boolean
+  reason: string
+  size: number
+  sha256: string
+  detectedType: 'pdf' | 'png' | 'jpeg' | 'text' | 'unknown'
+}
+
+export interface BrowserEmailAttachmentResult {
+  scan: BrowserEmailAttachmentScan
+  bytes?: Uint8Array
+}
+
 export interface BrowserGmailOAuthStatus {
   signedIn: boolean
   email: string | null
@@ -128,6 +151,7 @@ export interface BrowserEmailInboundEvent {
     inReplyTo?: string
     references?: string
     isFromMe?: boolean
+    attachments?: Array<{ id: string; name?: string; mimeType?: string; size?: number }>
   }
   status: 'queued' | 'draft' | 'processing' | 'completed'
   createdAt: number
@@ -399,6 +423,52 @@ const readEmailDraft = (value: unknown): BrowserEmailDraft => {
   return value as unknown as BrowserEmailDraft
 }
 
+const readEmailAttachmentMetadata = (value: unknown): BrowserEmailAttachment => {
+  if (!isRecord(value)
+    || typeof value.inboundId !== 'string'
+    || typeof value.messageId !== 'string'
+    || !/^[A-Za-z0-9_.:@-]{1,512}$/.test(value.messageId)
+    || typeof value.id !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/.test(value.id)
+    || (value.name !== undefined && typeof value.name !== 'string')
+    || (value.mimeType !== undefined && typeof value.mimeType !== 'string')
+    || !Number.isSafeInteger(value.receivedAt)
+    || (value.size !== undefined && (!Number.isSafeInteger(value.size) || (value.size as number) < 0 || (value.size as number) > 10 * 1024 * 1024))) throw new Error('Invalid agentd email attachment metadata')
+  return {
+    inboundId: value.inboundId,
+    messageId: value.messageId,
+    id: value.id,
+    ...(typeof value.name === 'string' && value.name ? { name: value.name } : {}),
+    ...(typeof value.mimeType === 'string' && value.mimeType ? { mimeType: value.mimeType } : {}),
+    ...(Number.isSafeInteger(value.size) ? { size: value.size as number } : {}),
+    receivedAt: value.receivedAt as number,
+  }
+}
+
+const readEmailAttachmentScan = (value: unknown): BrowserEmailAttachmentScan => {
+  if (!isRecord(value)
+    || typeof value.safe !== 'boolean'
+    || typeof value.reason !== 'string'
+    || !Number.isSafeInteger(value.size) || (value.size as number) < 0
+    || typeof value.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(value.sha256)
+    || !['pdf', 'png', 'jpeg', 'text', 'unknown'].includes(value.detectedType as string)) throw new Error('Invalid agentd email attachment scan')
+  return {
+    safe: value.safe,
+    reason: value.reason,
+    size: value.size as number,
+    sha256: value.sha256,
+    detectedType: value.detectedType as BrowserEmailAttachmentScan['detectedType'],
+  }
+}
+
+const validInboundEmailAttachments = (value: unknown): value is Array<{ id: string; name?: string; mimeType?: string; size?: number }> => (
+  value === undefined
+  || (Array.isArray(value) && value.length <= 20 && value.every((item) => isRecord(item)
+    && typeof item.id === 'string' && /^[A-Za-z0-9_-]{1,256}$/.test(item.id)
+    && (item.name === undefined || typeof item.name === 'string')
+    && (item.mimeType === undefined || typeof item.mimeType === 'string')
+    && (item.size === undefined || (Number.isSafeInteger(item.size) && (item.size as number) >= 0 && (item.size as number) <= 10 * 1024 * 1024))))
+)
+
 const readPersonaSettings = (value: unknown): PersonaSettings => {
   if (!isRecord(value)
     || typeof value.name !== 'string'
@@ -610,6 +680,8 @@ export interface BrowserAgentdClient extends ChatClient {
   getEmailSettings(): Promise<EmailSettings>
   saveEmailSettings(settings: EmailSettings): Promise<EmailSettings>
   testEmail(): Promise<BrowserEmailTestResult>
+  listEmailAttachments(limit?: number): Promise<BrowserEmailAttachment[]>
+  retrieveGmailAttachment(messageId: string, attachmentId: string, metadata?: { mimeType?: string; name?: string }): Promise<BrowserEmailAttachmentResult>
   getGmailOAuthStatus(): Promise<BrowserGmailOAuthStatus>
   startGmailOAuth(): Promise<{ authorizationUrl: string; expiresAt: number }>
   signOutGmailOAuth(): Promise<void>
@@ -1022,6 +1094,28 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     if (value.oauth !== undefined && (!isRecord(value.oauth) || typeof value.oauth.signedIn !== 'boolean' || (value.oauth.email !== null && typeof value.oauth.email !== 'string'))) throw new Error('Invalid email test response')
     return value as unknown as BrowserEmailTestResult
   }
+  const listEmailAttachments = async (limit = 20): Promise<BrowserEmailAttachment[]> => {
+    const boundedLimit = Number.isSafeInteger(limit) ? Math.min(Math.max(limit, 1), 100) : 20
+    const value = await request<unknown>(`/api/v1/email/attachments?limit=${boundedLimit}`)
+    if (!isRecord(value) || !Array.isArray(value.attachments)) throw new Error('Invalid agentd email attachment list response')
+    return value.attachments.map(readEmailAttachmentMetadata)
+  }
+  const retrieveGmailAttachment = async (messageId: string, attachmentId: string, metadata: { mimeType?: string; name?: string } = {}): Promise<BrowserEmailAttachmentResult> => {
+    if (!/^[A-Za-z0-9_-]{1,256}$/.test(messageId) || !/^[A-Za-z0-9_-]{1,256}$/.test(attachmentId)) throw new Error('Invalid Gmail attachment identity')
+    if (metadata.mimeType !== undefined && (typeof metadata.mimeType !== 'string' || metadata.mimeType.length > 128)) throw new Error('Invalid Gmail attachment MIME type')
+    if (metadata.name !== undefined && (typeof metadata.name !== 'string' || metadata.name.length > 256)) throw new Error('Invalid Gmail attachment name')
+    const value = await request<unknown>(`/api/v1/email/attachments/${encodeURIComponent(messageId)}/${encodeURIComponent(attachmentId)}`, { method: 'POST', body: JSON.stringify(metadata) }, true)
+    if (!isRecord(value)) throw new Error('Invalid agentd email attachment response')
+    const scan = readEmailAttachmentScan(value.scan)
+    if (value.bytes === undefined) return { scan }
+    if (typeof value.bytes !== 'string' || value.bytes.length > Math.ceil(10 * 1024 * 1024 * 4 / 3) + 1024) throw new Error('Invalid agentd email attachment bytes')
+    let binary: string
+    try { binary = atob(value.bytes) } catch { throw new Error('Invalid agentd email attachment bytes') }
+    if (binary.length > 10 * 1024 * 1024) throw new Error('Invalid agentd email attachment bytes')
+    const bytes = new Uint8Array(binary.length)
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
+    return { scan, bytes }
+  }
   const ingestEmailInbound = async (event: { providerEventId: string; conversationId: string; payload: BrowserEmailInboundEvent['payload'] }) => {
     const value = await request<unknown>('/api/v1/email/inbound', { method: 'POST', body: JSON.stringify(event) }, true)
     if (!isRecord(value) || value.accepted !== true || typeof value.duplicate !== 'boolean' || !Number.isSafeInteger(value.id)) throw new Error('Invalid email inbound response')
@@ -1036,6 +1130,7 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
       && isRecord(event.payload) && typeof event.payload.from === 'string' && typeof event.payload.to === 'string'
       && typeof event.payload.subject === 'string' && typeof event.payload.body === 'string'
       && (event.payload.bodyType === 'text' || event.payload.bodyType === 'html') && typeof event.payload.timestamp === 'number'
+      && validInboundEmailAttachments(event.payload.attachments)
       && event.status === 'processing' && Number.isSafeInteger(event.createdAt))
     if (events.length !== value.events.length) throw new Error('Invalid email inbound claim response')
     return events
@@ -1050,6 +1145,7 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
       && isRecord(event.payload) && typeof event.payload.from === 'string' && typeof event.payload.to === 'string'
       && typeof event.payload.subject === 'string' && typeof event.payload.body === 'string'
       && (event.payload.bodyType === 'text' || event.payload.bodyType === 'html') && typeof event.payload.timestamp === 'number'
+      && validInboundEmailAttachments(event.payload.attachments)
       && ['queued', 'draft', 'processing', 'completed'].includes(event.status as string) && Number.isSafeInteger(event.createdAt))
     if (events.length !== value.events.length) throw new Error('Invalid email inbound list response')
     return { events, nextAfterId: value.nextAfterId as number }
@@ -1302,6 +1398,8 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     getEmailSettings,
     saveEmailSettings,
     testEmail,
+    listEmailAttachments,
+    retrieveGmailAttachment,
     getGmailOAuthStatus,
     startGmailOAuth,
     signOutGmailOAuth,

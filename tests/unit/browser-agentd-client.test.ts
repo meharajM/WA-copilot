@@ -326,6 +326,28 @@ describe('browser agentd client', () => {
     expect(new Headers(ack?.init?.headers).get('x-csrf-token')).toBe('csrf-token')
   })
 
+  it('maps bounded browser email attachment metadata and operator inspection bytes', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = []
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      calls.push({ url, init })
+      if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
+      if (url.includes('/api/v1/email/attachments?')) return response({ attachments: [{ inboundId: '7', messageId: 'gmail-7', id: 'att-1', name: 'guide.pdf', mimeType: 'application/pdf', size: 3, receivedAt: 42 }] })
+      if (url.endsWith('/api/v1/email/attachments/gmail-7/att-1')) return response({
+        scan: { safe: true, reason: 'bounded_type_check_passed', size: 3, sha256: 'a'.repeat(64), detectedType: 'pdf' },
+        bytes: 'AQID',
+      })
+      return response({ success: true })
+    })
+    const client = createBrowserAgentdClient({ origin: 'http://127.0.0.1:4141', fetch: fetcher })
+    await client.pair('123456')
+    await expect(client.listEmailAttachments()).resolves.toEqual([{ inboundId: '7', messageId: 'gmail-7', id: 'att-1', name: 'guide.pdf', mimeType: 'application/pdf', size: 3, receivedAt: 42 }])
+    await expect(client.retrieveGmailAttachment('gmail-7', 'att-1', { mimeType: 'application/pdf', name: 'guide.pdf' })).resolves.toMatchObject({ scan: { safe: true }, bytes: Uint8Array.from([1, 2, 3]) })
+    const retrieve = calls.find(call => call.url.endsWith('/api/v1/email/attachments/gmail-7/att-1'))!
+    expect(new Headers(retrieve.init?.headers).get('x-csrf-token')).toBe('csrf-token')
+    expect(JSON.parse(String(retrieve.init?.body))).toEqual({ mimeType: 'application/pdf', name: 'guide.pdf' })
+  })
+
   it('persists browser email drafts through authenticated agentd routes', async () => {
     const draft = {
       id: 'draft_email_1', responseText: 'Reply', originalFrom: 'customer@example.test', originalSubject: 'Question', replyTo: 'customer@example.test',

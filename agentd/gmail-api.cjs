@@ -1,5 +1,8 @@
 const MAX_BODY_BYTES = 128 * 1024
 const MAX_MESSAGES_PER_POLL = 50
+const MAX_ATTACHMENTS_PER_MESSAGE = 20
+const MAX_ATTACHMENT_NAME_LENGTH = 256
+const MAX_ATTACHMENT_MIME_LENGTH = 128
 
 function parseEmailAddress(input) {
   if (typeof input !== 'string') return ''
@@ -63,6 +66,32 @@ function extractGmailBody(payload) {
   return htmlFallback
 }
 
+function extractGmailAttachments(payload, output = [], seen = new Set(), depth = 0) {
+  if (!payload || typeof payload !== 'object' || output.length >= MAX_ATTACHMENTS_PER_MESSAGE || depth > 8) return output
+  const body = payload.body && typeof payload.body === 'object' ? payload.body : {}
+  const attachmentId = typeof body.attachmentId === 'string' && /^[A-Za-z0-9_-]{1,256}$/.test(body.attachmentId)
+    ? body.attachmentId
+    : ''
+  const filename = typeof payload.filename === 'string' ? payload.filename.trim().slice(0, MAX_ATTACHMENT_NAME_LENGTH) : ''
+  const mimeType = typeof payload.mimeType === 'string' ? payload.mimeType.trim().slice(0, MAX_ATTACHMENT_MIME_LENGTH) : ''
+  const size = Number(body.size)
+  if (attachmentId && !seen.has(attachmentId)) {
+    seen.add(attachmentId)
+    output.push({
+      id: attachmentId,
+      ...(filename ? { name: filename } : {}),
+      ...(mimeType ? { mimeType } : {}),
+      ...(Number.isSafeInteger(size) && size >= 0 ? { size } : {}),
+    })
+  }
+  const parts = Array.isArray(payload.parts) ? payload.parts : []
+  for (const part of parts) {
+    if (output.length >= MAX_ATTACHMENTS_PER_MESSAGE) break
+    extractGmailAttachments(part, output, seen, depth + 1)
+  }
+  return output
+}
+
 function toInboundGmailMessage(item, ownerEmail = '') {
   if (!item || typeof item !== 'object' || typeof item.id !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/.test(item.id)) return null
   const payload = item.payload && typeof item.payload === 'object' ? item.payload : {}
@@ -74,6 +103,7 @@ function toInboundGmailMessage(item, ownerEmail = '') {
   const timestamp = Number.isFinite(internalDate) && internalDate > 0 ? internalDate : Date.now()
   const normalizedOwner = parseEmailAddress(ownerEmail)
   const labels = Array.isArray(item.labelIds) ? item.labelIds : []
+  const attachments = extractGmailAttachments(payload)
   return {
     id: item.id,
     from,
@@ -86,6 +116,7 @@ function toInboundGmailMessage(item, ownerEmail = '') {
     ...(readHeader(headers, 'In-Reply-To') ? { inReplyTo: readHeader(headers, 'In-Reply-To').slice(0, 998) } : {}),
     ...(readHeader(headers, 'References') ? { references: readHeader(headers, 'References').slice(0, 8192) } : {}),
     isFromMe: labels.includes('SENT') || Boolean(normalizedOwner && normalizedOwner === from),
+    ...(attachments.length ? { attachments } : {}),
   }
 }
 
@@ -170,4 +201,4 @@ class GmailInboundWorker {
   }
 }
 
-module.exports = { MAX_BODY_BYTES, extractGmailBody, toInboundGmailMessage, pollGmail, GmailInboundWorker }
+module.exports = { MAX_BODY_BYTES, MAX_ATTACHMENTS_PER_MESSAGE, extractGmailBody, extractGmailAttachments, toInboundGmailMessage, pollGmail, GmailInboundWorker }

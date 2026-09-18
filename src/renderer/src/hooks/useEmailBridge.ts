@@ -75,6 +75,13 @@ const ingestBrowserInboundEmail = async (event: BrowserEmailInboundEvent): Promi
     ...(payload.messageId ? { messageId: payload.messageId } : {}),
     ...(payload.inReplyTo ? { inReplyTo: payload.inReplyTo } : {}),
     ...(payload.references ? { references: payload.references } : {}),
+    ...(payload.attachments?.length ? {
+      attachments: payload.attachments.map((attachment) => ({
+        filename: attachment.name || attachment.id,
+        contentType: attachment.mimeType || 'application/octet-stream',
+        size: attachment.size || 0,
+      })),
+    } : {}),
   }
   const sessionKey = generateEmailSessionKey(email)
   let sessionId = stableEmailSessionId(sessionKey.key)
@@ -92,7 +99,19 @@ const ingestBrowserInboundEmail = async (event: BrowserEmailInboundEvent): Promi
     ? llmMessage.content
     : llmMessage.content.map((part) => 'text' in part ? part.text : '[Attachment]').join('\n')
   try {
-    await client.appendMessage(sessionId, { id: `email_${event.id}`, role: 'user', content, timestamp: email.timestamp })
+    await client.appendMessage(sessionId, {
+      id: `email_${event.id}`,
+      role: 'user',
+      content,
+      timestamp: email.timestamp,
+      ...(email.attachments?.length ? {
+        attachments: email.attachments.map((attachment) => ({
+          name: attachment.filename,
+          type: attachment.contentType,
+          size: attachment.size,
+        })),
+      } : {}),
+    })
   } catch (error) {
     if (!(error instanceof BrowserAgentdError) || error.status !== 409) throw error
   }

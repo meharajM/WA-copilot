@@ -107,6 +107,7 @@ describe('browser-first UI boundary', () => {
     const agent = readSource('hooks/useAgent.ts')
     const bridge = readSource('hooks/useEmailBridge.ts')
     const mcp = readSource('lib/mcp.ts')
+    const electron = readSource('lib/electron.ts')
 
     expect(agent).toContain('client.saveEmailDraft(draft)')
     expect(agent).toContain('client.sendEmailDraft(saved.id)')
@@ -118,6 +119,8 @@ describe('browser-first UI boundary', () => {
     expect(agent).toContain('await applyBrowserEmailPolicy(responseText)')
     expect(mcp).toContain('Browser Email tool calls are disabled')
     expect(mcp).not.toContain('isBrowserProduct()) return await electron.email.send')
+    expect(electron).toContain('getBrowserAgentdClient().listEmailAttachments(limit)')
+    expect(electron).toContain('getBrowserAgentdClient().retrieveGmailAttachment(messageId, attachmentId, metadata)')
     expect(bridge).toContain('emailGenerationRequestId: `email_${event.id}`')
     expect(bridge).toContain('emailDraftId: `draft_email_${event.id}`')
     expect(bridge).toContain('const durableDrafts = await client.listEmailDrafts()')

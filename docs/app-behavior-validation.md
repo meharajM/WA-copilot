@@ -387,6 +387,28 @@ Evidence:
 - [src/renderer/src/hooks/useAgent.ts](/Users/meharaj/WA-copilot/src/renderer/src/hooks/useAgent.ts):901
 - [tests/unit/tauri-ui-boundary.test.ts](/Users/meharaj/WA-copilot/tests/unit/tauri-ui-boundary.test.ts):115
 
+### Finding 7: browser Gmail attachment inspection used an empty Electron fallback — resolved
+
+Severity: medium
+
+The browser Autonomy panel already exposed operator-only Gmail attachment
+inspection, but its browser adapter returned an empty list/null result and Gmail
+normalization discarded attachment metadata. The browser therefore could not
+inspect a safe attachment even after Gmail OAuth polling had received it.
+
+Agentd now retains bounded Gmail attachment metadata, exposes authenticated
+list/retrieve routes, and performs the retrieval through the fixed Gmail OAuth
+API. Returned bytes are released only after the 10 MiB, MIME and magic-byte
+checks pass; polling and autonomous generation never download or process the
+attachment. Electron keeps its existing attachment service path.
+
+Evidence:
+
+- [agentd/gmail-api.cjs](/Users/meharaj/WA-copilot/agentd/gmail-api.cjs):65
+- [agentd/server.cjs](/Users/meharaj/WA-copilot/agentd/server.cjs):2280
+- [src/renderer/src/lib/browser-agentd-client.ts](/Users/meharaj/WA-copilot/src/renderer/src/lib/browser-agentd-client.ts):75
+- [tests/unit/agentd-email-attachments.test.cjs](/Users/meharaj/WA-copilot/tests/unit/agentd-email-attachments.test.cjs):22
+
 ## Recommended Source-of-Truth Order
 
 Use this order:

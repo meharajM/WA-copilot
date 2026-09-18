@@ -14,6 +14,7 @@ const { WhatsAppBaileysService } = require('./whatsapp-baileys.cjs')
 const continuityMigration = require('./continuity-migration.cjs')
 const { sendTextEmail } = require('./email-transport.cjs')
 const { EmailInboundWorker, pollMailbox } = require('./email-inbound-worker.cjs')
+const { MAX_SCANNED_EMAIL_ATTACHMENT_BYTES, scanEmailAttachment } = require('./email-attachment-safety.cjs')
 const { McpWorker, MCP_LIFECYCLE } = require('./mcp-worker.cjs')
 
 const SESSION_TTL_MS = 15 * 60 * 1000
@@ -29,6 +30,10 @@ const MAX_EMAIL_INBOUND_BATCH = 50
 const MAX_EMAIL_DRAFT_BATCH = 100
 const MAX_EMAIL_DRAFT_BODY_BYTES = 96 * 1024
 const MAX_EMAIL_DRAFT_TEXT_LENGTH = 32 * 1024
+const MAX_EMAIL_ATTACHMENT_COUNT = 20
+const MAX_EMAIL_ATTACHMENT_NAME_LENGTH = 256
+const MAX_EMAIL_ATTACHMENT_MIME_LENGTH = 128
+const MAX_EMAIL_ATTACHMENT_RESPONSE_BYTES = Math.ceil(MAX_SCANNED_EMAIL_ATTACHMENT_BYTES * 4 / 3) + 32 * 1024
 const MAX_WHATSAPP_INBOUND_BATCH = 50
 const MAX_DRAFT_TEXT_LENGTH = 4096
 const OUTBOX_QUARANTINED_ERROR = 'Quarantined by operator'
@@ -1011,6 +1016,9 @@ class AgentdServer {
     if (url.pathname === '/api/v1/email/inbound/ack' && req.method === 'POST') return this.acknowledgeEmailInbound(req, res)
     if (url.pathname === '/api/v1/email/inbound/claim' && req.method === 'POST') return this.claimEmailInbound(req, res)
     if (url.pathname === '/api/v1/email/inbound' && ['GET', 'POST'].includes(req.method)) return this.emailInbound(req, res, url)
+    if (url.pathname === '/api/v1/email/attachments' && req.method === 'GET') return this.emailAttachments(req, res, url)
+    const emailAttachmentMatch = /^\/api\/v1\/email\/attachments\/([^/]+)\/([^/]+)$/.exec(url.pathname)
+    if (emailAttachmentMatch && req.method === 'POST') return this.retrieveGmailAttachmentRoute(req, res, decodeURIComponent(emailAttachmentMatch[1]), decodeURIComponent(emailAttachmentMatch[2]))
     if (url.pathname === '/api/v1/email/drafts' && ['GET', 'POST'].includes(req.method)) return this.emailDrafts(req, res, url)
     const emailDraftMatch = /^\/api\/v1\/email\/drafts\/([^/]+)$/.exec(url.pathname)
     const emailDraftSendMatch = /^\/api\/v1\/email\/drafts\/([^/]+)\/send$/.exec(url.pathname)
@@ -2230,6 +2238,61 @@ class AgentdServer {
       return json(res, result.duplicate ? 200 : 202, result)
     } catch (error) {
       return json(res, /too large/i.test(error.message) ? 413 : 400, { error: error.message })
+    }
+  }
+
+  emailAttachments(req, res, url) {
+    this.authorize(req)
+    const requestedLimit = Number.parseInt(url.searchParams.get('limit') || '20', 10)
+    const limit = Number.isSafeInteger(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 100) : 20
+    const rows = this.db.prepare("SELECT id,provider_event_id,payload,created_at FROM inbound_events WHERE channel = 'email' AND payload IS NOT NULL ORDER BY created_at DESC LIMIT 100").all()
+    const attachments = []
+    for (const row of rows) {
+      if (attachments.length >= limit) break
+      let payload
+      try { payload = JSON.parse(row.payload) } catch { continue }
+      if (!Array.isArray(payload?.attachments)) continue
+      for (const attachment of payload.attachments) {
+        if (attachments.length >= limit) break
+        const parsed = parseEmailAttachmentMetadata(attachment)
+        if (!parsed) continue
+        attachments.push({
+          inboundId: String(row.id),
+          messageId: typeof payload.id === 'string' ? payload.id : (typeof payload.messageId === 'string' ? payload.messageId : row.provider_event_id),
+          ...parsed,
+          receivedAt: row.created_at,
+        })
+      }
+    }
+    return json(res, 200, { attachments })
+  }
+
+  async retrieveGmailAttachmentRoute(req, res, messageId, attachmentId) {
+    this.authorize(req, { mutation: true })
+    if (!/^[A-Za-z0-9_-]{1,256}$/.test(messageId) || !/^[A-Za-z0-9_-]{1,256}$/.test(attachmentId)) return json(res, 400, { error: 'Invalid Gmail attachment identity' })
+    if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
+    let body
+    try { body = await readBody(req, 16 * 1024) } catch (error) { return json(res, error.statusCode || 400, { error: error.message }) }
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => !['mimeType', 'name'].includes(key))) return json(res, 400, { error: 'Invalid Gmail attachment metadata' })
+    const metadata = {
+      ...(typeof body.mimeType === 'string' && body.mimeType.length <= MAX_EMAIL_ATTACHMENT_MIME_LENGTH ? { mimeType: body.mimeType } : {}),
+      ...(typeof body.name === 'string' && body.name.length <= MAX_EMAIL_ATTACHMENT_NAME_LENGTH ? { name: body.name } : {}),
+    }
+    if (body.mimeType !== undefined && !metadata.mimeType) return json(res, 400, { error: 'Invalid Gmail attachment MIME type' })
+    if (body.name !== undefined && !metadata.name) return json(res, 400, { error: 'Invalid Gmail attachment name' })
+    const settings = this.getEmailSettings()
+    if (!settings || settings.provider !== 'gmail-api' || settings.gmailAuthMode !== 'google-oauth') return json(res, 409, { error: 'Gmail OAuth attachment inspection is unavailable for the selected transport' })
+    try {
+      const payload = await this.gmailOAuth.request(`/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}`, {}, MAX_EMAIL_ATTACHMENT_RESPONSE_BYTES)
+      const encoded = payload && typeof payload.data === 'string' ? payload.data : ''
+      if (!encoded || encoded.length > Math.ceil(MAX_SCANNED_EMAIL_ATTACHMENT_BYTES * 4 / 3) + 32) return json(res, 502, { error: 'Gmail attachment payload is missing or too large' })
+      if (!/^[A-Za-z0-9+/_=-]+$/.test(encoded)) return json(res, 502, { error: 'Gmail attachment payload is invalid' })
+      const bytes = Buffer.from(encoded.replace(/-/g, '+').replace(/_/g, '/'), 'base64')
+      const scan = scanEmailAttachment({ bytes, mimeType: metadata.mimeType, name: metadata.name })
+      if (Number.isFinite(payload.size) && Number(payload.size) !== bytes.byteLength) return json(res, 200, { scan: { ...scan, safe: false, reason: 'attachment_size_mismatch' } })
+      return json(res, 200, { scan, ...(scan.safe ? { bytes: bytes.toString('base64') } : {}) })
+    } catch {
+      return json(res, 502, { error: 'Gmail attachment retrieval failed' })
     }
   }
 
@@ -4056,8 +4119,25 @@ function parseEmailInbound(value) {
     || (payload.messageId !== undefined && !validBoundedText(payload.messageId, 998, true))
     || (payload.inReplyTo !== undefined && !validBoundedText(payload.inReplyTo, 998, true))
     || (payload.references !== undefined && !validBoundedText(payload.references, 8192, true))
-    || (payload.isFromMe !== undefined && typeof payload.isFromMe !== 'boolean')) return null
+    || (payload.isFromMe !== undefined && typeof payload.isFromMe !== 'boolean')
+    || (payload.attachments !== undefined && (!Array.isArray(payload.attachments) || payload.attachments.length > MAX_EMAIL_ATTACHMENT_COUNT || payload.attachments.some(attachment => !parseEmailAttachmentMetadata(attachment))))) return null
   return { providerEventId: value.providerEventId, conversationId: value.conversationId, payload }
+}
+
+function parseEmailAttachmentMetadata(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const keys = Object.keys(value)
+  if (keys.some(key => !['id', 'name', 'mimeType', 'size'].includes(key))) return null
+  if (typeof value.id !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/.test(value.id)) return null
+  if (value.name !== undefined && (!validBoundedText(value.name, MAX_EMAIL_ATTACHMENT_NAME_LENGTH, true) || /[\u0000\r\n]/.test(value.name))) return null
+  if (value.mimeType !== undefined && (!validBoundedText(value.mimeType, MAX_EMAIL_ATTACHMENT_MIME_LENGTH, true) || /[\u0000\r\n]/.test(value.mimeType))) return null
+  if (value.size !== undefined && (!Number.isSafeInteger(value.size) || value.size < 0 || value.size > MAX_SCANNED_EMAIL_ATTACHMENT_BYTES)) return null
+  return {
+    id: value.id,
+    ...(typeof value.name === 'string' && value.name.trim() ? { name: value.name.trim() } : {}),
+    ...(typeof value.mimeType === 'string' && value.mimeType.trim() ? { mimeType: value.mimeType.trim() } : {}),
+    ...(Number.isSafeInteger(value.size) ? { size: value.size } : {}),
+  }
 }
 
 function parseEmailDraft(value) {
