@@ -38,9 +38,12 @@ test('packaged runner owns agentd startup and does not accept renderer-selected 
 })
 
 test('Windows CI runs target-specific native host tests before packaging', () => {
+  const browserBundle = windowsWorkflow.indexOf('npm run build:tauri:web')
   const nativeTests = windowsWorkflow.indexOf('cargo test --locked --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc')
   const bundle = windowsWorkflow.indexOf('npm run build:tauri:win')
+  assert.notEqual(browserBundle, -1)
   assert.notEqual(nativeTests, -1)
   assert.notEqual(bundle, -1)
+  assert.ok(browserBundle < nativeTests, 'browser assets must exist before native host compilation')
   assert.ok(nativeTests < bundle, 'native host tests must run before packaging')
 })

@@ -55,6 +55,11 @@ jobs:
           $cjsTests = @(Get-ChildItem -Path tests/unit -Filter '*.test.cjs' | Select-Object -ExpandProperty FullName)
           node --test $cjsTests
 
+      - name: Build browser bundle for native host tests
+        # The Tauri build script embeds ../dist even for `cargo test`, so
+        # prepare the browser-first product assets before compiling Rust.
+        run: npm run build:tauri:web
+
       - name: Run Windows native host tests
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc
 
