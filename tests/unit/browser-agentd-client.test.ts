@@ -203,6 +203,22 @@ describe('browser agentd client', () => {
     expect(new Headers(send.init?.headers).get('x-csrf-token')).toBe('csrf-token')
   })
 
+  it('sends an approved browser WhatsApp draft through the authenticated outbox route', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = []
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      calls.push({ url, init })
+      if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
+      if (url.endsWith('/api/v1/whatsapp/drafts/7/send')) return response({ success: true, duplicate: false, providerMessageId: 'wamid.draft-1', draft: { id: 7, channel: 'whatsapp', providerEventId: 'evt-7', conversationId: '14155551212@s.whatsapp.net', responseText: 'draft reply', status: 'sent', createdAt: 10, updatedAt: 30, sendStatus: 'sent', providerMessageId: 'wamid.draft-1', sendAttempts: 1 } })
+      return response({ success: true })
+    })
+    const client = createBrowserAgentdClient({ origin: 'http://127.0.0.1:4141', fetch: fetcher })
+    await client.pair('123456')
+    await expect(client.sendWhatsAppDraft(7)).resolves.toMatchObject({ providerMessageId: 'wamid.draft-1', duplicate: false, draft: { status: 'sent' } })
+    const send = calls.find(call => call.url.endsWith('/api/v1/whatsapp/drafts/7/send'))!
+    expect(new Headers(send.init?.headers).get('x-csrf-token')).toBe('csrf-token')
+  })
+
   it('maps loopback Ollama settings and model discovery through agentd', async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = []
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

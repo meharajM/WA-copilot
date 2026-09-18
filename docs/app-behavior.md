@@ -186,7 +186,7 @@ Pass evidence:
 ### Browser-first transport
 
 - Edge/Chrome owns the product workflow. When WhatsApp Cloud transport is selected and configured, an explicit user send from the browser chat input uses the authenticated `agentd` Cloud API route; the access token stays in the native OS credential store and never reaches the page.
-- Browser sends fail closed when Cloud transport or credentials are unavailable. QR/WhatsApp Web automation and autonomous direct-send remain unavailable until their provider-backed daemon adapters and outbox safety gates are migrated.
+- Browser sends fail closed when Cloud transport or credentials are unavailable. A browser draft must be explicitly approved and then explicitly sent; `agentd` records a durable pending/sent/failed outbox entry and suppresses duplicate provider calls. QR/WhatsApp Web automation and autonomous direct-send remain unavailable until their provider-backed daemon adapters and remaining outbox safety gates are migrated.
 - A failed channel send does not discard the local chat submission; the browser records the failure through its normal audit/error path so the operator can retry after fixing configuration.
 
 Pass evidence:
@@ -277,7 +277,7 @@ Pass evidence:
   - pending review
   - escalated
   - recent history
-- Drafts can be edited, approved, rejected, or sent.
+- Drafts can be edited, approved, rejected, or sent. In Edge/Chrome, approval and sending are separate explicit actions; status cannot be changed to `sent` without a successful provider-backed outbox call.
 - Sending a draft uses reply headers and normalized `Re:` behavior.
 
 Pass evidence:

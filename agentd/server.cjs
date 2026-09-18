@@ -226,6 +226,16 @@ class AgentdServer {
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS whatsapp_outbox (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          draft_id INTEGER NOT NULL UNIQUE REFERENCES whatsapp_drafts(id) ON DELETE CASCADE,
+          status TEXT NOT NULL CHECK(status IN ('pending','sent','failed')) DEFAULT 'pending',
+          provider_message_id TEXT,
+          error TEXT,
+          attempts INTEGER NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS chat_sessions (
           id TEXT PRIMARY KEY,
           title TEXT NOT NULL,
@@ -556,6 +566,8 @@ class AgentdServer {
     if (['/api/v1/whatsapp/events', '/api/v1/whatsapp/inbound', '/api/v1/events/whatsapp'].includes(url.pathname) && req.method === 'POST') return this.recordWhatsAppEvent(req, res)
     if (['/api/v1/drafts', '/api/v1/whatsapp/drafts'].includes(url.pathname) && req.method === 'GET') return this.listDrafts(req, res, url)
     const draftMatch = /^\/api\/v1\/(?:whatsapp\/)?drafts\/(\d+)$/.exec(url.pathname)
+    const draftSendMatch = /^\/api\/v1\/whatsapp\/drafts\/(\d+)\/send$/.exec(url.pathname)
+    if (draftSendMatch && req.method === 'POST') return this.sendWhatsAppDraft(req, res, Number(draftSendMatch[1]))
     if (draftMatch && req.method === 'GET') return this.getDraft(req, res, Number(draftMatch[1]))
     if (draftMatch && ['PATCH', 'PUT'].includes(req.method)) return this.updateDraftStatus(req, res, Number(draftMatch[1]))
     if (url.pathname === '/api/v1/pause-all' && req.method === 'POST') return this.control(req, res, true)
@@ -963,6 +975,44 @@ class AgentdServer {
     return { settings, models }
   }
 
+  async sendWhatsAppCloudMessage(to, text) {
+    let storedSettings = null
+    try { storedSettings = JSON.parse(this.getState('whatsapp_settings', 'null')) } catch {}
+    const settings = parseWhatsAppSettings(storedSettings) || WHATSAPP_SETTINGS_DEFAULTS
+    if (settings.whatsapp_transport !== 'cloud') throw Object.assign(new Error('WhatsApp Cloud transport is not enabled'), { statusCode: 409 })
+    if (!/^\d{5,32}$/.test(settings.whatsapp_cloud_phone_number_id)
+      || !/^v\d+(?:\.\d+)?$/.test(settings.whatsapp_cloud_api_version)) {
+      throw Object.assign(new Error('WhatsApp Cloud transport is not configured'), { statusCode: 409 })
+    }
+    if (!/^\+?[0-9\s().-]{8,32}$/.test(to.trim())) throw Object.assign(new Error('Invalid WhatsApp recipient'), { statusCode: 400 })
+    const recipient = to.replace(/\D/g, '')
+    if (!/^\d{8,15}$/.test(recipient)) throw Object.assign(new Error('Invalid WhatsApp recipient'), { statusCode: 400 })
+    if (typeof text !== 'string' || !text.trim() || [...text].length > MAX_DRAFT_TEXT_LENGTH) throw Object.assign(new Error('Invalid WhatsApp message'), { statusCode: 400 })
+
+    let accessToken
+    try { accessToken = await this.credentials?.get('whatsapp_cloud_access_token') } catch {}
+    if (typeof accessToken !== 'string' || !accessToken) throw Object.assign(new Error('WhatsApp Cloud credentials are not configured'), { statusCode: 409 })
+
+    let response
+    try {
+      response = await this.providerFetch(`https://graph.facebook.com/${settings.whatsapp_cloud_api_version}/${settings.whatsapp_cloud_phone_number_id}/messages`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messaging_product: 'whatsapp', to: recipient, type: 'text', text: { body: text.trim() } }),
+        redirect: 'manual',
+        signal: AbortSignal.timeout(10_000),
+      })
+      const payload = await readProviderResponse(response)
+      const providerMessageId = payload?.messages?.[0]?.id
+      if (!response.ok || typeof providerMessageId !== 'string' || !providerMessageId) throw new Error('WhatsApp Cloud message failed')
+      return { providerMessageId }
+    } catch (error) {
+      try { await response?.body?.cancel() } catch {}
+      if (error?.statusCode) throw error
+      throw Object.assign(new Error('WhatsApp Cloud message failed'), { statusCode: 502 })
+    }
+  }
+
   async sendWhatsAppMessage(req, res) {
     this.authorize(req, { mutation: true })
     if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
@@ -976,39 +1026,12 @@ class AgentdServer {
       return json(res, 400, { error: 'Invalid WhatsApp message' })
     }
 
-    let storedSettings = null
-    try { storedSettings = JSON.parse(this.getState('whatsapp_settings', 'null')) } catch {}
-    const settings = parseWhatsAppSettings(storedSettings) || WHATSAPP_SETTINGS_DEFAULTS
-    if (settings.whatsapp_transport !== 'cloud') return json(res, 409, { error: 'WhatsApp Cloud transport is not enabled' })
-    if (!/^\d{5,32}$/.test(settings.whatsapp_cloud_phone_number_id)
-      || !/^v\d+(?:\.\d+)?$/.test(settings.whatsapp_cloud_api_version)) {
-      return json(res, 409, { error: 'WhatsApp Cloud transport is not configured' })
-    }
-
-    if (!/^\+?[0-9\s().-]{8,32}$/.test(body.to.trim())) return json(res, 400, { error: 'Invalid WhatsApp recipient' })
-    const recipient = body.to.replace(/\D/g, '')
-    if (!/^\d{8,15}$/.test(recipient)) return json(res, 400, { error: 'Invalid WhatsApp recipient' })
-    const text = body.text.trim()
-    let accessToken
-    try { accessToken = await this.credentials?.get('whatsapp_cloud_access_token') } catch {}
-    if (typeof accessToken !== 'string' || !accessToken) return json(res, 409, { error: 'WhatsApp Cloud credentials are not configured' })
-
-    let response
     try {
-      response = await this.providerFetch(`https://graph.facebook.com/${settings.whatsapp_cloud_api_version}/${settings.whatsapp_cloud_phone_number_id}/messages`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messaging_product: 'whatsapp', to: recipient, type: 'text', text: { body: text } }),
-        redirect: 'manual',
-        signal: AbortSignal.timeout(10_000),
-      })
-      const payload = await readProviderResponse(response)
-      const providerMessageId = payload?.messages?.[0]?.id
-      if (!response.ok || typeof providerMessageId !== 'string' || !providerMessageId) throw new Error('WhatsApp Cloud provider request failed')
+      const { providerMessageId } = await this.sendWhatsAppCloudMessage(body.to, body.text)
       return json(res, 200, { success: true, providerMessageId })
-    } catch {
-      try { await response?.body?.cancel() } catch {}
-      return json(res, 502, { success: false, error: 'WhatsApp Cloud message failed' })
+    } catch (error) {
+      const statusCode = Number.isInteger(error?.statusCode) ? error.statusCode : 502
+      return json(res, statusCode, { success: false, error: statusCode === 502 ? 'WhatsApp Cloud message failed' : error.message })
     }
   }
 
@@ -1524,7 +1547,23 @@ class AgentdServer {
 
   draftView(row) {
     if (!row) return null
-    return { id: row.id, channel: row.channel, providerEventId: row.provider_event_id, conversationId: row.conversation_id, responseText: row.response_text, status: row.status, createdAt: row.created_at, updatedAt: row.updated_at }
+    const outbox = this.db.prepare('SELECT status,provider_message_id,error,attempts FROM whatsapp_outbox WHERE draft_id = ?').get(row.id)
+    return {
+      id: row.id,
+      channel: row.channel,
+      providerEventId: row.provider_event_id,
+      conversationId: row.conversation_id,
+      responseText: row.response_text,
+      status: row.status,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      ...(outbox ? {
+        sendStatus: outbox.status,
+        ...(typeof outbox.provider_message_id === 'string' ? { providerMessageId: outbox.provider_message_id } : {}),
+        ...(typeof outbox.error === 'string' ? { sendError: outbox.error } : {}),
+        sendAttempts: outbox.attempts,
+      } : {}),
+    }
   }
 
   async listDrafts(req, res, url) {
@@ -1553,7 +1592,8 @@ class AgentdServer {
     if (!['draft', 'approved', 'rejected', 'sent'].includes(next)) return json(res, 400, { error: 'Invalid draft status' })
     const row = this.db.prepare('SELECT * FROM whatsapp_drafts WHERE id = ?').get(id)
     if (!row) return json(res, 404, { error: 'Draft not found' })
-    const allowed = { draft: new Set(['draft', 'approved', 'rejected']), approved: new Set(['approved', 'sent']), rejected: new Set(['rejected']), sent: new Set(['sent']) }
+    if (next === 'sent') return json(res, 409, { error: 'Use the WhatsApp send route to mark a draft sent' })
+    const allowed = { draft: new Set(['draft', 'approved', 'rejected']), approved: new Set(['approved']), rejected: new Set(['rejected']), sent: new Set(['sent']) }
     if (!allowed[row.status].has(next)) return json(res, 409, { error: 'Invalid draft status transition' })
     if (next !== row.status) {
       const result = this.db.prepare('UPDATE whatsapp_drafts SET status = ?, updated_at = ? WHERE id = ? AND status = ?').run(next, Date.now(), id, row.status)
@@ -1564,6 +1604,57 @@ class AgentdServer {
       }
     }
     return json(res, 200, this.draftView(this.db.prepare('SELECT * FROM whatsapp_drafts WHERE id = ?').get(id)))
+  }
+
+  async sendWhatsAppDraft(req, res, id) {
+    this.authorize(req, { mutation: true })
+    if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
+    const body = await readBody(req, 1024)
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 0) return json(res, 400, { error: 'Draft send accepts no input' })
+    const draft = this.db.prepare('SELECT * FROM whatsapp_drafts WHERE id = ?').get(id)
+    if (!draft) return json(res, 404, { error: 'Draft not found' })
+    if (!['approved', 'sent'].includes(draft.status)) return json(res, 409, { error: 'Draft must be approved before sending' })
+
+    const existing = this.db.prepare('SELECT * FROM whatsapp_outbox WHERE draft_id = ?').get(id)
+    if (existing?.status === 'sent' && existing.provider_message_id) {
+      return json(res, 200, { success: true, duplicate: true, providerMessageId: existing.provider_message_id, draft: this.draftView(draft) })
+    }
+    if (existing?.status === 'pending') return json(res, 409, { error: 'WhatsApp send is already pending' })
+
+    const now = Date.now()
+    const claimed = this.db.transaction(() => {
+      const current = this.db.prepare('SELECT * FROM whatsapp_drafts WHERE id = ?').get(id)
+      if (!current) return { missing: true }
+      if (!['approved', 'sent'].includes(current.status)) return { invalid: true }
+      const prior = this.db.prepare('SELECT * FROM whatsapp_outbox WHERE draft_id = ?').get(id)
+      if (prior?.status === 'sent' && prior.provider_message_id) return { sent: prior }
+      if (prior?.status === 'pending') return { pending: true }
+      this.db.prepare(`INSERT INTO whatsapp_outbox(draft_id,status,attempts,created_at,updated_at)
+        VALUES (?,?,?,?,?)
+        ON CONFLICT(draft_id) DO UPDATE SET status = 'pending', error = NULL, attempts = whatsapp_outbox.attempts + 1, updated_at = excluded.updated_at`).run(id, 'pending', prior?.attempts ? prior.attempts + 1 : 1, now, now)
+      return { current }
+    })()
+    if (claimed.missing) return json(res, 404, { error: 'Draft not found' })
+    if (claimed.invalid) return json(res, 409, { error: 'Draft must be approved before sending' })
+    if (claimed.sent) return json(res, 200, { success: true, duplicate: true, providerMessageId: claimed.sent.provider_message_id, draft: this.draftView(draft) })
+    if (claimed.pending) return json(res, 409, { error: 'WhatsApp send is already pending' })
+
+    // Inbound conversation IDs may be stored as `+15551234567` or as a
+    // WhatsApp JID. Strip only the known JID suffix; never guess a recipient.
+    const recipient = draft.conversation_id.replace(/@s\.whatsapp\.net$/i, '')
+    try {
+      const { providerMessageId } = await this.sendWhatsAppCloudMessage(recipient, draft.response_text)
+      this.db.transaction(() => {
+        this.db.prepare("UPDATE whatsapp_outbox SET status = 'sent', provider_message_id = ?, error = NULL, updated_at = ? WHERE draft_id = ?").run(providerMessageId, Date.now(), id)
+        this.db.prepare("UPDATE whatsapp_drafts SET status = 'sent', updated_at = ? WHERE id = ? AND status = 'approved'").run(Date.now(), id)
+      })()
+      return json(res, 200, { success: true, duplicate: false, providerMessageId, draft: this.draftView(this.db.prepare('SELECT * FROM whatsapp_drafts WHERE id = ?').get(id)) })
+    } catch (error) {
+      const message = Number.isInteger(error?.statusCode) && error.statusCode !== 502 ? error.message : 'WhatsApp Cloud message failed'
+      this.db.prepare("UPDATE whatsapp_outbox SET status = 'failed', error = ?, updated_at = ? WHERE draft_id = ?").run(message, Date.now(), id)
+      const statusCode = Number.isInteger(error?.statusCode) ? error.statusCode : 502
+      return json(res, statusCode, { success: false, error: message })
+    }
   }
 
   control(req, res, paused) {

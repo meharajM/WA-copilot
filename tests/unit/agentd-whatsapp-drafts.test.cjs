@@ -31,12 +31,12 @@ test('authenticated WhatsApp events dedupe, pause, persist, and expose safe draf
   const id = list.body.drafts[0].id
   assert.equal((await request(origin, 'PATCH', `/api/v1/drafts/${id}`, { status: 'sent' }, auth)).status, 409)
   assert.equal((await request(origin, 'PATCH', `/api/v1/drafts/${id}`, { status: 'approved' }, auth)).status, 200)
-  assert.equal((await request(origin, 'PATCH', `/api/v1/drafts/${id}`, { status: 'sent' }, auth)).body.status, 'sent')
+  assert.equal((await request(origin, 'PATCH', `/api/v1/drafts/${id}`, { status: 'sent' }, auth)).status, 409)
   await server.stop()
 
   const recovered = new AgentdServer({ dataDir, secret, logger: { log() {} } })
   const restarted = await recovered.start()
-  assert.equal((await request(restarted.origin, 'GET', `/api/v1/whatsapp/drafts/${id}`, undefined, auth)).body.status, 'sent')
+  assert.equal((await request(restarted.origin, 'GET', `/api/v1/whatsapp/drafts/${id}`, undefined, auth)).body.status, 'approved')
   await request(restarted.origin, 'POST', '/api/v1/pause-all', {}, auth)
   const paused = await request(restarted.origin, 'POST', '/api/v1/whatsapp/events', { channel: 'whatsapp', providerEventId: 'paused-event', conversationId: 'chat', payload: {} }, auth)
   assert.deepEqual(paused.body, { accepted: false, paused: true, duplicate: false })
@@ -126,5 +126,54 @@ test('browser WhatsApp send stays fail-closed when transport/configuration is un
     whatsapp_transport: 'cloud', whatsapp_cloud_phone_number_id: '1234567890', whatsapp_cloud_api_version: 'v23.0',
   }, auth)).status, 200)
   assert.equal((await request(origin, 'POST', '/api/v1/whatsapp/messages', { to: 'not-a-number', text: 'hello' }, auth)).status, 400)
+  await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true })
+})
+
+test('approved WhatsApp drafts send through the durable browser outbox exactly once', async () => {
+  const dataDir = makeTempDir('aica-agentd-wa-outbox-')
+  const secret = 'o'.repeat(32)
+  const calls = []
+  const server = new AgentdServer({
+    dataDir,
+    secret,
+    credentials: { async get() { return 'cloud-secret-token' }, async exists() { return true } },
+    providerFetch: async (url, init) => {
+      calls.push({ url, init })
+      return new Response(JSON.stringify({ messages: [{ id: 'wamid.draft-1' }] }), { status: 200, headers: { 'content-type': 'application/json' } })
+    },
+    logger: { log() {} },
+  })
+  const { origin } = await server.start()
+  const auth = { authorization: `Bearer ${secret}` }
+  await request(origin, 'PUT', '/api/v1/settings/whatsapp', { whatsapp_transport: 'cloud', whatsapp_cloud_phone_number_id: '1234567890', whatsapp_cloud_api_version: 'v23.0' }, auth)
+  const event = await request(origin, 'POST', '/api/v1/whatsapp/events', { channel: 'whatsapp', providerEventId: 'draft-send-1', conversationId: '14155551212@s.whatsapp.net', payload: {}, draftText: 'approved reply' }, auth)
+  assert.equal(event.status, 202)
+  const draft = (await request(origin, 'GET', '/api/v1/drafts', undefined, auth)).body.drafts[0]
+  assert.equal((await request(origin, 'POST', `/api/v1/whatsapp/drafts/${draft.id}/send`, { unexpected: true }, auth)).status, 400)
+  assert.equal((await request(origin, 'POST', `/api/v1/whatsapp/drafts/${draft.id}/send`, {}, auth)).status, 409)
+  assert.equal((await request(origin, 'PATCH', `/api/v1/drafts/${draft.id}`, { status: 'approved' }, auth)).status, 200)
+  const sent = await request(origin, 'POST', `/api/v1/whatsapp/drafts/${draft.id}/send`, {}, auth)
+  assert.deepEqual(sent.body, {
+    success: true,
+    duplicate: false,
+    providerMessageId: 'wamid.draft-1',
+    draft: {
+      id: draft.id,
+      channel: 'whatsapp',
+      providerEventId: 'draft-send-1',
+      conversationId: '14155551212@s.whatsapp.net',
+      responseText: 'approved reply',
+      status: 'sent',
+      createdAt: draft.createdAt,
+      updatedAt: sent.body.draft.updatedAt,
+      sendStatus: 'sent',
+      providerMessageId: 'wamid.draft-1',
+      sendAttempts: 1,
+    },
+  })
+  const duplicate = await request(origin, 'POST', `/api/v1/whatsapp/drafts/${draft.id}/send`, {}, auth)
+  assert.deepEqual(duplicate.body, { success: true, duplicate: true, providerMessageId: 'wamid.draft-1', draft: sent.body.draft })
+  assert.equal(calls.length, 1)
+  assert.equal(JSON.stringify(sent.body).includes('cloud-secret-token'), false)
   await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true })
 })

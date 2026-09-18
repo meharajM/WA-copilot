@@ -164,6 +164,16 @@ export interface BrowserDraft {
   status: 'draft' | 'approved' | 'rejected' | 'sent'
   createdAt: number
   updatedAt: number
+  sendStatus?: 'pending' | 'sent' | 'failed'
+  providerMessageId?: string
+  sendError?: string
+  sendAttempts?: number
+}
+
+export interface BrowserDraftSendResult {
+  providerMessageId: string
+  duplicate: boolean
+  draft: BrowserDraft
 }
 
 export interface BrowserKnowledgeDocument {
@@ -250,6 +260,7 @@ export interface BrowserAgentdClient extends ChatClient {
   resumeAll(): Promise<{ paused: boolean }>
   listDrafts(limit?: number, status?: BrowserDraft['status']): Promise<BrowserDraft[]>
   updateDraftStatus(id: number, status: BrowserDraft['status']): Promise<BrowserDraft>
+  sendWhatsAppDraft(id: number): Promise<BrowserDraftSendResult>
   listKnowledge(limit?: number): Promise<BrowserKnowledgeDocument[]>
   ingestKnowledge(input: { fileName: string; filePath: string; fileType: string; content: string; size: number }): Promise<BrowserKnowledgeDocument>
   deleteKnowledge(id: number): Promise<boolean>
@@ -552,7 +563,11 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
       || typeof value.responseText !== 'string'
       || !['draft', 'approved', 'rejected', 'sent'].includes(value.status as string)
       || !Number.isSafeInteger(value.createdAt)
-      || !Number.isSafeInteger(value.updatedAt)) throw new Error('Invalid agentd draft response')
+      || !Number.isSafeInteger(value.updatedAt)
+      || (value.sendStatus !== undefined && !['pending', 'sent', 'failed'].includes(value.sendStatus as string))
+      || (value.providerMessageId !== undefined && typeof value.providerMessageId !== 'string')
+      || (value.sendError !== undefined && typeof value.sendError !== 'string')
+      || (value.sendAttempts !== undefined && (!Number.isSafeInteger(value.sendAttempts) || (value.sendAttempts as number) < 0))) throw new Error('Invalid agentd draft response')
     return value as unknown as BrowserDraft
   }
   const listDrafts = async (limit = 50, status?: BrowserDraft['status']): Promise<BrowserDraft[]> => {
@@ -566,6 +581,12 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     if (!Number.isSafeInteger(id) || id < 1) throw new Error('Invalid draft id')
     const value = await request<unknown>(`/api/v1/drafts/${id}`, { method: 'PATCH', body: JSON.stringify({ status }) }, true)
     return readDraft(value)
+  }
+  const sendWhatsAppDraft = async (id: number): Promise<BrowserDraftSendResult> => {
+    if (!Number.isSafeInteger(id) || id < 1) throw new Error('Invalid draft id')
+    const value = await request<unknown>(`/api/v1/whatsapp/drafts/${id}/send`, { method: 'POST', body: '{}' }, true)
+    if (!isRecord(value) || typeof value.providerMessageId !== 'string' || !value.providerMessageId || typeof value.duplicate !== 'boolean') throw new Error('Invalid WhatsApp draft send response')
+    return { providerMessageId: value.providerMessageId, duplicate: value.duplicate, draft: readDraft(value.draft) }
   }
   const readKnowledgeDocument = (value: unknown): BrowserKnowledgeDocument => {
     if (!isRecord(value) || !Number.isSafeInteger(value.id) || typeof value.file_path !== 'string' || typeof value.file_name !== 'string' || typeof value.created_at !== 'string') throw new Error('Invalid agentd knowledge document')
@@ -676,6 +697,7 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     resumeAll,
     listDrafts,
     updateDraftStatus,
+    sendWhatsAppDraft,
     listKnowledge,
     ingestKnowledge,
     deleteKnowledge,

@@ -571,8 +571,8 @@ export const electron = {
         listDrafts: async () => {
             if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.listDrafts()
             if (!isBrowserProduct()) return []
-            const drafts = await getBrowserAgentdClient().listDrafts(50, 'draft')
-            return drafts.map(draft => ({ inboundId: draft.providerEventId, jid: draft.conversationId, content: draft.responseText, contentHash: '', expiresAt: draft.updatedAt + 7 * 24 * 60 * 60 * 1000, status: draft.status }))
+            const drafts = await getBrowserAgentdClient().listDrafts(50)
+            return drafts.filter(draft => draft.status === 'draft' || draft.status === 'approved').map(draft => ({ inboundId: draft.providerEventId, jid: draft.conversationId, content: draft.responseText, contentHash: '', expiresAt: draft.updatedAt + 7 * 24 * 60 * 60 * 1000, status: draft.status, providerMessageId: draft.providerMessageId, sendStatus: draft.sendStatus, sendError: draft.sendError }))
         },
         usageHistory: async (days = 30) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.usageHistory(days) : [],
         channelUsage: async (days = 1) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.channelUsage(days) : [],
@@ -581,6 +581,12 @@ export const electron = {
             if (!isBrowserProduct()) return null
             const draft = (await getBrowserAgentdClient().listDrafts(100)).find(item => item.providerEventId === inboundId)
             return draft ? getBrowserAgentdClient().updateDraftStatus(draft.id, 'approved').then(() => browserAutonomyState()) : null
+        },
+        sendApprovedDraft: async (inboundId: string) => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.approveDraft(inboundId)
+            if (!isBrowserProduct()) return null
+            const draft = (await getBrowserAgentdClient().listDrafts(100, 'approved')).find(item => item.providerEventId === inboundId)
+            return draft ? getBrowserAgentdClient().sendWhatsAppDraft(draft.id).then(() => browserAutonomyState()) : null
         },
         sendApprovedTemplate: async (inboundId: string, name: string, languageCode: string, parameters: string[] = []) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.sendApprovedTemplate(inboundId, name, languageCode, parameters) : null,
         listNotifications: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listNotifications() : [],
