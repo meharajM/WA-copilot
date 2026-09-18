@@ -270,7 +270,7 @@ Browser parity boundary:
 
 ### Channel gating
 
-- `Enable Email Channel` controls whether the background email bridge starts.
+- In Electron, `Enable Email Channel` controls whether the background email bridge starts. In browser mode, it persists the desired state and controls consumption of already-queued agentd events; it does not start a mailbox poller.
 - `Draft Mode` controls whether even high-confidence outbound replies are held as drafts.
 - `Auto-Reply` controls whether inbound email messages are submitted into the agent pipeline.
 - Current behavior: if `Auto-Reply` is off, inbound emails are ignored by the email bridge and no session is created from inbound mail.
@@ -280,6 +280,7 @@ Pass evidence:
 - With `Auto-Reply` off, inbound email does not create an email session.
 - With `Auto-Reply` on and the channel enabled, inbound email can create a session.
 - Browser `Test Connection` reaches the local agentd endpoint, rejects missing credentials, and never returns the stored app password.
+- In browser mode, the Drafts panel allows review/edit/approve/reject, but its send action is visibly disabled until daemon-owned email delivery is migrated; it must not call an Electron IPC fallback or append a synthetic send failure to the draft text.
 
 ### Safety and reply behavior
 

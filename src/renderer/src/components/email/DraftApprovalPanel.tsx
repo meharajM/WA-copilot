@@ -14,7 +14,7 @@
 import React, { useState } from 'react';
 import { useDraftStore } from '../../stores/draftStore';
 import { Card } from '../primitives/Card';
-import electron from '../../lib/electron';
+import electron, { isElectron } from '../../lib/electron';
 import { normalizeSubject } from '../../lib/email-integration';
 import {
   CheckCircle,
@@ -30,6 +30,7 @@ import {
 
 export function DraftApprovalPanel() {
   const { drafts, approveDraft, rejectDraft, markDraftSent, updateDraftText, removeDraft, cleanupOldDrafts } = useDraftStore();
+  const browserRuntime = !isElectron();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editText, setEditText] = useState('');
 
@@ -88,6 +89,11 @@ export function DraftApprovalPanel() {
           </span>
         )}
       </div>
+      {browserRuntime && drafts.length > 0 && (
+        <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2 text-xs text-amber-200">
+          Browser mode can review and approve drafts, but email delivery remains disabled until the agentd mailbox worker is migrated. Use Electron for the legacy send path.
+        </div>
+      )}
 
       {/* Pending Drafts */}
       {pendingDrafts.length > 0 && (
@@ -109,6 +115,7 @@ export function DraftApprovalPanel() {
               onApprove={() => approveDraft(draft.id)}
               onSend={() => handleApproveAndSend(draft.id)}
               onReject={() => rejectDraft(draft.id)}
+              canSend={!browserRuntime}
             />
           ))}
         </div>
@@ -134,6 +141,7 @@ export function DraftApprovalPanel() {
               onApprove={() => approveDraft(draft.id)}
               onSend={() => handleApproveAndSend(draft.id)}
               onReject={() => rejectDraft(draft.id)}
+              canSend={!browserRuntime}
               isEscalated
             />
           ))}
@@ -202,6 +210,7 @@ function DraftCard({
   onApprove,
   onSend,
   onReject,
+  canSend,
   isEscalated = false,
 }: {
   draft: import('../../lib/email-policy').EmailDraft;
@@ -214,6 +223,7 @@ function DraftCard({
   onApprove: () => void;
   onSend: () => void;
   onReject: () => void;
+  canSend: boolean;
   isEscalated?: boolean;
 }) {
   return (
@@ -294,10 +304,12 @@ function DraftCard({
         {isEscalated ? (
           <button
             onClick={onSend}
-            className="flex items-center gap-1 text-xs bg-red-500/20 text-red-300 px-3 py-1.5 rounded-lg hover:bg-red-500/30 font-bold"
+            disabled={!canSend}
+            title={!canSend ? 'Email delivery is unavailable in browser mode' : undefined}
+            className="flex items-center gap-1 text-xs bg-red-500/20 text-red-300 px-3 py-1.5 rounded-lg hover:bg-red-500/30 font-bold disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <Send size={12} />
-            Review & Send
+            {canSend ? 'Review & Send' : 'Send unavailable'}
           </button>
         ) : (
           <>
@@ -310,10 +322,12 @@ function DraftCard({
             </button>
             <button
               onClick={onSend}
-              className="flex items-center gap-1 text-xs bg-[var(--color-brand-teal)]/20 text-[var(--color-brand-teal)] px-3 py-1.5 rounded-lg hover:bg-[var(--color-brand-teal)]/30 font-bold"
+              disabled={!canSend}
+              title={!canSend ? 'Email delivery is unavailable in browser mode' : undefined}
+              className="flex items-center gap-1 text-xs bg-[var(--color-brand-teal)]/20 text-[var(--color-brand-teal)] px-3 py-1.5 rounded-lg hover:bg-[var(--color-brand-teal)]/30 font-bold disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <CheckCircle size={12} />
-              Approve & Send
+              {canSend ? 'Approve & Send' : 'Send unavailable'}
             </button>
           </>
         )}
