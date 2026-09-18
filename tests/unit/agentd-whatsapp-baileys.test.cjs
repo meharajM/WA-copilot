@@ -151,3 +151,44 @@ test('agentd browser WhatsApp routes use the daemon Baileys worker for connectio
     fs.rmSync(dataDir, { recursive: true, force: true })
   }
 })
+
+test('approved browser WhatsApp drafts use the selected Baileys outbox transport idempotently', async () => {
+  const dataDir = makeTempDir('aica-agentd-whatsapp-baileys-outbox-')
+  const calls = []
+  const fakeService = {
+    configureStateAccessors() {},
+    async initialize() {},
+    getState: () => ({ status: 'connected', qrCode: null, error: null, phoneNumber: null, workerNumber: '919999999999', handshakeStatus: 'idle' }),
+    async disconnect() {},
+    async sendText(to, text) { calls.push([to, text]); return { providerMessageId: 'baileys-draft-1' } },
+  }
+  const server = new AgentdServer({ dataDir, secret: 'b'.repeat(32), whatsappService: fakeService, logger: { log() {} } })
+  const request = (origin, method, pathname, body, headers = {}) => new Promise((resolve, reject) => {
+    const payload = body === undefined ? '' : JSON.stringify(body)
+    const req = require('node:http').request(`${origin}${pathname}`, { method, headers: { ...(payload ? { 'content-type': 'application/json' } : {}), ...headers } }, res => {
+      let text = ''
+      res.on('data', chunk => { text += chunk })
+      res.on('end', () => resolve({ status: res.statusCode, body: text ? JSON.parse(text) : null }))
+    })
+    req.on('error', reject)
+    req.end(payload)
+  })
+  try {
+    const { origin } = await server.start()
+    const auth = { authorization: `Bearer ${'b'.repeat(32)}` }
+    await request(origin, 'PUT', '/api/v1/settings/whatsapp', { whatsapp_transport: 'baileys', whatsapp_cloud_phone_number_id: '', whatsapp_cloud_api_version: 'v23.0' }, auth)
+    const created = await request(origin, 'POST', '/api/v1/whatsapp/events', { channel: 'whatsapp', providerEventId: 'baileys-draft-event', conversationId: '919888888888@s.whatsapp.net', payload: {}, draftText: 'approved local reply' }, auth)
+    assert.equal(created.status, 202)
+    const draft = (await request(origin, 'GET', '/api/v1/drafts?status=draft', undefined, auth)).body.drafts[0]
+    assert.equal((await request(origin, 'PATCH', `/api/v1/drafts/${draft.id}`, { status: 'approved' }, auth)).status, 200)
+    const sent = await request(origin, 'POST', `/api/v1/whatsapp/drafts/${draft.id}/send`, {}, auth)
+    assert.equal(sent.status, 200)
+    assert.equal(sent.body.providerMessageId, 'baileys-draft-1')
+    const duplicate = await request(origin, 'POST', `/api/v1/whatsapp/drafts/${draft.id}/send`, {}, auth)
+    assert.equal(duplicate.body.duplicate, true)
+    assert.deepEqual(calls, [['919888888888', 'approved local reply']])
+  } finally {
+    await server.stop()
+    fs.rmSync(dataDir, { recursive: true, force: true })
+  }
+})

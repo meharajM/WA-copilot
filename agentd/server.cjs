@@ -2766,6 +2766,15 @@ class AgentdServer {
     }
   }
 
+  async sendWhatsAppConfiguredMessage(to, text) {
+    let storedSettings = null
+    try { storedSettings = JSON.parse(this.getState('whatsapp_settings', 'null')) } catch {}
+    const settings = parseWhatsAppSettings(storedSettings) || WHATSAPP_SETTINGS_DEFAULTS
+    if (settings.whatsapp_transport === 'baileys') return this.whatsappBaileys.sendText(to, text)
+    if (settings.whatsapp_transport === 'cloud') return this.sendWhatsAppCloudMessage(to, text)
+    throw Object.assign(new Error('WhatsApp Web transport is not available in browser mode'), { statusCode: 409 })
+  }
+
   async sendWhatsAppMessage(req, res) {
     this.authorize(req, { mutation: true })
     if (this.migrationFence(req, res)) return
@@ -2785,17 +2794,7 @@ class AgentdServer {
       releaseOperation = this.beginActiveOperation()
       if (!releaseOperation) return json(res, 409, { error: 'Settings migration is committing' })
       this.assertMigrationOpen()
-      let providerMessageId
-      let storedSettings = null
-      try { storedSettings = JSON.parse(this.getState('whatsapp_settings', 'null')) } catch {}
-      const settings = parseWhatsAppSettings(storedSettings) || WHATSAPP_SETTINGS_DEFAULTS
-      if (settings.whatsapp_transport === 'baileys') {
-        ({ providerMessageId } = await this.whatsappBaileys.sendText(body.to, body.text))
-      } else if (settings.whatsapp_transport === 'cloud') {
-        ({ providerMessageId } = await this.sendWhatsAppCloudMessage(body.to, body.text))
-      } else {
-        throw Object.assign(new Error('WhatsApp Web transport is not available in browser mode'), { statusCode: 409 })
-      }
+      const { providerMessageId } = await this.sendWhatsAppConfiguredMessage(body.to, body.text)
       releaseOperation()
       return json(res, 200, { success: true, providerMessageId })
     } catch (error) {
@@ -3509,14 +3508,14 @@ class AgentdServer {
       // WhatsApp JID. Strip only the known JID suffix; never guess a recipient.
       const recipient = draft.conversation_id.replace(/@s\.whatsapp\.net$/i, '')
       this.assertMigrationOpen()
-      const { providerMessageId } = await this.sendWhatsAppCloudMessage(recipient, draft.response_text)
+      const { providerMessageId } = await this.sendWhatsAppConfiguredMessage(recipient, draft.response_text)
       this.db.transaction(() => {
         this.db.prepare("UPDATE whatsapp_outbox SET status = 'sent', provider_message_id = ?, error = NULL, updated_at = ? WHERE draft_id = ?").run(providerMessageId, Date.now(), id)
         this.db.prepare("UPDATE whatsapp_drafts SET status = 'sent', updated_at = ? WHERE id = ? AND status = 'approved'").run(Date.now(), id)
       })()
       return { status: 200, body: { success: true, duplicate: false, providerMessageId, draft: this.draftView(this.db.prepare('SELECT * FROM whatsapp_drafts WHERE id = ?').get(id)) } }
     } catch (error) {
-      const message = Number.isInteger(error?.statusCode) && error.statusCode !== 502 ? error.message : 'WhatsApp Cloud message failed'
+      const message = Number.isInteger(error?.statusCode) && error.statusCode !== 502 ? error.message : 'WhatsApp message failed'
       this.db.prepare("UPDATE whatsapp_outbox SET status = 'failed', error = ?, updated_at = ? WHERE draft_id = ?").run(message, Date.now(), id)
       const statusCode = Number.isInteger(error?.statusCode) ? error.statusCode : 502
       return { status: statusCode, body: { success: false, error: message } }
