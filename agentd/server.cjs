@@ -1435,7 +1435,7 @@ class AgentdServer {
     const resolved = this.db.prepare("SELECT COUNT(*) AS count FROM intelligence_logs WHERE type = 'accuracy' AND event = 'resolved'").get().count
     const training = this.db.prepare("SELECT COUNT(*) AS count FROM intelligence_logs WHERE type = 'training'").get().count
     const learning = this.db.prepare("SELECT COUNT(*) AS count FROM intelligence_logs WHERE type = 'learning'").get().count
-    return json(res, 200, { success: true, stats: { totalQueries: total, resolvedQueries: resolved, autonomyRate: total > 0 ? (resolved / total) * 100 : 100, trainingCount: training, learningCount: learning } })
+    return json(res, 200, { success: true, stats: { totalQueries: total, resolvedQueries: resolved, autonomyRate: total > 0 ? (resolved / total) * 100 : 0, trainingCount: training, learningCount: learning } })
   }
 
   async logIntelligenceAccuracy(req, res) {

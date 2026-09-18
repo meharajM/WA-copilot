@@ -128,6 +128,8 @@ Pass evidence:
   - knowledge upload
   - knowledge test drive
   - topic analysis of sessions
+- Conversation Topics stays empty until real sessions are analyzed; the browser must not display seeded percentages as if they were activity.
+- A fresh browser workspace reports `0%` autonomy until at least one authenticated accuracy event exists; it must not present an empty dataset as successful automation.
 - Knowledge upload accepts documents and images in the legacy Electron flow. In the browser product, the authenticated agentd adapter currently accepts bounded text/Markdown/CSV/JSON/XML/HTML/log files through the browser file picker; binary conversion remains an explicit unsupported state until a native parser capability is migrated.
 - Knowledge test drive runs a RAG search and then asks the selected LLM to answer only from retrieved context.
 - Assistant corrections use the same runtime-aware knowledge route: browser corrections are persisted by authenticated agentd, while Electron uses its internal RAG tool. The UI only reports success after the route returns success.

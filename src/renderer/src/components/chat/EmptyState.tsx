@@ -27,7 +27,7 @@ export function EmptyState({ onNavigate }: { onNavigate?: (view: ViewMode) => vo
   const [analyzing, setAnalyzing] = useState(false)
   const [ragStats, setRagStats] = useState<{ count: number; fileTypes: Record<string, number>; totalSize: number }>({ count: 0, fileTypes: {}, totalSize: 0 })
   const [memoryStats, setMemoryStats] = useState<{ entityCount: number; relationCount: number }>({ entityCount: 0, relationCount: 0 })
-  const [intelligenceStats, setIntelligenceStats] = useState<{ totalQueries: number; resolvedQueries: number; autonomyRate: number; trainingCount: number; learningCount: number }>({ totalQueries: 0, resolvedQueries: 0, autonomyRate: 100, trainingCount: 0, learningCount: 0 })
+  const [intelligenceStats, setIntelligenceStats] = useState<{ totalQueries: number; resolvedQueries: number; autonomyRate: number; trainingCount: number; learningCount: number }>({ totalQueries: 0, resolvedQueries: 0, autonomyRate: 0, trainingCount: 0, learningCount: 0 })
   interface EvolutionLog { id: number; type: string; event: string; details?: string | null; timestamp?: string }
   const [evolutionLogs, setEvolutionLogs] = useState<EvolutionLog[]>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -131,15 +131,10 @@ export function EmptyState({ onNavigate }: { onNavigate?: (view: ViewMode) => vo
   const insights = useMemo(() => {
     const topicsLog = sessions.map(s => s.topic).filter(Boolean) as string[]
     
-    // If no sessions have been analyzed yet, show the mock/default
-    if (topicsLog.length === 0) {
-      const total = Math.max(metrics.messagesToday, 10) // default to 10 for visual mock if empty
-      return [
-        { name: 'Product Queries', percent: Math.round((total * 0.45) / total * 100) },
-        { name: 'Order Status', percent: Math.round((total * 0.35) / total * 100) },
-        { name: 'Returns/Refunds', percent: Math.round((total * 0.20) / total * 100) },
-      ]
-    }
+    // Do not seed example percentages: empty browser state must not look like
+    // real customer activity. Sync Insights can populate topics after sessions
+    // have been analyzed.
+    if (topicsLog.length === 0) return []
 
     const counts: Record<string, number> = {}
     topicsLog.forEach(t => counts[t] = (counts[t] || 0) + 1)
@@ -392,20 +387,22 @@ export function EmptyState({ onNavigate }: { onNavigate?: (view: ViewMode) => vo
             </div>
             
             <div className="flex flex-col gap-4">
-              {insights.map((item, i) => (
+              {insights.length > 0 ? insights.map((item, i) => (
                 <div key={i} className="flex flex-col gap-2">
                   <div className="flex justify-between text-sm">
                     <span className="text-[var(--color-text-secondary)] font-medium">{item.name}</span>
                     <span className="text-[var(--color-text-primary)] font-bold">{item.percent}%</span>
                   </div>
                   <div className="w-full bg-[var(--color-border)] rounded-full h-2.5">
-                    <div 
+                    <div
                       className={`h-2.5 rounded-full ${i === 0 ? 'bg-[var(--color-brand-teal)]' : i === 1 ? 'bg-blue-500' : 'bg-purple-500'}`}
                       style={{ width: `${item.percent}%` }}
                     ></div>
                   </div>
                 </div>
-              ))}
+              )) : (
+                <p className="text-sm text-[var(--color-text-muted)] italic">No analyzed sessions yet. Use Sync Insights after a conversation is available.</p>
+              )}
             </div>
           </div>
 

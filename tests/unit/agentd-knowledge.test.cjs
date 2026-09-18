@@ -25,6 +25,7 @@ test('agentd persists bounded browser knowledge, searches it, and records accura
   const auth = { authorization: `Bearer ${'s'.repeat(32)}` }
 
   assert.equal((await request(origin, 'GET', '/api/v1/knowledge', undefined, {})).status, 401)
+  assert.equal((await request(origin, 'GET', '/api/v1/intelligence/stats', undefined, auth)).body.stats.autonomyRate, 0)
   const ingest = await request(origin, 'POST', '/api/v1/knowledge', {
     fileName: 'refunds.md',
     filePath: 'browser://knowledge/refunds.md',

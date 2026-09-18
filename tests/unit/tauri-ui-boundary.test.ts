@@ -81,4 +81,12 @@ describe('browser-first UI boundary', () => {
     expect(knowledge).not.toContain('visual data')
     expect(knowledge).not.toContain('ToIndex documents, spreadsheets or images')
   })
+
+  it('does not seed browser dashboard topics when there is no analyzed activity', () => {
+    const dashboard = readSource('components/chat/EmptyState.tsx')
+
+    expect(dashboard).toContain('if (topicsLog.length === 0) return []')
+    expect(dashboard).toContain('No analyzed sessions yet.')
+    expect(dashboard).not.toContain('Math.max(metrics.messagesToday, 10)')
+  })
 })
