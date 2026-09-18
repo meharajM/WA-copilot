@@ -6,6 +6,20 @@ import {
 } from '../../src/renderer/src/lib/tauri-native-bridge'
 
 describe('tauri native bridge', () => {
+  it('exposes only native capability command names', () => {
+    expect(Object.values(TAURI_COMMANDS)).toEqual([
+      'app_version',
+      'agentd_health',
+      'agentd_origin',
+      'open_browser_workspace',
+      'credential_set',
+      'credential_exists',
+      'credential_delete',
+      'select_file',
+      'select_folder',
+    ])
+  })
+
   it('reports a safe host-unavailable state when opened as plain web UI', async () => {
     await expect(tauriNativeBridge.health()).resolves.toMatchObject({
       status: 'unavailable',
