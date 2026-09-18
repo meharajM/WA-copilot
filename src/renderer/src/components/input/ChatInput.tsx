@@ -214,7 +214,7 @@ export function ChatInput({ onSubmit, disabled = false, onAbort }: ChatInputProp
     const message = textInput.trim()
     const hasAttachments = attachments.length > 0
     if ((message || hasAttachments) && !disabled) {
-      // If WhatsApp mode is active and connected, also send via WhatsApp
+      // If WhatsApp mode is active, send through the selected transport.
       const browserRuntime = typeof window !== 'undefined' && !window.electron && !isTauriRuntime()
       if (whatsappEnabled && (browserRuntime || connectionState.status === 'connected') && message) {
         const targetNumber = useWhatsAppStore.getState().targetPhoneNumber
