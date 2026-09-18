@@ -485,12 +485,16 @@ test('agentd exposes authenticated MCP lifecycle metadata without enabling execu
   fs.rmSync(dataDir, { recursive: true, force: true })
 })
 
-test('agentd persists bounded MCP configurations without returning env secret values', async () => {
+test('agentd persists MCP definitions but exposes only a sanitized browser projection', async () => {
   const dataDir = makeTempDir('aica-agentd-mcp-config-')
   const server = new AgentdServer({ dataDir, secret: 's'.repeat(32), logger: { log() {} } })
   const { origin } = await server.start()
   const auth = { authorization: `Bearer ${'s'.repeat(32)}` }
   assert.equal((await request(origin, 'GET', '/api/v1/mcp/servers', undefined, auth)).status, 200)
+  const browserPair = await request(origin, 'POST', '/api/v1/pair', { code: fs.readFileSync(path.join(dataDir, 'agentd.pairing-code'), 'utf8').trim() }, { origin })
+  const browserCookie = browserPair.headers['set-cookie'][0].split(';')[0]
+  const browserPut = await request(origin, 'PUT', '/api/v1/mcp/servers', { servers: [] }, { origin, cookie: browserCookie, 'x-csrf-token': browserPair.body.csrfToken })
+  assert.equal(browserPut.status, 401)
   const servers = [{
     id: 'mcp_local',
     name: 'Local test server',
@@ -503,9 +507,9 @@ test('agentd persists bounded MCP configurations without returning env secret va
     envKeys: ['API_TOKEN'],
   }]
   const saved = await request(origin, 'PUT', '/api/v1/mcp/servers', { servers }, auth)
-  assert.deepEqual(saved.body.servers, servers)
+  assert.deepEqual(saved.body.servers, [{ id: 'mcp_local', name: 'Local test server', description: 'Bounded config', type: 'stdio', execution: 'unavailable', autoConnect: false }])
   assert.equal(JSON.stringify(saved.body).includes('secret-value'), false)
-  assert.deepEqual((await request(origin, 'GET', '/api/v1/mcp/servers', undefined, auth)).body.servers, servers)
+  assert.deepEqual((await request(origin, 'GET', '/api/v1/mcp/servers', undefined, auth)).body.servers, [{ id: 'mcp_local', name: 'Local test server', description: 'Bounded config', type: 'stdio', execution: 'unavailable', autoConnect: false }])
   for (const invalid of [
     [{ ...servers[0], id: 'bad id' }],
     [{ ...servers[0], type: 'stdio', command: '' }],

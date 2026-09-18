@@ -162,6 +162,17 @@ const MCP_LIFECYCLE = Object.freeze({
   transports: [],
   tools: [],
 })
+
+function projectMcpServer(server) {
+  return {
+    id: String(server.id).slice(0, 128),
+    name: String(server.name).slice(0, MAX_MCP_NAME_LENGTH),
+    description: String(server.description || '').slice(0, MAX_MCP_DESCRIPTION_LENGTH),
+    type: ['stdio', 'sse', 'http'].includes(server.type) ? server.type : 'stdio',
+    execution: 'unavailable',
+    autoConnect: false,
+  }
+}
 const EMAIL_DRAFT_STATUSES = Object.freeze(['pending_review', 'approved', 'rejected', 'escalated', 'sent', 'failed'])
 const MAX_MCP_SERVERS = 50
 const MAX_MCP_NAME_LENGTH = 128
@@ -906,16 +917,18 @@ class AgentdServer {
     }
     if (req.method === 'GET') {
       this.authorize(req)
-      return json(res, 200, { servers: read(), execution: 'unavailable', reason: MCP_LIFECYCLE.reason })
+      return json(res, 200, { servers: read().map(projectMcpServer), execution: 'unavailable', reason: MCP_LIFECYCLE.reason })
     }
-    this.authorize(req, { mutation: true })
+    // Definitions are continuity metadata. Only the native owner may write them;
+    // the browser receives a read-only projection and has no PUT path.
+    this.authorizeNative(req)
     if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
     let body
     try { body = await readBody(req) } catch (error) { return json(res, error.statusCode || 400, { error: error.message }) }
     const servers = parseMcpServers(body?.servers)
     if (!servers) return json(res, 400, { error: 'Invalid MCP server configuration' })
     this.setState('mcp_servers', JSON.stringify(servers))
-    return json(res, 200, { servers, execution: 'unavailable', reason: MCP_LIFECYCLE.reason })
+    return json(res, 200, { servers: servers.map(projectMcpServer), execution: 'unavailable', reason: MCP_LIFECYCLE.reason })
   }
 
   async continuityStatus(req, res) {

@@ -501,25 +501,24 @@ describe('browser agentd client', () => {
     await expect(client.getMcpLifecycle()).resolves.toMatchObject({ runtime: 'agentd', execution: 'unavailable' })
   })
 
-  it('persists browser MCP configuration without env values', async () => {
-    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+  it('reads only a sanitized browser MCP projection', async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
       if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
-      if (url.endsWith('/api/v1/mcp/servers') && init?.method === 'PUT') return response({
-        servers: [{ id: 'mcp_local', name: 'Local', description: '', type: 'stdio', command: 'node', args: ['server.mjs'], autoConnect: false, envKeys: ['API_TOKEN'] }],
-        execution: 'unavailable', reason: 'execution unavailable',
-      })
       if (url.endsWith('/api/v1/mcp/servers')) return response({
-        servers: [{ id: 'mcp_local', name: 'Local', description: '', type: 'stdio', command: 'node', args: ['server.mjs'], autoConnect: false, envKeys: ['API_TOKEN'] }],
+        servers: [{ id: 'mcp_local', name: 'Local', description: '', type: 'stdio', execution: 'unavailable', autoConnect: false, command: 'node', args: ['server.mjs'], url: 'https://secret.example', allowedTools: ['lookup'], env: { API_TOKEN: 'secret' } }],
         execution: 'unavailable', reason: 'execution unavailable',
       })
       return response({ success: true })
     })
     const client = createBrowserAgentdClient({ origin: 'http://127.0.0.1:4141', fetch: fetcher })
     await client.pair('123456')
-    await expect(client.getMcpServers()).resolves.toMatchObject({ servers: [{ id: 'mcp_local', envKeys: ['API_TOKEN'] }] })
-    await client.saveMcpServers([{ id: 'mcp_local', name: 'Local', description: '', type: 'stdio', command: 'node', args: ['server.mjs'], autoConnect: false, envKeys: ['API_TOKEN'] }])
-    const save = fetcher.mock.calls.find(([input, init]) => String(input).endsWith('/api/v1/mcp/servers') && init?.method === 'PUT')
-    expect(new Headers(save?.[1]?.headers).get('x-csrf-token')).toBe('csrf-token')
+    await expect(client.getMcpServers()).resolves.toMatchObject({ servers: [{ id: 'mcp_local', execution: 'unavailable', autoConnect: false }] })
+    const result = await client.getMcpServers()
+    expect(result.servers[0]).not.toHaveProperty('command')
+    expect(result.servers[0]).not.toHaveProperty('url')
+    expect(result.servers[0]).not.toHaveProperty('allowedTools')
+    expect(result.servers[0]).not.toHaveProperty('envKeys')
+    expect(fetcher.mock.calls.some(([input, init]) => String(input).endsWith('/api/v1/mcp/servers') && init?.method === 'PUT')).toBe(false)
   })
 })

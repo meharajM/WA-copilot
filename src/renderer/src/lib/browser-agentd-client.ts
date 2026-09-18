@@ -73,13 +73,8 @@ export interface BrowserMcpServer {
   name: string
   description: string
   type: 'stdio' | 'sse' | 'http'
-  command?: string
-  args?: string[]
-  url?: string
-  allowedTools?: string[]
-  autoConnect: boolean
-  /** Names only. Values are never returned to the browser. */
-  envKeys?: string[]
+  execution: 'unavailable'
+  autoConnect: false
 }
 
 export interface BrowserEmailInboundEvent {
@@ -181,22 +176,14 @@ const readMcpServers = (value: unknown): { servers: BrowserMcpServer[]; executio
       || typeof item.name !== 'string' || !item.name.trim() || item.name.length > 128
       || typeof item.description !== 'string' || item.description.length > 512
       || !['stdio', 'sse', 'http'].includes(item.type as string)
-      || typeof item.autoConnect !== 'boolean') throw new Error('Invalid agentd MCP server response')
-    if (item.type === 'stdio' && (typeof item.command !== 'string' || !item.command.trim() || !Array.isArray(item.args || []))) throw new Error('Invalid agentd MCP server response')
-    if (item.type !== 'stdio' && typeof item.url !== 'string') throw new Error('Invalid agentd MCP server response')
-    if (item.allowedTools !== undefined && (!Array.isArray(item.allowedTools) || item.allowedTools.some(tool => typeof tool !== 'string'))) throw new Error('Invalid agentd MCP server response')
-    if (item.envKeys !== undefined && (!Array.isArray(item.envKeys) || item.envKeys.some(key => typeof key !== 'string'))) throw new Error('Invalid agentd MCP server response')
+      || item.execution !== 'unavailable' || item.autoConnect !== false) throw new Error('Invalid agentd MCP server response')
     return {
       id: item.id,
       name: item.name,
       description: item.description,
       type: item.type as BrowserMcpServer['type'],
-      ...(typeof item.command === 'string' ? { command: item.command } : {}),
-      ...(Array.isArray(item.args) ? { args: item.args.filter((arg): arg is string => typeof arg === 'string') } : {}),
-      ...(typeof item.url === 'string' ? { url: item.url } : {}),
-      ...(Array.isArray(item.allowedTools) ? { allowedTools: item.allowedTools.filter((tool): tool is string => typeof tool === 'string') } : {}),
-      autoConnect: item.autoConnect,
-      ...(Array.isArray(item.envKeys) ? { envKeys: item.envKeys.filter((key): key is string => typeof key === 'string') } : {}),
+      execution: 'unavailable' as const,
+      autoConnect: false as const,
     }
   })
   return { servers, execution: 'unavailable', reason: value.reason }
@@ -548,7 +535,6 @@ export interface BrowserAgentdClient extends ChatClient {
   testProvider(provider: 'openai' | 'openrouter'): Promise<ProviderTestResult>
   getMcpLifecycle(): Promise<BrowserMcpLifecycle>
   getMcpServers(): Promise<{ servers: BrowserMcpServer[]; execution: 'unavailable'; reason: string }>
-  saveMcpServers(servers: BrowserMcpServer[]): Promise<{ servers: BrowserMcpServer[]; execution: 'unavailable'; reason: string }>
 }
 
 export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = {}): BrowserAgentdClient {
@@ -604,7 +590,6 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
   const status = async (): Promise<NativeHealth> => readNativeHealth(await request('/api/v1/status'))
   const getMcpLifecycle = async (): Promise<BrowserMcpLifecycle> => readMcpLifecycle(await request('/api/v1/mcp'))
   const getMcpServers = async () => readMcpServers(await request('/api/v1/mcp/servers'))
-  const saveMcpServers = async (servers: BrowserMcpServer[]) => readMcpServers(await request('/api/v1/mcp/servers', { method: 'PUT', body: JSON.stringify({ servers }) }, true))
   const getContinuityStatus = async (): Promise<BrowserContinuityStatus> => readContinuityStatus(await request('/api/v1/continuity/status'))
 
   const readiness = async (): Promise<'ready' | 'pairing' | 'unavailable'> => {
@@ -1123,7 +1108,6 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     testProvider,
     getMcpLifecycle,
     getMcpServers,
-    saveMcpServers,
   }
 }
 
