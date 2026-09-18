@@ -37,7 +37,7 @@ import { EmailSettingsPanel } from './settings/EmailSettingsPanel'
 import { Mail } from 'lucide-react'
 import electron from '../lib/electron'
 import { isTauriRuntime } from '../lib/tauri-native-bridge'
-import { getBrowserAgentdClient } from '../lib/browser-agentd-client'
+import { getBrowserAgentdClient, type BrowserSystemInfo } from '../lib/browser-agentd-client'
 import type { WhatsAppSettings } from '../../../shared/native-bridge'
 
 type SettingsSection = 'whatsapp' | 'email' | 'tools' | 'identity' | 'llm' | 'memory' | 'browser' | 'appearance' | 'logs' | 'about'
@@ -84,10 +84,19 @@ export function SettingsPanel({ onClose, initialSection = 'whatsapp' }: Settings
     const settings = useSettingsStore()
     const { openLogFolder, getLogPath, downloadAuditLog } = useLogStore()
     const [logPath, setLogPath] = useState<string>('')
+    const [systemInfo, setSystemInfo] = useState<BrowserSystemInfo | null>(null)
 
     useEffect(() => {
         getLogPath().then(setLogPath)
     }, [getLogPath])
+
+    useEffect(() => {
+        if (!nativeApi) {
+            setSystemInfo(null)
+            return
+        }
+        void nativeApi.getSystemInfo().then(setSystemInfo).catch(() => setSystemInfo(null))
+    }, [nativeApi])
 
     useEffect(() => {
         if (nativeApi) {
@@ -619,8 +628,8 @@ export function SettingsPanel({ onClose, initialSection = 'whatsapp' }: Settings
                                 <div className="w-20 h-20 bg-[var(--color-primary)] rounded-[var(--radius-xl)] flex items-center justify-center mx-auto mb-[var(--space-4)] shadow-lg">
                                     <Sparkles className="w-10 h-10 text-[var(--color-text-inverse)]" />
                                 </div>
-                                <h4 className="text-[var(--text-2xl)] font-[var(--font-weight-bold)] text-[var(--color-text-primary)]">{APP_INFO.NAME}</h4>
-                                <p className="text-[var(--text-sm)] text-[var(--color-text-muted)] mt-[var(--space-1)]">Version {APP_INFO.VERSION}</p>
+                                <h4 className="text-[var(--text-2xl)] font-[var(--font-weight-bold)] text-[var(--color-text-primary)]">{systemInfo?.productName || APP_INFO.NAME}</h4>
+                                <p className="text-[var(--text-sm)] text-[var(--color-text-muted)] mt-[var(--space-1)]">Version {systemInfo?.productVersion || (browserRuntime ? 'Loading…' : APP_INFO.VERSION)}</p>
                                 <p className="text-[var(--text-sm)] text-[var(--color-text-secondary)] mt-[var(--space-4)] max-w-sm mx-auto">
                                     Self-hosted WhatsApp AI agent for privacy-first business automation. Built for intelligent support.
                                 </p>
@@ -649,7 +658,7 @@ export function SettingsPanel({ onClose, initialSection = 'whatsapp' }: Settings
                                     </div>
                                     <div>
                                         <p className="text-[var(--text-xs)] text-[var(--color-text-dim)]">Platform</p>
-                                        <p className="text-[var(--text-sm)] font-[var(--font-weight-medium)] text-[var(--color-text-primary)]">{browserRuntime ? 'Browser + agentd' : 'Electron'}</p>
+                                        <p className="text-[var(--text-sm)] font-[var(--font-weight-medium)] text-[var(--color-text-primary)]">{browserRuntime ? (systemInfo?.platform || 'Loading…') : 'Electron'}</p>
                                     </div>
                                 </Card>
                                 <Card variant="default" padding="md" className="flex items-center gap-3">
@@ -667,7 +676,7 @@ export function SettingsPanel({ onClose, initialSection = 'whatsapp' }: Settings
                                     </div>
                                     <div>
                                         <p className="text-[var(--text-xs)] text-[var(--color-text-dim)]">Engine</p>
-                                        <p className="text-[var(--text-sm)] font-[var(--font-weight-medium)] text-[var(--color-text-primary)]">React</p>
+                                        <p className="text-[var(--text-sm)] font-[var(--font-weight-medium)] text-[var(--color-text-primary)]">{browserRuntime ? (systemInfo ? `React + ${systemInfo.engine}` : 'Loading…') : 'React'}</p>
                                     </div>
                                 </Card>
                             </div>

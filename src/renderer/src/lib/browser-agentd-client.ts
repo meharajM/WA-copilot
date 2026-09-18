@@ -263,6 +263,14 @@ export interface BrowserAuditLogEntry {
   [key: string]: unknown
 }
 
+export interface BrowserSystemInfo {
+  productName: string
+  productVersion: string
+  runtime: 'agentd'
+  platform: string
+  engine: string
+}
+
 export interface BrowserDraft {
   id: number
   channel: 'whatsapp'
@@ -400,6 +408,7 @@ export interface BrowserAgentdClient extends ChatClient {
   readiness(): Promise<'ready' | 'pairing' | 'unavailable'>
   status(): Promise<NativeHealth>
   getContinuityStatus(): Promise<BrowserContinuityStatus>
+  getSystemInfo(): Promise<BrowserSystemInfo>
   cancelGeneration(sessionId: string, requestId: string): Promise<boolean>
   getLlmSettings(): Promise<LlmSettings>
   saveLlmSettings(settings: LlmSettings): Promise<LlmSettings>
@@ -745,6 +754,16 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
   const savePersonaSettings = async (settings: PersonaSettings) => readPersonaSettings(await request('/api/v1/settings/persona', { method: 'PUT', body: JSON.stringify(settings) }, true))
   const getProductPreferences = async () => readProductPreferences(await request('/api/v1/settings/preferences'))
   const saveProductPreferences = async (settings: ProductPreferences) => readProductPreferences(await request('/api/v1/settings/preferences', { method: 'PUT', body: JSON.stringify(settings) }, true))
+  const getSystemInfo = async (): Promise<BrowserSystemInfo> => {
+    const value = await request<unknown>('/api/v1/system-info')
+    if (!isRecord(value)
+      || typeof value.productName !== 'string'
+      || typeof value.productVersion !== 'string'
+      || value.runtime !== 'agentd'
+      || typeof value.platform !== 'string'
+      || typeof value.engine !== 'string') throw new Error('Invalid agentd system info response')
+    return value as unknown as BrowserSystemInfo
+  }
   const appendAuditLog = async (entry: Record<string, unknown>) => {
     await request('/api/v1/logs', { method: 'POST', body: JSON.stringify(entry) }, true)
   }
@@ -898,6 +917,7 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     readiness,
     status,
     getContinuityStatus,
+    getSystemInfo,
     health,
     loadSessions,
     createSession,

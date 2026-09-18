@@ -375,6 +375,25 @@ test('agentd persists bounded product preferences and redacts browser audit logs
   fs.rmSync(dataDir, { recursive: true, force: true })
 })
 
+test('agentd exposes authenticated product system info for browser About labels', async () => {
+  const dataDir = makeTempDir('aica-agentd-system-info-')
+  const server = new AgentdServer({ dataDir, secret: 's'.repeat(32), logger: { log() {} } })
+  const { origin } = await server.start()
+  const auth = { authorization: `Bearer ${'s'.repeat(32)}` }
+  assert.equal((await request(origin, 'GET', '/api/v1/system-info')).status, 401)
+  const result = await request(origin, 'GET', '/api/v1/system-info', undefined, auth)
+  assert.equal(result.status, 200)
+  assert.deepEqual(result.body, {
+    productName: 'AIConsumerAgent',
+    productVersion: require('../../package.json').version,
+    runtime: 'agentd',
+    platform: process.platform === 'win32' ? 'Windows' : process.platform === 'darwin' ? 'macOS' : process.platform === 'linux' ? 'Linux' : 'Other',
+    engine: `Node.js ${process.versions.node}`,
+  })
+  await server.stop()
+  fs.rmSync(dataDir, { recursive: true, force: true })
+})
+
 test('agentd persists bounded WhatsApp transport settings and never returns Cloud secrets', async () => {
   const dataDir = makeTempDir('aica-agentd-whatsapp-settings-')
   const records = new Map()

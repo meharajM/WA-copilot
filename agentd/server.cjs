@@ -134,6 +134,19 @@ const EMAIL_SETTINGS_DEFAULTS = Object.freeze({
   draftMode: true,
 })
 
+const PRODUCT_NAME = 'AIConsumerAgent'
+const PRODUCT_VERSION = (() => {
+  for (const candidate of [path.join(__dirname, 'package.json'), path.join(__dirname, '..', 'package.json')]) {
+    try {
+      const value = JSON.parse(fs.readFileSync(candidate, 'utf8')).version
+      if (typeof value === 'string' && /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(value)) return value
+    } catch {}
+  }
+  return 'unknown'
+})()
+const PLATFORM_LABEL = Object.freeze({ win32: 'Windows', darwin: 'macOS', linux: 'Linux' })[process.platform] || 'Other'
+const AGENTD_ENGINE = `Node.js ${process.versions.node}`
+
 const EMAIL_PROBE_TIMEOUT_MS = 10 * 1000
 const MCP_LIFECYCLE = Object.freeze({
   runtime: 'agentd',
@@ -672,6 +685,7 @@ class AgentdServer {
       this.authorize(req)
       return json(res, 200, { runtime: 'agentd', paused: this.getState('paused', 'true') === 'true', queueDepth: this.db.prepare("SELECT COUNT(*) AS count FROM inbound_events WHERE status IN ('queued','processing')").get().count, events: this.db.prepare('SELECT COUNT(*) AS count FROM inbound_events').get().count })
     }
+    if (url.pathname === '/api/v1/system-info' && req.method === 'GET') return this.systemInfo(req, res)
     if (url.pathname === '/api/v1/mcp' && req.method === 'GET') {
       this.authorize(req)
       return json(res, 200, MCP_LIFECYCLE)
@@ -978,6 +992,17 @@ class AgentdServer {
     const limit = Number.isSafeInteger(requested) ? Math.min(Math.max(requested, 1), 500) : 100
     const rows = this.db.prepare('SELECT timestamp,payload FROM audit_logs ORDER BY id DESC LIMIT ?').all(limit)
     return json(res, 200, { entries: rows.reverse().map((row) => ({ timestamp: row.timestamp, ...JSON.parse(row.payload) })) })
+  }
+
+  systemInfo(req, res) {
+    this.authorize(req)
+    return json(res, 200, {
+      productName: PRODUCT_NAME,
+      productVersion: PRODUCT_VERSION,
+      runtime: 'agentd',
+      platform: PLATFORM_LABEL,
+      engine: AGENTD_ENGINE,
+    })
   }
 
   knowledgeView(row) {

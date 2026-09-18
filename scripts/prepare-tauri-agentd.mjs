@@ -35,6 +35,7 @@ await rm(stageRoot, { recursive: true, force: true })
 await mkdir(join(stageRoot, 'node_modules'), { recursive: true })
 await cp(join(projectRoot, 'agentd', 'server.cjs'), join(stageRoot, 'server.cjs'))
 await cp(join(projectRoot, 'agentd', 'keyring-credential-store.cjs'), join(stageRoot, 'keyring-credential-store.cjs'))
+await cp(join(projectRoot, 'package.json'), join(stageRoot, 'package.json'))
 await cp(join(projectRoot, 'scripts', 'tauri-agentd-runner.cjs'), join(stageRoot, 'index.cjs'))
 for (const dependency of ['better-sqlite3', 'bindings', 'file-uri-to-path']) {
   await cp(join(projectRoot, 'node_modules', dependency), join(stageRoot, 'node_modules', dependency), { recursive: true })

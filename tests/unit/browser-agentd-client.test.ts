@@ -200,6 +200,23 @@ describe('browser agentd client', () => {
     expect(new Headers(post?.[1]?.headers).get('x-csrf-token')).toBe('csrf-token')
   })
 
+  it('validates authenticated system info for browser About labels', async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
+      if (url.endsWith('/api/v1/system-info')) return response({
+        productName: 'AIConsumerAgent', productVersion: '1.0.1', runtime: 'agentd', platform: 'Windows', engine: 'Node.js 22.12.0',
+      })
+      return response({ success: true })
+    })
+    const client = createBrowserAgentdClient({ origin: 'http://127.0.0.1:4141', fetch: fetcher })
+    await client.pair('123456')
+    await expect(client.getSystemInfo()).resolves.toEqual({
+      productName: 'AIConsumerAgent', productVersion: '1.0.1', runtime: 'agentd', platform: 'Windows', engine: 'Node.js 22.12.0',
+    })
+    expect(fetcher.mock.calls.some(([input]) => String(input).endsWith('/api/v1/system-info'))).toBe(true)
+  })
+
   it('maps non-secret email settings through authenticated agentd routes', async () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
