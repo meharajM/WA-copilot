@@ -41,6 +41,7 @@ The older support-doc drift identified by the first audit is now corrected in th
 - [src/renderer/src/components/chat/LeadDirectory.tsx](/Users/meharaj/WA-copilot/src/renderer/src/components/chat/LeadDirectory.tsx)
 - [src/renderer/src/components/settings/MemoryPreferencesPanel.tsx](/Users/meharaj/WA-copilot/src/renderer/src/components/settings/MemoryPreferencesPanel.tsx)
 - [src/renderer/src/components/settings/llm/OpenAISettings.tsx](/Users/meharaj/WA-copilot/src/renderer/src/components/settings/llm/OpenAISettings.tsx)
+- [src/renderer/src/stores/settingsStore.ts](/Users/meharaj/WA-copilot/src/renderer/src/stores/settingsStore.ts)
 
 ### Docs checked
 
