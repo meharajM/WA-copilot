@@ -295,7 +295,7 @@ Pass evidence:
 - With `Auto-Reply` off, inbound email does not create an email session.
 - With `Auto-Reply` on and the channel enabled, inbound email can create a session.
 - Browser `Test Connection` reaches the local agentd endpoint, rejects missing credentials, and never returns the stored app password.
-- Browser inbound processing is restart-safe: an event remains queued until session/message persistence succeeds, then agentd marks it completed; duplicate acknowledgement does not create another chat message.
+- Browser inbound processing is restart-safe: the daemon can atomically claim queued events as `processing` before the browser maps them to sessions/messages, then agentd marks them completed only after persistence succeeds; duplicate claims and acknowledgements do not create another chat message. The claim route is a queue/worker boundary only—it does not poll IMAP/Gmail or deliver SMTP.
 - In browser mode, the Drafts panel allows review/edit/approve/reject, but its send action is visibly disabled until daemon-owned email delivery is migrated; it must not call an Electron IPC fallback or append a synthetic send failure to the draft text.
 
 ### Safety and reply behavior

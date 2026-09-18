@@ -744,6 +744,7 @@ class AgentdServer {
     if (url.pathname === '/api/v1/settings/email' && ['GET', 'PUT'].includes(req.method)) return this.emailSettings(req, res)
     if (url.pathname === '/api/v1/email/test' && req.method === 'POST') return this.testEmail(req, res)
     if (url.pathname === '/api/v1/email/inbound/ack' && req.method === 'POST') return this.acknowledgeEmailInbound(req, res)
+    if (url.pathname === '/api/v1/email/inbound/claim' && req.method === 'POST') return this.claimEmailInbound(req, res)
     if (url.pathname === '/api/v1/email/inbound' && ['GET', 'POST'].includes(req.method)) return this.emailInbound(req, res, url)
     if (url.pathname === '/api/v1/email/drafts' && ['GET', 'POST'].includes(req.method)) return this.emailDrafts(req, res, url)
     const emailDraftMatch = /^\/api\/v1\/email\/drafts\/([^/]+)$/.exec(url.pathname)
@@ -1103,6 +1104,33 @@ class AgentdServer {
       return acknowledged.sort((a, b) => a - b)
     })()
     return json(res, 200, { acknowledgedIds })
+  }
+
+  async claimEmailInbound(req, res) {
+    this.authorize(req, { mutation: true })
+    if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
+    let body
+    try { body = await readBody(req, 16 * 1024) } catch (error) { return json(res, error.statusCode || 400, { error: error.message }) }
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => key !== 'limit')) {
+      return json(res, 400, { error: 'Invalid email inbound claim' })
+    }
+    const requestedLimit = body.limit === undefined ? 20 : body.limit
+    if (!Number.isSafeInteger(requestedLimit) || requestedLimit < 1 || requestedLimit > MAX_EMAIL_INBOUND_BATCH) {
+      return json(res, 400, { error: 'Invalid email inbound claim limit' })
+    }
+    const events = this.db.transaction(() => {
+      const rows = this.db.prepare("SELECT id,provider_event_id,conversation_id,payload,status,created_at FROM inbound_events WHERE channel = 'email' AND status = 'queued' ORDER BY id ASC LIMIT ?").all(requestedLimit)
+      for (const row of rows) this.db.prepare("UPDATE inbound_events SET status = 'processing' WHERE channel = 'email' AND id = ? AND status = 'queued'").run(row.id)
+      return rows.map(row => ({
+        id: row.id,
+        providerEventId: row.provider_event_id,
+        conversationId: row.conversation_id,
+        payload: JSON.parse(row.payload),
+        status: 'processing',
+        createdAt: row.created_at,
+      }))
+    })()
+    return json(res, 200, { events })
   }
 
   async emailDrafts(req, res, url) {
