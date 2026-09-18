@@ -123,6 +123,60 @@ test('chat-history rejects staged corruption and conflicting existing IDs withou
   await oversizeServer.stop(); fs.rmSync(oversizeData, { recursive: true, force: true }); fs.rmSync(oversizeSource, { recursive: true, force: true })
 })
 
+test('chat-history refuses SQLite WAL and SHM sidecars during staging and cutover', async () => {
+  const sidecars = ['-wal', '-shm']
+  for (const suffix of sidecars) {
+    const dataDir = makeTempDir(`aica-agentd-chat-sidecar-preview-${suffix.slice(1)}-`)
+    const sourceRoot = sourceFixture()
+    const secret = 'm'.repeat(32)
+    const server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
+    const { origin } = await server.start()
+    fs.writeFileSync(path.join(sourceRoot, `chat_history.v2.db${suffix}`), 'uncheckpointed sidecar')
+    const preview = await request(origin, 'POST', '/api/v1/continuity/preview', { sourceRoot }, { authorization: `Bearer ${secret}` })
+    assert.equal(preview.status, 409)
+    assert.match(preview.body.error, /sidecar/i)
+    await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true }); fs.rmSync(sourceRoot, { recursive: true, force: true })
+  }
+
+  const dataDir = makeTempDir('aica-agentd-chat-sidecar-cutover-')
+  const sourceRoot = sourceFixture()
+  const secret = 'n'.repeat(32)
+  const server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
+  const { origin } = await server.start()
+  const auth = { authorization: `Bearer ${secret}` }
+  const { preview } = await staged(server, origin, sourceRoot, secret)
+  const stagedPath = path.join(dataDir, '.migration-staging', preview.previewId, 'electron-chat-history-wal')
+  fs.writeFileSync(stagedPath, 'uncheckpointed staged sidecar')
+  const stagedSidecar = await request(origin, 'POST', '/api/v1/continuity/chat-history/confirm', { previewId: preview.previewId, scope: 'chat-history' }, auth)
+  assert.equal(stagedSidecar.status, 409)
+  assert.match(stagedSidecar.body.error, /sidecar/i)
+  fs.rmSync(stagedPath)
+  const confirmation = await request(origin, 'POST', '/api/v1/continuity/chat-history/confirm', { previewId: preview.previewId, scope: 'chat-history' }, auth)
+  assert.equal(confirmation.status, 200)
+  fs.writeFileSync(path.join(sourceRoot, 'chat_history.v2.db-wal'), 'uncheckpointed source sidecar')
+  const sourceSidecar = await request(origin, 'POST', '/api/v1/continuity/chat-history/apply', { previewId: preview.previewId, confirmationToken: confirmation.body.confirmationToken }, auth)
+  assert.equal(sourceSidecar.status, 409)
+  assert.match(sourceSidecar.body.error, /sidecar/i)
+  await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true }); fs.rmSync(sourceRoot, { recursive: true, force: true })
+})
+
+test('chat-history applies the shared migration secret-key denylist to session metadata', async () => {
+  const dataDir = makeTempDir('aica-agentd-chat-session-metadata-')
+  const sourceRoot = sourceFixture()
+  const sourceDb = new Database(path.join(sourceRoot, 'chat_history.v2.db'))
+  sourceDb.prepare('UPDATE sessions SET extra_data = ? WHERE id = ?').run(JSON.stringify({ session: 'must-not-migrate' }), 'legacy_session')
+  sourceDb.close()
+  const secret = 'o'.repeat(32)
+  const server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
+  const { origin } = await server.start()
+  const { auth, preview } = await staged(server, origin, sourceRoot, secret)
+  const confirmation = await request(origin, 'POST', '/api/v1/continuity/chat-history/confirm', { previewId: preview.previewId, scope: 'chat-history' }, auth)
+  assert.equal(confirmation.status, 400)
+  assert.match(confirmation.body.error, /secret field refused/i)
+  assert.match(confirmation.body.error, /session/i)
+  await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true }); fs.rmSync(sourceRoot, { recursive: true, force: true })
+})
+
 test('chat-history cutover survives restart and rollback removes only imported rows', async () => {
   const dataDir = makeTempDir('aica-agentd-chat-recovery-')
   const sourceRoot = sourceFixture()

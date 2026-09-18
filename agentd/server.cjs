@@ -1525,6 +1525,12 @@ class AgentdServer {
       throw Object.assign(new Error('Chat-history store is missing from preview'), { statusCode: 409 })
     }
     const stagingRoot = path.join(this.dataDir, '.migration-staging', preview.previewId)
+    try {
+      continuityMigration.assertNoSqliteSidecars(preview.manifest.sourceRoot)
+      continuityMigration.assertNoSqliteSidecars(stagingRoot, 'electron-chat-history')
+    } catch (error) {
+      throw Object.assign(new Error(error.message), { statusCode: error.statusCode || 409 })
+    }
     const manifestPath = path.join(stagingRoot, 'manifest.json')
     let persisted
     try { persisted = JSON.parse(readMigrationFile(manifestPath).toString('utf8')) } catch {
@@ -1553,7 +1559,6 @@ class AgentdServer {
   readChatHistoryInput(preview) {
     const staged = this.chatHistoryStagedPath(preview)
     const sourceDb = new Database(staged.file, { readonly: true, fileMustExist: true })
-    const secretKey = /(?:secret|token|password|passwd|api[_.-]?(?:key|secret|token)|private[_.-]?(?:key|secret)|cookie|authorization|credential|bearer|oauth|encryption)/i
     const parseJson = (raw, label) => {
       if (raw === null || raw === undefined || raw === '') return null
       if (typeof raw !== 'string' || Buffer.byteLength(raw, 'utf8') > CHAT_HISTORY_MAX_METADATA_BYTES) throw Object.assign(new Error(`${label} is too large`), { statusCode: 413 })
@@ -1563,7 +1568,7 @@ class AgentdServer {
         if (Array.isArray(item)) return item.forEach((child, index) => walk(child, `${location}[${index}]`))
         if (!item || typeof item !== 'object') return
         for (const [key, child] of Object.entries(item)) {
-          if (secretKey.test(key)) throw Object.assign(new Error(`Secret field refused: ${label}.${key}`), { statusCode: 400 })
+          if (continuityMigration.isSecretMigrationKey(key)) throw Object.assign(new Error(`Secret field refused: ${label}.${key}`), { statusCode: 400 })
           walk(child, `${location}.${key}`)
         }
       }

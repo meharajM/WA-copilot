@@ -25,6 +25,17 @@ function digest(bytes) {
   return crypto.createHash('sha256').update(bytes).digest('hex')
 }
 
+function isSecretMigrationKey(key) {
+  return SECRET_KEY.test(String(key))
+}
+
+function assertNoSqliteSidecars(root, relativePath = 'chat_history.v2.db') {
+  for (const suffix of ['-wal', '-shm']) {
+    const filename = path.join(root, `${relativePath}${suffix}`)
+    if (fs.existsSync(filename)) fail(`SQLite sidecar is not allowed: ${path.basename(filename)}`, 409)
+  }
+}
+
 function writeAtomically(filename, bytes) {
   const temporary = `${filename}.${crypto.randomUUID()}.tmp`
   let handle
@@ -136,7 +147,7 @@ function assertNoSecrets(value, location = '$') {
   if (Array.isArray(value)) return value.forEach((item, index) => assertNoSecrets(item, `${location}[${index}]`))
   if (!value || typeof value !== 'object') return
   for (const [key, child] of Object.entries(value)) {
-    if (SECRET_KEY.test(key)) fail(`Secret field refused: ${location}.${key}`)
+    if (isSecretMigrationKey(key)) fail(`Secret field refused: ${location}.${key}`)
     assertNoSecrets(child, `${location}.${key}`)
   }
 }
@@ -159,6 +170,7 @@ function inspect(sourceRoot, targetRoot) {
   const root = rootPath(sourceRoot, targetRoot)
   const entries = []
   for (const store of STORES) {
+    if (store.id === 'electron-chat-history') assertNoSqliteSidecars(root, store.relativePath)
     const sourcePath = safeSourceFile(root, store.relativePath)
     if (!sourcePath) continue
     const bytes = fs.readFileSync(sourcePath)
@@ -234,4 +246,4 @@ function rollback(migrationId, targetRoot) {
   return { migrationId, state: 'rolled-back' }
 }
 
-module.exports = { createPreview, importPreview, rollback }
+module.exports = { assertNoSqliteSidecars, createPreview, importPreview, isSecretMigrationKey, rollback }
