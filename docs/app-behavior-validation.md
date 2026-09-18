@@ -108,9 +108,17 @@ one-shot agentd controls but a no-op state subscription. The adapter now polls
 the authenticated status projection while the panel is mounted, cleans up its
 timer on unmount, and leaves Electron's native event subscription unchanged.
 
+The Email review then found that browser Auto-Reply stopped after session
+hydration and never entered the generation/confidence-policy path. Browser
+inbound handling now dispatches a completion-aware event, runs generation
+through the authenticated agentd chat route, applies the existing sensitive /
+low-confidence draft policy, and uses only the authenticated approved-draft
+send route. The inbound event is acknowledged only after that work completes;
+Electron's local Email bridge remains unchanged.
+
 ### Real-user browser smoke
 
-On 2026-09-18, the browser entry was opened at `http://127.0.0.1:5173/tauri.html?workspace=1` with no local daemon available. The UI showed `AICA / BROWSER WORKSPACE`, `Local service unavailable`, and `Retry connection`; activating retry kept the same fail-closed state and did not mount the product workspace. This passes the unavailable-service contract. Pairing and full workspace navigation require a running owner-supervised agentd instance and were not claimed by this smoke.
+On 2026-09-18, the browser entry was opened at `http://127.0.0.1:5173/tauri.html` with no local daemon available. The UI showed `AICA / BROWSER WORKSPACE`, `Local service unavailable`, and `Retry connection`; activating retry kept the same fail-closed state and did not mount the product workspace. This passes the unavailable-service contract. Pairing and full workspace navigation require a running owner-supervised agentd instance and were not claimed by this smoke.
 
 The same audit also ran an isolated owner-supervised agentd on a temporary loopback port with a disposable pairing code. The browser pairing form accepted the one-time code, mounted the full product workspace, navigated through the sidebar and Settings, and showed the explicit `On-Device (WebGPU)` provider card with user-initiated model-download controls. The in-app browser surface did not expose `navigator.gpu`, so no real WebGPU adapter or model download was claimed. The native Tauri surface showed diagnostics, service status, owner pairing, picker and credential-presence controls only; it did not mount the product workspace.
 

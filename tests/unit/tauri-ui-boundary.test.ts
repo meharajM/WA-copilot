@@ -103,6 +103,20 @@ describe('browser-first UI boundary', () => {
     expect(storage).toContain('The Tauri native companion does not mount the product workspace')
   })
 
+  it('keeps browser email auto-reply inside the authenticated agentd policy path', () => {
+    const agent = readSource('hooks/useAgent.ts')
+    const bridge = readSource('hooks/useEmailBridge.ts')
+
+    expect(agent).toContain('client.saveEmailDraft(draft)')
+    expect(agent).toContain('client.sendEmailDraft(saved.id)')
+    expect(agent).toContain('emailAlreadyHydrated')
+    expect(agent).toContain('if (isEmailFlow && options?.skipUserMessage) throw error')
+    expect(agent).toContain('const browserEmailSend = async')
+    expect(bridge).toContain('emailGenerationRequestId: `email_${event.id}`')
+    expect(bridge).toContain('await client.acknowledgeEmailInbound([event.id])')
+    expect(bridge.indexOf('onComplete: completion')).toBeLessThan(bridge.indexOf('acknowledgeEmailInbound'))
+  })
+
   it('keeps browser brain corrections on the runtime-aware agentd route', () => {
     const actions = readSource('components/chat/MessageActions.tsx')
     expect(actions).toContain("executeToolCall('rag_save_correction'")

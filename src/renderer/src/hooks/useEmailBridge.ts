@@ -61,7 +61,7 @@ const toRendererSession = (session: AgentdChatSession): ChatSession => ({
   })),
 })
 
-const ingestBrowserInboundEmail = async (event: BrowserEmailInboundEvent): Promise<void> => {
+const ingestBrowserInboundEmail = async (event: BrowserEmailInboundEvent): Promise<{ email: EmailMessage; content: string }> => {
   const payload = event.payload
   const email: EmailMessage = {
     id: event.providerEventId,
@@ -80,7 +80,7 @@ const ingestBrowserInboundEmail = async (event: BrowserEmailInboundEvent): Promi
   let sessionId = stableEmailSessionId(sessionKey.key)
   const client = getBrowserAgentdClient()
   const sessions = await client.loadSessions()
-  let session = sessions.find((candidate) => candidate.id === sessionId)
+  const session = sessions.find((candidate) => candidate.id === sessionId)
     || sessions.find((candidate) => candidate.channel === 'email' && candidate.contactId === sessionKey.sender && candidate.threadId === sessionKey.threadId)
   if (!session) {
     await client.createSession(sessionId, generateEmailSessionTitle(email), undefined, { channel: 'email', contactId: sessionKey.sender, threadId: sessionKey.threadId })
@@ -102,6 +102,7 @@ const ingestBrowserInboundEmail = async (event: BrowserEmailInboundEvent): Promi
     sessions: refreshed.map(toRendererSession),
     activeSessionId: activeSessionId && refreshed.some((candidate) => candidate.id === activeSessionId) ? activeSessionId : sessionId,
   })
+  return { email, content }
 }
 
 export function useEmailBridge(): void {
@@ -138,9 +139,30 @@ export function useEmailBridge(): void {
           if (config.autoReplyMode) {
             const events = await client.claimEmailInbound(50)
             for (const event of events) {
-              await ingestBrowserInboundEmail(event)
+              const hydrated = await ingestBrowserInboundEmail(event)
+              // The product hook owns generation/policy execution. It reports
+              // completion back through the event detail so the daemon event is
+              // acknowledged only after the response is durably handled.
+              await new Promise<void>((resolve, reject) => {
+                let handedOff = false
+                const completion = (promise: Promise<void>) => {
+                  handedOff = true
+                  promise.then(resolve, reject)
+                }
+                window.dispatchEvent(new CustomEvent('app:submit-message', {
+                  detail: {
+                    content: hydrated.content,
+                    emailMessage: hydrated.email,
+                    emailAlreadyHydrated: true,
+                    emailGenerationRequestId: `email_${event.id}`,
+                    onComplete: completion,
+                  },
+                }))
+                if (!handedOff) reject(new Error('Browser email agent is unavailable'))
+              })
               // Acknowledge only after durable session/message hydration. If the
-              // tab dies earlier, daemon keeps event queued for retry.
+              // generation or draft/send policy fails, daemon keeps event queued
+              // for retry after reload.
               await client.acknowledgeEmailInbound([event.id])
               processed += 1
             }
