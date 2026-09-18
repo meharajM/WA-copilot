@@ -59,3 +59,20 @@ Verification:
 - `git diff --check` — passed.
 
 Remaining concern: Windows native no-reparse descriptor support remains a release blocker; chat/credential migration remains intentionally out of scope.
+
+## Concurrency follow-up — 2026-09-18
+
+Result: DONE_WITH_CONCERNS
+
+- Generation admission now acquires the active-operation fence before request-body reads, provider discovery/credential awaits, validation, chat DB mutations, and provider response cleanup. Migration apply can drain the admitted request; a hold recheck before chat mutation prevents an orphan user message when discovery overlaps cutover.
+- Settings/persona confirmation now rejects while a cutover is `applying` or owns the migration hold. Public cutover responses expose confirmation tokens only for `confirmed` records, so terminal and in-flight states cannot leak one.
+- Added regression coverage for confirmation during apply and generation admission racing migration hold.
+
+Verification:
+
+- `node --test tests/unit/agentd-settings-persona.test.cjs tests/unit/agentd-chat-generations.test.cjs` — 16 passed.
+- `node --test tests/unit/agentd*.test.cjs` — 59 passed.
+- `node --check agentd/server.cjs` — passed.
+- `git diff --check` — passed.
+
+Remaining concern: Windows native no-reparse descriptor support remains a release blocker; chat/credential migration remains intentionally out of scope.

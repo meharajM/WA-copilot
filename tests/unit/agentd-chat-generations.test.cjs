@@ -128,6 +128,56 @@ test('agentd generation returns safe errors and never accepts arbitrary provider
   fs.rmSync(dataDir, { recursive: true, force: true })
 })
 
+test('generation admission fences provider discovery and leaves no orphan message during migration', async () => {
+  const dataDir = makeTempDir('aica-agentd-generation-admission-')
+  const secret = 'm'.repeat(32)
+  let credentialStarted
+  const credentialEntered = new Promise(resolve => { credentialStarted = resolve })
+  let releaseCredential
+  const credentialRelease = new Promise(resolve => { releaseCredential = resolve })
+  let providerCalled = false
+  const server = new AgentdServer({
+    dataDir,
+    secret,
+    logger: { log() {} },
+    credentials: {
+      async get() {
+        credentialStarted()
+        await credentialRelease
+        return 'provider-secret'
+      },
+    },
+    providerFetch: async () => {
+      providerCalled = true
+      return providerResponse('should not run')
+    },
+  })
+  const { origin } = await server.start()
+  const auth = { authorization: `Bearer ${secret}` }
+  assert.equal((await request(origin, 'POST', '/api/v1/sessions', { id: 'admit1' }, auth)).status, 201)
+  const generation = request(origin, 'POST', '/api/v1/sessions/admit1/generations', { requestId: 'admit-r1', content: 'hello' }, auth)
+  await credentialEntered
+  assert.equal(server.activeOperations.size, 1)
+  server.migrationHold = true
+  server.migrationOwner = true
+  let drained = false
+  const drain = server.drainActiveOperations().then(() => { drained = true })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(drained, false)
+  releaseCredential()
+  const result = await generation
+  assert.equal(result.status, 409)
+  await drain
+  assert.equal(drained, true)
+  assert.equal(providerCalled, false)
+  assert.equal(server.db.prepare('SELECT COUNT(*) AS count FROM chat_messages WHERE session_id = ?').get('admit1').count, 0)
+  assert.equal(server.db.prepare('SELECT COUNT(*) AS count FROM chat_generations WHERE session_id = ?').get('admit1').count, 0)
+  server.migrationHold = false
+  server.migrationOwner = false
+  await server.stop()
+  fs.rmSync(dataDir, { recursive: true, force: true })
+})
+
 test('agentd persists bounded browser attachments and maps text/images into provider content parts', async () => {
   const dataDir = makeTempDir('aica-agentd-generation-attachments-')
   const secret = 'a'.repeat(32)

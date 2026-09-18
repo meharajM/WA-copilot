@@ -1338,6 +1338,7 @@ class AgentdServer {
     if (!preview) return json(res, 404, { error: 'Migration preview expired' })
     const effectivePreview = preview || this.cutoverPreview(persisted)
     const existing = persisted
+    if (this.migrationOwner || existing?.state === 'applying') return json(res, 409, { error: 'Settings migration is committing' })
     if (existing && ['applied', 'rolled-back', 'needs-recovery'].includes(existing.state)) return json(res, 200, this.settingsPersonaPublic(existing))
     if (existing?.state === 'confirmed' && existing.token) return json(res, 200, this.settingsPersonaPublic(existing))
     const input = this.readSettingsPersonaInput(effectivePreview)
@@ -1358,7 +1359,7 @@ class AgentdServer {
       state: record.state,
       manifestHash: record.manifestHash,
       ...(record.expiresAt ? { expiresAt: record.expiresAt } : {}),
-      ...(record.token ? { confirmationToken: record.token } : {}),
+      ...(record.state === 'confirmed' && record.token ? { confirmationToken: record.token } : {}),
       ...(record.state === 'confirmed' && !record.token ? { requiresReconfirmation: true } : {}),
       ...(record.state === 'needs-recovery' ? { manualRecoveryRequired: true } : {}),
       ...(record.result || {}),
@@ -2449,6 +2450,16 @@ class AgentdServer {
 
   async generateChat(req, res, rawId) {
     this.authorize(req, { mutation: true })
+    const releaseOperation = this.beginActiveOperation()
+    if (!releaseOperation) return json(res, 409, { error: 'Settings migration is committing' })
+    try {
+      return await this.generateChatAdmitted(req, res, rawId)
+    } finally {
+      releaseOperation()
+    }
+  }
+
+  async generateChatAdmitted(req, res, rawId) {
     if (this.migrationFence(req, res)) return
     if (!this.validChatId(rawId)) return json(res, 400, { error: 'Invalid session id' })
     if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
@@ -2527,6 +2538,7 @@ class AgentdServer {
     if (!provider || (provider !== 'ollama' && !apiKey)) return json(res, 503, { error: 'Provider unavailable' })
     const model = requestedModel || configuredModels[provider]
     if (!validModelName(model)) return json(res, 400, { error: 'Invalid model' })
+    if (this.migrationFence(req, res)) return
 
     const now = Date.now()
     const prepared = this.db.transaction(() => {
@@ -2578,8 +2590,6 @@ class AgentdServer {
       return json(res, 413, { error: 'Conversation context too large' })
     }
     this.generations.add(requestKey)
-    const releaseOperation = this.beginActiveOperation()
-    if (!releaseOperation) { this.db.prepare('DELETE FROM chat_generations WHERE request_id = ? AND status = \'processing\'').run(body.requestId); return json(res, 409, { error: 'Settings migration is committing' }) }
     const providerController = new AbortController()
     this.generationControllers.set(requestKey, providerController)
     const abortProvider = () => providerController.abort()
@@ -2642,7 +2652,6 @@ class AgentdServer {
       res.off('close', abortProvider)
       this.generationControllers.delete(requestKey)
       this.generations.delete(requestKey)
-      releaseOperation()
     }
   }
 
