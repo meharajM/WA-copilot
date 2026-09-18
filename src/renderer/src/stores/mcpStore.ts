@@ -166,6 +166,7 @@ export const useMcpStore = create<McpState>()((set, get) => ({
             }
 
             let initialServers: MCPServer[] = []
+            const defaultServers = isBrowserProduct() ? [] : DEFAULT_MCP_SERVERS
 
             if (stored && Array.isArray(stored)) {
                 initialServers = stored.map(s => {
@@ -173,7 +174,7 @@ export const useMcpStore = create<McpState>()((set, get) => ({
 
                     // Migration: Fix servers that have "internal" command placeholder
                     if (updated.command === 'internal') {
-                        const defaultMatch = DEFAULT_MCP_SERVERS.find(d => d.name === updated.name);
+                        const defaultMatch = defaultServers.find(d => d.name === updated.name);
                         if (defaultMatch) {
                             updated.command = defaultMatch.command;
                             updated.args = defaultMatch.args;
@@ -204,7 +205,7 @@ export const useMcpStore = create<McpState>()((set, get) => ({
                 const beforeCount = initialServers.length;
                 initialServers = initialServers.filter(s => !s.name.toLowerCase().includes('whatsapp'));
                 let hasNewDefaults = beforeCount !== initialServers.length;
-                DEFAULT_MCP_SERVERS.forEach(def => {
+                defaultServers.forEach(def => {
                     if (!initialServers.some(s => s.name === def.name)) {
                         initialServers.push({
                             ...def,
@@ -225,7 +226,7 @@ export const useMcpStore = create<McpState>()((set, get) => ({
                 // Defaults (only for anonymous or empty user profile? Maybe always safe to default?)
                 // If user has NO servers, maybe we should give them defaults?
                 // Let's stick to defaults for now.
-                initialServers = DEFAULT_MCP_SERVERS.map(s => ({
+                initialServers = defaultServers.map(s => ({
                     ...s,
                     id: generateId(),
                     connected: false,
