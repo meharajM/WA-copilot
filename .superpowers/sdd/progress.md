@@ -1,6 +1,6 @@
 # SDD Progress — Complete Tauri Product Migration
 
-Branch: `codex/tauri-full-migration`  
+Branch: `codex/tauri-full-migration`
 Started: 2026-09-15
 
 ## Status

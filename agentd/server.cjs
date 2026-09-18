@@ -481,6 +481,8 @@ class AgentdServer {
     this.chatHistoryCutovers = new Map()
     this.migrationHold = false
     this.migrationOwner = false
+    this.migrationScope = null
+    this.migrationRecoveryScope = null
     this.activeOperations = new Set()
     this.pairingCode = pairingCode || String(crypto.randomInt(100000, 999999))
     this.pairingExpiresAt = Date.now() + PAIRING_TTL_MS
@@ -1188,6 +1190,29 @@ class AgentdServer {
     if (!this.migrationHold || !this.migrationOwner || this.activeOperations.size) throw Object.assign(new Error('Migration work is still active'), { statusCode: 409 })
   }
 
+  claimMigrationOwner(scope, allowRecovery = false) {
+    if (this.migrationOwner || (this.migrationHold && !(allowRecovery && this.migrationRecoveryScope === scope))) return false
+    this.migrationHold = true
+    this.migrationOwner = true
+    this.migrationScope = scope
+    return true
+  }
+
+  releaseMigrationOwner(scope, priorHold, clearRecovery = false) {
+    if (!this.migrationOwner || this.migrationScope !== scope) return
+    this.migrationOwner = false
+    this.migrationScope = null
+    this.migrationHold = clearRecovery ? false : priorHold
+    if (!this.migrationHold) this.migrationRecoveryScope = null
+    if (!this.migrationHold) this.startEmailInboundPolling()
+  }
+
+  markMigrationRecovery(scope) {
+    if (this.migrationRecoveryScope && this.migrationRecoveryScope !== scope) this.migrationRecoveryScope = 'multiple'
+    else this.migrationRecoveryScope = scope
+    this.migrationHold = true
+  }
+
   async drainActiveOperations() {
     while (this.activeOperations.size) await Promise.all([...this.activeOperations])
   }
@@ -1215,7 +1240,9 @@ class AgentdServer {
         this.persistSettingsPersonaCutover(record)
       }
       this.settingsPersonaCutovers.set(record.previewId, record)
-      if (record.state === 'needs-recovery' || record.state === 'applying') this.migrationHold = true
+      if (record.state === 'needs-recovery' || record.state === 'applying') {
+        this.markMigrationRecovery(SETTINGS_PERSONA_SCOPE)
+      }
     }
   }
 
@@ -1415,18 +1442,18 @@ class AgentdServer {
     const supplied = typeof body.confirmationToken === 'string' ? Buffer.from(body.confirmationToken) : null
     const expected = record.token ? Buffer.from(record.token) : null
     if (record.state !== 'confirmed' || !supplied || !expected || supplied.length !== expected.length || !crypto.timingSafeEqual(supplied, expected) || Date.now() > record.expiresAt) return json(res, 403, { error: 'Valid native confirmation token required' })
-    record.token = null
-    record.consumedAt = Date.now()
-    record.state = 'applying'
-    this.persistSettingsPersonaCutover(record)
     const priorHold = this.migrationHold
-    this.migrationHold = true
-    this.migrationOwner = true
-    this.stopEmailInboundPolling()
-    for (const controller of this.generationControllers.values()) controller.abort()
-    await this.drainActiveOperations()
+    const allowRecovery = record.state === 'needs-recovery' && this.migrationRecoveryScope === SETTINGS_PERSONA_SCOPE
+    if (!this.claimMigrationOwner(SETTINGS_PERSONA_SCOPE, allowRecovery)) return json(res, 409, { error: 'Another migration is committing' })
     let prior = null
     try {
+      record.token = null
+      record.consumedAt = Date.now()
+      record.state = 'applying'
+      this.persistSettingsPersonaCutover(record)
+      this.stopEmailInboundPolling()
+      for (const controller of this.generationControllers.values()) controller.abort()
+      await this.drainActiveOperations()
       const input = this.readSettingsPersonaInput(this.cutoverPreview(record))
       if (input.manifestHash !== record.manifestHash) throw Object.assign(new Error('Preview changed after confirmation'), { statusCode: 409 })
       prior = Object.fromEntries(['persona_settings', 'llm_settings', 'ollama_settings', 'product_preferences'].map(key => [key, this.getState(key, null)]))
@@ -1447,19 +1474,21 @@ class AgentdServer {
       record.state = 'applied'; record.appliedAt = Date.now()
       record.result = { backupSha256: backup.sha256, liveDataChanged: true }
       this.persistSettingsPersonaCutover(record)
-      this.migrationHold = priorHold
-      this.migrationOwner = false
-      if (!this.migrationHold) this.startEmailInboundPolling()
+      this.releaseMigrationOwner(SETTINGS_PERSONA_SCOPE, priorHold, allowRecovery)
       return json(res, 200, this.settingsPersonaPublic(record))
     } catch (error) {
       const keys = ['persona_settings', 'llm_settings', 'ollama_settings', 'product_preferences']
       const restored = !prior || keys.every(key => this.getState(key, null) === prior[key])
       const requiresRecovery = error?.migrationRecovery === true
       record.state = requiresRecovery || !restored ? 'needs-recovery' : 'rolled-back'; record.error = error.message
-      this.persistSettingsPersonaCutover(record)
-      this.migrationHold = requiresRecovery || !restored ? true : priorHold
-      this.migrationOwner = false
-      if (restored && !this.migrationHold) this.startEmailInboundPolling()
+      try { this.persistSettingsPersonaCutover(record) } catch {}
+      if (requiresRecovery || !restored) {
+        this.migrationOwner = false
+        this.migrationScope = null
+        this.markMigrationRecovery(SETTINGS_PERSONA_SCOPE)
+      } else {
+        this.releaseMigrationOwner(SETTINGS_PERSONA_SCOPE, priorHold)
+      }
       return json(res, error.statusCode || 500, { ...this.settingsPersonaPublic(record), error: error.message })
     }
   }
@@ -1470,8 +1499,8 @@ class AgentdServer {
     const record = this.settingsPersonaCutovers.get(body?.previewId)
     if (!record || !record.backupPath) return json(res, 404, { error: 'Migration backup not found' })
     const priorHold = this.migrationHold
-    this.migrationHold = true
-    this.migrationOwner = true
+    const allowRecovery = record.state === 'needs-recovery' && this.migrationRecoveryScope === SETTINGS_PERSONA_SCOPE
+    if (!this.claimMigrationOwner(SETTINGS_PERSONA_SCOPE, allowRecovery)) return json(res, 409, { error: 'Another migration is committing' })
     try {
       const backup = this.readVerifiedMigrationBackup(record)
       await this.drainActiveOperations()
@@ -1479,15 +1508,14 @@ class AgentdServer {
       this.db.transaction(() => Object.entries(backup.prior).forEach(([key, value]) => value === null ? this.db.prepare('DELETE FROM agent_state WHERE key = ?').run(key) : this.setState(key, value)))()
       record.state = 'rolled-back'; record.rolledBackAt = Date.now(); record.result = { liveDataChanged: true }
       this.persistSettingsPersonaCutover(record)
-      this.migrationHold = priorHold
-      this.migrationOwner = false
-      if (!this.migrationHold) this.startEmailInboundPolling()
+      this.releaseMigrationOwner(SETTINGS_PERSONA_SCOPE, priorHold, allowRecovery)
       return json(res, 200, this.settingsPersonaPublic(record))
     } catch (error) {
       record.state = 'needs-recovery'; record.error = error.message
-      this.persistSettingsPersonaCutover(record)
+      try { this.persistSettingsPersonaCutover(record) } catch {}
       this.migrationOwner = false
-      this.migrationHold = true
+      this.migrationScope = null
+      this.markMigrationRecovery(SETTINGS_PERSONA_SCOPE)
       return json(res, 500, { ...this.settingsPersonaPublic(record), error: error.message })
     }
   }
@@ -1639,7 +1667,9 @@ class AgentdServer {
         this.persistChatHistoryCutover(record)
       }
       this.chatHistoryCutovers.set(record.previewId, record)
-      if (record.state === 'needs-recovery') this.migrationHold = true
+      if (record.state === 'needs-recovery') {
+        this.markMigrationRecovery(CHAT_HISTORY_SCOPE)
+      }
     }
   }
 
@@ -1674,12 +1704,14 @@ class AgentdServer {
     const supplied = typeof body.confirmationToken === 'string' ? Buffer.from(body.confirmationToken) : null
     const expected = record.token ? Buffer.from(record.token) : null
     if (record.state !== 'confirmed' || !supplied || !expected || supplied.length !== expected.length || !crypto.timingSafeEqual(supplied, expected) || Date.now() > record.expiresAt) return json(res, 403, { error: 'Valid native confirmation token required' })
-    record.token = null; record.consumedAt = Date.now(); record.state = 'applying'; this.persistChatHistoryCutover(record)
     const priorHold = this.migrationHold
-    this.migrationHold = true; this.migrationOwner = true; this.stopEmailInboundPolling()
-    for (const controller of this.generationControllers.values()) controller.abort()
-    await this.drainActiveOperations()
+    const allowRecovery = record.state === 'needs-recovery' && this.migrationRecoveryScope === CHAT_HISTORY_SCOPE
+    if (!this.claimMigrationOwner(CHAT_HISTORY_SCOPE, allowRecovery)) return json(res, 409, { error: 'Another migration is committing' })
     try {
+      record.token = null; record.consumedAt = Date.now(); record.state = 'applying'; this.persistChatHistoryCutover(record)
+      this.stopEmailInboundPolling()
+      for (const controller of this.generationControllers.values()) controller.abort()
+      await this.drainActiveOperations()
       const input = this.readChatHistoryInput(this.cutoverPreview(record))
       if (this.migrationManifestHash(record.manifest) !== record.manifestHash || input.sourceHash !== record.sourceHash) throw Object.assign(new Error('Source or staged chat-history changed before commit'), { statusCode: 409 })
       this.assertMigrationCommitReady()
@@ -1716,11 +1748,11 @@ class AgentdServer {
         return { sessionsImported: insertedSessions.length, messagesImported: insertedMessages.length, sessionsAlreadyPresent: existingSessions.length, messagesAlreadyPresent: existingMessages.length, backupSha256: record.backupSha256, liveDataChanged: Boolean(insertedSessions.length || insertedMessages.length) }
       })()
       record.state = 'applied'; record.appliedAt = Date.now(); record.result = result; this.persistChatHistoryCutover(record)
-      this.migrationHold = priorHold; this.migrationOwner = false; if (!this.migrationHold) this.startEmailInboundPolling()
+      this.releaseMigrationOwner(CHAT_HISTORY_SCOPE, priorHold, allowRecovery)
       return json(res, 200, this.chatHistoryPublic(record))
     } catch (error) {
-      record.state = 'rolled-back'; record.error = error.message; this.persistChatHistoryCutover(record)
-      this.migrationHold = priorHold; this.migrationOwner = false; if (!this.migrationHold) this.startEmailInboundPolling()
+      record.state = 'rolled-back'; record.error = error.message; try { this.persistChatHistoryCutover(record) } catch {}
+      this.releaseMigrationOwner(CHAT_HISTORY_SCOPE, priorHold)
       return json(res, error.statusCode || 500, { ...this.chatHistoryPublic(record), error: error.message })
     }
   }
@@ -1731,7 +1763,9 @@ class AgentdServer {
     const record = this.chatHistoryCutovers.get(body?.previewId)
     if (!record || !record.backupPath) return json(res, 404, { error: 'Migration backup not found' })
     if (record.state === 'rolled-back') return json(res, 200, this.chatHistoryPublic(record))
-    const priorHold = this.migrationHold; this.migrationHold = true; this.migrationOwner = true
+    const priorHold = this.migrationHold
+    const allowRecovery = record.state === 'needs-recovery' && this.migrationRecoveryScope === CHAT_HISTORY_SCOPE
+    if (!this.claimMigrationOwner(CHAT_HISTORY_SCOPE, allowRecovery)) return json(res, 409, { error: 'Another migration is committing' })
     try {
       const bytes = readMigrationFile(record.backupPath)
       if (crypto.createHash('sha256').update(bytes).digest('hex') !== record.backupSha256) throw new Error('Migration backup integrity check failed')
@@ -1742,16 +1776,24 @@ class AgentdServer {
       const sessionSelect = this.db.prepare('SELECT id,title,workspace_path,status,channel,contact_id,thread_id,topic,metadata,created_at,updated_at FROM chat_sessions WHERE id = ?')
       const messageSelect = this.db.prepare('SELECT session_id,message_id,role,content,attachments,metadata,created_at FROM chat_messages WHERE session_id = ? AND message_id = ?')
       for (const row of backup.insertedMessages) if (JSON.stringify(messageSelect.get(row.session_id, row.message_id)) !== JSON.stringify(row)) throw new Error('Imported chat-history changed; manual recovery required')
-      for (const row of backup.insertedSessions) if (JSON.stringify(sessionSelect.get(row.id)) !== JSON.stringify(row)) throw new Error('Imported chat-history changed; manual recovery required')
+      for (const row of backup.insertedSessions) {
+        if (JSON.stringify(sessionSelect.get(row.id)) !== JSON.stringify(row)) throw new Error('Imported chat-history changed; manual recovery required')
+        const expectedMessages = backup.insertedMessages.filter(message => message.session_id === row.id)
+        const actualMessages = this.db.prepare('SELECT session_id,message_id,role,content,attachments,metadata,created_at FROM chat_messages WHERE session_id = ?').all(row.id)
+        if (actualMessages.length !== expectedMessages.length || actualMessages.some(actual => {
+          const expected = expectedMessages.find(message => message.message_id === actual.message_id)
+          return !expected || JSON.stringify(actual) !== JSON.stringify(expected)
+        })) throw new Error('Imported chat-history changed; manual recovery required')
+      }
       this.db.transaction(() => {
         for (const row of backup.insertedMessages) this.db.prepare('DELETE FROM chat_messages WHERE session_id = ? AND message_id = ?').run(row.session_id, row.message_id)
         for (const row of backup.insertedSessions) this.db.prepare('DELETE FROM chat_sessions WHERE id = ?').run(row.id)
       })()
       record.state = 'rolled-back'; record.rolledBackAt = Date.now(); record.result = { ...(record.result || {}), liveDataChanged: Boolean(backup.insertedSessions.length || backup.insertedMessages.length) }; this.persistChatHistoryCutover(record)
-      this.migrationHold = priorHold; this.migrationOwner = false; if (!this.migrationHold) this.startEmailInboundPolling()
+      this.releaseMigrationOwner(CHAT_HISTORY_SCOPE, priorHold, allowRecovery)
       return json(res, 200, this.chatHistoryPublic(record))
     } catch (error) {
-      record.state = 'needs-recovery'; record.error = error.message; this.persistChatHistoryCutover(record); this.migrationOwner = false; this.migrationHold = true
+      record.state = 'needs-recovery'; record.error = error.message; try { this.persistChatHistoryCutover(record) } catch {}; this.migrationOwner = false; this.migrationScope = null; this.markMigrationRecovery(CHAT_HISTORY_SCOPE)
       return json(res, 500, { ...this.chatHistoryPublic(record), error: error.message })
     }
   }
@@ -2624,11 +2666,13 @@ class AgentdServer {
   async chatSessions(req, res) {
     const mutation = req.method === 'POST'
     this.authorize(req, { mutation })
-    if (mutation && this.migrationFence(req, res)) return
     if (req.method === 'GET') {
       const rows = this.db.prepare('SELECT * FROM chat_sessions ORDER BY updated_at DESC, id DESC LIMIT 100').all()
       return json(res, 200, { sessions: rows.map(row => this.chatSessionView(row)) })
     }
+    const releaseOperation = this.beginActiveOperation()
+    if (!releaseOperation) return json(res, 409, { error: 'Settings migration is committing' })
+    try {
     if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
     const body = await readBody(req, 16 * 1024)
     if (!body || typeof body !== 'object' || Array.isArray(body)) return json(res, 400, { error: 'Invalid session' })
@@ -2657,11 +2701,16 @@ class AgentdServer {
     })()
     if (result.duplicate && result.session.title !== title) return json(res, 409, { error: 'Session already exists' })
     return json(res, result.duplicate ? 200 : 201, { session: this.chatSessionView(result.session), duplicate: result.duplicate })
+    } finally {
+      releaseOperation()
+    }
   }
 
   async updateChatSession(req, res, rawId) {
     this.authorize(req, { mutation: true })
-    if (this.migrationFence(req, res)) return
+    const releaseOperation = this.beginActiveOperation()
+    if (!releaseOperation) return json(res, 409, { error: 'Settings migration is committing' })
+    try {
     if (!this.validChatId(rawId)) return json(res, 400, { error: 'Invalid session id' })
     if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
     const body = await readBody(req, 8 * 1024)
@@ -2694,6 +2743,9 @@ class AgentdServer {
     const result = this.db.prepare(`UPDATE chat_sessions SET ${assignments.join(', ')} WHERE id = ?`).run(...values)
     if (!result.changes) return json(res, 404, { error: 'Session not found' })
     return json(res, 200, { session: this.chatSessionView(this.db.prepare('SELECT * FROM chat_sessions WHERE id = ?').get(rawId)) })
+    } finally {
+      releaseOperation()
+    }
   }
 
   async getChatSession(req, res, rawId) {
@@ -2707,13 +2759,18 @@ class AgentdServer {
 
   async deleteChatSession(req, res, rawId) {
     this.authorize(req, { mutation: true })
-    if (this.migrationFence(req, res)) return
+    const releaseOperation = this.beginActiveOperation()
+    if (!releaseOperation) return json(res, 409, { error: 'Settings migration is committing' })
+    try {
     if (!this.validChatId(rawId)) return json(res, 400, { error: 'Invalid session id' })
     if ([...this.generations].some(key => key.startsWith(`${rawId}:`))) {
       return json(res, 409, { error: 'Session generation is in progress' })
     }
     const deleted = this.db.prepare('DELETE FROM chat_sessions WHERE id = ?').run(rawId).changes > 0
     return json(res, 200, { success: true, deleted })
+    } finally {
+      releaseOperation()
+    }
   }
 
   async cancelGeneration(req, res, rawId, rawRequestId) {
@@ -2728,7 +2785,9 @@ class AgentdServer {
 
   async addChatMessage(req, res, rawId) {
     this.authorize(req, { mutation: true })
-    if (this.migrationFence(req, res)) return
+    const releaseOperation = this.beginActiveOperation()
+    if (!releaseOperation) return json(res, 409, { error: 'Settings migration is committing' })
+    try {
     if (!this.validChatId(rawId)) return json(res, 400, { error: 'Invalid session id' })
     if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
     const body = await readBody(req, MAX_CHAT_REQUEST_BYTES)
@@ -2759,6 +2818,9 @@ class AgentdServer {
     if (result.conflict) return json(res, 409, { error: 'Message id already exists' })
     if (result.full) return json(res, 413, { error: 'Session message limit reached' })
     return json(res, result.duplicate ? 200 : 201, { message: this.chatMessageView(result.row), duplicate: result.duplicate })
+    } finally {
+      releaseOperation()
+    }
   }
 
   async generateChat(req, res, rawId) {

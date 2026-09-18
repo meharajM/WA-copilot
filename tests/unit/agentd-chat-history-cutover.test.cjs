@@ -18,6 +18,30 @@ const request = (origin, method, pathname, body, headers = {}) => new Promise((r
   req.end(payload)
 })
 
+const delayedRequest = (origin, method, pathname, body, headers = {}) => {
+  const payload = JSON.stringify(body)
+  let resolveResponse
+  let rejectResponse
+  const response = new Promise((resolve, reject) => { resolveResponse = resolve; rejectResponse = reject })
+  const req = http.request(`${origin}${pathname}`, { method, headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload), ...headers } }, res => {
+    let text = ''
+    res.on('data', chunk => { text += chunk })
+    res.on('end', () => {
+      try { resolveResponse({ status: res.statusCode, headers: res.headers, body: text ? JSON.parse(text) : null }) } catch (error) { rejectResponse(error) }
+    })
+  })
+  req.on('error', rejectResponse)
+  return { req, response, send: () => req.end(payload) }
+}
+
+async function waitFor(predicate) {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (predicate()) return
+    await new Promise(resolve => setTimeout(resolve, 2))
+  }
+  assert.fail('Timed out waiting for migration admission')
+}
+
 function sourceFixture({ content = 'hello', metadata = true } = {}) {
   const root = makeTempDir('aica-electron-chat-history-')
   const db = new Database(path.join(root, 'chat_history.v2.db'))
@@ -118,6 +142,48 @@ test('chat-history cutover survives restart and rollback removes only imported r
   await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true }); fs.rmSync(sourceRoot, { recursive: true, force: true })
 })
 
+test('chat-history rollback fails closed when an imported session gains a later child message', async () => {
+  const dataDir = makeTempDir('aica-agentd-chat-rollback-child-')
+  const sourceRoot = sourceFixture()
+  const secret = 'g'.repeat(32)
+  const server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
+  const { origin } = await server.start()
+  const { auth, preview } = await staged(server, origin, sourceRoot, secret)
+  const confirmation = await request(origin, 'POST', '/api/v1/continuity/chat-history/confirm', { previewId: preview.previewId, scope: 'chat-history' }, auth)
+  assert.equal((await request(origin, 'POST', '/api/v1/continuity/chat-history/apply', { previewId: preview.previewId, confirmationToken: confirmation.body.confirmationToken }, auth)).status, 200)
+  server.db.prepare('INSERT INTO chat_messages(session_id,message_id,role,content,attachments,metadata,created_at) VALUES (?,?,?,?,?,?,?)')
+    .run('legacy_session', 'later_message', 'user', 'added after import', null, null, 300)
+  const rollback = await request(origin, 'POST', '/api/v1/continuity/chat-history/rollback', { previewId: preview.previewId }, auth)
+  assert.equal(rollback.status, 500)
+  assert.equal(rollback.body.state, 'needs-recovery')
+  assert.equal(rollback.body.manualRecoveryRequired, true)
+  assert.equal(server.db.prepare('SELECT COUNT(*) AS count FROM chat_sessions').get().count, 1)
+  assert.equal(server.db.prepare('SELECT COUNT(*) AS count FROM chat_messages WHERE session_id = ?').get('legacy_session').count, 2)
+  await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true }); fs.rmSync(sourceRoot, { recursive: true, force: true })
+})
+
+test('chat-history restart recovery allows same-scope rollback and clears the hold', async () => {
+  const dataDir = makeTempDir('aica-agentd-chat-recovery-rollback-')
+  const sourceRoot = sourceFixture()
+  const secret = 'h'.repeat(32)
+  let server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
+  let { origin } = await server.start()
+  const { auth, preview } = await staged(server, origin, sourceRoot, secret)
+  const confirmation = await request(origin, 'POST', '/api/v1/continuity/chat-history/confirm', { previewId: preview.previewId, scope: 'chat-history' }, auth)
+  assert.equal((await request(origin, 'POST', '/api/v1/continuity/chat-history/apply', { previewId: preview.previewId, confirmationToken: confirmation.body.confirmationToken }, auth)).status, 200)
+  server.db.prepare('UPDATE chat_history_cutovers SET state = ? WHERE preview_id = ?').run('needs-recovery', preview.previewId)
+  await server.stop()
+  server = new AgentdServer({ dataDir, secret, logger: { log() {} } }); ({ origin } = await server.start())
+  assert.equal((await request(origin, 'GET', `/api/v1/continuity/chat-history/status?previewId=${preview.previewId}`, undefined, auth)).body.state, 'needs-recovery')
+  assert.equal(server.migrationHold, true)
+  const rollback = await request(origin, 'POST', '/api/v1/continuity/chat-history/rollback', { previewId: preview.previewId }, auth)
+  assert.equal(rollback.status, 200)
+  assert.equal(rollback.body.state, 'rolled-back')
+  assert.equal(server.migrationHold, false)
+  assert.equal(server.db.prepare('SELECT COUNT(*) AS count FROM chat_sessions').get().count, 0)
+  await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true }); fs.rmSync(sourceRoot, { recursive: true, force: true })
+})
+
 test('chat-history migration hold fences chat writes while generation admission is held', async () => {
   const dataDir = makeTempDir('aica-agentd-chat-fence-')
   const sourceRoot = sourceFixture()
@@ -137,5 +203,58 @@ test('chat-history migration hold fences chat writes while generation admission 
   assert.equal((await request(origin, 'POST', '/api/v1/sessions', { id: 'blocked', title: 'blocked' }, auth)).status, 409)
   release()
   assert.equal((await applying).status, 200)
+  await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true }); fs.rmSync(sourceRoot, { recursive: true, force: true })
+})
+
+test('settings and chat cutovers cannot claim or release each other’s migration hold', async () => {
+  const dataDir = makeTempDir('aica-agentd-migration-owner-')
+  const server = new AgentdServer({ dataDir, secret: 'j'.repeat(32), logger: { log() {} } })
+  await server.start()
+  assert.equal(server.claimMigrationOwner('settings-persona'), true)
+  assert.equal(server.claimMigrationOwner('chat-history'), false)
+  server.releaseMigrationOwner('chat-history', false)
+  assert.equal(server.migrationOwner, true)
+  assert.equal(server.migrationScope, 'settings-persona')
+  server.releaseMigrationOwner('settings-persona', false)
+  assert.equal(server.migrationOwner, false)
+  assert.equal(server.migrationHold, false)
+  await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true })
+})
+
+test('chat session and add-message admissions span body reads before cutover drains', async () => {
+  const dataDir = makeTempDir('aica-agentd-chat-admission-')
+  const sourceRoot = sourceFixture()
+  const secret = 'i'.repeat(32)
+  const server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
+  const { origin } = await server.start()
+  const auth = { authorization: `Bearer ${secret}` }
+  const { preview } = await staged(server, origin, sourceRoot, secret)
+  const confirmation = await request(origin, 'POST', '/api/v1/continuity/chat-history/confirm', { previewId: preview.previewId, scope: 'chat-history' }, auth)
+  const delayedSession = delayedRequest(origin, 'POST', '/api/v1/sessions', { id: 'held_session', title: 'Held session' }, auth)
+  delayedSession.req.flushHeaders()
+  await waitFor(() => server.activeOperations.size === 1)
+  const applying = request(origin, 'POST', '/api/v1/continuity/chat-history/apply', { previewId: preview.previewId, confirmationToken: confirmation.body.confirmationToken }, auth)
+  await waitFor(() => server.migrationHold)
+  assert.equal(server.activeOperations.size, 1)
+  delayedSession.send()
+  const [sessionResult, applied] = await Promise.all([delayedSession.response, applying])
+  assert.equal(sessionResult.status, 201)
+  assert.equal(applied.status, 200)
+  assert.equal(server.db.prepare('SELECT COUNT(*) AS count FROM chat_sessions WHERE id = ?').get('held_session').count, 1)
+
+  const second = await staged(server, origin, sourceRoot, secret)
+  const secondConfirmation = await request(origin, 'POST', '/api/v1/continuity/chat-history/confirm', { previewId: second.preview.previewId, scope: 'chat-history' }, auth)
+  assert.equal(secondConfirmation.status, 200)
+  const delayedMessage = delayedRequest(origin, 'POST', '/api/v1/sessions/held_session/messages', { id: 'held_message', role: 'user', content: 'Held message' }, auth)
+  delayedMessage.req.flushHeaders()
+  await waitFor(() => server.activeOperations.size === 1)
+  const secondApplying = request(origin, 'POST', '/api/v1/continuity/chat-history/apply', { previewId: second.preview.previewId, confirmationToken: secondConfirmation.body.confirmationToken }, auth)
+  await waitFor(() => server.migrationHold)
+  assert.equal(server.activeOperations.size, 1)
+  delayedMessage.send()
+  const [messageResult, secondApplied] = await Promise.all([delayedMessage.response, secondApplying])
+  assert.equal(messageResult.status, 201)
+  assert.equal(secondApplied.status, 200, JSON.stringify(secondApplied.body))
+  assert.equal(server.db.prepare('SELECT COUNT(*) AS count FROM chat_messages WHERE message_id = ?').get('held_message').count, 1)
   await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true }); fs.rmSync(sourceRoot, { recursive: true, force: true })
 })
