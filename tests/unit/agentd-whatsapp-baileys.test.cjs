@@ -73,6 +73,14 @@ test('agentd Baileys worker exposes bounded QR/state, text inbound, dedupe, and 
   })
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(inbound.length, 1)
+  baileys.socket.ev.emit('messages.upsert', {
+    type: 'notify',
+    messages: [{ key: { id: 'image-2', remoteJid: '919888888888@s.whatsapp.net', fromMe: false }, message: { imageMessage: { caption: 'See this' } } }],
+  })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(inbound.length, 2)
+  assert.equal(inbound[1].content, 'See this')
+  assert.equal(inbound[1].type, 'image')
   service.pendingHandshake = { phoneNumber: '919888888888', code: '123456', expires: Date.now() - 1 }
   baileys.socket.ev.emit('messages.upsert', {
     type: 'notify',
@@ -80,7 +88,7 @@ test('agentd Baileys worker exposes bounded QR/state, text inbound, dedupe, and 
   })
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(service.getState().handshakeStatus, 'expired')
-  assert.equal(inbound.length, 2)
+  assert.equal(inbound.length, 3)
   await service.disconnect(true)
   assert.equal(service.getState().status, 'disconnected')
   assert.equal(fs.existsSync(path.join(dataDir, 'whatsapp-auth')), false)
