@@ -82,6 +82,12 @@ const KEEP_ALIVE_TIMEOUT_MS = 5 * 1000
 const SETTINGS_PERSONA_SCOPE = 'settings-persona'
 const SETTINGS_PERSONA_TOKEN_TTL_MS = 5 * 60 * 1000
 const SETTINGS_PERSONA_MAX_SOURCE_BYTES = 512 * 1024
+const CHAT_HISTORY_SCOPE = 'chat-history'
+const CHAT_HISTORY_TOKEN_TTL_MS = 5 * 60 * 1000
+const CHAT_HISTORY_MAX_SOURCE_BYTES = 64 * 1024 * 1024
+const CHAT_HISTORY_MAX_SESSIONS = 10_000
+const CHAT_HISTORY_MAX_MESSAGES = 100_000
+const CHAT_HISTORY_MAX_METADATA_BYTES = 128 * 1024
 const PROVIDER_ENDPOINTS = Object.freeze({
   openai: 'https://api.openai.com/v1/models',
   openrouter: 'https://openrouter.ai/api/v1/models',
@@ -472,6 +478,7 @@ class AgentdServer {
     this.generationControllers = new Map()
     this.continuityPreviews = new Map()
     this.settingsPersonaCutovers = new Map()
+    this.chatHistoryCutovers = new Map()
     this.migrationHold = false
     this.migrationOwner = false
     this.activeOperations = new Set()
@@ -550,6 +557,7 @@ class AgentdServer {
           role TEXT NOT NULL CHECK(role IN ('user','assistant','system')),
           content TEXT NOT NULL,
           attachments TEXT,
+          metadata TEXT,
           created_at INTEGER NOT NULL,
           PRIMARY KEY(session_id, message_id)
         );
@@ -577,6 +585,24 @@ class AgentdServer {
           manifest_hash TEXT NOT NULL,
           scope TEXT NOT NULL,
           target_runtime TEXT NOT NULL,
+          state TEXT NOT NULL,
+          confirmed_at INTEGER,
+          expires_at INTEGER,
+          token_hash TEXT,
+          consumed_at INTEGER,
+          backup_path TEXT,
+          backup_sha256 TEXT,
+          result TEXT,
+          error TEXT,
+          updated_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS chat_history_cutovers (
+          preview_id TEXT PRIMARY KEY,
+          manifest TEXT NOT NULL,
+          manifest_hash TEXT NOT NULL,
+          scope TEXT NOT NULL,
+          target_runtime TEXT NOT NULL,
+          source_hash TEXT,
           state TEXT NOT NULL,
           confirmed_at INTEGER,
           expires_at INTEGER,
@@ -651,6 +677,7 @@ class AgentdServer {
       }
       const chatColumns = this.db.prepare('PRAGMA table_info(chat_messages)').all()
       if (!chatColumns.some((column) => column.name === 'attachments')) this.db.exec('ALTER TABLE chat_messages ADD COLUMN attachments TEXT')
+      if (!chatColumns.some((column) => column.name === 'metadata')) this.db.exec('ALTER TABLE chat_messages ADD COLUMN metadata TEXT')
       const sessionColumns = this.db.prepare('PRAGMA table_info(chat_sessions)').all()
       if (!sessionColumns.some((column) => column.name === 'workspace_path')) this.db.exec('ALTER TABLE chat_sessions ADD COLUMN workspace_path TEXT')
       if (!sessionColumns.some((column) => column.name === 'status')) this.db.exec("ALTER TABLE chat_sessions ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
@@ -658,8 +685,12 @@ class AgentdServer {
       if (!sessionColumns.some((column) => column.name === 'contact_id')) this.db.exec('ALTER TABLE chat_sessions ADD COLUMN contact_id TEXT')
       if (!sessionColumns.some((column) => column.name === 'thread_id')) this.db.exec('ALTER TABLE chat_sessions ADD COLUMN thread_id TEXT')
       if (!sessionColumns.some((column) => column.name === 'topic')) this.db.exec('ALTER TABLE chat_sessions ADD COLUMN topic TEXT')
+      if (!sessionColumns.some((column) => column.name === 'metadata')) this.db.exec('ALTER TABLE chat_sessions ADD COLUMN metadata TEXT')
+      const chatCutoverColumns = this.db.prepare('PRAGMA table_info(chat_history_cutovers)').all()
+      if (!chatCutoverColumns.some((column) => column.name === 'source_hash')) this.db.exec('ALTER TABLE chat_history_cutovers ADD COLUMN source_hash TEXT')
       this.db.prepare('INSERT INTO agent_state(key,value,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO NOTHING').run('paused', 'false', Date.now())
       this.restoreSettingsPersonaCutovers()
+      this.restoreChatHistoryCutovers()
       await new Promise((resolve, reject) => {
         this.server = http.createServer((req, res) => this.handle(req, res).catch(error => {
           const status = Number.isInteger(error.statusCode) ? error.statusCode : 500
@@ -785,6 +816,7 @@ class AgentdServer {
     this.sessions.clear()
     this.generations.clear()
     this.settingsPersonaCutovers.clear()
+    this.chatHistoryCutovers.clear()
     if (this.db) this.db.close()
     this.db = null
     this.removeOwnedFiles()
@@ -936,6 +968,10 @@ class AgentdServer {
     if (url.pathname === '/api/v1/continuity/settings-persona/apply' && req.method === 'POST') return this.settingsPersonaApply(req, res)
     if (url.pathname === '/api/v1/continuity/settings-persona/rollback' && req.method === 'POST') return this.settingsPersonaRollback(req, res)
     if (url.pathname === '/api/v1/continuity/settings-persona/status' && req.method === 'GET') return this.settingsPersonaStatus(req, res)
+    if (url.pathname === '/api/v1/continuity/chat-history/confirm' && req.method === 'POST') return this.chatHistoryConfirm(req, res)
+    if (url.pathname === '/api/v1/continuity/chat-history/apply' && req.method === 'POST') return this.chatHistoryApply(req, res)
+    if (url.pathname === '/api/v1/continuity/chat-history/rollback' && req.method === 'POST') return this.chatHistoryRollback(req, res)
+    if (url.pathname === '/api/v1/continuity/chat-history/status' && req.method === 'GET') return this.chatHistoryStatus(req, res)
     if (url.pathname === '/api/v1/autonomy/metrics' && req.method === 'GET') return this.autonomyMetrics(req, res, url)
     if (url.pathname === '/api/v1/logs' && ['GET', 'POST'].includes(req.method)) return this.auditLogs(req, res, url)
     if (url.pathname === '/api/v1/knowledge' && ['GET', 'POST'].includes(req.method)) return this.knowledge(req, res, url)
@@ -1456,12 +1492,276 @@ class AgentdServer {
     }
   }
 
+  chatHistoryStagedPath(preview) {
+    if (!preview?.previewId || !preview.manifest?.entries?.some(entry => entry.id === 'electron-chat-history')) {
+      throw Object.assign(new Error('Chat-history store is missing from preview'), { statusCode: 409 })
+    }
+    const stagingRoot = path.join(this.dataDir, '.migration-staging', preview.previewId)
+    const manifestPath = path.join(stagingRoot, 'manifest.json')
+    let persisted
+    try { persisted = JSON.parse(readMigrationFile(manifestPath).toString('utf8')) } catch {
+      throw Object.assign(new Error('Staged migration manifest is unavailable'), { statusCode: 409 })
+    }
+    if (persisted.previewId !== preview.previewId || JSON.stringify(persisted.manifest) !== JSON.stringify(preview.manifest)) {
+      throw Object.assign(new Error('Staged migration manifest does not match preview'), { statusCode: 409 })
+    }
+    const entry = preview.manifest.entries.find(item => item.id === 'electron-chat-history')
+    const file = path.join(stagingRoot, entry.id)
+    let bytes
+    try { bytes = readMigrationFile(file) } catch { throw Object.assign(new Error('Staged chat-history file is unavailable'), { statusCode: 409 }) }
+    if (bytes.length !== entry.byteSize || crypto.createHash('sha256').update(bytes).digest('hex') !== entry.sha256) {
+      throw Object.assign(new Error('Staged chat-history file changed'), { statusCode: 409 })
+    }
+    if (bytes.length > CHAT_HISTORY_MAX_SOURCE_BYTES) throw Object.assign(new Error('Chat-history store too large'), { statusCode: 413 })
+    const sourcePath = path.join(preview.manifest.sourceRoot, 'chat_history.v2.db')
+    let sourceBytes
+    try { sourceBytes = readMigrationFile(sourcePath) } catch { throw Object.assign(new Error('Electron chat-history source changed or is unavailable'), { statusCode: 409 }) }
+    if (sourceBytes.length !== entry.byteSize || crypto.createHash('sha256').update(sourceBytes).digest('hex') !== entry.sha256) {
+      throw Object.assign(new Error('Electron chat-history source changed after preview'), { statusCode: 409 })
+    }
+    return { file, bytes, sourceHash: entry.sha256 }
+  }
+
+  readChatHistoryInput(preview) {
+    const staged = this.chatHistoryStagedPath(preview)
+    const sourceDb = new Database(staged.file, { readonly: true, fileMustExist: true })
+    const secretKey = /(?:secret|token|password|passwd|api[_.-]?(?:key|secret|token)|private[_.-]?(?:key|secret)|cookie|authorization|credential|bearer|oauth|encryption)/i
+    const parseJson = (raw, label) => {
+      if (raw === null || raw === undefined || raw === '') return null
+      if (typeof raw !== 'string' || Buffer.byteLength(raw, 'utf8') > CHAT_HISTORY_MAX_METADATA_BYTES) throw Object.assign(new Error(`${label} is too large`), { statusCode: 413 })
+      let value
+      try { value = parseJsonWithoutDuplicateKeys(Buffer.from(raw), label) } catch { throw Object.assign(new Error(`Invalid ${label}`), { statusCode: 400 }) }
+      const walk = (item, location = '$') => {
+        if (Array.isArray(item)) return item.forEach((child, index) => walk(child, `${location}[${index}]`))
+        if (!item || typeof item !== 'object') return
+        for (const [key, child] of Object.entries(item)) {
+          if (secretKey.test(key)) throw Object.assign(new Error(`Secret field refused: ${label}.${key}`), { statusCode: 400 })
+          walk(child, `${location}.${key}`)
+        }
+      }
+      walk(value)
+      return value
+    }
+    const bounded = (value, max, allowEmpty = false) => validBoundedText(value, max, allowEmpty) && Buffer.byteLength(value, 'utf8') <= max * 4
+    try {
+      const integrity = sourceDb.pragma('integrity_check')
+      if (!Array.isArray(integrity) || integrity.some(row => row.integrity_check !== 'ok')) throw Object.assign(new Error('SQLite integrity check failed'), { statusCode: 400 })
+      const tables = new Map(sourceDb.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name IN ('sessions','session_messages')").all().map(row => [row.name, row.sql]))
+      if (!tables.has('sessions') || !tables.has('session_messages')) throw Object.assign(new Error('Invalid chat-history schema'), { statusCode: 400 })
+      const required = {
+        sessions: ['id', 'title', 'createdAt', 'updatedAt', 'channel', 'contact_id', 'status', 'workspacePath', 'topic', 'extra_data'],
+        session_messages: ['id', 'sessionId', 'role', 'content', 'timestamp', 'thought', 'toolCalls', 'actions', 'findings', 'plan'],
+      }
+      for (const [table, columns] of Object.entries(required)) {
+        const actual = new Set(sourceDb.prepare(`PRAGMA table_info(${table})`).all().map(row => row.name))
+        if (columns.some(column => !actual.has(column))) throw Object.assign(new Error('Invalid chat-history schema'), { statusCode: 400 })
+      }
+      const sessions = sourceDb.prepare('SELECT id,title,createdAt,updatedAt,channel,contact_id,status,workspacePath,topic,extra_data FROM sessions ORDER BY id').all()
+      const messages = sourceDb.prepare('SELECT id,sessionId,role,content,timestamp,thought,toolCalls,actions,findings,plan FROM session_messages ORDER BY sessionId,timestamp,id').all()
+      if (sessions.length > CHAT_HISTORY_MAX_SESSIONS || messages.length > CHAT_HISTORY_MAX_MESSAGES) throw Object.assign(new Error('Chat-history row limit exceeded'), { statusCode: 413 })
+      const sessionIds = new Set()
+      const messageIds = new Set()
+      const allowedChannels = new Set(['whatsapp', 'email', 'telegram', 'instagram', 'twitter', 'messenger', 'web'])
+      const allowedTopics = new Set(['Product Queries', 'Order Status', 'Returns/Refunds', 'Technical Support', 'Other'])
+      const normalizedSessions = sessions.map(row => {
+        if (sessionIds.has(row.id) || !this.validChatId(row.id) || !this.validChatTitle(row.title)
+          || !Number.isSafeInteger(row.createdAt) || row.createdAt < 0 || !Number.isSafeInteger(row.updatedAt) || row.updatedAt < 0
+          || (row.channel !== null && (!bounded(row.channel, MAX_CHAT_CHANNEL_LENGTH) || !allowedChannels.has(row.channel)))
+          || (row.contact_id !== null && !bounded(row.contact_id, MAX_CHAT_CONTACT_LENGTH))
+          || (row.status !== null && !['active', 'resolved'].includes(row.status))
+          || (row.workspacePath !== null && !bounded(row.workspacePath, 1024))
+          || (row.topic !== null && (!bounded(row.topic, 64) || !allowedTopics.has(row.topic)))) throw Object.assign(new Error('Invalid chat-history session'), { statusCode: 400 })
+        sessionIds.add(row.id)
+        const metadata = parseJson(row.extra_data, 'session metadata')
+        if (metadata !== null && (!metadata || typeof metadata !== 'object' || Array.isArray(metadata))) throw Object.assign(new Error('Invalid session metadata'), { statusCode: 400 })
+        return { id: row.id, title: row.title, workspace_path: row.workspacePath, status: row.status || 'active', channel: row.channel, contact_id: row.contact_id, thread_id: null, topic: row.topic, metadata: metadata ? JSON.stringify(metadata) : null, created_at: row.createdAt, updated_at: row.updatedAt }
+      })
+      const normalizedMessages = messages.map(row => {
+        if (messageIds.has(row.id) || !this.validChatId(row.id) || !sessionIds.has(row.sessionId) || !['user', 'assistant', 'system'].includes(row.role)
+          || (row.content !== null && !bounded(row.content, MAX_CHAT_CONTENT_LENGTH, true)) || !Number.isSafeInteger(row.timestamp) || row.timestamp < 0) throw Object.assign(new Error('Invalid chat-history message'), { statusCode: 400 })
+        messageIds.add(row.id)
+        const metadataValues = {}
+        for (const [key, value] of [['thought', row.thought], ['toolCalls', row.toolCalls], ['actions', row.actions], ['findings', row.findings], ['plan', row.plan]]) {
+          const parsed = key === 'thought'
+            ? (value === null || value === undefined || value === '' ? null : (bounded(value, MAX_CHAT_CONTENT_LENGTH, true) ? value : (() => { throw Object.assign(new Error('Message thought is too large'), { statusCode: 413 }) })()))
+            : parseJson(value, `message ${key}`)
+          if (parsed !== null) metadataValues[key] = parsed
+        }
+        const metadata = Object.keys(metadataValues).length ? JSON.stringify(metadataValues) : null
+        if (metadata && Buffer.byteLength(metadata, 'utf8') > CHAT_HISTORY_MAX_METADATA_BYTES) throw Object.assign(new Error('Message metadata is too large'), { statusCode: 413 })
+        return { session_id: row.sessionId, message_id: row.id, role: row.role, content: row.content || '', attachments: null, metadata, created_at: row.timestamp }
+      })
+      return { ...staged, sessions: normalizedSessions, messages: normalizedMessages }
+    } finally { sourceDb.close() }
+  }
+
   async settingsPersonaStatus(req, res) {
     this.authorizeNative(req)
     const body = new URL(req.url, this.origin).searchParams
     const record = this.settingsPersonaCutovers.get(body.get('previewId'))
     if (!record) return json(res, 404, { error: 'Migration preview not found' })
     return json(res, 200, this.settingsPersonaPublic(record))
+  }
+
+  chatHistoryPublic(record) {
+    return {
+      previewId: record.previewId,
+      scope: record.scope,
+      targetRuntime: record.targetRuntime,
+      state: record.state,
+      manifestHash: record.manifestHash,
+      ...(record.expiresAt ? { expiresAt: record.expiresAt } : {}),
+      ...(record.state === 'confirmed' && record.token ? { confirmationToken: record.token } : {}),
+      ...(record.state === 'confirmed' && !record.token ? { requiresReconfirmation: true } : {}),
+      ...(record.state === 'needs-recovery' ? { manualRecoveryRequired: true } : {}),
+      ...(record.result || {}),
+    }
+  }
+
+  persistChatHistoryCutover(record) {
+    this.db.prepare(`INSERT INTO chat_history_cutovers
+      (preview_id,manifest,manifest_hash,scope,target_runtime,source_hash,state,confirmed_at,expires_at,token_hash,consumed_at,backup_path,backup_sha256,result,error,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(preview_id) DO UPDATE SET manifest=excluded.manifest,manifest_hash=excluded.manifest_hash,scope=excluded.scope,target_runtime=excluded.target_runtime,source_hash=excluded.source_hash,state=excluded.state,confirmed_at=excluded.confirmed_at,expires_at=excluded.expires_at,token_hash=excluded.token_hash,consumed_at=excluded.consumed_at,backup_path=excluded.backup_path,backup_sha256=excluded.backup_sha256,result=excluded.result,error=excluded.error,updated_at=excluded.updated_at`).run(
+      record.previewId, JSON.stringify(record.manifest), record.manifestHash, record.scope, record.targetRuntime, record.sourceHash || null, record.state,
+      record.confirmedAt || null, record.expiresAt || null, record.token ? crypto.createHash('sha256').update(record.token).digest('hex') : null,
+      record.consumedAt || null, record.backupPath || null, record.backupSha256 || null, record.result ? JSON.stringify(record.result) : null, record.error || null, Date.now())
+  }
+
+  restoreChatHistoryCutovers() {
+    for (const row of this.db.prepare('SELECT * FROM chat_history_cutovers').all()) {
+      let manifest; let result
+      try { manifest = JSON.parse(row.manifest); result = row.result ? JSON.parse(row.result) : undefined } catch { continue }
+      const record = { previewId: row.preview_id, manifest, manifestHash: row.manifest_hash, scope: row.scope, targetRuntime: row.target_runtime, sourceHash: row.source_hash || undefined, state: row.state, confirmedAt: row.confirmed_at || undefined, expiresAt: row.expires_at || undefined, consumedAt: row.consumed_at || undefined, backupPath: row.backup_path || undefined, backupSha256: row.backup_sha256 || undefined, result, error: row.error || undefined }
+      if (record.state === 'applying') {
+        record.state = 'needs-recovery'
+        record.error = record.backupPath ? 'Chat-history cutover interrupted after backup creation; manual rollback required' : 'Chat-history cutover interrupted before backup reference; manual recovery required'
+        this.persistChatHistoryCutover(record)
+      }
+      this.chatHistoryCutovers.set(record.previewId, record)
+      if (record.state === 'needs-recovery') this.migrationHold = true
+    }
+  }
+
+  async chatHistoryConfirm(req, res) {
+    this.authorizeNative(req)
+    const body = await readBody(req, 16 * 1024)
+    if (body?.scope !== CHAT_HISTORY_SCOPE) return json(res, 400, { error: 'Invalid migration scope' })
+    const persisted = this.chatHistoryCutovers.get(body.previewId)
+    const preview = this.continuityPreviews.get(body.previewId) || this.cutoverPreview(persisted)
+    if (!preview) return json(res, 404, { error: 'Migration preview expired' })
+    const existing = persisted
+    if (this.migrationOwner || existing?.state === 'applying') return json(res, 409, { error: 'Chat-history migration is committing' })
+    if (existing?.state === 'applied' || existing?.state === 'needs-recovery' || existing?.state === 'rolled-back') return json(res, 200, this.chatHistoryPublic(existing))
+    const input = this.readChatHistoryInput(preview)
+    const record = existing || { previewId: preview.previewId, manifest: preview.manifest, manifestHash: this.migrationManifestHash(preview.manifest), scope: CHAT_HISTORY_SCOPE, targetRuntime: this.runtimeId, state: 'previewed' }
+    record.state = 'confirmed'; record.confirmedAt = Date.now(); record.expiresAt = Date.now() + CHAT_HISTORY_TOKEN_TTL_MS
+    record.token = crypto.randomBytes(32).toString('hex'); record.sourceHash = input.sourceHash
+    this.chatHistoryCutovers.set(preview.previewId, record)
+    this.persistChatHistoryCutover(record)
+    return json(res, 200, this.chatHistoryPublic(record))
+  }
+
+  async chatHistoryApply(req, res) {
+    this.authorizeNative(req)
+    const body = await readBody(req, 16 * 1024)
+    const record = this.chatHistoryCutovers.get(body?.previewId)
+    if (!record) return json(res, 404, { error: 'Migration preview expired' })
+    if (record.state === 'applied' || record.state === 'rolled-back') {
+      if (body.confirmationToken !== undefined) return json(res, 403, { error: 'Confirmation token already consumed' })
+      return json(res, 200, this.chatHistoryPublic(record))
+    }
+    const supplied = typeof body.confirmationToken === 'string' ? Buffer.from(body.confirmationToken) : null
+    const expected = record.token ? Buffer.from(record.token) : null
+    if (record.state !== 'confirmed' || !supplied || !expected || supplied.length !== expected.length || !crypto.timingSafeEqual(supplied, expected) || Date.now() > record.expiresAt) return json(res, 403, { error: 'Valid native confirmation token required' })
+    record.token = null; record.consumedAt = Date.now(); record.state = 'applying'; this.persistChatHistoryCutover(record)
+    const priorHold = this.migrationHold
+    this.migrationHold = true; this.migrationOwner = true; this.stopEmailInboundPolling()
+    for (const controller of this.generationControllers.values()) controller.abort()
+    await this.drainActiveOperations()
+    try {
+      const input = this.readChatHistoryInput(this.cutoverPreview(record))
+      if (this.migrationManifestHash(record.manifest) !== record.manifestHash || input.sourceHash !== record.sourceHash) throw Object.assign(new Error('Source or staged chat-history changed before commit'), { statusCode: 409 })
+      this.assertMigrationCommitReady()
+      const sessionSelect = this.db.prepare('SELECT id,title,workspace_path,status,channel,contact_id,thread_id,topic,metadata,created_at,updated_at FROM chat_sessions WHERE id = ?')
+      const messageSelect = this.db.prepare('SELECT session_id,message_id,role,content,attachments,metadata,created_at FROM chat_messages WHERE session_id = ? AND message_id = ?')
+      const insertedSessions = []; const insertedMessages = []
+      const existingSessions = []; const existingMessages = []
+      for (const row of input.sessions) {
+        const existing = sessionSelect.get(row.id)
+        if (existing) {
+          if (JSON.stringify(existing) !== JSON.stringify(row)) throw Object.assign(new Error(`Conflicting existing session id: ${row.id}`), { statusCode: 409 })
+          existingSessions.push(existing)
+        } else insertedSessions.push(row)
+      }
+      for (const row of input.messages) {
+        const existing = messageSelect.get(row.session_id, row.message_id)
+        if (existing) {
+          if (JSON.stringify(existing) !== JSON.stringify(row)) throw Object.assign(new Error(`Conflicting existing message id: ${row.message_id}`), { statusCode: 409 })
+          existingMessages.push(existing)
+        } else insertedMessages.push(row)
+      }
+      const backupDir = path.join(this.dataDir, 'migration-backups')
+      fs.mkdirSync(backupDir, { recursive: true, mode: 0o700 }); fs.chmodSync(backupDir, 0o700)
+      const backupPath = path.join(backupDir, `${CHAT_HISTORY_SCOPE}-${record.previewId}-${crypto.randomUUID()}.json`)
+      const backupPayload = { version: 1, scope: CHAT_HISTORY_SCOPE, previewId: record.previewId, manifest: record.manifest, previewHash: record.manifestHash, sourceHash: input.sourceHash, existingSessions, existingMessages, insertedSessions, insertedMessages }
+      const backupBytes = Buffer.from(JSON.stringify(backupPayload) + '\n')
+      const backupHash = crypto.createHash('sha256').update(backupBytes).digest('hex')
+      const completeBackup = Buffer.from(JSON.stringify({ ...backupPayload, sha256: backupHash }) + '\n')
+      writePrivateFileAtomically(backupPath, completeBackup)
+      record.backupPath = backupPath; record.backupSha256 = crypto.createHash('sha256').update(completeBackup).digest('hex'); this.persistChatHistoryCutover(record)
+      const result = this.db.transaction(() => {
+        for (const row of insertedSessions) this.db.prepare('INSERT INTO chat_sessions(id,title,workspace_path,status,channel,contact_id,thread_id,topic,metadata,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)').run(row.id, row.title, row.workspace_path, row.status, row.channel, row.contact_id, row.thread_id, row.topic, row.metadata, row.created_at, row.updated_at)
+        for (const row of insertedMessages) this.db.prepare('INSERT INTO chat_messages(session_id,message_id,role,content,attachments,metadata,created_at) VALUES (?,?,?,?,?,?,?)').run(row.session_id, row.message_id, row.role, row.content, row.attachments, row.metadata, row.created_at)
+        return { sessionsImported: insertedSessions.length, messagesImported: insertedMessages.length, sessionsAlreadyPresent: existingSessions.length, messagesAlreadyPresent: existingMessages.length, backupSha256: record.backupSha256, liveDataChanged: Boolean(insertedSessions.length || insertedMessages.length) }
+      })()
+      record.state = 'applied'; record.appliedAt = Date.now(); record.result = result; this.persistChatHistoryCutover(record)
+      this.migrationHold = priorHold; this.migrationOwner = false; if (!this.migrationHold) this.startEmailInboundPolling()
+      return json(res, 200, this.chatHistoryPublic(record))
+    } catch (error) {
+      record.state = 'rolled-back'; record.error = error.message; this.persistChatHistoryCutover(record)
+      this.migrationHold = priorHold; this.migrationOwner = false; if (!this.migrationHold) this.startEmailInboundPolling()
+      return json(res, error.statusCode || 500, { ...this.chatHistoryPublic(record), error: error.message })
+    }
+  }
+
+  async chatHistoryRollback(req, res) {
+    this.authorizeNative(req)
+    const body = await readBody(req, 16 * 1024)
+    const record = this.chatHistoryCutovers.get(body?.previewId)
+    if (!record || !record.backupPath) return json(res, 404, { error: 'Migration backup not found' })
+    if (record.state === 'rolled-back') return json(res, 200, this.chatHistoryPublic(record))
+    const priorHold = this.migrationHold; this.migrationHold = true; this.migrationOwner = true
+    try {
+      const bytes = readMigrationFile(record.backupPath)
+      if (crypto.createHash('sha256').update(bytes).digest('hex') !== record.backupSha256) throw new Error('Migration backup integrity check failed')
+      const backup = JSON.parse(bytes.toString('utf8'))
+      const embedded = { ...backup }; delete embedded.sha256
+      if (backup.scope !== CHAT_HISTORY_SCOPE || backup.previewId !== record.previewId || crypto.createHash('sha256').update(Buffer.from(JSON.stringify(embedded) + '\n')).digest('hex') !== backup.sha256) throw new Error('Invalid migration backup')
+      await this.drainActiveOperations(); this.assertMigrationCommitReady()
+      const sessionSelect = this.db.prepare('SELECT id,title,workspace_path,status,channel,contact_id,thread_id,topic,metadata,created_at,updated_at FROM chat_sessions WHERE id = ?')
+      const messageSelect = this.db.prepare('SELECT session_id,message_id,role,content,attachments,metadata,created_at FROM chat_messages WHERE session_id = ? AND message_id = ?')
+      for (const row of backup.insertedMessages) if (JSON.stringify(messageSelect.get(row.session_id, row.message_id)) !== JSON.stringify(row)) throw new Error('Imported chat-history changed; manual recovery required')
+      for (const row of backup.insertedSessions) if (JSON.stringify(sessionSelect.get(row.id)) !== JSON.stringify(row)) throw new Error('Imported chat-history changed; manual recovery required')
+      this.db.transaction(() => {
+        for (const row of backup.insertedMessages) this.db.prepare('DELETE FROM chat_messages WHERE session_id = ? AND message_id = ?').run(row.session_id, row.message_id)
+        for (const row of backup.insertedSessions) this.db.prepare('DELETE FROM chat_sessions WHERE id = ?').run(row.id)
+      })()
+      record.state = 'rolled-back'; record.rolledBackAt = Date.now(); record.result = { ...(record.result || {}), liveDataChanged: Boolean(backup.insertedSessions.length || backup.insertedMessages.length) }; this.persistChatHistoryCutover(record)
+      this.migrationHold = priorHold; this.migrationOwner = false; if (!this.migrationHold) this.startEmailInboundPolling()
+      return json(res, 200, this.chatHistoryPublic(record))
+    } catch (error) {
+      record.state = 'needs-recovery'; record.error = error.message; this.persistChatHistoryCutover(record); this.migrationOwner = false; this.migrationHold = true
+      return json(res, 500, { ...this.chatHistoryPublic(record), error: error.message })
+    }
+  }
+
+  async chatHistoryStatus(req, res) {
+    this.authorizeNative(req)
+    const previewId = new URL(req.url, this.origin).searchParams.get('previewId')
+    const record = this.chatHistoryCutovers.get(previewId)
+    if (!record) return json(res, 404, { error: 'Migration preview not found' })
+    return json(res, 200, this.chatHistoryPublic(record))
   }
 
   async llmSettings(req, res) {
@@ -2236,6 +2536,8 @@ class AgentdServer {
   }
 
   chatSessionView(row) {
+    let metadata
+    try { metadata = row.metadata ? JSON.parse(row.metadata) : null } catch {}
     return {
       id: row.id,
       title: row.title,
@@ -2247,14 +2549,20 @@ class AgentdServer {
       ...(typeof row.thread_id === 'string' && row.thread_id ? { threadId: row.thread_id } : {}),
       ...(typeof row.workspace_path === 'string' && row.workspace_path ? { workspacePath: row.workspace_path } : {}),
       ...(typeof row.topic === 'string' && row.topic ? { topic: row.topic } : {}),
+      ...(metadata && typeof metadata === 'object' && !Array.isArray(metadata) ? { metadata } : {}),
     }
   }
 
   chatMessageView(row) {
     let attachments
+    let metadata
     try {
       const parsed = row.attachments ? JSON.parse(row.attachments) : null
       if (Array.isArray(parsed) && parsed.length) attachments = parsed
+    } catch {}
+    try {
+      const parsed = row.metadata ? JSON.parse(row.metadata) : null
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) metadata = parsed
     } catch {}
     return {
       id: row.message_id,
@@ -2262,6 +2570,7 @@ class AgentdServer {
       content: row.content,
       createdAt: row.created_at,
       ...(attachments ? { attachments } : {}),
+      ...(metadata ? metadata : {}),
     }
   }
 
@@ -2315,6 +2624,7 @@ class AgentdServer {
   async chatSessions(req, res) {
     const mutation = req.method === 'POST'
     this.authorize(req, { mutation })
+    if (mutation && this.migrationFence(req, res)) return
     if (req.method === 'GET') {
       const rows = this.db.prepare('SELECT * FROM chat_sessions ORDER BY updated_at DESC, id DESC LIMIT 100').all()
       return json(res, 200, { sessions: rows.map(row => this.chatSessionView(row)) })
@@ -2351,6 +2661,7 @@ class AgentdServer {
 
   async updateChatSession(req, res, rawId) {
     this.authorize(req, { mutation: true })
+    if (this.migrationFence(req, res)) return
     if (!this.validChatId(rawId)) return json(res, 400, { error: 'Invalid session id' })
     if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
     const body = await readBody(req, 8 * 1024)
@@ -2396,6 +2707,7 @@ class AgentdServer {
 
   async deleteChatSession(req, res, rawId) {
     this.authorize(req, { mutation: true })
+    if (this.migrationFence(req, res)) return
     if (!this.validChatId(rawId)) return json(res, 400, { error: 'Invalid session id' })
     if ([...this.generations].some(key => key.startsWith(`${rawId}:`))) {
       return json(res, 409, { error: 'Session generation is in progress' })
@@ -2416,6 +2728,7 @@ class AgentdServer {
 
   async addChatMessage(req, res, rawId) {
     this.authorize(req, { mutation: true })
+    if (this.migrationFence(req, res)) return
     if (!this.validChatId(rawId)) return json(res, 400, { error: 'Invalid session id' })
     if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
     const body = await readBody(req, MAX_CHAT_REQUEST_BYTES)

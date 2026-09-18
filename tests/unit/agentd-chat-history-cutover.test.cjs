@@ -1,0 +1,141 @@
+const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const http = require('node:http')
+const path = require('node:path')
+const test = require('node:test')
+const Database = require('better-sqlite3')
+const { AgentdServer } = require('../../agentd/server.cjs')
+const { makeTempDir } = require('./temp-dir.cjs')
+
+const request = (origin, method, pathname, body, headers = {}) => new Promise((resolve, reject) => {
+  const payload = body === undefined ? '' : JSON.stringify(body)
+  const req = http.request(`${origin}${pathname}`, { method, headers: { ...(payload ? { 'content-type': 'application/json' } : {}), ...headers } }, res => {
+    let text = ''
+    res.on('data', chunk => { text += chunk })
+    res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: text ? JSON.parse(text) : null }))
+  })
+  req.on('error', reject)
+  req.end(payload)
+})
+
+function sourceFixture({ content = 'hello', metadata = true } = {}) {
+  const root = makeTempDir('aica-electron-chat-history-')
+  const db = new Database(path.join(root, 'chat_history.v2.db'))
+  db.exec(`CREATE TABLE sessions (id TEXT PRIMARY KEY, title TEXT NOT NULL, createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL, channel TEXT, contact_id TEXT, status TEXT, workspacePath TEXT, topic TEXT, extra_data TEXT); CREATE TABLE session_messages (id TEXT PRIMARY KEY, sessionId TEXT NOT NULL, role TEXT NOT NULL, content TEXT, timestamp INTEGER NOT NULL, thought TEXT, toolCalls TEXT, actions TEXT, findings TEXT, plan TEXT, FOREIGN KEY(sessionId) REFERENCES sessions(id));`)
+  const extra = metadata ? JSON.stringify({ owner: 'native', view: 'compact' }) : null
+  db.prepare('INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?)').run('legacy_session', 'Legacy chat', 100, 200, 'web', 'contact-1', 'active', '/workspace', 'Other', extra)
+  db.prepare('INSERT INTO session_messages VALUES (?,?,?,?,?,?,?,?,?,?)').run('legacy_message', 'legacy_session', 'user', content, 150, 'thought', JSON.stringify({ tool: 'none' }), JSON.stringify([{ type: 'note' }]), null, JSON.stringify({ steps: ['one'] }))
+  db.close()
+  return root
+}
+
+async function staged(server, origin, sourceRoot, secret) {
+  const auth = { authorization: `Bearer ${secret}` }
+  const preview = await request(origin, 'POST', '/api/v1/continuity/preview', { sourceRoot }, auth)
+  assert.equal(preview.status, 200)
+  const stage = await request(origin, 'POST', '/api/v1/continuity/import', { previewId: preview.body.previewId, ownerConfirmation: 'IMPORT_ELECTRON_DATA' }, auth)
+  assert.equal(stage.status, 200)
+  return { auth, preview: preview.body }
+}
+
+test('native chat-history cutover imports metadata transactionally and repeats idempotently', async () => {
+  const dataDir = makeTempDir('aica-agentd-chat-cutover-')
+  const sourceRoot = sourceFixture()
+  const secret = 'c'.repeat(32)
+  const server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
+  const { origin } = await server.start()
+  const { auth, preview } = await staged(server, origin, sourceRoot, secret)
+  assert.equal((await request(origin, 'POST', '/api/v1/continuity/chat-history/confirm', { previewId: preview.previewId, scope: 'chat-history' }, { origin })).status, 401)
+  const confirmation = await request(origin, 'POST', '/api/v1/continuity/chat-history/confirm', { previewId: preview.previewId, scope: 'chat-history' }, auth)
+  assert.equal(confirmation.status, 200)
+  assert.equal(confirmation.body.state, 'confirmed')
+  const applied = await request(origin, 'POST', '/api/v1/continuity/chat-history/apply', { previewId: preview.previewId, confirmationToken: confirmation.body.confirmationToken }, auth)
+  assert.equal(applied.status, 200)
+  assert.equal(applied.body.state, 'applied')
+  assert.equal(applied.body.sessionsImported, 1)
+  assert.equal(applied.body.messagesImported, 1)
+  assert.equal(server.db.prepare('SELECT COUNT(*) AS count FROM chat_sessions').get().count, 1)
+  assert.equal(server.db.prepare('SELECT COUNT(*) AS count FROM chat_messages').get().count, 1)
+  assert.deepEqual(JSON.parse(server.db.prepare('SELECT metadata FROM chat_messages').get().metadata), { thought: 'thought', toolCalls: { tool: 'none' }, actions: [{ type: 'note' }], plan: { steps: ['one'] } })
+  assert.deepEqual(JSON.parse(server.db.prepare('SELECT metadata FROM chat_sessions').get().metadata), { owner: 'native', view: 'compact' })
+  assert.equal((await request(origin, 'POST', '/api/v1/continuity/chat-history/apply', { previewId: preview.previewId }, auth)).status, 200)
+  assert.equal((await request(origin, 'POST', '/api/v1/continuity/chat-history/apply', { previewId: preview.previewId, confirmationToken: confirmation.body.confirmationToken }, auth)).status, 403)
+  await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true }); fs.rmSync(sourceRoot, { recursive: true, force: true })
+})
+
+test('chat-history rejects staged corruption and conflicting existing IDs without partial writes', async () => {
+  const dataDir = makeTempDir('aica-agentd-chat-conflict-')
+  const sourceRoot = sourceFixture()
+  const secret = 'd'.repeat(32)
+  const server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
+  const { origin } = await server.start()
+  const { auth, preview } = await staged(server, origin, sourceRoot, secret)
+  const confirmation = await request(origin, 'POST', '/api/v1/continuity/chat-history/confirm', { previewId: preview.previewId, scope: 'chat-history' }, auth)
+  server.db.prepare('INSERT INTO chat_sessions(id,title,created_at,updated_at) VALUES (?,?,?,?)').run('legacy_session', 'conflict', 1, 1)
+  const conflict = await request(origin, 'POST', '/api/v1/continuity/chat-history/apply', { previewId: preview.previewId, confirmationToken: confirmation.body.confirmationToken }, auth)
+  assert.equal(conflict.status, 409)
+  assert.equal(server.db.prepare('SELECT COUNT(*) AS count FROM chat_messages').get().count, 0)
+  assert.equal(conflict.body.state, 'rolled-back')
+  await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true }); fs.rmSync(sourceRoot, { recursive: true, force: true })
+
+  const corruptData = makeTempDir('aica-agentd-chat-corrupt-')
+  const corruptSource = sourceFixture()
+  const corruptServer = new AgentdServer({ dataDir: corruptData, secret, logger: { log() {} } })
+  const started = await corruptServer.start()
+  const stagedResult = await staged(corruptServer, started.origin, corruptSource, secret)
+  const stageFile = path.join(corruptData, '.migration-staging', stagedResult.preview.previewId, 'electron-chat-history')
+  fs.appendFileSync(stageFile, 'tamper')
+  const bad = await request(started.origin, 'POST', '/api/v1/continuity/chat-history/confirm', { previewId: stagedResult.preview.previewId, scope: 'chat-history' }, stagedResult.auth)
+  assert.equal(bad.status, 409)
+  await corruptServer.stop(); fs.rmSync(corruptData, { recursive: true, force: true }); fs.rmSync(corruptSource, { recursive: true, force: true })
+
+  const oversizeData = makeTempDir('aica-agentd-chat-oversize-')
+  const oversizeSource = sourceFixture({ content: 'x'.repeat(32 * 1024 + 1) })
+  const oversizeServer = new AgentdServer({ dataDir: oversizeData, secret, logger: { log() {} } })
+  const oversizeStarted = await oversizeServer.start()
+  const oversizeStaged = await staged(oversizeServer, oversizeStarted.origin, oversizeSource, secret)
+  const oversizeConfirm = await request(oversizeStarted.origin, 'POST', '/api/v1/continuity/chat-history/confirm', { previewId: oversizeStaged.preview.previewId, scope: 'chat-history' }, oversizeStaged.auth)
+  assert.equal(oversizeConfirm.status, 400)
+  await oversizeServer.stop(); fs.rmSync(oversizeData, { recursive: true, force: true }); fs.rmSync(oversizeSource, { recursive: true, force: true })
+})
+
+test('chat-history cutover survives restart and rollback removes only imported rows', async () => {
+  const dataDir = makeTempDir('aica-agentd-chat-recovery-')
+  const sourceRoot = sourceFixture()
+  const secret = 'e'.repeat(32)
+  let server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
+  let { origin } = await server.start()
+  const { auth, preview } = await staged(server, origin, sourceRoot, secret)
+  const confirmation = await request(origin, 'POST', '/api/v1/continuity/chat-history/confirm', { previewId: preview.previewId, scope: 'chat-history' }, auth)
+  assert.equal((await request(origin, 'POST', '/api/v1/continuity/chat-history/apply', { previewId: preview.previewId, confirmationToken: confirmation.body.confirmationToken }, auth)).status, 200)
+  await server.stop()
+  server = new AgentdServer({ dataDir, secret, logger: { log() {} } }); ({ origin } = await server.start())
+  assert.equal((await request(origin, 'GET', `/api/v1/continuity/chat-history/status?previewId=${preview.previewId}`, undefined, auth)).body.state, 'applied')
+  const rolledBack = await request(origin, 'POST', '/api/v1/continuity/chat-history/rollback', { previewId: preview.previewId }, auth)
+  assert.equal(rolledBack.status, 200)
+  assert.equal(rolledBack.body.state, 'rolled-back')
+  assert.equal(server.db.prepare('SELECT COUNT(*) AS count FROM chat_sessions').get().count, 0)
+  await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true }); fs.rmSync(sourceRoot, { recursive: true, force: true })
+})
+
+test('chat-history migration hold fences chat writes while generation admission is held', async () => {
+  const dataDir = makeTempDir('aica-agentd-chat-fence-')
+  const sourceRoot = sourceFixture()
+  const secret = 'f'.repeat(32)
+  const server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
+  const { origin } = await server.start()
+  const auth = { authorization: `Bearer ${secret}` }
+  server.migrationHold = true
+  assert.equal((await request(origin, 'POST', '/api/v1/sessions', { id: 'blocked', title: 'blocked' }, auth)).status, 409)
+  server.migrationHold = false
+  const { preview } = await staged(server, origin, sourceRoot, secret)
+  const confirmation = await request(origin, 'POST', '/api/v1/continuity/chat-history/confirm', { previewId: preview.previewId, scope: 'chat-history' }, auth)
+  const release = server.beginActiveOperation()
+  const applying = request(origin, 'POST', '/api/v1/continuity/chat-history/apply', { previewId: preview.previewId, confirmationToken: confirmation.body.confirmationToken }, auth)
+  for (let attempt = 0; attempt < 20 && !server.migrationHold; attempt++) await new Promise(resolve => setTimeout(resolve, 5))
+  assert.equal(server.migrationHold, true)
+  assert.equal((await request(origin, 'POST', '/api/v1/sessions', { id: 'blocked', title: 'blocked' }, auth)).status, 409)
+  release()
+  assert.equal((await applying).status, 200)
+  await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true }); fs.rmSync(sourceRoot, { recursive: true, force: true })
+})
