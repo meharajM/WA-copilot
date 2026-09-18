@@ -269,7 +269,7 @@ export function EmailSettingsPanel() {
         const result = await getBrowserAgentdClient().testEmail()
         setTestState({
           status: 'success',
-          message: `Secure transport reachable (IMAP ${result.transport.imap.tls ? 'TLS' : 'plain'}, SMTP ${result.transport.smtp.tls ? 'TLS' : 'plain'}). Browser runtime remains fail-closed until channel worker migration is complete.`,
+          message: `Secure transport reachable (IMAP ${result.transport.imap.tls ? 'TLS' : 'plain'}, SMTP ${result.transport.smtp.tls ? 'TLS' : 'plain'}). The daemon mailbox worker and approved-draft delivery still require their explicit browser gates.`,
         })
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
@@ -351,7 +351,7 @@ export function EmailSettingsPanel() {
         <Sparkles size={18} className="text-[var(--color-brand-teal)] shrink-0 mt-0.5" />
         <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed">
           {browserRuntime
-            ? <><strong>Browser setup:</strong> agentd stores mailbox settings and credentials, then performs a bounded secure-transport probe. The background mailbox worker is not migrated yet, so browser mode stays fail-closed for delivery.</>
+            ? <><strong>Browser setup:</strong> agentd stores mailbox settings and credentials, performs a bounded secure-transport probe, and runs text-only IMAP/SMTP workers when their TLS, app-password, enable, and approval gates pass.</>
             : <><strong>Client-side setup:</strong> choose a mailbox preset, use an app password by default, test the local IMAP/SMTP bridge, then go live.</>}
           {' '}Keep Draft Mode on and Auto-Reply off until verification is complete.
         </p>
@@ -381,7 +381,7 @@ export function EmailSettingsPanel() {
         <p className="text-xs text-[var(--color-text-dim)]">
           {!isVerified
             ? (browserRuntime
-              ? (transportVerified ? 'Transport verified. Browser delivery remains disabled until the agentd mailbox worker is migrated.' : 'Run Test Connection to verify the secure transport. Browser delivery remains disabled until the agentd mailbox worker is migrated.')
+              ? (transportVerified ? 'Transport verified. Browser IMAP polling and approved-draft delivery remain protected by their explicit gates.' : 'Run Test Connection to verify the secure transport. Browser IMAP polling and approved-draft delivery remain protected by their explicit gates.')
               : 'Run Test Connection to complete verification and unlock Go Live.')
             : 'Verified. You can now safely go live.'}
         </p>
@@ -451,7 +451,7 @@ export function EmailSettingsPanel() {
           <div className="space-y-3 pt-2 border-t border-[var(--color-border)]">
             <p className="text-xs text-[var(--color-text-dim)]">
               {browserRuntime
-                ? 'Browser mode stores Gmail settings in agentd. The recommended path is an app password over the future agentd IMAP/SMTP worker.'
+                ? 'Browser mode stores Gmail settings in agentd. The recommended path is an app password over the bounded agentd IMAP/SMTP workers.'
                 : 'Gmail stays client-side here. The recommended path is an app password over IMAP/SMTP.'}
             </p>
             <p className="text-xs text-[var(--color-text-dim)]">
@@ -486,7 +486,7 @@ export function EmailSettingsPanel() {
             {localGmailAuthMode === 'app-password' && (
               <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg p-3 text-xs text-[var(--color-text-dim)]">
                 {browserRuntime
-                  ? 'Gmail preset values are already loaded. Use an app password for the bounded transport probe; mailbox polling and delivery remain disabled in browser mode.'
+                  ? 'Gmail preset values are already loaded. Use an app password for the bounded transport probe, text-only mailbox polling, and approved-draft delivery.'
                   : 'Gmail preset values are already loaded. Use a Gmail app password and keep Draft Mode on for the first end-to-end run.'}
               </div>
             )}
@@ -655,7 +655,7 @@ export function EmailSettingsPanel() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm text-[var(--color-text-primary)] font-medium">Auto-Reply</p>
-              <p className="text-xs text-[var(--color-text-dim)]">{browserRuntime ? 'Controls whether agentd inbound events are consumed; live mailbox polling is not migrated yet.' : 'Only enable after successful testing'}</p>
+              <p className="text-xs text-[var(--color-text-dim)]">{browserRuntime ? 'Controls whether queued agentd inbound events are consumed; daemon polling has separate enable, TLS, and credential gates.' : 'Only enable after successful testing'}</p>
             </div>
             <button onClick={() => setAutoReplyMode(!config.autoReplyMode)} className="text-[var(--color-brand-teal)]">
               {config.autoReplyMode ? <ToggleRight size={28} /> : <ToggleLeft size={28} />}
@@ -665,7 +665,7 @@ export function EmailSettingsPanel() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm text-[var(--color-text-primary)] font-medium">Enable Email Channel</p>
-              <p className="text-xs text-[var(--color-text-dim)]">{browserRuntime ? 'Stores desired state; the browser worker remains fail-closed until agentd polling is migrated.' : 'Turns on background email processing'}</p>
+              <p className="text-xs text-[var(--color-text-dim)]">{browserRuntime ? 'Starts bounded daemon IMAP polling when the app-password, TLS, host, and credential gates pass.' : 'Turns on background email processing'}</p>
             </div>
             <button onClick={() => setEnabled(!config.enabled)} className={config.enabled ? 'text-green-400' : 'text-[var(--color-text-muted)]'}>
               {config.enabled ? <ToggleRight size={28} /> : <ToggleLeft size={28} />}
@@ -699,7 +699,7 @@ export function EmailSettingsPanel() {
         <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg p-3 text-xs text-[var(--color-text-dim)] flex gap-2">
           <Info size={14} className="shrink-0 mt-0.5" />
           {browserRuntime
-            ? 'Browser mode uses authenticated local agentd. It does not run mailbox polling or delivery until the daemon adapter is migrated; no hosted mail server is required for Gmail, Outlook, or other IMAP/SMTP providers.'
+            ? 'Browser mode uses authenticated local agentd for bounded text-only IMAP polling and approved SMTP delivery. OAuth, HTML/multipart, attachments, and unsupported providers remain fail-closed; the daemon connects directly to the selected mailbox provider.'
             : 'This email channel runs as a local client connector. No hosted mail server is required for Gmail, Outlook, or other IMAP/SMTP providers.'}
         </div>
       </Card>

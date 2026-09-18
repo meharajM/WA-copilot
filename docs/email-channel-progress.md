@@ -11,7 +11,7 @@ For QA pass/fail expectations, treat [docs/app-behavior.md](/Users/meharaj/WA-co
 The repo’s main architecture doc is WhatsApp-oriented. Email currently has two explicit runtime paths:
 
 - Electron owns the legacy/native path: renderer settings, the Zustand store and bridge hook; the main process owns MCP email-server spawn, IMAP/Gmail polling and outbound delivery; IPC connects those layers.
-- Browser mode owns the migrated agentd slice: authenticated settings/credential writes, bounded secure-transport probes, queued inbound-event consumption, and durable draft/session records. It does not run a mailbox poller or SMTP delivery yet.
+- Browser mode owns the migrated agentd slice: authenticated settings/credential writes, bounded secure-transport probes, daemon-owned app-password IMAP polling for text/plain messages, gated SMTP delivery for approved text drafts, queued inbound-event consumption, and durable draft/session records. OAuth/Gmail API, rich MIME, attachments, and unsupported providers remain unavailable.
 - Both paths map email sessions into chat sessions using deterministic thread keys.
 
 Electron flow:
@@ -29,9 +29,9 @@ Browser flow:
 
 1. User configures settings in Edge/Chrome.
 2. The browser persists non-secret settings and write-only credentials through authenticated agentd routes.
-3. `Test Connection` runs a bounded IMAP/SMTP transport probe; it does not start a mailbox worker.
-4. A trusted producer may post normalized inbound events to agentd; the browser consumes them only when `Enable Email Channel` and `Auto-Reply` are both on.
-5. Browser drafts and session records remain agentd-owned. IMAP/Gmail polling, OAuth, SMTP delivery and native file/credential operations remain Electron-only until migrated.
+3. `Test Connection` runs a bounded IMAP/SMTP transport probe; the daemon mailbox worker separately starts only when Enable, app-password, IMAP TLS/host, and OS-credential gates pass.
+4. The daemon polls bounded text/plain IMAP messages using a durable UID cursor and queues normalized inbound events; the browser claims them only when `Enable Email Channel` and `Auto-Reply` are both on.
+5. Browser drafts and session records remain agentd-owned. Google OAuth/Gmail API, rich MIME/attachments, and native file/credential operations remain Electron-only until migrated; approved text-only SMTP drafts use the daemon route.
 
 Current policy behavior:
 
@@ -84,8 +84,8 @@ Browser checks:
 
 Expected browser result:
 
-- `Secure transport reachable ... Browser runtime remains fail-closed until channel worker migration is complete.`
-- The browser must not claim that polling, auto-reply delivery or SMTP send is active.
+- `Secure transport reachable ...` with bounded IMAP/SMTP TLS diagnostics and no credential values.
+- The browser must distinguish transport reachability from the separately gated mailbox poller and approved-draft SMTP send.
 
 ### 3. Local automated tests
 Run the repo’s deterministic test layers:
@@ -123,7 +123,7 @@ The live OpenRouter suite does not replace the dedicated-mailbox email QA flow.
 If you want a true end-to-end email smoke test:
 
 - Electron: configure a real mailbox, run `Test Connection`, enable the channel, and verify a real inbound message and policy-controlled response.
-- Browser: verify settings/credential persistence and the bounded transport probe, then inject a normalized agentd inbound event. Confirm it becomes a session only when both `Enable Email Channel` and `Auto-Reply` are on; do not expect mailbox polling or SMTP delivery yet.
+- Browser: verify settings/credential persistence and the bounded transport probe, then use an authorized app-password IMAP test mailbox. Confirm bounded text/plain messages queue through the daemon UID cursor and become a session only when both `Enable Email Channel` and `Auto-Reply` are on; approve a text draft and verify the separately gated SMTP route.
 
 ## Current Work Status
 
@@ -136,7 +136,7 @@ Browser mode now exposes an authenticated, durable email ingress contract:
 - `GET /api/v1/email/inbound?after_id=<id>&limit=<n>` reads queued events with a bounded cursor page (`n` capped at 50).
 - Payloads are bounded and require sender, body, body type, and timestamp. Credentials never enter the event payload.
 
-This slice stores real normalized events for the browser session consumer to consume. It does not claim IMAP polling, SMTP delivery or Gmail OAuth parity; native Electron remains owner of those transports.
+This slice stores real normalized events for the browser session consumer to consume. The daemon now owns the bounded app-password IMAP/SMTP path; Gmail OAuth/API, rich MIME/attachments and unsupported provider transports remain Electron-owned.
 
 When the browser Email channel is enabled and Auto-Reply is explicitly on, the browser polls this bounded cursor, creates or reuses the deterministic agentd-backed email session, and appends the normalized message once. With Auto-Reply off, events remain durable and the UI reports that they are stored but gated; they are not silently routed into an agent session. This is an ingress/session-continuity slice only: there is still no browser IMAP/Gmail worker, outbound delivery, draft approval/send path, or browser-side credential read.
 

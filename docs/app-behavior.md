@@ -246,14 +246,14 @@ Pass evidence:
 
 ### Positioning
 
-- Electron currently runs the legacy client-side local connector flow. In the browser product, non-secret Email configuration and outbound text delivery are owned by authenticated `agentd`; inbound mailbox polling remains explicitly unavailable until its daemon adapter is migrated.
+- Electron currently runs the legacy client-side local connector flow. In the browser product, non-secret Email configuration, bounded app-password IMAP polling, and outbound text delivery are owned by authenticated `agentd`; OAuth/Gmail API and rich MIME paths remain explicitly unavailable.
 - The primary path is IMAP/SMTP.
 - Gmail is presented as a first-class option, but defaults to app-password mode.
 - Google sign-in is optional, not required.
 - Browser Email settings never use renderer `localStorage` and app-password values are write-only through the authenticated daemon credential route; the browser cannot read them back.
 - Browser email drafts are persisted as bounded, authenticated `agentd` records. Reloading Edge/Chrome rehydrates the same pending/rejected/approved history; the browser does not use renderer `localStorage` as a second draft authority.
 - On the first browser startup after this migration, a legacy `aica-email-drafts-v1` renderer record is validated and handed off to agentd; the legacy key is removed only after every draft is accepted, so malformed or partially migrated data remains recoverable for owner review.
-- In browser mode, enabling the Email Channel persists the desired state and controls consumption of inbound events already queued in agentd; it does not start IMAP/Gmail polling. Outbound SMTP delivery is available only through the explicit approved-draft send route and its gates.
+- In browser mode, enabling the Email Channel persists the desired state and starts the daemon IMAP poller only when app-password mode, IMAP TLS, an IMAP host, and the OS credential are present. `Auto-Reply` controls whether the browser claims events and creates sessions; it does not control mailbox ingestion. Outbound SMTP delivery is available only through the explicit approved-draft send route and its gates.
 - When browser Auto-Reply is enabled, the page reads only queued normalized events and acknowledges each event through an authenticated agentd mutation after its session and message are durably hydrated. Acknowledgement is idempotent; an interrupted tab leaves the event queued for retry after reload. Completed events are not reprocessed by another browser tab.
 
 ### Provider and auth behavior
@@ -271,36 +271,36 @@ Pass evidence:
 
 Pass evidence:
 
-- Electron Gmail app-password mode can test and start without requiring OAuth. Browser Gmail app-password mode can persist credentials, run the bounded transport probe, and deliver explicitly approved text-only drafts through authenticated SMTP; it cannot start the mailbox poller yet.
+- Electron Gmail app-password mode can test and start without requiring OAuth. Browser Gmail app-password mode can persist credentials, run the bounded transport probe, start the gated text-only IMAP poller, and deliver explicitly approved text-only drafts through authenticated SMTP; it cannot use Google OAuth/Gmail API polling.
 - Gmail Google sign-in mode fails cleanly when OAuth is not configured or not signed in.
 
 Browser parity boundary:
 
 - In browser mode, email settings and app-password credentials are stored by authenticated local `agentd`; the renderer never reads password values back.
-- `Test Connection` performs a server-side IMAP/SMTP secure-transport probe and reports only bounded reachability/TLS results. It does not expose credentials or claim that the inbound mailbox worker has migrated.
+- `Test Connection` performs a server-side IMAP/SMTP secure-transport probe and reports only bounded reachability/TLS results. It does not expose credentials or guarantee that the separately gated background mailbox worker is currently healthy.
 - Browser Gmail Google Sign-In and custom MCP transports fail closed with an explicit unsupported message until their native flow/worker is migrated. Electron remains the fallback for full OAuth and channel-worker behavior.
 - Browser settings survive reload/restart without exposing the credential value; browser test/start reports a clear transport-migration message instead of probing Electron IPC.
-- Draft edits, approvals, rejection, deletion, and explicit send use authenticated agentd mutations with CSRF protection. Only an approved draft, enabled app-password transport, and an OS-stored SMTP credential can trigger delivery. The daemon sends text/plain only over authenticated TLS/STARTTLS, marks the draft `sent` only after a 250 response, and marks failed attempts `failed`; unsupported OAuth, custom MCP, attachments, and inbound polling remain fail-closed.
+- Draft edits, approvals, rejection, deletion, and explicit send use authenticated agentd mutations with CSRF protection. Only an approved draft, enabled app-password transport, and an OS-stored SMTP credential can trigger delivery. The daemon sends text/plain only over authenticated TLS/STARTTLS, marks the draft `sent` only after a 250 response, and marks failed attempts `failed`; unsupported OAuth, custom MCP, multipart/HTML messages, and attachments remain fail-closed.
 - Browser continuity status is read-only and authenticated. It reports agentd-owned record counts, the allowlisted Electron-to-agentd store contract, and per-key credential presence (`present`/`available`) without returning secret values. Electron stores remain `pending` until an explicit owner-approved native migration flow validates, backs up, imports, and requires reauthentication; the browser endpoint never reads or imports Electron files. Native staging is hash-checked and retry-safe after a lost response; a tampered or partial snapshot fails closed and must be explicitly rolled back.
 
 ### Channel gating
 
-- In Electron, `Enable Email Channel` controls whether the background email bridge starts. In browser mode, it persists the desired state and controls consumption of already-queued agentd events; it does not start a mailbox poller or authorize delivery by itself.
+- In Electron, `Enable Email Channel` controls whether the background email bridge starts. In browser mode, it persists the desired state and controls whether the daemon's gated IMAP poller runs; it does not authorize SMTP delivery by itself.
 - `Draft Mode` controls whether even high-confidence outbound replies are held as drafts.
-- `Auto-Reply` controls whether inbound email messages are submitted into the agent pipeline.
-- Current behavior: if `Auto-Reply` is off, inbound emails are ignored by the email bridge and no session is created from inbound mail.
+- `Auto-Reply` controls whether the browser claims queued inbound email messages and submits them into the agent pipeline. The daemon may still ingest and retain normalized events while this gate is off.
+- Current behavior: if `Auto-Reply` is off, inbound emails do not create browser email sessions; enabling it claims queued events after durable session/message hydration.
 
 Pass evidence:
 
 - With `Auto-Reply` off, inbound email does not create an email session.
 - With `Auto-Reply` on and the channel enabled, inbound email can create a session.
 - Browser `Test Connection` reaches the local agentd endpoint, rejects missing credentials, and never returns the stored app password.
-- Browser inbound processing is restart-safe: the daemon can atomically claim queued events as `processing` before the browser maps them to sessions/messages, then agentd marks them completed only after persistence succeeds; duplicate claims and acknowledgements do not create another chat message. The claim route is a queue/worker boundary only—it does not poll IMAP/Gmail.
+- Browser inbound processing is restart-safe: the daemon IMAP worker queues UID-deduplicated events, then the browser atomically claims them as `processing` before mapping them to sessions/messages, and agentd marks them completed only after persistence succeeds; duplicate claims and acknowledgements do not create another chat message. The claim route is the queue/worker boundary; OAuth/Gmail API polling is still unavailable.
 - In browser mode, the Drafts panel allows review/edit/approve/reject and invokes the daemon-owned send route only for approved text-only drafts. It must not call an Electron IPC fallback or append a synthetic send failure to the draft text.
 
 ### Safety and reply behavior
 
-- Electron `Test Connection` starts and stops the legacy email channel to verify connectivity. Browser `Test Connection` only runs the authenticated agentd secure-transport probe; it must not claim that mailbox polling is active. Browser draft send performs the separate authenticated SMTP transaction.
+- Electron `Test Connection` starts and stops the legacy email channel to verify connectivity. Browser `Test Connection` runs the authenticated agentd secure-transport probe; background IMAP polling has its own enable/TLS/credential gates. Browser draft send performs the separate authenticated SMTP transaction.
 - Drafts are the safe default.
 - Sensitive topics such as refunds, legal, disputes, fraud, and account-deletion style requests escalate.
 - Medium-confidence replies become drafts.

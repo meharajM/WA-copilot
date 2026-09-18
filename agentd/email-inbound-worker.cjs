@@ -200,13 +200,23 @@ async function pollMailbox(settings, password, lastUid = 0) {
     await session.command('SELECT INBOX')
     const search = await session.command(`UID SEARCH UID ${Math.max(1, lastUid + 1)}:*`)
     const line = search.lines.find(item => /^\* SEARCH(?: |$)/.test(item)) || ''
-    const uids = (line.match(/\d+/g) || []).map(Number).filter(uid => Number.isSafeInteger(uid) && uid > lastUid).slice(0, 50)
+    const uids = (line.match(/\d+/g) || []).map(Number)
+      .filter(uid => Number.isSafeInteger(uid) && uid > lastUid)
+      .sort((a, b) => a - b)
+      .slice(0, 50)
     const messages = []
     for (const uid of uids) {
       const response = await session.command(`UID FETCH ${uid} (UID BODY.PEEK[])`)
       const raw = response.literals[0]
       if (!raw) throw new Error('IMAP message literal missing')
-      messages.push({ uid, payload: parseTextMessage(raw) })
+      try {
+        messages.push({ uid, payload: parseTextMessage(raw) })
+      } catch (error) {
+        // A malformed/unsupported message is immutable on the server. Return a
+        // bounded rejection marker so one bad message cannot block newer mail;
+        // the worker advances the UID cursor without ingesting its content.
+        messages.push({ uid, rejected: true, reason: error instanceof Error ? error.message : 'Unsupported email message' })
+      }
     }
     return messages
   } finally {
@@ -245,8 +255,16 @@ class EmailInboundWorker {
         if (password) {
           this.active = this.poll(settings, password, this.getCursor())
           const messages = await this.active
-          for (const message of messages) await this.onMessage(settings, message)
-          if (messages.length) this.setCursor(messages[messages.length - 1].uid)
+          for (const message of messages) {
+            if (message.rejected) {
+              this.logger.warn?.(`[agentd] skipped unsupported inbound email: ${message.reason}`)
+            } else {
+              await this.onMessage(settings, message)
+            }
+            // Persist after every UID. A later transient failure must not make
+            // earlier successful messages replay on the next poll.
+            this.setCursor(message.uid)
+          }
         }
       } catch { this.logger.warn?.('[agentd] email inbound polling failed') }
       finally { this.active = null }

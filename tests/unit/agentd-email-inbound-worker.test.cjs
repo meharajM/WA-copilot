@@ -56,6 +56,56 @@ test('fake IMAP server fetches UID messages and normalizes durable event payload
   await new Promise(resolve => server.close(resolve))
 })
 
+test('malformed messages are rejected without blocking later UIDs', async () => {
+  const messages = await (async () => {
+    const server = net.createServer(socket => {
+      socket.write('* OK fake IMAP\r\n')
+      let data = ''
+      socket.on('data', chunk => {
+        data += chunk.toString('utf8')
+        let end
+        while ((end = data.indexOf('\r\n')) >= 0) {
+          const command = data.slice(0, end); data = data.slice(end + 2)
+          const tag = command.split(' ', 1)[0]
+          if (/ LOGIN /.test(command)) socket.write(`${tag} OK LOGIN\r\n`)
+          else if (/SELECT INBOX/.test(command)) socket.write(`${tag} OK SELECT\r\n`)
+          else if (/UID SEARCH/.test(command)) socket.write('* SEARCH 1 2\r\n' + `${tag} OK SEARCH\r\n`)
+          else if (/UID FETCH 1 /.test(command)) {
+            const bad = Buffer.from('Content-Type: text/html\r\n\r\nbad')
+            socket.write(`* 1 FETCH (UID 1 BODY[] {${bad.length}}\r\n` + bad + `\r\n)\r\n${tag} OK FETCH\r\n`)
+          } else if (/UID FETCH 2 /.test(command)) {
+            const good = Buffer.from('Content-Type: text/plain\r\n\r\ngood')
+            socket.write(`* 2 FETCH (UID 2 BODY[] {${good.length}}\r\n` + good + `\r\n)\r\n${tag} OK FETCH\r\n`)
+          } else socket.write(`${tag} OK\r\n`)
+        }
+      })
+    })
+    const port = await listen(server)
+    const result = await pollMailbox({ imapHost: '127.0.0.1', imapPort: port, imapTls: false, userName: 'user', emailAddress: 'user@example.test' }, 'password', 0)
+    await new Promise(resolve => server.close(resolve))
+    return result
+  })()
+  assert.equal(messages.length, 2)
+  assert.equal(messages[0].rejected, true)
+  assert.equal(messages[1].payload.body, 'good')
+})
+
+test('worker persists the cursor after each accepted message', async () => {
+  const cursors = []
+  const worker = new EmailInboundWorker({
+    credentials: { get: async () => 'secret' },
+    getSettings: () => ({ enabled: true, provider: 'imap-smtp', gmailAuthMode: 'app-password', imapHost: 'x', imapTls: true, pollingIntervalSeconds: 60 }),
+    getCursor: () => cursors.at(-1) || 0,
+    setCursor: uid => cursors.push(uid),
+    onMessage: async (_settings, message) => { if (message.uid === 2) throw new Error('transient') },
+    logger: { warn() {} },
+    poll: async () => [{ uid: 1, payload: { body: 'one' } }, { uid: 2, payload: { body: 'two' } }],
+  })
+  await worker.start()
+  worker.stop()
+  assert.deepEqual(cursors, [1])
+})
+
 test('inbound worker fail-closes when browser email TLS/app-password gate is incomplete', async () => {
   let calls = 0
   const worker = new EmailInboundWorker({
