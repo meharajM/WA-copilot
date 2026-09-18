@@ -467,6 +467,11 @@ test('agentd persists bounded product preferences and redacts browser audit logs
   }
   assert.deepEqual((await request(origin, 'PUT', '/api/v1/settings/preferences', preferences, auth)).body, preferences)
   assert.deepEqual((await request(origin, 'GET', '/api/v1/settings/preferences', undefined, auth)).body, preferences)
+  const legacyMemory = { ...preferences, memoryBackend: 'server-memory' }
+  const normalizedLegacy = await request(origin, 'PUT', '/api/v1/settings/preferences', legacyMemory, auth)
+  assert.equal(normalizedLegacy.status, 200)
+  assert.equal(normalizedLegacy.body.memoryBackend, 'sqlite')
+  assert.equal((await request(origin, 'GET', '/api/v1/settings/preferences', undefined, auth)).body.memoryBackend, 'sqlite')
   assert.equal((await request(origin, 'PUT', '/api/v1/settings/preferences', { ...preferences, unknown: true }, auth)).status, 400)
   assert.equal((await request(origin, 'PUT', '/api/v1/settings/preferences', { ...preferences, ttsRate: 99 }, auth)).status, 400)
 

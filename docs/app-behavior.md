@@ -206,9 +206,10 @@ Pass evidence:
 
 ### Runtime gating
 
-- Incoming WhatsApp messages are ignored if both of these are off:
+- In Electron, incoming WhatsApp messages are ignored if both of these are off:
   - `Response Permission` (`whatsappEnabled`)
   - `Autonomous Bot Mode` (`businessBotMode`)
+- In the browser product, `Autonomous Bot Mode` is unavailable and forced off; inbound review hydration is gated only by `Response Permission`.
 - Incoming self-messages are ignored.
 - On disconnect or connection error, `Response Permission` is automatically turned off.
 - In browser mode, `Response Permission` and the selected target number are persisted in authenticated `agentd` UI state; a one-time legacy renderer copy may be imported only after pairing and is removed after a successful read. `Autonomous Bot Mode` is never persisted or restored in the browser and any legacy value is cleared before browser inbound polling can run; opening Settings repeats the visible-state cleanup. Inbound events remain review-only until the daemon supervisor can safely execute the response-policy path. Explicit text sends and approved drafts remain separately gated.
@@ -367,9 +368,10 @@ Pass evidence:
 ### Knowledge Base settings
 
 - Knowledge Base settings expose long-term memory configuration, not just RAG files.
-- Supported memory backends are:
+- Electron supports two selectable memory backends:
   - `sqlite` (recommended default)
   - `server-memory` (compatibility backend)
+- The browser product has one instantiated memory backend: daemon-owned SQLite (`agentd-sqlite`). A legacy browser preference containing `server-memory` is accepted only for recovery and canonicalized to SQLite before it is returned or persisted; the browser never starts an MCP `server-memory` process.
 - The panel shows entity count, relation count, storage size, and average search latency.
 - `memento-mcp` is not selectable until its adapter is implemented. Persisted legacy selections fall back to SQLite.
 - A memory inspector is available.
@@ -379,7 +381,7 @@ Browser session channel/contact metadata is also persisted by authenticated `age
 
 Pass evidence:
 
-- Backend change persists.
+- Electron backend changes persist after restart. In the browser, selecting SQLite persists the browser preference and a legacy `server-memory` value is visibly normalized to SQLite; no second memory process is started.
 - Stats refresh works.
 - Test write updates memory state when the backend is working.
 

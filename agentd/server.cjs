@@ -3950,12 +3950,17 @@ function parseProductPreferences(value) {
     || typeof value.offlineSpeech !== 'boolean'
     || !validBoundedText(value.voskModel, 128)
     || !validBoundedText(value.browserModel, 128)) return null
+  // The browser product has one durable memory implementation today: the
+  // daemon-owned SQLite store. Keep accepting the legacy Electron
+  // `server-memory` value so an older browser profile can recover, but
+  // canonicalize it before it is returned or persisted. This prevents the
+  // settings UI from advertising a backend that agentd cannot instantiate.
   return {
     theme: value.theme,
     playwrightBrowser: value.playwrightBrowser,
     playwrightHeadless: value.playwrightHeadless,
     fileSystemSafeMode: value.fileSystemSafeMode,
-    memoryBackend: value.memoryBackend,
+    memoryBackend: value.memoryBackend === 'server-memory' ? 'sqlite' : value.memoryBackend,
     ttsEnabled: value.ttsEnabled,
     ttsRate: value.ttsRate,
     ttsPitch: value.ttsPitch,

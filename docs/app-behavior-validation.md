@@ -79,11 +79,29 @@ The older support-doc drift identified by the first audit is now corrected in th
 
 The current run completed these checks successfully; build tools emitted only their existing warnings.
 
+### Follow-up memory-boundary audit
+
+The code-first review found that the browser preference schema still accepted the
+Electron-only `server-memory` label even though agentd's memory routes always use
+the daemon-owned SQLite tables (`backend: agentd-sqlite`). The route now accepts
+that legacy value only as a compatibility input and canonicalizes it to `sqlite`
+before persistence/response. The browser settings copy also distinguishes this
+fixed browser backend from Electron's compatibility choice. This keeps a stale
+profile from reporting a backend that the browser cannot actually instantiate.
+
+Evidence:
+
+- [agentd/server.cjs](/Users/meharaj/WA-copilot/agentd/server.cjs): `parseProductPreferences` and `memoryStatsValue`
+- [src/renderer/src/components/settings/MemoryPreferencesPanel.tsx](/Users/meharaj/WA-copilot/src/renderer/src/components/settings/MemoryPreferencesPanel.tsx): browser-specific backend copy
+- [docs/app-behavior.md](/Users/meharaj/WA-copilot/docs/app-behavior.md): browser/Electron memory backend contract
+
 ### Real-user browser smoke
 
 On 2026-09-18, the browser entry was opened at `http://127.0.0.1:5173/tauri.html?workspace=1` with no local daemon available. The UI showed `AICA / BROWSER WORKSPACE`, `Local service unavailable`, and `Retry connection`; activating retry kept the same fail-closed state and did not mount the product workspace. This passes the unavailable-service contract. Pairing and full workspace navigation require a running owner-supervised agentd instance and were not claimed by this smoke.
 
 The same audit also ran an isolated owner-supervised agentd on a temporary loopback port with a disposable pairing code. The browser pairing form accepted the one-time code, mounted the full product workspace, navigated through the sidebar and Settings, and showed the explicit `On-Device (WebGPU)` provider card with user-initiated model-download controls. The in-app browser surface did not expose `navigator.gpu`, so no real WebGPU adapter or model download was claimed. The native Tauri surface showed diagnostics, service status, owner pairing, picker and credential-presence controls only; it did not mount the product workspace.
+
+The follow-up real-user smoke used the current daemon-served bundle on a disposable loopback port. After pairing, Settings → Knowledge Base showed `Memory backend: agentd-sqlite`, disabled `Server Memory (desktop)` with the Electron-only explanation, and the browser-specific fixed-backend copy. `Test Write` incremented the memory entity count from 0 to 1; reloading the browser preserved that count and the dashboard's learned-facts metric. This proves the browser memory route and reload persistence on macOS; it does not claim Windows Credential Manager, packaged Windows, or Electron memory-backend migration evidence.
 
 ## Confirmed Alignment
 

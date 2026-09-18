@@ -107,7 +107,9 @@ export function MemoryPreferencesPanel() {
                     </button>
                 </div>
                 <p className="mt-3 text-xs text-[var(--color-text-dim)]">
-                    Backend changes take effect after restarting the app. The browser product uses agentd SQLite for this migration slice; Server Memory remains an Electron transition option until its data adapter is migrated.
+                    {browserProduct
+                        ? 'The browser product uses the daemon-owned SQLite store. Existing Server Memory preferences are migrated to SQLite and are not instantiated in the browser.'
+                        : 'Backend changes take effect after restarting the app. Server Memory remains available for Electron compatibility while the migration is in progress.'}
                 </p>
             </div>
 
