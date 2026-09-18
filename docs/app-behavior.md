@@ -25,10 +25,18 @@ If older manuals, screenshots, or marketing copy disagree with the running code,
 - The supported product workspace is rendered in the user's web browser (Windows Edge or Chrome are the primary targets) and talks to the local authenticated `agentd` service over loopback HTTP.
 - The Tauri companion is a lightweight native host for OS-only capabilities such as keychain access, file/folder dialogs, service lifecycle and diagnostics. It must not render a second product workspace or own business workflows.
 - In a real Tauri runtime, the only rendered surface is the native-host diagnostics/onboarding screen. Chat, settings, channels, Brain/knowledge, memory, approvals and all other product screens are browser-only; no query parameter can opt a Tauri window into them.
+- The runtime entrypoints are intentionally different: Electron's `index.html` mounts the legacy `App.tsx` client, while `tauri.html` mounts `tauri-main.tsx`. In a normal Edge/Chrome tab, `tauri-main.tsx` mounts `BrowserProduct`; inside a Tauri webview it mounts `NativeHostDiagnostics` only.
 - In the browser product, native dependency installation/checks are skipped explicitly; host tools are owned by the companion/agentd boundary and the browser must not show an Electron terminal-install gate.
-- The expected Windows flow is: start the native companion/service, choose `Open browser workspace` from the native diagnostics/tray, pair once in Edge or Chrome, and keep using the browser tab. The companion also displays the bounded loopback URL for manual copy. Closing the browser or companion does not stop `agentd`.
-- Closing the browser or companion does not stop `agentd`; explicit agent controls own processing state.
+- The expected Windows flow is: start the native companion/service, choose `Open browser workspace` from the native diagnostics/tray, pair once in Edge or Chrome with the six-digit code revealed by the owner action, and keep using the browser tab. The companion also displays the bounded loopback URL for manual copy. The code is one-time, short-lived, never copied into browser storage, and never returned by the product API.
+- `agentd` owns the loopback HTTP listener, pairing/session state and durable product database. The native host validates the private runtime descriptor and reuses a live daemon; it starts a packaged child only when no valid daemon is available. Closing the browser or companion does not stop a running `agentd`; explicit agent controls own processing state. Automatic service installation, crash recovery and OS user-service registration are not yet release-complete behaviors.
+- When the daemon serves the bundled UI, a request for `/` falls back to the `tauri.html` entry when no `index.html` exists. Direct requests for unsupported or traversal paths fail closed rather than exposing files outside the UI root.
 - Electron remains a transition client until browser plus `agentd` feature/data parity is evidenced.
+
+### Native-host-only actions
+
+- The native diagnostics screen may report daemon health/origin/version, reveal the owner pairing code, open the browser workspace, select a file or folder for an explicitly initiated workflow, check credential presence, and stage/rollback the bounded continuity snapshot.
+- Native commands return paths or status only to the native host workflow that requested them. Browser product code does not receive arbitrary native filesystem paths, secret values, pairing codes or a generic native command proxy.
+- A custom button label for the native file picker is rejected because the Tauri dialog does not support that option; callers must use the platform picker labels.
 
 ## Verification Order
 
@@ -53,6 +61,11 @@ For packaged-app testing, also verify one of:
 
 - `/Applications/AIConsumerAgent.app`
 - `dist/mac-arm64/AIConsumerAgent.app`
+
+Repository validation note:
+
+- The repository-wide `npm run typecheck` currently stops at the intentionally ignored legacy Electron import `src/main/ipc/antigravity.ts -> src/main/services/AntigravityAuthService.ts`. That file is secret-bearing local setup and is not recreated as a browser/Tauri shim. Until the legacy service is restored or removed as part of the Electron retirement gate, record the full preflight as **blocked at typecheck**, not as a product pass.
+- The browser/Tauri migration checks remain independently runnable: `npm run typecheck:renderer`, `npm run test:unit`, `npm run test:integration`, `npm run test:agentd`, `npm run test:agentd:credentials`, `cargo test --locked --manifest-path src-tauri/Cargo.toml`, and `npm run build:tauri:web`. Report each command separately and include the native Windows CI result when evaluating a Windows release candidate.
 
 ## Global Contract
 
@@ -507,6 +520,8 @@ Pass evidence:
 For every manual test run, capture:
 
 - build and test preflight result
+- runtime boundary used (`Edge`/`Chrome` browser workspace, Tauri native diagnostics, or Electron transition client)
+- Windows host/packaging evidence when claiming Windows readiness (native-host tests, bundle, signing/install smoke, and resource measurements are separate gates)
 - app build or install path used
 - exact feature area tested
 - expected behavior from this document
