@@ -207,7 +207,7 @@ function DraftCard({
   onStartEdit,
   onSaveEdit,
   onCancelEdit,
-  onApprove,
+  onApprove: _onApprove,
   onSend,
   onReject,
   canSend,
