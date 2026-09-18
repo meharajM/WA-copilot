@@ -56,7 +56,13 @@ test('native settings/persona cutover is schema-aware, transactional, fenced, an
   assert.equal(typeof confirmation.body.confirmationToken, 'string')
   assert.equal((await request(origin, 'GET', `/api/v1/continuity/settings-persona/status?previewId=${preview.body.previewId}`, undefined, bearer)).body.state, 'confirmed')
 
-  const applied = await request(origin, 'POST', '/api/v1/continuity/settings-persona/apply', { previewId: preview.body.previewId, confirmationToken: confirmation.body.confirmationToken }, bearer)
+  const releaseActive = server.beginActiveOperation()
+  let applySettled = false
+  const applying = request(origin, 'POST', '/api/v1/continuity/settings-persona/apply', { previewId: preview.body.previewId, confirmationToken: confirmation.body.confirmationToken }, bearer).then(result => { applySettled = true; return result })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(applySettled, false)
+  releaseActive()
+  const applied = await applying
   assert.equal(applied.status, 200)
   assert.equal(applied.body.state, 'applied')
   assert.equal(fs.statSync(applied.body.backupSha256 && fs.readdirSync(path.join(dataDir, 'migration-backups')).map(name => path.join(dataDir, 'migration-backups', name))[0]).mode & 0o077, 0)
@@ -74,4 +80,46 @@ test('native settings/persona cutover is schema-aware, transactional, fenced, an
   await server.stop()
   fs.rmSync(dataDir, { recursive: true, force: true })
   fs.rmSync(sourceRoot, { recursive: true, force: true })
+})
+
+test('settings/persona rejects duplicate or unknown Electron settings fields', async () => {
+  const dataDir = makeTempDir('aica-agentd-settings-schema-')
+  const sourceRoot = sourceFixture()
+  const secret = 's'.repeat(32)
+  const server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
+  const { origin } = await server.start()
+  const bearer = { authorization: `Bearer ${secret}` }
+  fs.writeFileSync(path.join(sourceRoot, 'aica-store.json'), '{"aica-settings":{"state":{"theme":"light","unknown":"reject"},"version":0}}')
+  const preview = await request(origin, 'POST', '/api/v1/continuity/preview', { sourceRoot }, bearer)
+  await request(origin, 'POST', '/api/v1/continuity/import', { previewId: preview.body.previewId, ownerConfirmation: 'IMPORT_ELECTRON_DATA' }, bearer)
+  assert.equal((await request(origin, 'POST', '/api/v1/continuity/settings-persona/confirm', { previewId: preview.body.previewId, scope: 'settings-persona' }, bearer)).status, 400)
+  fs.writeFileSync(path.join(sourceRoot, 'aica-store.json'), '{"aica-settings":{"state":{"theme":"light","theme":"dark"},"version":0}}')
+  const duplicatePreview = await request(origin, 'POST', '/api/v1/continuity/preview', { sourceRoot }, bearer)
+  await request(origin, 'POST', '/api/v1/continuity/import', { previewId: duplicatePreview.body.previewId, ownerConfirmation: 'IMPORT_ELECTRON_DATA' }, bearer)
+  assert.equal((await request(origin, 'POST', '/api/v1/continuity/settings-persona/confirm', { previewId: duplicatePreview.body.previewId, scope: 'settings-persona' }, bearer)).status, 400)
+  fs.rmSync(sourceRoot, { recursive: true, force: true })
+  await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true })
+})
+
+test('cutover status survives restart and rollback rejects tampered backups', async () => {
+  const dataDir = makeTempDir('aica-agentd-settings-restart-')
+  const sourceRoot = sourceFixture()
+  const secret = 's'.repeat(32)
+  let server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
+  let { origin } = await server.start()
+  const bearer = { authorization: `Bearer ${secret}` }
+  const preview = await request(origin, 'POST', '/api/v1/continuity/preview', { sourceRoot }, bearer)
+  await request(origin, 'POST', '/api/v1/continuity/import', { previewId: preview.body.previewId, ownerConfirmation: 'IMPORT_ELECTRON_DATA' }, bearer)
+  const confirmation = await request(origin, 'POST', '/api/v1/continuity/settings-persona/confirm', { previewId: preview.body.previewId, scope: 'settings-persona' }, bearer)
+  assert.equal((await request(origin, 'POST', '/api/v1/continuity/settings-persona/apply', { previewId: preview.body.previewId, confirmationToken: confirmation.body.confirmationToken }, bearer)).body.state, 'applied')
+  await server.stop()
+  server = new AgentdServer({ dataDir, secret, logger: { log() {} } }); ({ origin } = await server.start())
+  assert.equal((await request(origin, 'GET', `/api/v1/continuity/settings-persona/status?previewId=${preview.body.previewId}`, undefined, bearer)).body.state, 'applied')
+  const backup = fs.readdirSync(path.join(dataDir, 'migration-backups'))[0]
+  fs.appendFileSync(path.join(dataDir, 'migration-backups', backup), 'tamper')
+  const rolledBack = await request(origin, 'POST', '/api/v1/continuity/settings-persona/rollback', { previewId: preview.body.previewId }, bearer)
+  assert.equal(rolledBack.status, 500)
+  assert.equal(rolledBack.body.state, 'needs-recovery')
+  assert.equal(server.migrationHold, true)
+  await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true }); fs.rmSync(sourceRoot, { recursive: true, force: true })
 })

@@ -8,7 +8,7 @@ const Database = require('better-sqlite3')
 const { isAllowedCredentialKey } = require('./keyring-credential-store.cjs')
 const continuityMigration = require('./continuity-migration.cjs')
 const { sendTextEmail } = require('./email-transport.cjs')
-const { EmailInboundWorker } = require('./email-inbound-worker.cjs')
+const { EmailInboundWorker, pollMailbox } = require('./email-inbound-worker.cjs')
 
 const SESSION_TTL_MS = 15 * 60 * 1000
 const PAIRING_TTL_MS = 5 * 60 * 1000
@@ -120,6 +120,7 @@ const PRODUCT_PREFERENCES_DEFAULTS = Object.freeze({
   voskModel: 'en-us',
   browserModel: 'Qwen2.5-1.5B-Instruct-q4f16_1-MLC',
 })
+const SAFE_IGNORED_ELECTRON_SETTINGS_KEYS = Object.freeze(['activeUserId', 'isSyncing', 'lastSyncTime', 'openaiBaseUrl', 'geminiModel'])
 const WHATSAPP_SETTINGS_DEFAULTS = Object.freeze({
   whatsapp_transport: 'baileys',
   whatsapp_cloud_phone_number_id: '',
@@ -344,6 +345,66 @@ function writePrivateFileAtomically(filename, contents) {
   }
 }
 
+function readMigrationFile(filename) {
+  if (process.platform === 'win32' && fs.constants.O_NOFOLLOW === undefined) {
+    throw Object.assign(new Error('Settings migration requires trusted native no-reparse file access on Windows'), { statusCode: 503 })
+  }
+  const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0)
+  let handle
+  try {
+    handle = fs.openSync(filename, flags)
+    const stat = fs.fstatSync(handle)
+    if (!stat.isFile()) throw new Error('unsafe')
+    return fs.readFileSync(handle)
+  } finally {
+    if (handle !== undefined) fs.closeSync(handle)
+  }
+}
+
+function parseJsonWithoutDuplicateKeys(bytes, label) {
+  const text = bytes.toString('utf8')
+  let index = 0
+  const whitespace = () => { while (/\s/.test(text[index] || '')) index += 1 }
+  const string = () => {
+    if (text[index] !== '"') throw new Error(`Invalid ${label}`)
+    const start = index++
+    while (index < text.length) {
+      if (text[index] === '\\') index += 2
+      else if (text[index++] === '"') return JSON.parse(text.slice(start, index))
+    }
+    throw new Error(`Invalid ${label}`)
+  }
+  const value = () => {
+    whitespace()
+    if (text[index] === '{') {
+      index += 1; whitespace(); const keys = new Set()
+      if (text[index] === '}') { index += 1; return }
+      while (true) {
+        const key = string()
+        if (keys.has(key)) throw new Error(`Duplicate JSON key: ${key}`)
+        keys.add(key); whitespace()
+        if (text[index++] !== ':') throw new Error(`Invalid ${label}`)
+        value(); whitespace()
+        if (text[index] === '}') { index += 1; return }
+        if (text[index++] !== ',') throw new Error(`Invalid ${label}`)
+        whitespace()
+      }
+    }
+    if (text[index] === '[') {
+      index += 1; whitespace()
+      if (text[index] === ']') { index += 1; return }
+      while (true) { value(); whitespace(); if (text[index] === ']') { index += 1; return }; if (text[index++] !== ',') throw new Error(`Invalid ${label}`); whitespace() }
+    }
+    if (text[index] === '"') { string(); return }
+    const match = text.slice(index).match(/^(?:true|false|null|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)/)
+    if (!match) throw new Error(`Invalid ${label}`)
+    index += match[0].length
+  }
+  value(); whitespace()
+  if (index !== text.length) throw new Error(`Invalid ${label}`)
+  return JSON.parse(text)
+}
+
 function json(res, status, body, headers = {}) {
   const payload = JSON.stringify(body)
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...headers })
@@ -412,6 +473,8 @@ class AgentdServer {
     this.continuityPreviews = new Map()
     this.settingsPersonaCutovers = new Map()
     this.migrationHold = false
+    this.migrationOwner = false
+    this.activeOperations = new Set()
     this.pairingCode = pairingCode || String(crypto.randomInt(100000, 999999))
     this.pairingExpiresAt = Date.now() + PAIRING_TTL_MS
     this.pairingFailures = 0
@@ -508,6 +571,23 @@ class AgentdServer {
           timestamp TEXT NOT NULL,
           payload TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS settings_persona_cutovers (
+          preview_id TEXT PRIMARY KEY,
+          manifest TEXT NOT NULL,
+          manifest_hash TEXT NOT NULL,
+          scope TEXT NOT NULL,
+          target_runtime TEXT NOT NULL,
+          state TEXT NOT NULL,
+          confirmed_at INTEGER,
+          expires_at INTEGER,
+          token_hash TEXT,
+          consumed_at INTEGER,
+          backup_path TEXT,
+          backup_sha256 TEXT,
+          result TEXT,
+          error TEXT,
+          updated_at INTEGER NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS knowledge_documents (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           file_path TEXT NOT NULL,
@@ -579,6 +659,7 @@ class AgentdServer {
       if (!sessionColumns.some((column) => column.name === 'thread_id')) this.db.exec('ALTER TABLE chat_sessions ADD COLUMN thread_id TEXT')
       if (!sessionColumns.some((column) => column.name === 'topic')) this.db.exec('ALTER TABLE chat_sessions ADD COLUMN topic TEXT')
       this.db.prepare('INSERT INTO agent_state(key,value,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO NOTHING').run('paused', 'false', Date.now())
+      this.restoreSettingsPersonaCutovers()
       await new Promise((resolve, reject) => {
         this.server = http.createServer((req, res) => this.handle(req, res).catch(error => {
           const status = Number.isInteger(error.statusCode) ? error.statusCode : 500
@@ -734,7 +815,11 @@ class AgentdServer {
       getSettings: () => this.getEmailSettings(),
       getCursor: () => Number.parseInt(this.getState('email_imap_last_uid', '0'), 10) || 0,
       setCursor: uid => this.setState('email_imap_last_uid', String(uid)),
-      poll: this.emailPoll,
+      poll: async (...args) => {
+        const release = this.beginActiveOperation()
+        if (!release) return []
+        try { return await (this.emailPoll || pollMailbox)(...args) } finally { release() }
+      },
       logger: this.logger,
       onMessage: async (settings, message) => {
         if (this.migrationHold) return
@@ -1000,6 +1085,7 @@ class AgentdServer {
       targetRuntime: this.runtimeId,
       state: 'previewed',
     })
+    this.persistSettingsPersonaCutover(this.settingsPersonaCutovers.get(preview.previewId))
     // Keep preview manifests short-lived and memory-only. They contain paths and
     // hashes, never store contents or credentials.
     setTimeout(() => this.continuityPreviews.delete(preview.previewId), 10 * 60 * 1000).unref?.()
@@ -1018,8 +1104,9 @@ class AgentdServer {
   async continuityImport(req, res) {
     this.authorizeNative(req)
     const body = await readBody(req, 16 * 1024)
-    const preview = this.continuityPreviews.get(body.previewId)
-    if (!preview) return json(res, 404, { error: 'Migration preview expired' })
+    const persisted = this.settingsPersonaCutovers.get(body.previewId)
+    const preview = this.continuityPreviews.get(body.previewId) || this.cutoverPreview(persisted)
+    if (!preview && !persisted) return json(res, 404, { error: 'Migration preview expired' })
     if (body.ownerConfirmation !== 'IMPORT_ELECTRON_DATA') {
       return json(res, 403, { error: 'Explicit owner confirmation required' })
     }
@@ -1036,7 +1123,10 @@ class AgentdServer {
     const result = continuityMigration.rollback(body.migrationId, this.dataDir)
     this.continuityPreviews.delete(body.migrationId)
     const cutover = this.settingsPersonaCutovers.get(body.migrationId)
-    if (!cutover || ['previewed', 'confirmed'].includes(cutover.state)) this.settingsPersonaCutovers.delete(body.migrationId)
+    if (!cutover || ['previewed', 'confirmed'].includes(cutover.state)) {
+      this.settingsPersonaCutovers.delete(body.migrationId)
+      this.db.prepare('DELETE FROM settings_persona_cutovers WHERE preview_id = ?').run(body.migrationId)
+    }
     return json(res, 200, result)
   }
 
@@ -1046,12 +1136,58 @@ class AgentdServer {
     return true
   }
 
+  beginActiveOperation() {
+    if (this.migrationHold) return null
+    let release
+    const done = new Promise(resolve => { release = () => { this.activeOperations.delete(done); resolve() } })
+    this.activeOperations.add(done)
+    return release
+  }
+
+  assertMigrationOpen() {
+    if (this.migrationHold) throw Object.assign(new Error('Settings migration is committing'), { statusCode: 409 })
+  }
+
+  assertMigrationCommitReady() {
+    if (!this.migrationHold || !this.migrationOwner || this.activeOperations.size) throw Object.assign(new Error('Migration work is still active'), { statusCode: 409 })
+  }
+
+  async drainActiveOperations() {
+    while (this.activeOperations.size) await Promise.all([...this.activeOperations])
+  }
+
+  persistSettingsPersonaCutover(record) {
+    this.db.prepare(`INSERT INTO settings_persona_cutovers
+      (preview_id,manifest,manifest_hash,scope,target_runtime,state,confirmed_at,expires_at,token_hash,consumed_at,backup_path,backup_sha256,result,error,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(preview_id) DO UPDATE SET manifest=excluded.manifest,manifest_hash=excluded.manifest_hash,scope=excluded.scope,target_runtime=excluded.target_runtime,state=excluded.state,confirmed_at=excluded.confirmed_at,expires_at=excluded.expires_at,token_hash=excluded.token_hash,consumed_at=excluded.consumed_at,backup_path=excluded.backup_path,backup_sha256=excluded.backup_sha256,result=excluded.result,error=excluded.error,updated_at=excluded.updated_at`).run(
+      record.previewId, JSON.stringify(record.manifest), record.manifestHash, record.scope, record.targetRuntime, record.state,
+      record.confirmedAt || null, record.expiresAt || null, record.token ? crypto.createHash('sha256').update(record.token).digest('hex') : null,
+      record.consumedAt || null, record.backupPath || null, record.backupSha256 || null, record.result ? JSON.stringify(record.result) : null, record.error || null, Date.now())
+  }
+
+  restoreSettingsPersonaCutovers() {
+    for (const row of this.db.prepare('SELECT * FROM settings_persona_cutovers').all()) {
+      let manifest; let result
+      try { manifest = JSON.parse(row.manifest); result = row.result ? JSON.parse(row.result) : undefined } catch { continue }
+      const record = { previewId: row.preview_id, manifest, manifestHash: row.manifest_hash, scope: row.scope, targetRuntime: row.target_runtime, state: row.state, confirmedAt: row.confirmed_at || undefined, expiresAt: row.expires_at || undefined, consumedAt: row.consumed_at || undefined, backupPath: row.backup_path || undefined, backupSha256: row.backup_sha256 || undefined, result, error: row.error || undefined }
+      this.settingsPersonaCutovers.set(record.previewId, record)
+      if (record.state === 'needs-recovery' || record.state === 'applying') this.migrationHold = true
+    }
+  }
+
+  cutoverPreview(record) {
+    if (!record) return null
+    return this.continuityPreviews.get(record.previewId) || { previewId: record.previewId, createdAt: record.manifest.createdAt, manifest: record.manifest }
+  }
+
   migrationManifestHash(manifest) {
     return crypto.createHash('sha256').update(JSON.stringify(manifest)).digest('hex')
   }
 
   readSettingsPersonaInput(preview) {
     if (!preview || !preview.manifest || !Array.isArray(preview.manifest.entries)) throw Object.assign(new Error('Migration preview expired'), { statusCode: 404 })
+    if (process.platform === 'win32' && fs.constants.O_NOFOLLOW === undefined) throw Object.assign(new Error('Settings migration requires trusted native no-reparse file access on Windows'), { statusCode: 503 })
     const entries = preview.manifest.entries
     const required = ['electron-settings', 'electron-persona']
     if (required.some(id => !entries.some(entry => entry.id === id))) throw Object.assign(new Error('Settings/persona stores are missing from preview'), { statusCode: 409 })
@@ -1065,9 +1201,7 @@ class AgentdServer {
       const staged = path.join(stagingRoot, id)
       let bytes
       try {
-        const stat = fs.lstatSync(staged)
-        if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('unsafe')
-        bytes = fs.readFileSync(staged)
+        bytes = readMigrationFile(staged)
       } catch { throw Object.assign(new Error(`Staged migration file unavailable: ${id}`), { statusCode: 409 }) }
       if (bytes.length !== entry.byteSize || crypto.createHash('sha256').update(bytes).digest('hex') !== entry.sha256) throw Object.assign(new Error(`Staged migration file changed: ${id}`), { statusCode: 409 })
       if (bytes.length > SETTINGS_PERSONA_MAX_SOURCE_BYTES) throw Object.assign(new Error(`Migration store too large: ${id}`), { statusCode: 413 })
@@ -1076,9 +1210,7 @@ class AgentdServer {
     const sourceFor = (id, relativePath) => {
       const source = path.join(preview.manifest.sourceRoot, relativePath)
       try {
-        const stat = fs.lstatSync(source)
-        if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('unsafe')
-        const bytes = fs.readFileSync(source)
+        const bytes = readMigrationFile(source)
         const entry = entries.find(item => item.id === id)
         if (bytes.length !== entry.byteSize || crypto.createHash('sha256').update(bytes).digest('hex') !== entry.sha256) throw Object.assign(new Error(`Source changed after preview: ${id}`), { statusCode: 409 })
       } catch (error) {
@@ -1090,7 +1222,7 @@ class AgentdServer {
     sourceFor('electron-persona', 'business_profile.json')
     let settingsRaw
     let personaRaw
-    try { settingsRaw = JSON.parse(bytesFor('electron-settings').toString('utf8')); personaRaw = JSON.parse(bytesFor('electron-persona').toString('utf8')) } catch { throw Object.assign(new Error('Invalid JSON in settings/persona stores'), { statusCode: 400 }) }
+    try { settingsRaw = parseJsonWithoutDuplicateKeys(bytesFor('electron-settings'), 'settings'); personaRaw = parseJsonWithoutDuplicateKeys(bytesFor('electron-persona'), 'persona') } catch { throw Object.assign(new Error('Invalid or duplicate JSON in settings/persona stores'), { statusCode: 400 }) }
     const denySecretKeys = value => {
       if (Array.isArray(value)) return value.forEach(denySecretKeys)
       if (!value || typeof value !== 'object') return
@@ -1103,8 +1235,15 @@ class AgentdServer {
     denySecretKeys(personaRaw)
     const persona = parsePersonaSettings(personaRaw)
     if (!persona) throw Object.assign(new Error('Invalid business persona schema'), { statusCode: 400 })
-    const state = settingsRaw?.['aica-settings']?.state || settingsRaw?.['aica-settings'] || settingsRaw?.state || settingsRaw
+    const settingKeys = Object.keys(settingsRaw || {})
+    if (settingKeys.length !== 1 || settingKeys[0] !== 'aica-settings' || !settingsRaw['aica-settings'] || typeof settingsRaw['aica-settings'] !== 'object' || Array.isArray(settingsRaw['aica-settings'])) throw Object.assign(new Error('Invalid Electron settings wrapper'), { statusCode: 400 })
+    const wrapper = settingsRaw['aica-settings']
+    const wrapperKeys = Object.keys(wrapper).sort()
+    if (wrapperKeys.some(key => !['state', 'version'].includes(key)) || !Object.prototype.hasOwnProperty.call(wrapper, 'state') || (wrapper.version !== undefined && (!Number.isSafeInteger(wrapper.version) || wrapper.version < 0))) throw Object.assign(new Error('Invalid Electron settings wrapper'), { statusCode: 400 })
+    const state = wrapper.state
     if (!state || typeof state !== 'object' || Array.isArray(state)) throw Object.assign(new Error('Invalid Electron settings schema'), { statusCode: 400 })
+    const allowedStateKeys = new Set(['preferredProvider', 'openaiModel', 'openrouterModel', 'ollamaModel', 'ollamaBaseUrl', ...Object.keys(PRODUCT_PREFERENCES_DEFAULTS), ...SAFE_IGNORED_ELECTRON_SETTINGS_KEYS])
+    if (Object.keys(state).some(key => !allowedStateKeys.has(key))) throw Object.assign(new Error('Unknown Electron settings field'), { statusCode: 400 })
     let currentLlm; let currentOllama; let currentPreferences
     try { currentLlm = parseLlmSettings(JSON.parse(this.getState('llm_settings', 'null'))) || LLM_SETTINGS_DEFAULTS } catch { currentLlm = LLM_SETTINGS_DEFAULTS }
     try { currentOllama = parseOllamaSettings(JSON.parse(this.getState('ollama_settings', 'null'))) || OLLAMA_SETTINGS_DEFAULTS } catch { currentOllama = OLLAMA_SETTINGS_DEFAULTS }
@@ -1123,6 +1262,8 @@ class AgentdServer {
   writeMigrationBackup(record, prior) {
     const backupDir = path.join(this.dataDir, 'migration-backups')
     fs.mkdirSync(backupDir, { recursive: true, mode: 0o700 })
+    fs.chmodSync(backupDir, 0o700)
+    if ((fs.statSync(backupDir).mode & 0o777) !== 0o700) throw new Error('Migration backup directory is not private')
     const filename = path.join(backupDir, `${SETTINGS_PERSONA_SCOPE}-${record.previewId}-${crypto.randomUUID()}.json`)
     const payload = { version: 1, scope: SETTINGS_PERSONA_SCOPE, previewId: record.previewId, manifest: record.manifest, previewHash: record.manifestHash, prior }
     const bytes = Buffer.from(JSON.stringify(payload) + '\n')
@@ -1130,24 +1271,49 @@ class AgentdServer {
     const complete = Buffer.from(JSON.stringify({ ...payload, sha256 }) + '\n')
     const temporary = `${filename}.${crypto.randomUUID()}.tmp`
     const handle = fs.openSync(temporary, 'wx', 0o600)
-    try { fs.writeFileSync(handle, complete); fs.fsyncSync(handle); fs.closeSync(handle); fs.renameSync(temporary, filename); fs.chmodSync(filename, 0o600) } catch (error) { try { fs.closeSync(handle) } catch {}; try { fs.unlinkSync(temporary) } catch {}; throw error }
+    try {
+      fs.writeFileSync(handle, complete); fs.fsyncSync(handle); fs.closeSync(handle); fs.renameSync(temporary, filename); fs.chmodSync(filename, 0o600)
+      if ((fs.statSync(filename).mode & 0o777) !== 0o600) throw new Error('Migration backup is not private')
+      const directory = fs.openSync(backupDir, fs.constants.O_RDONLY)
+      try { fs.fsyncSync(directory) } finally { fs.closeSync(directory) }
+    } catch (error) { try { fs.closeSync(handle) } catch {}; try { fs.unlinkSync(temporary) } catch {}; throw error }
     return { path: filename, sha256: crypto.createHash('sha256').update(complete).digest('hex') }
+  }
+
+  readVerifiedMigrationBackup(record) {
+    const bytes = readMigrationFile(record.backupPath)
+    const expected = Buffer.from(String(record.backupSha256 || ''), 'hex')
+    const actual = crypto.createHash('sha256').update(bytes).digest()
+    if (expected.length !== actual.length || !crypto.timingSafeEqual(expected, actual)) throw new Error('Migration backup integrity check failed')
+    let backup
+    try { backup = JSON.parse(bytes.toString('utf8')) } catch { throw new Error('Migration backup is invalid') }
+    const embedded = String(backup.sha256 || '')
+    const payload = { ...backup }; delete payload.sha256
+    const payloadHash = crypto.createHash('sha256').update(Buffer.from(JSON.stringify(payload) + '\n')).digest('hex')
+    const embeddedBytes = Buffer.from(embedded, 'hex'); const payloadBytes = Buffer.from(payloadHash, 'hex')
+    if (embeddedBytes.length !== payloadBytes.length || !crypto.timingSafeEqual(embeddedBytes, payloadBytes)) throw new Error('Migration backup integrity check failed')
+    if (backup.scope !== SETTINGS_PERSONA_SCOPE || backup.previewId !== record.previewId || !backup.prior || Object.keys(backup.prior).some(key => !['persona_settings', 'llm_settings', 'ollama_settings', 'product_preferences'].includes(key))) throw new Error('Invalid migration backup')
+    return backup
   }
 
   async settingsPersonaConfirm(req, res) {
     this.authorizeNative(req)
     const body = await readBody(req, 16 * 1024)
     if (body?.scope !== SETTINGS_PERSONA_SCOPE) return json(res, 400, { error: 'Invalid migration scope' })
-    const preview = this.continuityPreviews.get(body.previewId)
+    const persisted = this.settingsPersonaCutovers.get(body.previewId)
+    const preview = this.continuityPreviews.get(body.previewId) || this.cutoverPreview(persisted)
     if (!preview) return json(res, 404, { error: 'Migration preview expired' })
-    const existing = this.settingsPersonaCutovers.get(preview.previewId)
-    if (existing && existing.state !== 'previewed') return json(res, 200, this.settingsPersonaPublic(existing))
-    const input = this.readSettingsPersonaInput(preview)
-    const record = existing || { previewId: preview.previewId, manifest: preview.manifest, manifestHash: input.manifestHash, scope: SETTINGS_PERSONA_SCOPE, targetRuntime: this.runtimeId, state: 'previewed' }
+    const effectivePreview = preview || this.cutoverPreview(persisted)
+    const existing = persisted
+    if (existing && ['applied', 'rolled-back', 'needs-recovery'].includes(existing.state)) return json(res, 200, this.settingsPersonaPublic(existing))
+    if (existing?.state === 'confirmed' && existing.token) return json(res, 200, this.settingsPersonaPublic(existing))
+    const input = this.readSettingsPersonaInput(effectivePreview)
+    const record = existing || { previewId: effectivePreview.previewId, manifest: effectivePreview.manifest, manifestHash: input.manifestHash, scope: SETTINGS_PERSONA_SCOPE, targetRuntime: this.runtimeId, state: 'previewed' }
     record.state = 'confirmed'; record.confirmedAt = Date.now(); record.expiresAt = Date.now() + SETTINGS_PERSONA_TOKEN_TTL_MS
     record.token = record.token || crypto.randomBytes(32).toString('hex')
     record.input = input
-    this.settingsPersonaCutovers.set(preview.previewId, record)
+    this.settingsPersonaCutovers.set(effectivePreview.previewId, record)
+    this.persistSettingsPersonaCutover(record)
     return json(res, 200, this.settingsPersonaPublic(record))
   }
 
@@ -1165,32 +1331,49 @@ class AgentdServer {
       if (body.confirmationToken !== undefined) return json(res, 403, { error: 'Confirmation token already consumed' })
       return json(res, 200, this.settingsPersonaPublic(record))
     }
-    if (record.state !== 'confirmed' || body.confirmationToken !== record.token || Date.now() > record.expiresAt) return json(res, 403, { error: 'Valid native confirmation token required' })
+    const supplied = typeof body.confirmationToken === 'string' ? Buffer.from(body.confirmationToken) : null
+    const expected = record.token ? Buffer.from(record.token) : null
+    if (record.state !== 'confirmed' || !supplied || !expected || supplied.length !== expected.length || !crypto.timingSafeEqual(supplied, expected) || Date.now() > record.expiresAt) return json(res, 403, { error: 'Valid native confirmation token required' })
     record.token = null
     record.consumedAt = Date.now()
+    record.state = 'applying'
+    this.persistSettingsPersonaCutover(record)
     const priorHold = this.migrationHold
     this.migrationHold = true
+    this.migrationOwner = true
+    this.stopEmailInboundPolling()
+    for (const controller of this.generationControllers.values()) controller.abort()
+    await this.drainActiveOperations()
     let prior = null
     try {
-      const input = this.readSettingsPersonaInput(this.continuityPreviews.get(record.previewId))
+      const input = this.readSettingsPersonaInput(this.cutoverPreview(record))
       if (input.manifestHash !== record.manifestHash) throw Object.assign(new Error('Preview changed after confirmation'), { statusCode: 409 })
       prior = Object.fromEntries(['persona_settings', 'llm_settings', 'ollama_settings', 'product_preferences'].map(key => [key, this.getState(key, null)]))
       const backup = this.writeMigrationBackup(record, prior)
+      const finalInput = this.readSettingsPersonaInput(this.cutoverPreview(record))
+      if (finalInput.manifestHash !== record.manifestHash || JSON.stringify(finalInput) !== JSON.stringify(input)) throw Object.assign(new Error('Source or staged migration changed before commit'), { statusCode: 409 })
+      this.assertMigrationCommitReady()
       this.db.transaction(() => {
-        this.setState('persona_settings', JSON.stringify(input.persona))
-        this.setState('llm_settings', JSON.stringify(input.llm))
-        this.setState('ollama_settings', JSON.stringify(input.ollama))
-        this.setState('product_preferences', JSON.stringify(input.preferences))
+        this.setState('persona_settings', JSON.stringify(finalInput.persona))
+        this.setState('llm_settings', JSON.stringify(finalInput.llm))
+        this.setState('ollama_settings', JSON.stringify(finalInput.ollama))
+        this.setState('product_preferences', JSON.stringify(finalInput.preferences))
       })()
       record.state = 'applied'; record.appliedAt = Date.now(); record.backupPath = backup.path; record.backupSha256 = backup.sha256
       record.result = { backupSha256: backup.sha256, liveDataChanged: true }
+      this.persistSettingsPersonaCutover(record)
       this.migrationHold = priorHold
+      this.migrationOwner = false
+      if (!this.migrationHold) this.startEmailInboundPolling()
       return json(res, 200, this.settingsPersonaPublic(record))
     } catch (error) {
       const keys = ['persona_settings', 'llm_settings', 'ollama_settings', 'product_preferences']
       const restored = !prior || keys.every(key => this.getState(key, null) === prior[key])
       record.state = restored ? 'rolled-back' : 'needs-recovery'; record.error = error.message
+      this.persistSettingsPersonaCutover(record)
       this.migrationHold = restored ? priorHold : true
+      this.migrationOwner = false
+      if (restored && !this.migrationHold) this.startEmailInboundPolling()
       return json(res, error.statusCode || 500, { ...this.settingsPersonaPublic(record), error: error.message })
     }
   }
@@ -1202,15 +1385,22 @@ class AgentdServer {
     if (!record || !record.backupPath) return json(res, 404, { error: 'Migration backup not found' })
     const priorHold = this.migrationHold
     this.migrationHold = true
+    this.migrationOwner = true
     try {
-      const backup = JSON.parse(fs.readFileSync(record.backupPath, 'utf8'))
-      if (backup.scope !== SETTINGS_PERSONA_SCOPE || backup.previewId !== record.previewId) throw new Error('Invalid migration backup')
+      const backup = this.readVerifiedMigrationBackup(record)
+      await this.drainActiveOperations()
+      this.assertMigrationCommitReady()
       this.db.transaction(() => Object.entries(backup.prior).forEach(([key, value]) => value === null ? this.db.prepare('DELETE FROM agent_state WHERE key = ?').run(key) : this.setState(key, value)))()
       record.state = 'rolled-back'; record.rolledBackAt = Date.now(); record.result = { liveDataChanged: true }
+      this.persistSettingsPersonaCutover(record)
       this.migrationHold = priorHold
+      this.migrationOwner = false
+      if (!this.migrationHold) this.startEmailInboundPolling()
       return json(res, 200, this.settingsPersonaPublic(record))
     } catch (error) {
       record.state = 'needs-recovery'; record.error = error.message
+      this.persistSettingsPersonaCutover(record)
+      this.migrationOwner = false
       this.migrationHold = true
       return json(res, 500, { ...this.settingsPersonaPublic(record), error: error.message })
     }
@@ -1498,26 +1688,31 @@ class AgentdServer {
     if (!draft) return json(res, 500, { error: 'Stored email draft is invalid' })
     if (draft.status === 'sent') return json(res, 200, { success: true, duplicate: true, draft })
     if (draft.status !== 'approved') return json(res, 409, { success: false, error: 'Email draft must be approved before sending' })
-    if (!this.credentials) return json(res, 503, { success: false, error: 'Credential store unavailable' })
+    const releaseOperation = this.beginActiveOperation()
+    if (!releaseOperation) return json(res, 409, { success: false, error: 'Settings migration is committing' })
+    if (!this.credentials) { releaseOperation(); return json(res, 503, { success: false, error: 'Credential store unavailable' }) }
     let password = null
     for (const key of ['email_smtp_password', 'email_imap_password']) {
       try {
         password = await this.credentials.get(key)
         if (password) break
       } catch {
+        releaseOperation()
         return json(res, 503, { success: false, error: 'Credential store operation failed' })
       }
     }
-    if (!password) return json(res, 400, { success: false, error: 'Email app password is not configured' })
+    if (!password) { releaseOperation(); return json(res, 400, { success: false, error: 'Email app password is not configured' }) }
     const lockNow = Date.now()
     this.db.prepare('DELETE FROM email_delivery_locks WHERE draft_id = ? AND started_at < ?').run(id, lockNow - 10 * 60 * 1000)
     try {
       this.db.prepare('INSERT INTO email_delivery_locks(draft_id,started_at) VALUES (?,?)').run(id, lockNow)
     } catch {
+      releaseOperation()
       return json(res, 409, { success: false, error: 'Email draft delivery is already in progress' })
     }
     const recipient = draft.replyTo || draft.originalFrom
     try {
+      this.assertMigrationOpen()
       await this.emailSend({
         host: settings.smtpHost,
         port: settings.smtpPort,
@@ -1531,6 +1726,7 @@ class AgentdServer {
         inReplyTo: draft.inReplyTo,
         references: draft.references,
       })
+      this.assertMigrationOpen()
       const sent = { ...draft, status: 'sent' }
       this.db.prepare('UPDATE email_drafts SET status = ?, payload = ?, updated_at = ? WHERE id = ? AND status = ?').run('sent', JSON.stringify(sent), Date.now(), id, 'approved')
       this.db.prepare('DELETE FROM email_delivery_locks WHERE draft_id = ?').run(id)
@@ -1541,6 +1737,7 @@ class AgentdServer {
       this.db.prepare('DELETE FROM email_delivery_locks WHERE draft_id = ?').run(id)
       return json(res, 502, { success: false, error: 'Email delivery failed over the configured secure SMTP transport' })
     } finally {
+      releaseOperation()
       if (typeof password === 'string') password = ''
     }
   }
@@ -1918,10 +2115,17 @@ class AgentdServer {
       return json(res, 400, { error: 'Invalid WhatsApp message' })
     }
 
+    let releaseOperation = null
     try {
+      releaseOperation = this.beginActiveOperation()
+      if (!releaseOperation) return json(res, 409, { error: 'Settings migration is committing' })
+      this.assertMigrationOpen()
       const { providerMessageId } = await this.sendWhatsAppCloudMessage(body.to, body.text)
+      this.assertMigrationOpen()
+      releaseOperation()
       return json(res, 200, { success: true, providerMessageId })
     } catch (error) {
+      releaseOperation?.()
       const statusCode = Number.isInteger(error?.statusCode) ? error.statusCode : 502
       return json(res, statusCode, { success: false, error: statusCode === 502 ? 'WhatsApp Cloud message failed' : error.message })
     }
@@ -2305,6 +2509,8 @@ class AgentdServer {
       return json(res, 413, { error: 'Conversation context too large' })
     }
     this.generations.add(requestKey)
+    const releaseOperation = this.beginActiveOperation()
+    if (!releaseOperation) { this.db.prepare('DELETE FROM chat_generations WHERE request_id = ? AND status = \'processing\'').run(body.requestId); return json(res, 409, { error: 'Settings migration is committing' }) }
     const providerController = new AbortController()
     this.generationControllers.set(requestKey, providerController)
     const abortProvider = () => providerController.abort()
@@ -2337,6 +2543,7 @@ class AgentdServer {
         if (wantsStream && typeof content === 'string' && content && !writeSse(res, { type: 'assistant.delta', sessionId: rawId, requestId: body.requestId, sequence: 1, delta: content })) throw new Error('Client disconnected')
       }
       if (typeof content !== 'string' || !content || content.length > MAX_CHAT_CONTENT_LENGTH || Buffer.byteLength(content, 'utf8') > MAX_CHAT_CONTENT_LENGTH) throw new Error('Provider response invalid')
+      if (this.migrationHold) throw Object.assign(new Error('Settings migration is committing'), { statusCode: 409 })
       const assistantMessageId = `assistant_${body.requestId}`
       const result = this.db.transaction(() => {
         const current = this.db.prepare('SELECT * FROM chat_generations WHERE request_id = ? AND session_id = ?').get(body.requestId, rawId)
@@ -2367,6 +2574,7 @@ class AgentdServer {
       res.off('close', abortProvider)
       this.generationControllers.delete(requestKey)
       this.generations.delete(requestKey)
+      releaseOperation()
     }
   }
 
@@ -2556,12 +2764,16 @@ class AgentdServer {
     if (claimed.invalid) return { status: 409, body: { error: 'Draft must be approved before sending' } }
     if (claimed.sent) return { status: 200, body: { success: true, duplicate: true, providerMessageId: claimed.sent.provider_message_id, draft: this.draftView(draft) } }
     if (claimed.pending) return { status: 409, body: { error: 'WhatsApp send is already pending' } }
+    const releaseOperation = this.beginActiveOperation()
+    if (!releaseOperation) return { status: 409, body: { error: 'Settings migration is committing' } }
 
     // Inbound conversation IDs may be stored as `+15551234567` or as a
     // WhatsApp JID. Strip only the known JID suffix; never guess a recipient.
     const recipient = draft.conversation_id.replace(/@s\.whatsapp\.net$/i, '')
     try {
+      this.assertMigrationOpen()
       const { providerMessageId } = await this.sendWhatsAppCloudMessage(recipient, draft.response_text)
+      this.assertMigrationOpen()
       this.db.transaction(() => {
         this.db.prepare("UPDATE whatsapp_outbox SET status = 'sent', provider_message_id = ?, error = NULL, updated_at = ? WHERE draft_id = ?").run(providerMessageId, Date.now(), id)
         this.db.prepare("UPDATE whatsapp_drafts SET status = 'sent', updated_at = ? WHERE id = ? AND status = 'approved'").run(Date.now(), id)
@@ -2572,6 +2784,8 @@ class AgentdServer {
       this.db.prepare("UPDATE whatsapp_outbox SET status = 'failed', error = ?, updated_at = ? WHERE draft_id = ?").run(message, Date.now(), id)
       const statusCode = Number.isInteger(error?.statusCode) ? error.statusCode : 502
       return { status: statusCode, body: { success: false, error: message } }
+    } finally {
+      releaseOperation()
     }
   }
 
