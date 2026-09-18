@@ -526,7 +526,7 @@ For every manual test run, capture:
 
 - build and test preflight result
 - runtime boundary used (`Edge`/`Chrome` browser workspace, Tauri native diagnostics, or Electron transition client)
-- Windows host/packaging evidence when claiming Windows readiness (native-host tests, staged-resource verification, bundle, signing/install smoke, and resource measurements are separate gates). The staged-resource gate checks the target-specific agentd runtime and keyring helper, agentd entrypoint/dependencies, and browser `tauri.html` plus JavaScript/CSS assets before bundling; it does not claim signing, installation, upgrade, or Windows Credential Manager runtime evidence.
+- Windows host/packaging evidence when claiming Windows readiness (native-host tests, staged-resource verification, bundle, signing/install smoke, and resource measurements are separate gates). The staged-resource gate checks the target-specific agentd runtime and keyring helper, agentd entrypoint/dependencies including the compiled `better-sqlite3` native binding, and browser `tauri.html` plus JavaScript/CSS assets before bundling; it does not claim signing, installation, upgrade, or Windows Credential Manager runtime evidence.
 - app build or install path used
 - exact feature area tested
 - expected behavior from this document
