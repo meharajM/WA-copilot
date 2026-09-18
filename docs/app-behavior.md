@@ -197,6 +197,7 @@ Pass evidence:
 
 - Dialog step transitions match actual connection state.
 - Clearing auth requires re-scan on next connect.
+- In browser mode, the QR, connection state, handshake, disconnect and auth-directory lifecycle are owned by authenticated local `agentd`; Tauri remains a native capability host and does not render this dialog.
 
 ### Runtime gating
 
@@ -213,15 +214,17 @@ Pass evidence:
 
 ### Response behavior
 
-- Customer non-text WhatsApp media is rejected with a text-only support message.
+- Electron customer non-text WhatsApp media is rejected with a text-only support message. Browser Baileys consumes only bounded text and media captions; media without captions is ignored and no media bytes are downloaded.
 - During long-running customer handling, a courtesy message is sent after 60 seconds.
 - If the generated response indicates escalation, the admin/personal phone is notified.
 - Successful customer resolutions are logged to intelligence stats.
 
 ### Browser-first transport
 
-- Edge/Chrome owns the product workflow. When WhatsApp Cloud transport is selected and configured, an explicit user send from the browser chat input uses the authenticated `agentd` Cloud API route; the access token stays in the native OS credential store and never reaches the page.
-- Browser sends fail closed when Cloud transport or credentials are unavailable. A browser draft must be explicitly approved and then explicitly sent; `agentd` records a durable pending/sent/failed outbox entry and suppresses duplicate provider calls. Failed attempts can be retried through the authenticated browser route; an operator can quarantine or cancel a failed attempt, and those dispositions block accidental re-send. Pending provider work cannot be cancelled or quarantined and returns an explicit conflict. QR/WhatsApp Web automation and autonomous direct-send remain unavailable until their provider-backed daemon adapters and remaining outbox safety gates are migrated.
+- Edge/Chrome owns the product workflow. With Baileys selected, the browser calls authenticated local `agentd` routes for QR/session state, handshake, disconnect and text sends; the daemon keeps the multi-file auth directory on the local machine and never returns auth keys to the page. With Cloud transport selected, explicit sends use the authenticated `agentd` Cloud API route; the access token stays in the OS credential store and never reaches the page.
+- The agentd WhatsApp worker is lazy: constructing the daemon does not import Baileys or open a WhatsApp socket. Baileys dependencies load only after the operator explicitly starts a Baileys connection, preserving local CPU/network resources for the model and browser workspace.
+- Browser sends fail closed when the selected transport or credentials are unavailable. A browser draft must be explicitly approved and then explicitly sent; `agentd` records a durable pending/sent/failed outbox entry and suppresses duplicate provider calls. Failed attempts can be retried through the authenticated browser route; an operator can quarantine or cancel a failed attempt, and those dispositions block accidental re-send. Pending provider work cannot be cancelled or quarantined and returns an explicit conflict. WhatsApp Web automation, media delivery and autonomous direct-send remain unavailable until their provider-backed daemon adapters and remaining outbox safety gates are migrated.
+- The local Baileys worker normalizes bounded text and media captions into durable inbound events using stable provider message IDs. Self-messages and broadcast/system messages are ignored; media bytes are not downloaded into the browser path, so unsupported media remains fail-closed.
 - A failed channel send does not discard the local chat submission; the browser records the failure through its normal audit/error path so the operator can retry after fixing configuration.
 - Browser autonomy metrics come from authenticated agentd durable state (inbound events, draft/outbox statuses, and completed generations). Unsupported decision-review and recovery metrics remain explicitly zero until their agentd adapters are migrated; the UI must not present fabricated success activity.
 
@@ -230,7 +233,7 @@ Pass evidence:
 - Non-text customer media does not enter the normal autonomous handling path.
 - Long-running requests send exactly one courtesy notification.
 - Escalations notify the admin channel.
-- A configured Cloud send reaches Meta through `agentd`, while no credential value appears in browser responses, logs or persisted renderer state.
+- A configured Baileys send reaches the connected local session, or a configured Cloud send reaches Meta through `agentd`, while no credential/auth value appears in browser responses, logs or persisted renderer state.
 
 ### Resolution audit
 
@@ -544,7 +547,7 @@ Pass evidence:
 
 - Browser Email inbound polling is daemon-owned and starts only when `Enable Email Channel` is on and either app-password mode has IMAP TLS, an IMAP host, and an OS-stored `email_imap_password`, or Gmail OAuth mode has a signed-in agentd OAuth session. The IMAP worker uses UID-based durable deduplication; the Gmail worker uses a bounded timestamp overlap plus provider-event IDs. Both normalize bounded text-only events for the browser; Gmail HTML is reduced to text, while attachments and unsupported content fail closed. Auto-Reply controls response policy, not mailbox ingestion. STARTTLS is supported for non-993 IMAP endpoints. Approved text-only drafts can deliver through the separately gated daemon SMTP or Gmail API route.
 - Browser knowledge imports are text-only and cannot open the original native file after indexing; Electron retains native parser and file-reveal behavior.
-- The browser Autonomy panel does not render Electron-only WhatsApp Web automation, native backup staging, reconnect, or local-retention controls; those controls remain in the Electron transition client until agentd adapters are migrated.
+- The browser Autonomy panel does not render Electron-only WhatsApp Web automation, native backup staging, or local-retention controls. Baileys reconnect is daemon-owned and surfaced through bounded connection state; native-only controls remain in the Electron transition client until their agentd adapters are migrated.
 - Browser audit logs are downloaded as redacted NDJSON; native log-folder reveal remains Electron-only.
 - Lead Directory supports non-WhatsApp sessions in the data model, but some copy still describes it as WhatsApp-only.
 - The LLM provider selector includes `browser`, but there is no dedicated browser-provider configuration card in the panel yet.

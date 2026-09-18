@@ -127,6 +127,7 @@ const ingestBrowserWhatsAppEvent = async (event: BrowserWhatsAppInboundEvent): P
 
 export function useWhatsAppBridge(): void {
     const setConnectionState = useWhatsAppStore((s) => s.setConnectionState)
+    const setWhatsAppEnabled = useWhatsAppStore((s) => s.setWhatsAppEnabled)
     const whatsappEnabled = useWhatsAppStore((s) => s.whatsappEnabled)
     const businessBotMode = useWhatsAppStore((s) => s.businessBotMode)
 
@@ -140,9 +141,38 @@ export function useWhatsAppBridge(): void {
         return () => { cancelled = true }
     }, [setConnectionState])
 
+    // Browser mode owns the WhatsApp session in agentd. Poll the bounded
+    // connection projection so the QR and handshake screens update without
+    // exposing sockets, auth files, or provider credentials to the page.
+    useEffect(() => {
+        if (!isBrowserProduct()) return
+        let cancelled = false
+        let timer: ReturnType<typeof setTimeout> | null = null
+        const poll = async () => {
+            if (cancelled) return
+            let delay = 10_000
+            try {
+                const state = await getBrowserAgentdClient().getWhatsAppConnectionState()
+                if (!cancelled) {
+                    setConnectionState(state as WhatsAppConnectionState)
+                    if (state.status !== 'connected') setWhatsAppEnabled(false)
+                    delay = ['connecting', 'qr_required', 'connected'].includes(state.status) ? 2_000 : 10_000
+                }
+            } catch (error) {
+                if (!cancelled) console.warn('[WhatsAppBridge] Browser connection state unavailable', error)
+            }
+            if (!cancelled) timer = setTimeout(() => void poll(), delay)
+        }
+        void poll()
+        return () => {
+            cancelled = true
+            if (timer) clearTimeout(timer)
+        }
+    }, [setConnectionState, setWhatsAppEnabled])
+
     // Browser mode consumes durable agentd events only when an explicit WhatsApp
-    // mode is enabled. This hydrates Lead Directory sessions without pretending
-    // that QR/Web transport or autonomous replies have migrated yet.
+    // mode is enabled. The Baileys worker owns the provider socket; this hook
+    // only hydrates Lead Directory sessions through idempotent chat routes.
     useEffect(() => {
         if (!isBrowserProduct() || (!whatsappEnabled && !businessBotMode)) return
         let cancelled = false

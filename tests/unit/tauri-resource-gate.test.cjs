@@ -22,6 +22,8 @@ async function fixture() {
     'agentd-http/node_modules/better-sqlite3/build/Release/better_sqlite3.node',
     'agentd-http/node_modules/bindings/package.json',
     'agentd-http/node_modules/file-uri-to-path/package.json',
+    'agentd-http/node_modules/@whiskeysockets/baileys/package.json',
+    'agentd-http/node_modules/libsignal/package.json',
   ]
   for (const file of files) {
     const target = path.join(sidecar, file)
@@ -70,6 +72,19 @@ test('resource verifier rejects staging without a compiled better-sqlite3 bindin
     await assert.rejects(
       verify({ sidecarRoot: paths.sidecar, uiRoot: paths.ui, platform: 'win32', targetTriple: 'x86_64-pc-windows-msvc' }),
       /missing compiled better-sqlite3 native binding.*\.node/,
+    )
+  } finally {
+    await fs.rm(paths.root, { recursive: true, force: true })
+  }
+})
+
+test('resource verifier rejects staging without the packaged Baileys worker', async () => {
+  const paths = await fixture()
+  try {
+    await fs.rm(path.join(paths.sidecar, 'agentd-http', 'node_modules', '@whiskeysockets', 'baileys', 'package.json'))
+    await assert.rejects(
+      verify({ sidecarRoot: paths.sidecar, uiRoot: paths.ui, platform: 'win32', targetTriple: 'x86_64-pc-windows-msvc' }),
+      /missing staged resource:.*baileys.*package\.json/,
     )
   } finally {
     await fs.rm(paths.root, { recursive: true, force: true })

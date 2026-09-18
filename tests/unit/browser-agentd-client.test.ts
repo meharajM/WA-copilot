@@ -242,6 +242,29 @@ describe('browser agentd client', () => {
     expect(Object.prototype.hasOwnProperty.call(JSON.parse(String(put?.[1]?.body)), 'password')).toBe(false)
   })
 
+  it('maps browser WhatsApp QR/session routes without exposing auth material', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = []
+    const state = { status: 'qr_required', qrCode: 'qr-value', error: null, phoneNumber: null, workerNumber: null, handshakeStatus: 'idle' }
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      calls.push({ url, init })
+      if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
+      if (url.endsWith('/api/v1/whatsapp/connection') || url.endsWith('/api/v1/whatsapp/connect') || url.endsWith('/api/v1/whatsapp/disconnect')) return response(state)
+      if (url.endsWith('/api/v1/whatsapp/target')) return response({ success: true, handshakeCode: '123456' })
+      return response({ success: true })
+    })
+    const client = createBrowserAgentdClient({ origin: 'http://127.0.0.1:4141', fetch: fetcher })
+    await client.pair('123456')
+    await expect(client.getWhatsAppConnectionState()).resolves.toMatchObject({ status: 'qr_required', qrCode: 'qr-value' })
+    await expect(client.connectWhatsApp()).resolves.toMatchObject({ status: 'qr_required' })
+    await expect(client.setWhatsAppTarget('+919888888888')).resolves.toEqual({ success: true, handshakeCode: '123456' })
+    await expect(client.disconnectWhatsApp(true)).resolves.toMatchObject({ status: 'qr_required' })
+    for (const call of calls.filter(call => ['/api/v1/whatsapp/connect', '/api/v1/whatsapp/target', '/api/v1/whatsapp/disconnect'].some(path => call.url.endsWith(path)))) {
+      expect(new Headers(call.init?.headers).get('x-csrf-token')).toBe('csrf-token')
+    }
+    expect(JSON.stringify(calls).includes('auth')).toBe(false)
+  })
+
   it('lists queued email events and acknowledges them after hydration', async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = []
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

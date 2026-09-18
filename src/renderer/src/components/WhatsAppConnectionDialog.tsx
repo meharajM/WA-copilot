@@ -71,7 +71,7 @@ export function WhatsAppConnectionDialog(): React.JSX.Element | null {
         }
 
         // 3. Handle Connecting state
-        if (connectionState.status === 'connecting') {
+        if (connectionState.status === 'connecting' || connectionState.status === 'qr_required') {
             if (connectionState.qrCode) {
                 setStep('qr')
             } else {
@@ -95,18 +95,24 @@ export function WhatsAppConnectionDialog(): React.JSX.Element | null {
 
     // Step 1 -> Step 2
     const handleStartConnection = useCallback(async () => {
-        if (browserRuntime) {
-            setErrorMessage('Live WhatsApp connection is not available in the browser yet. Configure the authenticated Cloud API settings; native session transport remains an Electron transition path until its agentd adapter is migrated.')
-            setStep('error')
-            return
-        }
         setStep('connecting')
         setErrorMessage('')
         try {
-            const result = await electron.whatsapp.connect()
-            if (!result.success && 'error' in result) {
-                setErrorMessage((result as { success: false; error: string }).error)
-                setStep('error')
+            if (browserRuntime) {
+                const client = (await import('../lib/browser-agentd-client')).getBrowserAgentdClient()
+                const settings = await client.getWhatsAppSettings()
+                if (settings.whatsapp_transport !== 'baileys') {
+                    setErrorMessage('Browser QR connection requires Baileys transport. Select Baileys in WhatsApp settings first.')
+                    setStep('error')
+                    return
+                }
+                await client.connectWhatsApp()
+            } else {
+                const result = await electron.whatsapp.connect()
+                if (!result.success && 'error' in result) {
+                    setErrorMessage((result as { success: false; error: string }).error)
+                    setStep('error')
+                }
             }
         } catch (err) {
             setErrorMessage(err instanceof Error ? err.message : 'Failed to start connection')
@@ -125,7 +131,9 @@ export function WhatsAppConnectionDialog(): React.JSX.Element | null {
         setIsVerifying(true)
         setErrorMessage('')
         try {
-            const result = await electron.whatsapp.setTargetNumber(phone)
+            const result = browserRuntime
+                ? await (await import('../lib/browser-agentd-client')).getBrowserAgentdClient().setWhatsAppTarget(phone)
+                : await electron.whatsapp.setTargetNumber(phone)
             if (result.success) {
                 // Main process started handshake. We stay on this screen.
                 setHandshakeCode(result.handshakeCode || null)
@@ -138,7 +146,7 @@ export function WhatsAppConnectionDialog(): React.JSX.Element | null {
         } finally {
             setIsVerifying(false)
         }
-    }, [phoneInput])
+    }, [browserRuntime, phoneInput])
 
     const handleDisconnect = useCallback(async (clearAuth = true) => {
         if (clearAuth && !window.confirm('Are you sure you want to logout from WhatsApp? You will need to scan the QR code again to reconnect.')) {
@@ -146,7 +154,8 @@ export function WhatsAppConnectionDialog(): React.JSX.Element | null {
         }
         
         try {
-            await electron.whatsapp.disconnect(clearAuth)
+            if (browserRuntime) await (await import('../lib/browser-agentd-client')).getBrowserAgentdClient().disconnectWhatsApp(clearAuth)
+            else await electron.whatsapp.disconnect(clearAuth)
             
             if (clearAuth) {
                 setStep('idle')
@@ -168,18 +177,19 @@ export function WhatsAppConnectionDialog(): React.JSX.Element | null {
             setErrorMessage(err instanceof Error ? err.message : 'Failed to disconnect')
             setStep('error')
         }
-    }, [setConnectionState, setTargetPhoneNumber, setWhatsAppEnabled])
+    }, [browserRuntime, setConnectionState, setTargetPhoneNumber, setWhatsAppEnabled])
 
     const handleClose = useCallback(async () => {
         // If they abort during the active verify step, clear the socket.
         if (step === 'verify') {
             try {
-                await electron.whatsapp.disconnect(false); // Disconnect without clearing auth to just reset socket/state
+                if (browserRuntime) await (await import('../lib/browser-agentd-client')).getBrowserAgentdClient().disconnectWhatsApp(false)
+                else await electron.whatsapp.disconnect(false) // Disconnect without clearing auth to just reset socket/state
                 setHandshakeCode(null);
             } catch (e) { console.error(e); }
         }
         closeDialog()
-    }, [step, closeDialog])
+    }, [browserRuntime, step, closeDialog])
 
     if (!isDialogOpen) return null
 
@@ -241,18 +251,17 @@ export function WhatsAppConnectionDialog(): React.JSX.Element | null {
                                     <div className="p-3 bg-white/5 border border-white/10 rounded-xl">
                                         <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed">
                                             {browserRuntime
-                                                ? 'The browser workspace does not open a native WhatsApp session. Use the Cloud API settings for the migrated draft-only path; QR/native session transport remains a transition capability.'
+                                                ? 'The browser workspace uses the local agentd WhatsApp session. Scan the QR code here; the auth files stay on this machine and the product UI remains in the browser.'
                                                 : <>Prepare to scan the QR code using a phone you want to use as your <b>Worker Account</b>. This account will act as the AI Agent.</>}
                                         </p>
                                     </div>
 
                                     <button
                                         onClick={handleStartConnection}
-                                        disabled={browserRuntime}
                                         className="w-full py-3 bg-[#25D366] hover:bg-[#22c55e] text-white text-sm font-semibold rounded-xl shadow-lg shadow-[#25D366]/20 transition-all flex items-center justify-center gap-2"
                                     >
                                         <Link size={16} />
-                                        {browserRuntime ? 'Native connection unavailable' : 'Start Connection'}
+                                        Start Connection
                                     </button>
                                 </motion.div>
                             )}

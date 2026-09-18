@@ -105,6 +105,15 @@ export interface BrowserEmailInboundEvent {
   createdAt: number
 }
 
+export interface BrowserWhatsAppConnectionState {
+  status: 'disconnected' | 'connecting' | 'qr_required' | 'connected' | 'logged_out' | 'blocked' | 'error'
+  qrCode: string | null
+  error: string | null
+  phoneNumber: string | null
+  workerNumber: string | null
+  handshakeStatus: 'idle' | 'pending' | 'expired' | 'verified' | null
+}
+
 export type BrowserEmailDraftStatus = 'pending_review' | 'approved' | 'rejected' | 'escalated' | 'sent' | 'failed'
 
 export interface BrowserEmailDraft {
@@ -255,6 +264,24 @@ const readWhatsAppSettings = (value: unknown): WhatsAppSettings => {
     || typeof value.whatsapp_cloud_phone_number_id !== 'string'
     || typeof value.whatsapp_cloud_api_version !== 'string') throw new Error('Invalid WhatsApp settings response')
   return value as unknown as WhatsAppSettings
+}
+
+const readWhatsAppConnectionState = (value: unknown): BrowserWhatsAppConnectionState => {
+  if (!isRecord(value)
+    || !['disconnected', 'connecting', 'qr_required', 'connected', 'logged_out', 'blocked', 'error'].includes(value.status as string)
+    || (value.qrCode !== null && typeof value.qrCode !== 'string')
+    || (value.error !== null && typeof value.error !== 'string')
+    || (value.phoneNumber !== null && typeof value.phoneNumber !== 'string')
+    || (value.workerNumber !== null && typeof value.workerNumber !== 'string')
+    || (value.handshakeStatus !== null && !['idle', 'pending', 'expired', 'verified'].includes(value.handshakeStatus as string))) throw new Error('Invalid WhatsApp connection response')
+  return {
+    status: value.status as BrowserWhatsAppConnectionState['status'],
+    qrCode: value.qrCode as string | null,
+    error: value.error as string | null,
+    phoneNumber: value.phoneNumber as string | null,
+    workerNumber: value.workerNumber as string | null,
+    handshakeStatus: value.handshakeStatus as BrowserWhatsAppConnectionState['handshakeStatus'],
+  }
 }
 
 const readOllamaSettings = (value: unknown): BrowserOllamaSettings => {
@@ -495,6 +522,10 @@ export interface BrowserAgentdClient extends ChatClient {
   saveLlmSettings(settings: LlmSettings): Promise<LlmSettings>
   getWhatsAppSettings(): Promise<WhatsAppSettings>
   saveWhatsAppSettings(settings: WhatsAppSettings): Promise<WhatsAppSettings>
+  getWhatsAppConnectionState(): Promise<BrowserWhatsAppConnectionState>
+  connectWhatsApp(targetPhoneNumber?: string): Promise<BrowserWhatsAppConnectionState>
+  disconnectWhatsApp(clearAuth?: boolean): Promise<BrowserWhatsAppConnectionState>
+  setWhatsAppTarget(phoneNumber: string): Promise<{ success: boolean; error?: string; handshakeCode?: string }>
   sendWhatsAppText(to: string, text: string): Promise<BrowserWhatsAppSendResult>
   getOllamaSettings(): Promise<BrowserOllamaSettings>
   saveOllamaSettings(settings: BrowserOllamaSettings): Promise<BrowserOllamaSettings>
@@ -791,6 +822,18 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
   const saveLlmSettings = async (settings: LlmSettings) => readLlmSettings(await request('/api/v1/settings/llm', { method: 'PUT', body: JSON.stringify(settings) }, true))
   const getWhatsAppSettings = async () => readWhatsAppSettings(await request('/api/v1/settings/whatsapp'))
   const saveWhatsAppSettings = async (settings: WhatsAppSettings) => readWhatsAppSettings(await request('/api/v1/settings/whatsapp', { method: 'PUT', body: JSON.stringify(settings) }, true))
+  const getWhatsAppConnectionState = async () => readWhatsAppConnectionState(await request('/api/v1/whatsapp/connection'))
+  const connectWhatsApp = async (targetPhoneNumber?: string) => readWhatsAppConnectionState(await request('/api/v1/whatsapp/connect', { method: 'POST', body: JSON.stringify(targetPhoneNumber ? { targetPhoneNumber } : {}) }, true))
+  const disconnectWhatsApp = async (clearAuth = true) => readWhatsAppConnectionState(await request('/api/v1/whatsapp/disconnect', { method: 'POST', body: JSON.stringify({ clearAuth }) }, true))
+  const setWhatsAppTarget = async (phoneNumber: string) => {
+    const value = await request<unknown>('/api/v1/whatsapp/target', { method: 'POST', body: JSON.stringify({ phoneNumber }) }, true)
+    if (!isRecord(value) || typeof value.success !== 'boolean' || (value.error !== undefined && typeof value.error !== 'string') || (value.handshakeCode !== undefined && typeof value.handshakeCode !== 'string')) throw new Error('Invalid WhatsApp target response')
+    return {
+      success: value.success,
+      ...(typeof value.error === 'string' ? { error: value.error } : {}),
+      ...(typeof value.handshakeCode === 'string' ? { handshakeCode: value.handshakeCode } : {}),
+    }
+  }
   const sendWhatsAppText = async (to: string, text: string): Promise<BrowserWhatsAppSendResult> => {
     if (!to.trim() || !text.trim()) throw new Error('WhatsApp recipient and message are required')
     const value = await request<unknown>('/api/v1/whatsapp/messages', { method: 'POST', body: JSON.stringify({ to, text }) }, true)
@@ -1092,6 +1135,10 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     saveLlmSettings,
     getWhatsAppSettings,
     saveWhatsAppSettings,
+    getWhatsAppConnectionState,
+    connectWhatsApp,
+    disconnectWhatsApp,
+    setWhatsAppTarget,
     sendWhatsAppText,
     getOllamaSettings,
     saveOllamaSettings,

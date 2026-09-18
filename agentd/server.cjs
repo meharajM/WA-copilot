@@ -9,6 +9,7 @@ const Database = require('better-sqlite3')
 const { isPublicCredentialKey } = require('./keyring-credential-store.cjs')
 const { GmailOAuthService } = require('./gmail-oauth.cjs')
 const { GmailInboundWorker, pollGmail } = require('./gmail-api.cjs')
+const { WhatsAppBaileysService } = require('./whatsapp-baileys.cjs')
 const continuityMigration = require('./continuity-migration.cjs')
 const { sendTextEmail } = require('./email-transport.cjs')
 const { EmailInboundWorker, pollMailbox } = require('./email-inbound-worker.cjs')
@@ -469,7 +470,7 @@ function redactPayload(value, key = '') {
 }
 
 class AgentdServer {
-  constructor({ dataDir, secret, uiRoot = null, logger = console, pairingCode = null, credentials = null, providerFetch = fetch, emailProbe = probeEmailTransport, emailSend = sendTextEmail, emailPoll = undefined, gmailPoll: configuredGmailPoll = undefined } = {}) {
+  constructor({ dataDir, secret, uiRoot = null, logger = console, pairingCode = null, credentials = null, providerFetch = fetch, emailProbe = probeEmailTransport, emailSend = sendTextEmail, emailPoll = undefined, gmailPoll: configuredGmailPoll = undefined, whatsappService = null } = {}) {
     if (!secret || typeof secret !== 'string' || secret.length < 32) throw new Error('A per-install bearer secret of at least 32 characters is required')
     this.dataDir = resolveDataDir(dataDir)
     this.secret = secret
@@ -483,6 +484,14 @@ class AgentdServer {
     this.gmailPoll = configuredGmailPoll
     this.emailInboundWorker = null
     this.gmailOAuth = new GmailOAuthService({ credentials, fetchImpl: providerFetch, logger })
+    this.whatsappBaileys = whatsappService || new WhatsAppBaileysService({
+      dataDir: this.dataDir,
+      logger,
+      onState: state => {
+        if (this.db) this.setState('whatsapp_connection_state', JSON.stringify(state))
+      },
+      onMessage: message => this.ingestWhatsAppServiceMessage(message),
+    })
     this.server = null
     this.db = null
     this.lockDb = null
@@ -715,6 +724,14 @@ class AgentdServer {
           else this.setState(key, value)
         },
       })
+      this.whatsappBaileys.configureStateAccessors({
+        get: key => this.getState(key, null),
+        set: (key, value) => {
+          if (value === null || value === undefined) this.db.prepare('DELETE FROM agent_state WHERE key = ?').run(key)
+          else this.setState(key, value)
+        },
+      })
+      await this.whatsappBaileys.initialize()
       this.restoreSettingsPersonaCutovers()
       this.restoreChatHistoryCutovers()
       await new Promise((resolve, reject) => {
@@ -837,6 +854,7 @@ class AgentdServer {
 
   async stop() {
     this.stopEmailInboundPolling()
+    try { await this.whatsappBaileys?.disconnect(false) } catch {}
     if (this.server) await new Promise(resolve => this.server.close(() => resolve()))
     this.server = null
     this.sessions.clear()
@@ -981,6 +999,10 @@ class AgentdServer {
     if (url.pathname === '/api/v1/email/oauth/status' && req.method === 'GET') return this.emailOAuthStatus(req, res)
     if (url.pathname === '/api/v1/email/oauth/start' && req.method === 'POST') return this.emailOAuthStart(req, res)
     if (url.pathname === '/api/v1/email/oauth/signout' && req.method === 'POST') return this.emailOAuthSignOut(req, res)
+    if (url.pathname === '/api/v1/whatsapp/connection' && req.method === 'GET') return this.whatsappConnection(req, res)
+    if (url.pathname === '/api/v1/whatsapp/connect' && req.method === 'POST') return this.whatsappConnect(req, res)
+    if (url.pathname === '/api/v1/whatsapp/disconnect' && req.method === 'POST') return this.whatsappDisconnect(req, res)
+    if (url.pathname === '/api/v1/whatsapp/target' && req.method === 'POST') return this.whatsappTarget(req, res)
     if (url.pathname === '/api/v1/email/test' && req.method === 'POST') return this.testEmail(req, res)
     if (url.pathname === '/api/v1/email/inbound/ack' && req.method === 'POST') return this.acknowledgeEmailInbound(req, res)
     if (url.pathname === '/api/v1/email/inbound/claim' && req.method === 'POST') return this.claimEmailInbound(req, res)
@@ -2628,7 +2650,44 @@ class AgentdServer {
     const settings = parseWhatsAppSettings(body)
     if (!settings) return json(res, 400, { error: 'Invalid WhatsApp settings' })
     this.setState('whatsapp_settings', JSON.stringify(settings))
+    if (settings.whatsapp_transport !== 'baileys') await this.whatsappBaileys.disconnect(false)
     return json(res, 200, settings)
+  }
+
+  async whatsappConnection(req, res) {
+    this.authorize(req)
+    return json(res, 200, this.whatsappBaileys.getState())
+  }
+
+  async whatsappConnect(req, res) {
+    this.authorize(req, { mutation: true })
+    if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
+    const body = await readBody(req, 8 * 1024)
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => key !== 'targetPhoneNumber') || (body.targetPhoneNumber !== undefined && typeof body.targetPhoneNumber !== 'string')) return json(res, 400, { error: 'Invalid WhatsApp connection request' })
+    try {
+      const state = await this.whatsappBaileys.connect(body.targetPhoneNumber)
+      return json(res, 200, state)
+    } catch {
+      return json(res, 502, { error: 'WhatsApp connection could not be started' })
+    }
+  }
+
+  async whatsappDisconnect(req, res) {
+    this.authorize(req, { mutation: true })
+    if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
+    const body = await readBody(req, 8 * 1024)
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => key !== 'clearAuth') || (body.clearAuth !== undefined && typeof body.clearAuth !== 'boolean')) return json(res, 400, { error: 'Invalid WhatsApp disconnect request' })
+    await this.whatsappBaileys.disconnect(body.clearAuth !== false)
+    return json(res, 200, this.whatsappBaileys.getState())
+  }
+
+  async whatsappTarget(req, res) {
+    this.authorize(req, { mutation: true })
+    if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
+    const body = await readBody(req, 8 * 1024)
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 1 || typeof body.phoneNumber !== 'string') return json(res, 400, { error: 'Invalid WhatsApp target request' })
+    const result = await this.whatsappBaileys.setTargetPhoneNumber(body.phoneNumber)
+    return json(res, result.success ? 200 : 409, result)
   }
 
   async ollamaSettings(req, res) {
@@ -2726,7 +2785,17 @@ class AgentdServer {
       releaseOperation = this.beginActiveOperation()
       if (!releaseOperation) return json(res, 409, { error: 'Settings migration is committing' })
       this.assertMigrationOpen()
-      const { providerMessageId } = await this.sendWhatsAppCloudMessage(body.to, body.text)
+      let providerMessageId
+      let storedSettings = null
+      try { storedSettings = JSON.parse(this.getState('whatsapp_settings', 'null')) } catch {}
+      const settings = parseWhatsAppSettings(storedSettings) || WHATSAPP_SETTINGS_DEFAULTS
+      if (settings.whatsapp_transport === 'baileys') {
+        ({ providerMessageId } = await this.whatsappBaileys.sendText(body.to, body.text))
+      } else if (settings.whatsapp_transport === 'cloud') {
+        ({ providerMessageId } = await this.sendWhatsAppCloudMessage(body.to, body.text))
+      } else {
+        throw Object.assign(new Error('WhatsApp Web transport is not available in browser mode'), { statusCode: 409 })
+      }
       releaseOperation()
       return json(res, 200, { success: true, providerMessageId })
     } catch (error) {
@@ -3272,6 +3341,23 @@ class AgentdServer {
     if (existing) return json(res, 200, { accepted: true, duplicate: true, id: existing.id })
     const result = this.db.prepare('INSERT INTO inbound_events(channel,provider_event_id,conversation_id,payload,status,created_at) VALUES (?,?,?,?,?,?)').run(body.channel, body.providerEventId, body.conversationId, payload, 'draft', Date.now())
     return json(res, 202, { accepted: true, duplicate: false, id: result.lastInsertRowid })
+  }
+
+  ingestWhatsAppServiceMessage(message) {
+    if (this.migrationHold || !message || message.isFromMe === true || typeof message.providerEventId !== 'string' || !/^[\x21-\x7e]{1,300}$/.test(message.providerEventId) || typeof message.conversationId !== 'string' || !message.conversationId.trim()) return
+    const payload = {
+      from: typeof message.from === 'string' ? message.from : 'unknown',
+      to: typeof message.to === 'string' ? message.to : '',
+      body: typeof message.content === 'string' ? message.content : '',
+      bodyType: 'text',
+      timestamp: Number.isSafeInteger(message.timestamp) ? message.timestamp : Date.now(),
+      messageId: typeof message.id === 'string' ? message.id : message.providerEventId,
+      isFromMe: false,
+      ...(typeof message.type === 'string' ? { messageType: message.type } : {}),
+    }
+    const payloadJson = JSON.stringify(redactPayload(payload))
+    if (Buffer.byteLength(payloadJson, 'utf8') > MAX_WHATSAPP_PAYLOAD_BYTES) return
+    this.db.prepare('INSERT INTO inbound_events(channel,provider_event_id,conversation_id,payload,status,created_at) VALUES (?,?,?,?,?,?) ON CONFLICT(channel,provider_event_id) DO NOTHING').run('whatsapp', message.providerEventId, message.conversationId.slice(0, 500), payloadJson, 'draft', Date.now())
   }
 
   async whatsappInbound(req, res, url) {
