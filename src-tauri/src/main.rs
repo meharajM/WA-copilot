@@ -414,7 +414,9 @@ fn create_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         .on_menu_event(|app, event| match event.id().as_ref() {
             "open" => open_main_window(app),
             "browser" => {
-                let _ = open_browser_workspace_for_app(app);
+                if let Err(error) = open_browser_workspace_for_app(app) {
+                    eprintln!("[aica] browser workspace unavailable: {error}");
+                }
             }
             "quit" => request_quit(app),
             _ => {}
