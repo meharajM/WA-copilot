@@ -128,6 +128,11 @@ export interface BrowserWhatsAppConnectionState {
   handshakeStatus: 'idle' | 'pending' | 'expired' | 'verified' | null
 }
 
+export interface BrowserWhatsAppUiSettings {
+  whatsappEnabled: boolean
+  targetPhoneNumber: string | null
+}
+
 export type BrowserEmailDraftStatus = 'pending_review' | 'approved' | 'rejected' | 'escalated' | 'sent' | 'failed'
 
 export interface BrowserEmailDraft {
@@ -316,6 +321,20 @@ const readWhatsAppConnectionState = (value: unknown): BrowserWhatsAppConnectionS
     phoneNumber: value.phoneNumber as string | null,
     workerNumber: value.workerNumber as string | null,
     handshakeStatus: value.handshakeStatus as BrowserWhatsAppConnectionState['handshakeStatus'],
+  }
+}
+
+const readWhatsAppUiSettings = (value: unknown): BrowserWhatsAppUiSettings => {
+  if (!isRecord(value)
+    || typeof value.whatsappEnabled !== 'boolean'
+    || (value.targetPhoneNumber !== null
+      && (typeof value.targetPhoneNumber !== 'string'
+        || value.targetPhoneNumber.length > 32
+        || !/^\+?[0-9\s().-]+$/.test(value.targetPhoneNumber)
+        || !/^\d{8,15}$/.test(value.targetPhoneNumber.replace(/\D/g, ''))))) throw new Error('Invalid WhatsApp UI settings response')
+  return {
+    whatsappEnabled: value.whatsappEnabled,
+    targetPhoneNumber: value.targetPhoneNumber as string | null,
   }
 }
 
@@ -558,6 +577,8 @@ export interface BrowserAgentdClient extends ChatClient {
   getWhatsAppSettings(): Promise<WhatsAppSettings>
   saveWhatsAppSettings(settings: WhatsAppSettings): Promise<WhatsAppSettings>
   getWhatsAppConnectionState(): Promise<BrowserWhatsAppConnectionState>
+  getWhatsAppUiSettings(): Promise<BrowserWhatsAppUiSettings>
+  saveWhatsAppUiSettings(settings: BrowserWhatsAppUiSettings): Promise<BrowserWhatsAppUiSettings>
   connectWhatsApp(targetPhoneNumber?: string): Promise<BrowserWhatsAppConnectionState>
   disconnectWhatsApp(clearAuth?: boolean): Promise<BrowserWhatsAppConnectionState>
   setWhatsAppTarget(phoneNumber: string): Promise<{ success: boolean; error?: string; handshakeCode?: string }>
@@ -904,6 +925,8 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
   const getWhatsAppSettings = async () => readWhatsAppSettings(await request('/api/v1/settings/whatsapp'))
   const saveWhatsAppSettings = async (settings: WhatsAppSettings) => readWhatsAppSettings(await request('/api/v1/settings/whatsapp', { method: 'PUT', body: JSON.stringify(settings) }, true))
   const getWhatsAppConnectionState = async () => readWhatsAppConnectionState(await request('/api/v1/whatsapp/connection'))
+  const getWhatsAppUiSettings = async () => readWhatsAppUiSettings(await request('/api/v1/settings/whatsapp-ui'))
+  const saveWhatsAppUiSettings = async (settings: BrowserWhatsAppUiSettings) => readWhatsAppUiSettings(await request('/api/v1/settings/whatsapp-ui', { method: 'PUT', body: JSON.stringify(settings) }, true))
   const connectWhatsApp = async (targetPhoneNumber?: string) => readWhatsAppConnectionState(await request('/api/v1/whatsapp/connect', { method: 'POST', body: JSON.stringify(targetPhoneNumber ? { targetPhoneNumber } : {}) }, true))
   const disconnectWhatsApp = async (clearAuth = true) => readWhatsAppConnectionState(await request('/api/v1/whatsapp/disconnect', { method: 'POST', body: JSON.stringify({ clearAuth }) }, true))
   const setWhatsAppTarget = async (phoneNumber: string) => {
@@ -1224,6 +1247,8 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     getWhatsAppSettings,
     saveWhatsAppSettings,
     getWhatsAppConnectionState,
+    getWhatsAppUiSettings,
+    saveWhatsAppUiSettings,
     connectWhatsApp,
     disconnectWhatsApp,
     setWhatsAppTarget,

@@ -139,6 +139,10 @@ const WHATSAPP_SETTINGS_DEFAULTS = Object.freeze({
   whatsapp_cloud_phone_number_id: '',
   whatsapp_cloud_api_version: 'v23.0',
 })
+const WHATSAPP_UI_DEFAULTS = Object.freeze({
+  whatsappEnabled: false,
+  targetPhoneNumber: null,
+})
 const EMAIL_SETTINGS_DEFAULTS = Object.freeze({
   accountName: 'default',
   provider: 'imap-smtp',
@@ -979,6 +983,7 @@ class AgentdServer {
     if (url.pathname === '/api/v1/settings/persona' && ['GET', 'PUT'].includes(req.method)) return this.personaSettings(req, res)
     if (url.pathname === '/api/v1/settings/preferences' && ['GET', 'PUT'].includes(req.method)) return this.productPreferences(req, res)
     if (url.pathname === '/api/v1/settings/whatsapp' && ['GET', 'PUT'].includes(req.method)) return this.whatsappSettings(req, res)
+    if (url.pathname === '/api/v1/settings/whatsapp-ui' && ['GET', 'PUT'].includes(req.method)) return this.whatsappUiSettings(req, res)
     if (url.pathname === '/api/v1/settings/ollama' && ['GET', 'PUT'].includes(req.method)) return this.ollamaSettings(req, res)
     if (url.pathname === '/api/v1/settings/email' && ['GET', 'PUT'].includes(req.method)) return this.emailSettings(req, res)
     if (url.pathname === '/api/v1/email/oauth/callback' && req.method === 'GET') return this.emailOAuthCallback(req, res, url)
@@ -2711,6 +2716,21 @@ class AgentdServer {
     return json(res, 200, settings)
   }
 
+  async whatsappUiSettings(req, res) {
+    this.authorize(req, { mutation: req.method === 'PUT' })
+    if (req.method === 'GET') {
+      let stored = null
+      try { stored = JSON.parse(this.getState('whatsapp_ui_settings', 'null')) } catch {}
+      return json(res, 200, parseWhatsAppUiSettings(stored) || WHATSAPP_UI_DEFAULTS)
+    }
+    if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
+    const body = await readBody(req, 8 * 1024)
+    const settings = parseWhatsAppUiSettings(body)
+    if (!settings) return json(res, 400, { error: 'Invalid WhatsApp UI settings' })
+    this.setState('whatsapp_ui_settings', JSON.stringify(settings))
+    return json(res, 200, settings)
+  }
+
   async whatsappConnection(req, res) {
     this.authorize(req)
     return json(res, 200, this.whatsappBaileys.getState())
@@ -3890,6 +3910,22 @@ function parseWhatsAppSettings(value) {
   }
 }
 
+function parseWhatsAppUiSettings(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const keys = Object.keys(value).sort()
+  if (keys.length !== 2 || keys.join(',') !== 'targetPhoneNumber,whatsappEnabled'
+    || typeof value.whatsappEnabled !== 'boolean'
+    || (value.targetPhoneNumber !== null
+      && (typeof value.targetPhoneNumber !== 'string'
+        || value.targetPhoneNumber.length > 32
+        || !/^\+?[0-9\s().-]+$/.test(value.targetPhoneNumber)
+        || !/^\d{8,15}$/.test(value.targetPhoneNumber.replace(/\D/g, ''))))) return null
+  return {
+    whatsappEnabled: value.whatsappEnabled,
+    targetPhoneNumber: value.targetPhoneNumber,
+  }
+}
+
 function parseEmailSettings(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   const keys = Object.keys(value).sort()
@@ -4137,4 +4173,4 @@ async function readProviderStream(response, onDelta) {
   return content
 }
 
-module.exports = { AgentdServer, MCP_LIFECYCLE, PAIRING_TTL_MS, resolveDataDir, parseWhatsAppSettings, WHATSAPP_SETTINGS_DEFAULTS, parseOllamaSettings, OLLAMA_SETTINGS_DEFAULTS, parseProductPreferences, PRODUCT_PREFERENCES_DEFAULTS }
+module.exports = { AgentdServer, MCP_LIFECYCLE, PAIRING_TTL_MS, resolveDataDir, parseWhatsAppSettings, WHATSAPP_SETTINGS_DEFAULTS, parseWhatsAppUiSettings, WHATSAPP_UI_DEFAULTS, parseOllamaSettings, OLLAMA_SETTINGS_DEFAULTS, parseProductPreferences, PRODUCT_PREFERENCES_DEFAULTS }

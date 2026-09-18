@@ -83,7 +83,7 @@ The renderer process houses the React UI and the autonomous agent logic.
 
 #### State Management (`/stores`)
 *   **`useChatStore`**: Manages omnichannel chat sessions, messages, and channel/contact metadata. In the browser workspace, the durable session source is the authenticated `agentd` API; the store is a renderer projection, not a second database.
-*   **`useWhatsAppStore`**: Tracks connection status, QR codes, response permission, and the legacy autonomous-bot flag. Browser mode clears/ignores the autonomous flag and uses response permission only for review and explicit sends; the Electron transition client retains the existing autonomous path.
+*   **`useWhatsAppStore`**: Tracks connection status, QR codes, response permission, and the legacy autonomous-bot flag. Browser mode persists response permission/target state through authenticated agentd UI settings, never persists the autonomous flag, and uses response permission only for review and explicit sends; the Electron transition client retains the existing local path.
 *   **`useMcpStore`**: Maintains the Electron transition-client registry of connected **Model Context Protocol** servers and an agentd-owned browser projection. Browser mode uses the supervised worker for approved external servers; internal Playwright/filesystem/native definitions remain fail-closed.
 
 #### Agent Subsystem (`/lib`)

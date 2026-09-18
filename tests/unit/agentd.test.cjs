@@ -542,6 +542,31 @@ test('agentd persists bounded WhatsApp transport settings and never returns Clou
   fs.rmSync(dataDir, { recursive: true, force: true })
 })
 
+test('agentd persists browser WhatsApp UI state without the autonomous flag', async () => {
+  const dataDir = makeTempDir('aica-agentd-whatsapp-ui-')
+  const server = new AgentdServer({ dataDir, secret: 's'.repeat(32), pairingCode: '975311', logger: { log() {} } })
+  const { origin } = await server.start()
+  const bearer = { authorization: `Bearer ${'s'.repeat(32)}` }
+  const defaults = await request(origin, 'GET', '/api/v1/settings/whatsapp-ui', undefined, bearer)
+  assert.deepEqual(defaults.body, { whatsappEnabled: false, targetPhoneNumber: null })
+  const settings = { whatsappEnabled: true, targetPhoneNumber: '+1 (415) 555-0199' }
+  assert.deepEqual((await request(origin, 'PUT', '/api/v1/settings/whatsapp-ui', settings, bearer)).body, settings)
+  assert.deepEqual((await request(origin, 'GET', '/api/v1/settings/whatsapp-ui', undefined, bearer)).body, settings)
+  for (const invalid of [
+    { ...settings, targetPhoneNumber: 'not-a-phone' },
+    { ...settings, targetPhoneNumber: '1'.repeat(16) },
+    { ...settings, businessBotMode: true },
+  ]) assert.equal((await request(origin, 'PUT', '/api/v1/settings/whatsapp-ui', invalid, bearer)).status, 400)
+
+  const pair = await request(origin, 'POST', '/api/v1/pair', { code: '975311' }, { origin })
+  const browser = { origin, cookie: pair.headers['set-cookie'][0].split(';')[0] }
+  assert.equal((await request(origin, 'PUT', '/api/v1/settings/whatsapp-ui', settings, browser)).status, 403)
+  const browserSession = { ...browser, 'x-csrf-token': pair.body.csrfToken }
+  assert.equal((await request(origin, 'PUT', '/api/v1/settings/whatsapp-ui', { whatsappEnabled: false, targetPhoneNumber: null }, browserSession)).status, 200)
+  await server.stop()
+  fs.rmSync(dataDir, { recursive: true, force: true })
+})
+
 test('agentd serves the browser bundle with executable asset MIME types', async () => {
   const dataDir = makeTempDir('aica-agentd-ui-')
   const uiRoot = makeTempDir('aica-agentd-ui-root-')
