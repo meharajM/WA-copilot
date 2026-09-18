@@ -340,11 +340,16 @@ export const electron = {
             if (isElectron() && window.electron?.intelligence) {
                 return await window.electron.intelligence.getPersona()
             }
+            if (isBrowserProduct()) return await getBrowserAgentdClient().getPersonaSettings()
             return null
         },
         updatePersona: async (updates: Record<string, unknown>) => {
             if (isElectron() && window.electron?.intelligence) {
                 return await window.electron.intelligence.updatePersona(updates)
+            }
+            if (isBrowserProduct()) {
+                const current = await getBrowserAgentdClient().getPersonaSettings()
+                return await getBrowserAgentdClient().savePersonaSettings({ ...current, ...updates } as Parameters<ReturnType<typeof getBrowserAgentdClient>['savePersonaSettings']>[0])
             }
             return null
         },

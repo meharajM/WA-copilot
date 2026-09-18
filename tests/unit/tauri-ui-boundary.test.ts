@@ -137,6 +137,12 @@ describe('browser-first UI boundary', () => {
     expect(electron).toContain('getBrowserAgentdClient().disconnectWhatsApp(clearAuth)')
   })
 
+  it('routes browser persona reads and writes through agentd', () => {
+    const electron = readSource('lib/electron.ts')
+    expect(electron).toContain('getBrowserAgentdClient().getPersonaSettings()')
+    expect(electron).toContain('getBrowserAgentdClient().savePersonaSettings')
+  })
+
   it('describes browser knowledge as bounded text instead of binary or visual ingestion', () => {
     const knowledge = readSource('components/chat/KnowledgeBrowser.tsx')
 
