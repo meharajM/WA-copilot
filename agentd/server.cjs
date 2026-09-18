@@ -7,6 +7,7 @@ const tls = require('node:tls')
 const Database = require('better-sqlite3')
 const { isAllowedCredentialKey } = require('./keyring-credential-store.cjs')
 const continuityMigration = require('./continuity-migration.cjs')
+const { sendTextEmail } = require('./email-transport.cjs')
 
 const SESSION_TTL_MS = 15 * 60 * 1000
 const PAIRING_TTL_MS = 5 * 60 * 1000
@@ -370,7 +371,7 @@ function redactPayload(value, key = '') {
 }
 
 class AgentdServer {
-  constructor({ dataDir, secret, uiRoot = null, logger = console, pairingCode = null, credentials = null, providerFetch = fetch, emailProbe = probeEmailTransport } = {}) {
+  constructor({ dataDir, secret, uiRoot = null, logger = console, pairingCode = null, credentials = null, providerFetch = fetch, emailProbe = probeEmailTransport, emailSend = sendTextEmail } = {}) {
     if (!secret || typeof secret !== 'string' || secret.length < 32) throw new Error('A per-install bearer secret of at least 32 characters is required')
     this.dataDir = resolveDataDir(dataDir)
     this.secret = secret
@@ -379,6 +380,7 @@ class AgentdServer {
     this.credentials = credentials
     this.providerFetch = providerFetch
     this.emailProbe = emailProbe
+    this.emailSend = emailSend
     this.server = null
     this.db = null
     this.lockDb = null
@@ -442,6 +444,10 @@ class AgentdServer {
           payload TEXT NOT NULL,
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS email_delivery_locks (
+          draft_id TEXT PRIMARY KEY REFERENCES email_drafts(id) ON DELETE CASCADE,
+          started_at INTEGER NOT NULL
         );
         CREATE TABLE IF NOT EXISTS chat_sessions (
           id TEXT PRIMARY KEY,
@@ -748,6 +754,8 @@ class AgentdServer {
     if (url.pathname === '/api/v1/email/inbound' && ['GET', 'POST'].includes(req.method)) return this.emailInbound(req, res, url)
     if (url.pathname === '/api/v1/email/drafts' && ['GET', 'POST'].includes(req.method)) return this.emailDrafts(req, res, url)
     const emailDraftMatch = /^\/api\/v1\/email\/drafts\/([^/]+)$/.exec(url.pathname)
+    const emailDraftSendMatch = /^\/api\/v1\/email\/drafts\/([^/]+)\/send$/.exec(url.pathname)
+    if (emailDraftSendMatch && req.method === 'POST') return this.sendEmailDraft(req, res, decodeURIComponent(emailDraftSendMatch[1]))
     if (emailDraftMatch && ['PATCH', 'DELETE'].includes(req.method)) return this.emailDraft(req, res, decodeURIComponent(emailDraftMatch[1]))
     if (url.pathname === '/api/v1/whatsapp/messages' && req.method === 'POST') return this.sendWhatsAppMessage(req, res)
     const providerTestMatch = /^\/api\/v1\/providers\/(openai|openrouter|ollama)\/test$/.exec(url.pathname)
@@ -1192,6 +1200,69 @@ class AgentdServer {
     const now = Date.now()
     this.db.prepare('UPDATE email_drafts SET status = ?, payload = ?, updated_at = ? WHERE id = ?').run(draft.status, JSON.stringify(draft), now, id)
     return json(res, 200, draft)
+  }
+
+  async sendEmailDraft(req, res, id) {
+    this.authorize(req, { mutation: true })
+    if (!/^draft_[A-Za-z0-9_-]{1,120}$/.test(id)) return json(res, 400, { error: 'Invalid email draft id' })
+    let settings = null
+    try { settings = parseEmailSettings(JSON.parse(this.getState('email_settings', 'null'))) } catch {}
+    if (!settings || !settings.enabled || !['imap-smtp', 'gmail-api'].includes(settings.provider) || settings.gmailAuthMode !== 'app-password') {
+      return json(res, 409, { success: false, error: 'Browser email delivery requires an enabled app-password transport' })
+    }
+    if (!settings.smtpHost || !settings.emailAddress || !settings.userName) return json(res, 400, { success: false, error: 'Complete SMTP settings before sending email' })
+    if (!settings.smtpTls) return json(res, 409, { success: false, error: 'Browser email delivery requires SMTP TLS or STARTTLS' })
+    const row = this.db.prepare('SELECT payload,status FROM email_drafts WHERE id = ?').get(id)
+    if (!row) return json(res, 404, { error: 'Email draft not found' })
+    const draft = parseEmailDraft(JSON.parse(row.payload))
+    if (!draft) return json(res, 500, { error: 'Stored email draft is invalid' })
+    if (draft.status === 'sent') return json(res, 200, { success: true, duplicate: true, draft })
+    if (draft.status !== 'approved') return json(res, 409, { success: false, error: 'Email draft must be approved before sending' })
+    if (!this.credentials) return json(res, 503, { success: false, error: 'Credential store unavailable' })
+    let password = null
+    for (const key of ['email_smtp_password', 'email_imap_password']) {
+      try {
+        password = await this.credentials.get(key)
+        if (password) break
+      } catch {
+        return json(res, 503, { success: false, error: 'Credential store operation failed' })
+      }
+    }
+    if (!password) return json(res, 400, { success: false, error: 'Email app password is not configured' })
+    const lockNow = Date.now()
+    this.db.prepare('DELETE FROM email_delivery_locks WHERE draft_id = ? AND started_at < ?').run(id, lockNow - 10 * 60 * 1000)
+    try {
+      this.db.prepare('INSERT INTO email_delivery_locks(draft_id,started_at) VALUES (?,?)').run(id, lockNow)
+    } catch {
+      return json(res, 409, { success: false, error: 'Email draft delivery is already in progress' })
+    }
+    const recipient = draft.replyTo || draft.originalFrom
+    try {
+      await this.emailSend({
+        host: settings.smtpHost,
+        port: settings.smtpPort,
+        secure: settings.smtpTls,
+        username: settings.userName || settings.emailAddress,
+        password,
+        from: settings.emailAddress,
+        to: recipient,
+        subject: draft.originalSubject ? (draft.originalSubject.startsWith('Re:') ? draft.originalSubject : `Re: ${draft.originalSubject}`) : '(no subject)',
+        body: draft.responseText,
+        inReplyTo: draft.inReplyTo,
+        references: draft.references,
+      })
+      const sent = { ...draft, status: 'sent' }
+      this.db.prepare('UPDATE email_drafts SET status = ?, payload = ?, updated_at = ? WHERE id = ? AND status = ?').run('sent', JSON.stringify(sent), Date.now(), id, 'approved')
+      this.db.prepare('DELETE FROM email_delivery_locks WHERE draft_id = ?').run(id)
+      return json(res, 200, { success: true, duplicate: false, draft: sent })
+    } catch {
+      const failed = { ...draft, status: 'failed' }
+      this.db.prepare('UPDATE email_drafts SET status = ?, payload = ?, updated_at = ? WHERE id = ? AND status = ?').run('failed', JSON.stringify(failed), Date.now(), id, 'approved')
+      this.db.prepare('DELETE FROM email_delivery_locks WHERE draft_id = ?').run(id)
+      return json(res, 502, { success: false, error: 'Email delivery failed over the configured secure SMTP transport' })
+    } finally {
+      if (typeof password === 'string') password = ''
+    }
   }
 
   async auditLogs(req, res, url) {

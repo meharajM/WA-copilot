@@ -15,6 +15,7 @@ import React, { useState } from 'react';
 import { useDraftStore } from '../../stores/draftStore';
 import { Card } from '../primitives/Card';
 import electron, { isElectron } from '../../lib/electron';
+import { getBrowserAgentdClient } from '../../lib/browser-agentd-client';
 import { normalizeSubject } from '../../lib/email-integration';
 import {
   CheckCircle,
@@ -56,9 +57,19 @@ export function DraftApprovalPanel() {
   };
 
   const handleApproveAndSend = async (draftId: string) => {
-    if (!isElectron()) return
     const draft = drafts.find((d) => d.id === draftId);
     if (!draft) return;
+
+    if (!isElectron()) {
+      try {
+        await getBrowserAgentdClient().updateEmailDraft(draftId, { status: 'approved' });
+        const sent = await getBrowserAgentdClient().sendEmailDraft(draftId);
+        if (sent.status === 'sent') markDraftSent(draftId);
+      } catch {
+        // Keep the approved draft visible; the daemon owns the durable failure state.
+      }
+      return;
+    }
 
     const sendResult = await electron.email.send({
       to: draft.replyTo || draft.originalFrom,
@@ -92,7 +103,7 @@ export function DraftApprovalPanel() {
       </div>
       {browserRuntime && drafts.length > 0 && (
         <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2 text-xs text-amber-200">
-          Browser mode can review and approve drafts, but email delivery remains disabled until the agentd mailbox worker is migrated. Use Electron for the legacy send path.
+          Browser mode sends only explicitly approved text drafts through the local agentd SMTP transport. IMAP polling, OAuth, attachments, and insecure SMTP remain unavailable.
         </div>
       )}
 
@@ -116,7 +127,7 @@ export function DraftApprovalPanel() {
               onApprove={() => approveDraft(draft.id)}
               onSend={() => handleApproveAndSend(draft.id)}
               onReject={() => rejectDraft(draft.id)}
-              canSend={!browserRuntime}
+              canSend={true}
             />
           ))}
         </div>
@@ -142,7 +153,7 @@ export function DraftApprovalPanel() {
               onApprove={() => approveDraft(draft.id)}
               onSend={() => handleApproveAndSend(draft.id)}
               onReject={() => rejectDraft(draft.id)}
-              canSend={!browserRuntime}
+              canSend={true}
               isEscalated
             />
           ))}

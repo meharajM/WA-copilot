@@ -75,7 +75,6 @@ export const useDraftStore = create<DraftState>()(
 
       markDraftSent: (draftId) => {
         set((state) => ({ drafts: state.drafts.map((d) => d.id === draftId ? { ...d, status: 'sent' as const } : d) }))
-        if (isBrowserProduct()) void getBrowserAgentdClient().updateEmailDraft(draftId, { status: 'sent' }).catch(() => undefined)
       },
 
       updateDraftText: (draftId, newText) => {

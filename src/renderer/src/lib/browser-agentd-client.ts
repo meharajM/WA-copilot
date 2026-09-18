@@ -513,6 +513,7 @@ export interface BrowserAgentdClient extends ChatClient {
   listEmailDrafts(limit?: number, status?: BrowserEmailDraftStatus): Promise<BrowserEmailDraft[]>
   saveEmailDraft(draft: BrowserEmailDraft): Promise<BrowserEmailDraft>
   updateEmailDraft(id: string, update: { responseText?: string; status?: BrowserEmailDraftStatus }): Promise<BrowserEmailDraft>
+  sendEmailDraft(id: string): Promise<BrowserEmailDraft>
   deleteEmailDraft(id: string): Promise<void>
   listWhatsAppInbound(afterId?: number, limit?: number): Promise<{ events: BrowserWhatsAppInboundEvent[]; nextAfterId: number }>
   getPersonaSettings(): Promise<PersonaSettings>
@@ -860,6 +861,12 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     const value = await request<unknown>(`/api/v1/email/drafts/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(update) }, true)
     return readEmailDraft(value)
   }
+  const sendEmailDraft = async (id: string): Promise<BrowserEmailDraft> => {
+    if (!/^draft_[A-Za-z0-9_-]{1,120}$/.test(id)) throw new Error('Invalid email draft id')
+    const value = await request<unknown>(`/api/v1/email/drafts/${encodeURIComponent(id)}/send`, { method: 'POST', body: '{}' }, true)
+    if (!isRecord(value) || value.success !== true || !isRecord(value.draft)) throw new Error('Invalid agentd email send response')
+    return readEmailDraft(value.draft)
+  }
   const deleteEmailDraft = async (id: string): Promise<void> => {
     if (!/^draft_[A-Za-z0-9_-]{1,120}$/.test(id)) throw new Error('Invalid email draft id')
     const value = await request<unknown>(`/api/v1/email/drafts/${encodeURIComponent(id)}`, { method: 'DELETE' }, true)
@@ -1067,6 +1074,7 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     listEmailDrafts,
     saveEmailDraft,
     updateEmailDraft,
+    sendEmailDraft,
     deleteEmailDraft,
     listWhatsAppInbound,
     getPersonaSettings,
