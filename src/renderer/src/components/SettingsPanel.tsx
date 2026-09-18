@@ -332,7 +332,7 @@ export function SettingsPanel({ onClose, initialSection = 'whatsapp' }: Settings
                         <div className="bg-blue-500/5 border border-blue-500/20 rounded-xl p-4 flex gap-3">
                             <Info size={18} className="text-blue-400 shrink-0 mt-0.5" />
                             <p className="text-xs text-blue-200/70 leading-relaxed">
-                                <strong>Tip:</strong> Ensure your "Knowledge Base" is up to date. The bot uses your local files (PDFs, TXT) to answer customer questions accurately.
+                                <strong>Tip:</strong> Ensure your "Knowledge Base" is up to date. The bot uses your local files ({browserRuntime ? 'bounded text files' : 'PDFs, TXT'}) to answer customer questions accurately.
                             </p>
                         </div>
                         <AutonomyPanel />

@@ -586,7 +586,11 @@ export function EmptyState({ onNavigate }: { onNavigate?: (view: ViewMode) => vo
                       <>
                         <UploadCloud size={28} className="text-[var(--color-text-muted)] mb-3" />
                         <p className="text-sm text-[var(--color-text-secondary)] font-medium">Click to select files</p>
-                        <p className="text-xs text-[var(--color-text-muted)] mt-1">PDF, TXT, CSV (Multiple Files Supported)</p>
+                        <p className="text-xs text-[var(--color-text-muted)] mt-1">
+                          {isBrowserProduct()
+                            ? 'TXT, MD, CSV, JSON, XML, HTML, LOG (bounded text)'
+                            : 'PDF, TXT, CSV (Multiple Files Supported)'}
+                        </p>
                       </>
                     )}
                     {uploadStatus === 'uploading' && (
