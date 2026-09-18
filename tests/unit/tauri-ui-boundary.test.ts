@@ -57,4 +57,11 @@ describe('browser-first UI boundary', () => {
     expect(agent).toContain('!isTauriRuntime()')
     expect(storage).toContain('The Tauri native companion does not mount the product workspace')
   })
+
+  it('keeps browser brain corrections on the runtime-aware agentd route', () => {
+    const actions = readSource('components/chat/MessageActions.tsx')
+    expect(actions).toContain("executeToolCall('rag_save_correction'")
+    expect(actions).toContain('if (result.error) throw new Error(result.error)')
+    expect(actions).not.toContain("electron.mcp.callTool('internal-rag', 'rag_save_correction'")
+  })
 })
