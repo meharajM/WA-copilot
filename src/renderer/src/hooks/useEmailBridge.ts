@@ -61,7 +61,7 @@ const toRendererSession = (session: AgentdChatSession): ChatSession => ({
   })),
 })
 
-const ingestBrowserInboundEmail = async (event: BrowserEmailInboundEvent): Promise<{ email: EmailMessage; content: string }> => {
+const ingestBrowserInboundEmail = async (event: BrowserEmailInboundEvent): Promise<{ email: EmailMessage; content: string; alreadyGenerated: boolean }> => {
   const payload = event.payload
   const email: EmailMessage = {
     id: event.providerEventId,
@@ -97,12 +97,13 @@ const ingestBrowserInboundEmail = async (event: BrowserEmailInboundEvent): Promi
     if (!(error instanceof BrowserAgentdError) || error.status !== 409) throw error
   }
   const refreshed = await client.loadSessions()
+  const durableSession = refreshed.find((candidate) => candidate.id === sessionId)
   const activeSessionId = useChatStore.getState().activeSessionId
   useChatStore.setState({
     sessions: refreshed.map(toRendererSession),
     activeSessionId: activeSessionId && refreshed.some((candidate) => candidate.id === activeSessionId) ? activeSessionId : sessionId,
   })
-  return { email, content }
+  return { email, content, alreadyGenerated: durableSession?.messages.some((message) => message.id === `assistant_email_${event.id}`) === true }
 }
 
 export function useEmailBridge(): void {
@@ -140,26 +141,28 @@ export function useEmailBridge(): void {
             const events = await client.claimEmailInbound(50)
             for (const event of events) {
               const hydrated = await ingestBrowserInboundEmail(event)
-              // The product hook owns generation/policy execution. It reports
-              // completion back through the event detail so the daemon event is
-              // acknowledged only after the response is durably handled.
-              await new Promise<void>((resolve, reject) => {
-                let handedOff = false
-                const completion = (promise: Promise<void>) => {
-                  handedOff = true
-                  promise.then(resolve, reject)
-                }
-                window.dispatchEvent(new CustomEvent('app:submit-message', {
-                  detail: {
-                    content: hydrated.content,
-                    emailMessage: hydrated.email,
-                    emailAlreadyHydrated: true,
-                    emailGenerationRequestId: `email_${event.id}`,
-                    onComplete: completion,
-                  },
-                }))
-                if (!handedOff) reject(new Error('Browser email agent is unavailable'))
-              })
+              if (!hydrated.alreadyGenerated) {
+                // The product hook owns generation/policy execution. It reports
+                // completion back through the event detail so the daemon event is
+                // acknowledged only after the response is durably handled.
+                await new Promise<void>((resolve, reject) => {
+                  let handedOff = false
+                  const completion = (promise: Promise<void>) => {
+                    handedOff = true
+                    promise.then(resolve, reject)
+                  }
+                  window.dispatchEvent(new CustomEvent('app:submit-message', {
+                    detail: {
+                      content: hydrated.content,
+                      emailMessage: hydrated.email,
+                      emailAlreadyHydrated: true,
+                      emailGenerationRequestId: `email_${event.id}`,
+                      onComplete: completion,
+                    },
+                  }))
+                  if (!handedOff) reject(new Error('Browser email agent is unavailable'))
+                })
+              }
               // Acknowledge only after durable session/message hydration. If the
               // generation or draft/send policy fails, daemon keeps event queued
               // for retry after reload.
