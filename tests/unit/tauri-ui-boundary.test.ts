@@ -157,13 +157,24 @@ describe('browser-first UI boundary', () => {
     expect(electron).toContain('getBrowserAgentdClient().savePersonaSettings')
   })
 
-  it('describes browser knowledge as bounded text instead of binary or visual ingestion', () => {
+  it('describes browser knowledge as bounded text plus supervised binary conversion', () => {
     const knowledge = readSource('components/chat/KnowledgeBrowser.tsx')
 
-    expect(knowledge).toContain('bounded text files')
-    expect(knowledge).toContain('Binary conversion is not available in the browser yet.')
+    expect(knowledge).toContain('bounded text and document files')
+    expect(knowledge).toContain('convertKnowledge')
+    expect(knowledge).toContain('readBrowserKnowledgeBinaryFile')
+    expect(knowledge).not.toContain('Binary conversion is not available in the browser yet.')
     expect(knowledge).not.toContain('visual data')
     expect(knowledge).not.toContain('ToIndex documents, spreadsheets or images')
+  })
+
+  it('keeps the dashboard training picker on the same browser conversion boundary', () => {
+    const dashboard = readSource('components/chat/EmptyState.tsx')
+
+    expect(dashboard).toContain('readBrowserKnowledgeBinaryFile')
+    expect(dashboard).toContain('client.convertKnowledge')
+    expect(dashboard).toContain('PDF, DOCX, XLSX, PPTX')
+    expect(dashboard).not.toContain('browser import supports text, Markdown, CSV, JSON, XML, HTML, and log files')
   })
 
   it('does not seed browser dashboard topics when there is no analyzed activity', () => {

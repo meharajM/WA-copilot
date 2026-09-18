@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createBrowserAgentdClient, readBrowserKnowledgeFile } from '../../src/renderer/src/lib/browser-agentd-client'
+import { createBrowserAgentdClient, readBrowserKnowledgeBinaryFile, readBrowserKnowledgeFile } from '../../src/renderer/src/lib/browser-agentd-client'
 
 const response = (body: unknown, status = 200, headers?: HeadersInit) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...headers } })
 
@@ -12,6 +12,14 @@ describe('browser agentd client', () => {
     await expect(readBrowserKnowledgeFile(file('hello'))).resolves.toEqual({ content: 'hello', size: 5, fileType: 'text/markdown' })
     await expect(readBrowserKnowledgeFile(file('x', 16 * 1024 * 1024 + 1))).rejects.toThrow('16 MB or smaller')
     await expect(readBrowserKnowledgeFile(file('🙂'.repeat(200_000)))).rejects.toThrow('512 KiB or smaller')
+  })
+
+  it('encodes bounded binary knowledge without exposing a native path', async () => {
+    const file = {
+      name: 'guide.pdf', type: 'application/pdf', size: 3,
+      arrayBuffer: async () => Uint8Array.from([1, 2, 3]).buffer,
+    } as unknown as File
+    await expect(readBrowserKnowledgeBinaryFile(file)).resolves.toEqual({ dataBase64: 'AQID', size: 3, fileType: 'application/pdf' })
   })
 
   it('pairs with HttpOnly session cookies and sends CSRF only for mutations', async () => {
@@ -520,6 +528,7 @@ describe('browser agentd client', () => {
       if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
       if (url.includes('/api/v1/knowledge/search')) return response({ results: [{ id: 1, file_path: 'browser://knowledge/faq.md', file_name: 'faq.md', created_at: '2026-01-01T00:00:00.000Z', content: 'refunds are allowed', rank: -1 }] })
       if (url.endsWith('/api/v1/knowledge') && init?.method === 'POST') return response({ success: true, document: { id: 2, file_path: 'browser://knowledge/new.md', file_name: 'new.md', created_at: '2026-01-01T00:00:00.000Z' } })
+      if (url.endsWith('/api/v1/knowledge/convert')) return response({ success: true, document: { id: 3, file_path: 'browser://knowledge/guide.pdf', file_name: 'guide.pdf', file_type: 'text/markdown', size: 3, created_at: '2026-01-01T00:00:00.000Z' } })
       if (url.includes('/api/v1/knowledge?')) return response({ documents: [{ id: 1, file_path: 'browser://knowledge/faq.md', file_name: 'faq.md', file_type: 'text/markdown', size: 20, created_at: '2026-01-01T00:00:00.000Z' }] })
       if (url.endsWith('/api/v1/intelligence/stats')) return response({ success: true, stats: { totalQueries: 2, resolvedQueries: 1, autonomyRate: 50, trainingCount: 1, learningCount: 0 } })
       if (url.includes('/api/v1/intelligence/logs?')) return response({ logs: [{ id: 1, type: 'accuracy', event: 'resolved', timestamp: '2026-01-01T00:00:00.000Z' }] })
@@ -530,11 +539,14 @@ describe('browser agentd client', () => {
     await expect(client.listKnowledge()).resolves.toMatchObject([{ file_name: 'faq.md' }])
     await expect(client.searchKnowledge('refunds')).resolves.toMatchObject([{ content: 'refunds are allowed' }])
     await expect(client.ingestKnowledge({ fileName: 'new.md', filePath: 'browser://knowledge/new.md', fileType: 'text/markdown', content: 'new', size: 3 })).resolves.toMatchObject({ file_name: 'new.md' })
+    await expect(client.convertKnowledge({ fileName: 'guide.pdf', fileType: 'application/pdf', dataBase64: 'AQID', size: 3 })).resolves.toMatchObject({ file_name: 'guide.pdf', file_type: 'text/markdown' })
     await expect(client.getIntelligenceStats()).resolves.toMatchObject({ resolvedQueries: 1 })
     await expect(client.listIntelligenceLogs()).resolves.toMatchObject([{ event: 'resolved' }])
     await client.logAccuracy({ event: 'resolved', details: 'verified' })
     const ingest = fetcher.mock.calls.find(([input, init]) => String(input).endsWith('/api/v1/knowledge') && init?.method === 'POST')
     expect(new Headers(ingest?.[1]?.headers).get('x-csrf-token')).toBe('csrf-token')
+    const conversion = fetcher.mock.calls.find(([input, init]) => String(input).endsWith('/api/v1/knowledge/convert') && init?.method === 'POST')
+    expect(new Headers(conversion?.[1]?.headers).get('x-csrf-token')).toBe('csrf-token')
   })
 
   it('maps durable memory stats, export, and tool calls through agentd', async () => {

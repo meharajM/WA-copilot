@@ -5,6 +5,7 @@ const http = require('node:http')
 const net = require('node:net')
 const path = require('node:path')
 const tls = require('node:tls')
+const { pathToFileURL } = require('node:url')
 const Database = require('better-sqlite3')
 const { isPublicCredentialKey } = require('./keyring-credential-store.cjs')
 const { GmailOAuthService } = require('./gmail-oauth.cjs')
@@ -67,6 +68,8 @@ const MAX_KNOWLEDGE_PATH_LENGTH = 1024
 const MAX_KNOWLEDGE_TYPE_LENGTH = 128
 const MAX_KNOWLEDGE_CONTENT_LENGTH = 512 * 1024
 const MAX_KNOWLEDGE_BODY_BYTES = MAX_KNOWLEDGE_CONTENT_LENGTH + 32 * 1024
+const MAX_KNOWLEDGE_BINARY_BYTES = 16 * 1024 * 1024
+const MAX_KNOWLEDGE_CONVERSION_BODY_BYTES = Math.ceil(MAX_KNOWLEDGE_BINARY_BYTES * 4 / 3) + 64 * 1024
 const MAX_INTELLIGENCE_DETAILS_LENGTH = 4096
 const MAX_MEMORY_NAME_LENGTH = 256
 const MAX_MEMORY_TYPE_LENGTH = 128
@@ -159,6 +162,16 @@ const EMAIL_SETTINGS_DEFAULTS = Object.freeze({
   enabled: false,
   autoReplyMode: false,
   draftMode: true,
+})
+const MARKITDOWN_KNOWLEDGE_SERVER = Object.freeze({
+  id: 'builtin_markitdown',
+  name: 'Built-in document converter',
+  description: 'Bounded browser knowledge conversion',
+  type: 'stdio',
+  command: 'uvx',
+  args: ['markitdown-mcp[all]'],
+  allowedTools: ['convert_to_markdown'],
+  autoConnect: false,
 })
 
 const PRODUCT_NAME = 'AIConsumerAgent'
@@ -351,7 +364,7 @@ function readMigrationFile(filename, maxBytes = null) {
       const args = [filename]
       if (Number.isSafeInteger(maxBytes) && maxBytes >= 0) args.push(String(maxBytes))
       return execFileSync(reader, args, { stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: Number.isSafeInteger(maxBytes) && maxBytes >= 0 ? maxBytes + 1 : 64 * 1024 * 1024 + 1 })
-    } catch (error) {
+    } catch {
       if (error?.status === 3) throw Object.assign(new Error('Migration file is too large'), { statusCode: 413 })
       throw Object.assign(new Error('Migration file unavailable'), { statusCode: 409 })
     }
@@ -1038,6 +1051,7 @@ class AgentdServer {
     if (url.pathname === '/api/v1/continuity/chat-history/status' && req.method === 'GET') return this.chatHistoryStatus(req, res)
     if (url.pathname === '/api/v1/autonomy/metrics' && req.method === 'GET') return this.autonomyMetrics(req, res, url)
     if (url.pathname === '/api/v1/logs' && ['GET', 'POST'].includes(req.method)) return this.auditLogs(req, res, url)
+    if (url.pathname === '/api/v1/knowledge/convert' && req.method === 'POST') return this.convertKnowledge(req, res)
     if (url.pathname === '/api/v1/knowledge' && ['GET', 'POST'].includes(req.method)) return this.knowledge(req, res, url)
     const knowledgeMatch = /^\/api\/v1\/knowledge\/(\d+)$/.exec(url.pathname)
     if (knowledgeMatch && req.method === 'DELETE') return this.deleteKnowledge(req, res, Number(knowledgeMatch[1]))
@@ -2467,6 +2481,77 @@ class AgentdServer {
     }
   }
 
+  persistKnowledgeDocument({ fileName, filePath, fileType, content, size }) {
+    const now = new Date().toISOString()
+    const result = this.db.transaction(() => {
+      this.db.prepare('DELETE FROM knowledge_documents WHERE file_path = ?').run(filePath)
+      const inserted = this.db.prepare('INSERT INTO knowledge_documents(file_path,file_name,file_type,content,size,created_at) VALUES (?,?,?,?,?,?)')
+        .run(filePath, fileName.trim(), fileType, content, size, now)
+      this.db.prepare('INSERT INTO intelligence_logs(type,event,details,timestamp) VALUES (?,?,?,?)')
+        .run('training', 'completed', `Successfully indexed ${fileName.trim()}`, now)
+      return this.db.prepare('SELECT id,file_path,file_name,file_type,size,created_at FROM knowledge_documents WHERE id = ?').get(inserted.lastInsertRowid)
+    })()
+    return this.knowledgeView(result)
+  }
+
+  async convertKnowledge(req, res) {
+    this.authorize(req, { mutation: true })
+    if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
+    let body
+    try { body = await readBody(req, MAX_KNOWLEDGE_CONVERSION_BODY_BYTES) } catch (error) { return json(res, error.statusCode || 400, { error: error.message }) }
+    const keys = Object.keys(body || {}).sort()
+    if (!body || typeof body !== 'object' || Array.isArray(body)
+      || keys.some(key => !['dataBase64', 'fileName', 'fileType', 'size'].includes(key))
+      || !validBoundedText(body.fileName, MAX_KNOWLEDGE_NAME_LENGTH)
+      || !validBoundedText(body.fileType, MAX_KNOWLEDGE_TYPE_LENGTH, true)
+      || typeof body.dataBase64 !== 'string'
+      || body.dataBase64.length === 0
+      || body.dataBase64.length % 4 !== 0
+      || !/^[A-Za-z0-9+/]*={0,2}$/.test(body.dataBase64)
+      || !Number.isSafeInteger(body.size) || body.size < 1 || body.size > MAX_KNOWLEDGE_BINARY_BYTES) {
+      return json(res, 400, { error: 'Invalid knowledge conversion request' })
+    }
+    const bytes = Buffer.from(body.dataBase64, 'base64')
+    if (bytes.length !== body.size) return json(res, 400, { error: 'Invalid knowledge conversion request' })
+    const tempDir = fs.mkdtempSync(path.join(this.dataDir, '.knowledge-conversion-'))
+    // MarkItDown selects its parser from the source extension. Keep only a safe,
+    // bounded extension derived from the display name; never use the full name as
+    // a path because browser-provided names may contain separators or dot segments.
+    const rawExtension = path.extname(body.fileName.trim()).toLowerCase()
+    const extension = /^[.][a-z0-9]{1,16}$/.test(rawExtension) ? rawExtension : '.bin'
+    const sourcePath = path.join(tempDir, `source${extension}`)
+    let content = ''
+    try {
+      fs.writeFileSync(sourcePath, bytes, { flag: 'wx', mode: 0o600 })
+      const result = await this.mcpWorker.call(
+        MARKITDOWN_KNOWLEDGE_SERVER,
+        'convert_to_markdown',
+        { uri: pathToFileURL(sourcePath).href },
+        `knowledge-convert-${crypto.randomUUID()}`,
+      )
+      if (result?.isError) throw new Error('Knowledge conversion failed')
+      content = Array.isArray(result?.content)
+        ? result.content.filter(item => item && item.type === 'text' && typeof item.text === 'string').map(item => item.text).join('\n')
+        : ''
+      if (!content.trim() || content.length > MAX_KNOWLEDGE_CONTENT_LENGTH || Buffer.byteLength(content, 'utf8') > MAX_KNOWLEDGE_CONTENT_LENGTH) throw new Error('Knowledge conversion output is too large or empty')
+    } catch {
+      // Do not log converter details: parser errors can contain the generated
+      // native temp path or document metadata that must stay inside agentd.
+      this.logger.warn?.('[agentd] knowledge conversion failed')
+      return json(res, 422, { error: 'Knowledge conversion failed for this file' })
+    } finally {
+      try { fs.rmSync(tempDir, { recursive: true, force: true }) } catch {}
+    }
+    const document = this.persistKnowledgeDocument({
+      fileName: body.fileName,
+      filePath: `browser://knowledge/${encodeURIComponent(body.fileName.trim())}`,
+      fileType: 'text/markdown',
+      content,
+      size: body.size,
+    })
+    return json(res, 201, { success: true, document })
+  }
+
   async knowledge(req, res, url) {
     this.authorize(req, { mutation: req.method === 'POST' })
     if (req.method === 'GET') {
@@ -2489,16 +2574,8 @@ class AgentdServer {
       || !Number.isSafeInteger(body.size) || body.size < 0 || body.size > 16 * 1024 * 1024) {
       return json(res, 400, { error: 'Invalid knowledge document' })
     }
-    const now = new Date().toISOString()
-    const result = this.db.transaction(() => {
-      this.db.prepare('DELETE FROM knowledge_documents WHERE file_path = ?').run(body.filePath)
-      const inserted = this.db.prepare('INSERT INTO knowledge_documents(file_path,file_name,file_type,content,size,created_at) VALUES (?,?,?,?,?,?)')
-        .run(body.filePath, body.fileName.trim(), body.fileType, body.content, body.size, now)
-      this.db.prepare('INSERT INTO intelligence_logs(type,event,details,timestamp) VALUES (?,?,?,?)')
-        .run('training', 'completed', `Successfully indexed ${body.fileName.trim()}`, now)
-      return this.db.prepare('SELECT id,file_path,file_name,file_type,size,created_at FROM knowledge_documents WHERE id = ?').get(inserted.lastInsertRowid)
-    })()
-    return json(res, 201, { success: true, document: this.knowledgeView(result) })
+    const document = this.persistKnowledgeDocument(body)
+    return json(res, 201, { success: true, document })
   }
 
   async deleteKnowledge(req, res, id) {

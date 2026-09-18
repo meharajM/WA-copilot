@@ -155,7 +155,7 @@
                 <tr>
                     <td><b>Knowledge and RAG</b></td>
                     <td><span class="status-dot status-beta"></span><b>In progress</b></td>
-                    <td>Browser ingestion is bounded to supported text/Markdown/CSV/JSON/XML/HTML/log content. Binary/PDF parsing and native file reveal remain Electron/native gates.</td>
+                    <td>Browser ingestion accepts bounded text/Markdown/CSV/JSON/XML/HTML/log content and converts supported PDF, DOCX, XLS/XLSX, and PPTX files through supervised agentd MarkItDown. Source bytes are capped at 16 MiB and converted Markdown at 512 KiB; unsupported or malformed files fail closed and native file reveal remains unavailable.</td>
                 </tr>
                 <tr>
                     <td><b>Escalation relay</b></td>
@@ -221,7 +221,7 @@
                     <div class="flow-card-title">🧠 Provider and channel workers</div>
                 </div>
                 <div class="flow-card-body">
-                    Browser chat streams through authenticated agentd providers; bounded knowledge and memory routes are available, while unsupported binary and disallowed/internal MCP operations fail closed.
+                    Browser chat streams through authenticated agentd providers; bounded knowledge and memory routes are available, while unsupported document formats, conversion failures, and disallowed/internal MCP operations fail closed.
                 </div>
             </div>
 

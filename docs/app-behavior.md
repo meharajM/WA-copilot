@@ -133,7 +133,8 @@ Pass evidence:
   - topic analysis of sessions
 - Conversation Topics stays empty until real sessions are analyzed; the browser must not display seeded percentages as if they were activity.
 - A fresh browser workspace reports `0%` autonomy until at least one authenticated accuracy event exists; it must not present an empty dataset as successful automation.
-- Knowledge upload accepts documents and images in the legacy Electron flow. In the browser product, the authenticated agentd adapter currently accepts bounded text/Markdown/CSV/JSON/XML/HTML/log files through the browser file picker; binary conversion remains an explicit unsupported state until a native parser capability is migrated.
+- Knowledge upload accepts documents and images in the legacy Electron flow. In the browser product, the authenticated agentd adapter accepts bounded text/Markdown/CSV/JSON/XML/HTML/log files directly and converts supported PDF, DOCX, XLS/XLSX, and PPTX files through the supervised `markitdown-mcp[all]` worker. Browser uploads are limited to 16 MiB source bytes and 512 KiB converted Markdown; password-protected, unsupported, malformed, or oversized documents fail closed without exposing a native path.
+- Legacy `.doc`/`.ppt`, ODT, RTF, and image parser parity is not claimed by the browser converter; those files remain explicit fail-closed cases until a compatible converter is added.
 - Knowledge test drive runs a RAG search and then asks the selected LLM to answer only from retrieved context.
 - Assistant corrections use the same runtime-aware knowledge route: browser corrections are persisted by authenticated agentd, while Electron uses its internal RAG tool. The UI only reports success after the route returns success.
 
@@ -355,8 +356,8 @@ Pass evidence:
   - search documents by name
   - open the original file in Electron when a native path exists
   - delete indexed knowledge
-- Electron ingestion uses the internal RAG tool path. Browser ingestion uses the authenticated agentd knowledge route and stores bounded text content in the daemon-owned SQLite database; the browser never sends an arbitrary native path.
-- Browser-indexed `browser://knowledge/...` entries do not expose an original native file path or an open-in-Explorer action. Binary conversion and native-file reveal remain explicit unsupported states until a bounded native capability is migrated.
+- Electron ingestion uses the internal RAG tool path. Browser ingestion uses authenticated agentd knowledge routes and stores bounded text or converted Markdown content in the daemon-owned SQLite database; the browser sends file bytes, never an arbitrary native path.
+- Browser-indexed `browser://knowledge/...` entries do not expose an original native file path or an open-in-Explorer action. Binary conversion runs only through the fixed supervised MarkItDown capability, with a private daemon temp file removed after conversion; native-file reveal remains unsupported in the browser.
 
 Pass evidence:
 
@@ -551,7 +552,7 @@ Pass evidence:
 - Windows no-reparse smoke against junction/symlink replacement, credential/keychain handoff, Electron retirement, and release smoke remain open gates. The native bridge/UI wiring and packaged migration reader cover this bounded file-read gate; they do not claim full continuity migration or Windows release readiness.
 
 - Browser Email inbound polling is daemon-owned and starts only when `Enable Email Channel` is on and either app-password mode has IMAP TLS, an IMAP host, and an OS-stored `email_imap_password` (with legacy `email_mcp_password` fallback), or Gmail OAuth mode has a signed-in agentd OAuth session. The IMAP worker uses UID-based durable deduplication; the Gmail worker uses a bounded timestamp overlap plus provider-event IDs. Both normalize bounded text-only events for the browser; Gmail HTML is reduced to text, while attachments and unsupported content fail closed. Auto-Reply only controls browser claim/session hydration, not mailbox ingestion or automatic reply generation. STARTTLS is supported for non-993 IMAP endpoints. Approved text-only drafts can deliver through the separately gated daemon SMTP or Gmail API route.
-- Browser knowledge imports are text-only and cannot open the original native file after indexing; Electron retains native parser and file-reveal behavior.
+- Browser knowledge imports support bounded text plus supervised PDF/Office/document conversion, but cannot open the original native file after indexing; Electron retains broader parser and file-reveal behavior.
 - The browser Autonomy panel does not render Electron-only WhatsApp Web automation, native backup staging, or local-retention controls. Baileys reconnect is daemon-owned and surfaced through bounded connection state; native-only controls remain in the Electron transition client until their agentd adapters are migrated.
 - Browser audit logs are downloaded as redacted NDJSON; native log-folder reveal remains Electron-only.
 - Lead Directory supports non-WhatsApp sessions in the data model, but some copy still describes it as WhatsApp-only.

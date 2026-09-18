@@ -2,7 +2,7 @@ import { Brain, Search, Trash2, FileText, Calendar, Plus, ExternalLink, Zap } fr
 import { useState, useEffect, useRef, type ChangeEvent } from 'react'
 import electron from '../../lib/electron'
 import { executeToolCall } from '../../lib/mcp'
-import { getBrowserAgentdClient, readBrowserKnowledgeFile } from '../../lib/browser-agentd-client'
+import { getBrowserAgentdClient, readBrowserKnowledgeBinaryFile, readBrowserKnowledgeFile } from '../../lib/browser-agentd-client'
 import { isTauriRuntime } from '../../lib/tauri-native-bridge'
 
 interface Document {
@@ -108,20 +108,22 @@ export function KnowledgeBrowser() {
         if (!file) return
         const extension = file.name.split('.').pop()?.toLowerCase() || ''
         const isText = file.type.startsWith('text/') || ['txt', 'md', 'csv', 'json', 'xml', 'html', 'log'].includes(extension)
-        if (!isText) {
-            alert('Browser knowledge import currently supports text, Markdown, CSV, JSON, XML, HTML, and log files. Use the desktop fallback for binary document conversion.')
-            return
-        }
         setUploading(true)
         try {
-            const browserFile = await readBrowserKnowledgeFile(file)
-            await getBrowserAgentdClient().ingestKnowledge({
-              fileName: file.name,
-              filePath: `browser://knowledge/${encodeURIComponent(file.name)}`,
-              ...browserFile,
-            })
+            const client = getBrowserAgentdClient()
+            if (isText) {
+                const browserFile = await readBrowserKnowledgeFile(file)
+                await client.ingestKnowledge({
+                  fileName: file.name,
+                  filePath: `browser://knowledge/${encodeURIComponent(file.name)}`,
+                  ...browserFile,
+                })
+            } else {
+                const browserFile = await readBrowserKnowledgeBinaryFile(file)
+                await client.convertKnowledge({ fileName: file.name, ...browserFile })
+            }
             await fetchDocs()
-            alert(`Successfully ingested: ${file.name}`)
+            alert(`Successfully ${isText ? 'ingested' : 'converted and ingested'}: ${file.name}`)
         } catch (error) {
             console.error('Failed to add browser knowledge:', error)
             alert(`Failed to index: ${error instanceof Error ? error.message : String(error)}`)
@@ -145,7 +147,7 @@ export function KnowledgeBrowser() {
                         </div>
                         <div>
                             <h1 className="text-2xl font-bold">Knowledge Brain</h1>
-                            <p className="text-gray-400 text-sm">Manage the bounded text files your agent learns from.</p>
+                            <p className="text-gray-400 text-sm">Manage bounded text and document files your agent learns from.</p>
                         </div>
                     </div>
                     <button 
@@ -160,7 +162,7 @@ export function KnowledgeBrowser() {
                         )}
                         <span>{uploading ? 'Injecting...' : 'Add Knowledge'}</span>
                     </button>
-                    {isBrowserProduct() && <input ref={fileInputRef} type="file" hidden accept=".txt,.md,.csv,.json,.xml,.html,.log,text/*" onChange={handleBrowserFile} />}
+                    {isBrowserProduct() && <input ref={fileInputRef} type="file" hidden accept=".txt,.md,.csv,.json,.xml,.html,.log,.pdf,.docx,.xlsx,.xls,.pptx,text/*" onChange={handleBrowserFile} />}
                 </div>
 
                 {/* Stats Bar */}
@@ -201,7 +203,7 @@ export function KnowledgeBrowser() {
                             <FileText className="w-8 h-8 text-gray-600" />
                         </div>
                         <h3 className="text-lg font-bold text-gray-400">Empty Brain</h3>
-                        <p className="text-gray-500 text-sm max-w-xs">Index bounded text, Markdown, CSV, JSON, XML, HTML, or log files. Binary conversion is not available in the browser yet.</p>
+                        <p className="text-gray-500 text-sm max-w-xs">Index bounded text files or convert common PDF, Office, and document formats through the local agent.</p>
                     </div>
                 ) : (
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">

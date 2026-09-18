@@ -22,7 +22,7 @@ The 2026-09-18 audit found and corrected browser Email drift: the contract now d
 
 The follow-up runtime-boundary audit also corrected the launch contract: Edge/Chrome has an explicit agentd readiness/pairing state machine, while the Electron dependency modal is no longer described as a browser startup requirement. Gemini is covered by the browser agentd provider slice, and explicit on-device/WebGPU execution is now available in the browser without changing the Tauri native-only boundary. WhatsApp browser UI state now lives in authenticated agentd settings with a one-time legacy renderer migration; the autonomous flag is never persisted or restored, and browser ingress remains gated only by Response Permission. Windows native diagnostics now includes an owner-triggered, least-privilege per-user sign-in service registration with bounded failure restart settings; installer enrollment and packaged Windows evidence remain release gates.
 
-The older support-doc drift identified by the first audit is now corrected in the checked-in HTML manuals, email progress note, and architecture overview. The code-first follow-up also corrected `docs/tester_flow.html`, which had incorrectly presented the legacy Electron flow, PDF ingestion, and Browser MCP/Playwright as browser capabilities. The browser MCP boundary is now a supervised agentd worker for approved external servers; internal/native command definitions remain fail-closed. The native companion now supervises and restarts a child daemon that it started, while still preserving the independent daemon lifetime. Explicit Windows per-user service registration is implemented; installer enrollment, recovery after intentional user quit, and Windows release evidence remain implementation gates, not competing product-contract descriptions.
+The older support-doc drift identified by the first audit is now corrected in the checked-in HTML manuals, email progress note, and architecture overview. The code-first follow-up also corrected `docs/tester_flow.html`, which had incorrectly presented the legacy Electron flow, PDF ingestion, and Browser MCP/Playwright as browser capabilities. The browser MCP boundary is now a supervised agentd worker for approved external servers; internal/native command definitions remain fail-closed. Browser PDF/Office/document ingestion now uses the same supervised agentd boundary with bounded conversion output and explicit failure states. The native companion now supervises and restarts a child daemon that it started, while still preserving the independent daemon lifetime. Explicit Windows per-user service registration is implemented; installer enrollment, recovery after intentional user quit, and Windows release evidence remain implementation gates, not competing product-contract descriptions.
 
 ## Validation Scope
 
@@ -37,6 +37,7 @@ The older support-doc drift identified by the first audit is now corrected in th
 - [src/renderer/src/hooks/useEmailBridge.ts](/Users/meharaj/WA-copilot/src/renderer/src/hooks/useEmailBridge.ts)
 - [src/renderer/src/components/SettingsPanel.tsx](/Users/meharaj/WA-copilot/src/renderer/src/components/SettingsPanel.tsx)
 - [src/renderer/src/components/chat/KnowledgeBrowser.tsx](/Users/meharaj/WA-copilot/src/renderer/src/components/chat/KnowledgeBrowser.tsx)
+- [src/renderer/src/components/chat/EmptyState.tsx](/Users/meharaj/WA-copilot/src/renderer/src/components/chat/EmptyState.tsx)
 - [src/renderer/src/components/chat/LeadDirectory.tsx](/Users/meharaj/WA-copilot/src/renderer/src/components/chat/LeadDirectory.tsx)
 - [src/renderer/src/components/settings/MemoryPreferencesPanel.tsx](/Users/meharaj/WA-copilot/src/renderer/src/components/settings/MemoryPreferencesPanel.tsx)
 - [src/renderer/src/components/settings/llm/OpenAISettings.tsx](/Users/meharaj/WA-copilot/src/renderer/src/components/settings/llm/OpenAISettings.tsx)
@@ -55,6 +56,7 @@ The older support-doc drift identified by the first audit is now corrected in th
 - [src/renderer/src/stores/whatsappStore.ts](/Users/meharaj/WA-copilot/src/renderer/src/stores/whatsappStore.ts)
 - [src/renderer/src/lib/browser-agentd-client.ts](/Users/meharaj/WA-copilot/src/renderer/src/lib/browser-agentd-client.ts)
 - [agentd/server.cjs](/Users/meharaj/WA-copilot/agentd/server.cjs)
+- [agentd/mcp-worker.cjs](/Users/meharaj/WA-copilot/agentd/mcp-worker.cjs)
 
 ### Test surface checked
 
@@ -70,6 +72,7 @@ The older support-doc drift identified by the first audit is now corrected in th
 - `node scripts/verify-tauri-resources.mjs --sidecar-root src-tauri/sidecar --ui-root dist --platform darwin --target-triple aarch64-apple-darwin`
 - `npm exec vitest run tests/integration/llm-routing.test.ts tests/unit/tauri-ui-boundary.test.ts tests/unit/browser-agentd-client.test.ts`
 - `npx vitest run tests/unit/whatsapp-browser-persistence.test.ts`
+- `node --test tests/unit/agentd-knowledge.test.cjs`
 - `node --test tests/unit/agentd.test.cjs tests/unit/agentd-chat-generations.test.cjs tests/unit/agentd-settings-persona.test.cjs`
 - `cargo test --manifest-path src-tauri/Cargo.toml --locked` also covers the native supervisor build and descriptor ownership guards; the supervisor restart loop is conservative and target-specific Windows runtime behavior still requires the Windows runner.
 - On Windows, the same Rust test binary additionally registers, queries, and removes a disposable current-user Task Scheduler definition; macOS/Linux runs validate XML escaping and the fixed native command boundary without claiming Windows runtime behavior.
@@ -276,7 +279,7 @@ The technical reference called the application an Electron-first product, listed
 PDF ingestion as browser-ready, and marked Browser MCP/Playwright as a beta
 feature. The current browser implementation instead uses Edge/Chrome with a
 paired local `agentd` service; browser knowledge ingestion is bounded to the
-document types listed in the behavior contract, and MCP execution is available
+document types and conversion limits listed in the behavior contract, and MCP execution is available
 only through the supervised approved-server policy. Internal Playwright/native
 definitions remain unavailable. The manual now labels the transition boundary
 and uses the current browser/agentd behavior.

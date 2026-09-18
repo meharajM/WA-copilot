@@ -35,6 +35,20 @@ export async function readBrowserKnowledgeFile(file: File): Promise<{ content: s
   return { content, size: file.size, fileType: file.type || 'text/plain' }
 }
 
+/** Read a bounded binary file without exposing a native path to the browser. */
+export async function readBrowserKnowledgeBinaryFile(file: File): Promise<{ dataBase64: string; size: number; fileType: string }> {
+  if (file.size > MAX_BROWSER_KNOWLEDGE_FILE_BYTES) {
+    throw new Error('Browser knowledge files must be 16 MB or smaller')
+  }
+  const bytes = new Uint8Array(await file.arrayBuffer())
+  let binary = ''
+  const chunkSize = 0x8000
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, Math.min(offset + chunkSize, bytes.length)))
+  }
+  return { dataBase64: btoa(binary), size: file.size, fileType: file.type || 'application/octet-stream' }
+}
+
 export class BrowserAgentdError extends Error {
   readonly status: number
 
@@ -619,6 +633,7 @@ export interface BrowserAgentdClient extends ChatClient {
   getAutonomyMetrics(days?: number): Promise<BrowserAutonomyMetrics>
   listKnowledge(limit?: number): Promise<BrowserKnowledgeDocument[]>
   ingestKnowledge(input: { fileName: string; filePath: string; fileType: string; content: string; size: number }): Promise<BrowserKnowledgeDocument>
+  convertKnowledge(input: { fileName: string; fileType: string; dataBase64: string; size: number }): Promise<BrowserKnowledgeDocument>
   deleteKnowledge(id: number): Promise<boolean>
   searchKnowledge(query: string, limit?: number): Promise<BrowserKnowledgeResult[]>
   getIntelligenceStats(): Promise<{ totalQueries: number; resolvedQueries: number; autonomyRate: number; trainingCount: number; learningCount: number }>
@@ -1165,6 +1180,11 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     if (!isRecord(value) || value.success !== true) throw new Error('Knowledge ingestion failed')
     return readKnowledgeDocument(value.document)
   }
+  const convertKnowledge = async (input: { fileName: string; fileType: string; dataBase64: string; size: number }): Promise<BrowserKnowledgeDocument> => {
+    const value = await request<unknown>('/api/v1/knowledge/convert', { method: 'POST', body: JSON.stringify(input) }, true)
+    if (!isRecord(value) || value.success !== true) throw new Error('Knowledge conversion failed')
+    return readKnowledgeDocument(value.document)
+  }
   const deleteKnowledge = async (id: number): Promise<boolean> => {
     const value = await request<unknown>(`/api/v1/knowledge/${encodeURIComponent(String(id))}`, { method: 'DELETE' }, true)
     if (!isRecord(value) || typeof value.deleted !== 'boolean') throw new Error('Invalid knowledge delete response')
@@ -1289,6 +1309,7 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     getAutonomyMetrics,
     listKnowledge,
     ingestKnowledge,
+    convertKnowledge,
     deleteKnowledge,
     searchKnowledge,
     getIntelligenceStats,

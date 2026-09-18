@@ -8,7 +8,7 @@ import { StatusBadge } from '../primitives/StatusDot'
 import { clsx } from 'clsx'
 import { KnowledgeTest } from './KnowledgeTest'
 import { ViewMode } from '../Sidebar'
-import { getBrowserAgentdClient, readBrowserKnowledgeFile } from '../../lib/browser-agentd-client'
+import { getBrowserAgentdClient, readBrowserKnowledgeBinaryFile, readBrowserKnowledgeFile, type BrowserKnowledgeDocument } from '../../lib/browser-agentd-client'
 import { isTauriRuntime } from '../../lib/tauri-native-bridge'
 
 const isBrowserProduct = (): boolean => typeof window !== 'undefined' && !window.electron && !isTauriRuntime()
@@ -65,11 +65,21 @@ export function EmptyState({ onNavigate }: { onNavigate?: (view: ViewMode) => vo
             // dashboard showing stale/default metrics.
             if (isBrowserProduct()) {
                 const client = getBrowserAgentdClient()
-                const [memory, intelligence, logs] = await Promise.all([
+                const [knowledge, memory, intelligence, logs] = await Promise.all([
+                    client.listKnowledge().catch(() => [] as BrowserKnowledgeDocument[]),
                     client.getMemoryStats(),
                     client.getIntelligenceStats(),
                     client.listIntelligenceLogs(5),
                 ])
+                setRagStats({
+                    count: knowledge.length,
+                    fileTypes: knowledge.reduce<Record<string, number>>((counts, document) => {
+                        const type = document.file_type || 'unknown'
+                        counts[type] = (counts[type] || 0) + 1
+                        return counts
+                    }, {}),
+                    totalSize: knowledge.reduce((total, document) => total + (document.size || 0), 0),
+                })
                 setMemoryStats(memory)
                 setIntelligenceStats(intelligence)
                 setEvolutionLogs(logs)
@@ -281,17 +291,19 @@ export function EmptyState({ onNavigate }: { onNavigate?: (view: ViewMode) => vo
       for (const file of files) {
           const extension = file.name.split('.').pop()?.toLowerCase() || ''
           const isText = file.type.startsWith('text/') || ['txt', 'md', 'csv', 'json', 'xml', 'html', 'log'].includes(extension)
-          if (!isText) {
-              errors.push(`${file.name}: browser import supports text, Markdown, CSV, JSON, XML, HTML, and log files`)
-              continue
-          }
           try {
-              const browserFile = await readBrowserKnowledgeFile(file)
-              await getBrowserAgentdClient().ingestKnowledge({
-                fileName: file.name,
-                filePath: `browser://knowledge/${encodeURIComponent(file.name)}`,
-                ...browserFile,
-              })
+              const client = getBrowserAgentdClient()
+              if (isText) {
+                  const browserFile = await readBrowserKnowledgeFile(file)
+                  await client.ingestKnowledge({
+                    fileName: file.name,
+                    filePath: `browser://knowledge/${encodeURIComponent(file.name)}`,
+                    ...browserFile,
+                  })
+              } else {
+                  const browserFile = await readBrowserKnowledgeBinaryFile(file)
+                  await client.convertKnowledge({ fileName: file.name, ...browserFile })
+              }
               successCount += 1
           } catch (error) {
               errors.push(`${file.name}: ${error instanceof Error ? error.message : String(error)}`)
@@ -299,8 +311,21 @@ export function EmptyState({ onNavigate }: { onNavigate?: (view: ViewMode) => vo
       }
       if (successCount > 0) {
           setUploadStatus('done')
-          const statsRes = await executeToolCall('rag_get_stats', {})
-          if (statsRes.result && typeof statsRes.result === 'object') setRagStats(statsRes.result as typeof ragStats)
+          if (isBrowserProduct()) {
+              const knowledge = await getBrowserAgentdClient().listKnowledge().catch(() => [] as BrowserKnowledgeDocument[])
+              setRagStats({
+                  count: knowledge.length,
+                  fileTypes: knowledge.reduce<Record<string, number>>((counts, document) => {
+                      const type = document.file_type || 'unknown'
+                      counts[type] = (counts[type] || 0) + 1
+                      return counts
+                  }, {}),
+                  totalSize: knowledge.reduce((total, document) => total + (document.size || 0), 0),
+              })
+          } else {
+              const statsRes = await executeToolCall('rag_get_stats', {})
+              if (statsRes.result && typeof statsRes.result === 'object') setRagStats(statsRes.result as typeof ragStats)
+          }
           setTimeout(() => setUploadStatus('idle'), 5000)
       } else {
           alert(`Upload failed: ${errors.join(' | ')}`)
@@ -585,7 +610,7 @@ export function EmptyState({ onNavigate }: { onNavigate?: (view: ViewMode) => vo
                         <p className="text-sm text-[var(--color-text-secondary)] font-medium">Click to select files</p>
                         <p className="text-xs text-[var(--color-text-muted)] mt-1">
                           {isBrowserProduct()
-                            ? 'TXT, MD, CSV, JSON, XML, HTML, LOG (bounded text)'
+                            ? 'TXT, MD, CSV, JSON, XML, HTML, LOG, PDF, DOCX, XLSX, PPTX (16 MB max)'
                             : 'PDF, TXT, CSV (Multiple Files Supported)'}
                         </p>
                       </>
@@ -604,7 +629,7 @@ export function EmptyState({ onNavigate }: { onNavigate?: (view: ViewMode) => vo
                     )}
                   </div>
               </button>
-              {isBrowserProduct() && <input ref={fileInputRef} type="file" hidden multiple accept=".txt,.md,.csv,.json,.xml,.html,.log,text/*" onChange={handleBrowserFileUpload} />}
+              {isBrowserProduct() && <input ref={fileInputRef} type="file" hidden multiple accept=".txt,.md,.csv,.json,.xml,.html,.log,.pdf,.docx,.xlsx,.xls,.pptx,text/*" onChange={handleBrowserFileUpload} />}
 
               {/* Show Knowledge Test after successful upload */}
               {ragStats.count > 0 && <KnowledgeTest />}
