@@ -2,7 +2,7 @@
 
 Date: September 14, 2026
 
-Status: Historical pilot record. The current browser-first migration is tracked in [`tauri-full-migration-plan.md`](./tauri-full-migration-plan.md) and supersedes this document's UI ownership wording.
+Status: Historical pilot record. The current browser-first migration is tracked in [`tauri-full-migration-plan.md`](./tauri-full-migration-plan.md) and supersedes this document's UI ownership wording and runnable task commands. Use the current package scripts (`dev:tauri`, `build:tauri:web`, `build:tauri`, `prepare:tauri:agentd`) when validating this branch.
 
 Current boundary: the complete product workspace is rendered in Edge/Chrome. Tauri is retained only as a lightweight native companion for OS capabilities and agentd supervision; it must not become a second product UI.
 
@@ -97,7 +97,7 @@ Work:
 
 Acceptance:
 
-- `npm run build:agentd` succeeds.
+- The retired JSONL pilot protocol is not a current build target; use `npm run test:integration` for maintained integration coverage.
 - Focused subprocess test passes without Electron mocks.
 - Node entry import graph has no `electron` or `electron-store` dependency.
 
@@ -105,7 +105,7 @@ Acceptance:
 
 Files:
 
-- `scripts/prepare-tauri-sidecar.mjs`
+- `scripts/prepare-tauri-agentd.mjs`
 - `src-tauri/Cargo.toml`
 - `src-tauri/build.rs`
 - `src-tauri/tauri.conf.json`
@@ -147,7 +147,7 @@ Files:
 
 Work:
 
-1. Add opt-in `dev:tauri`, `build:tauri`, `build:tauri:web`, `build:agentd` and sidecar-preparation scripts. Existing Electron script meanings stay identical.
+1. Add opt-in `dev:tauri`, `build:tauri`, `build:tauri:web` and agentd-preparation scripts. Existing Electron script meanings stay identical.
 2. Add a normal Vite build using the existing React plugin, renderer alias and stylesheet.
 3. Implement the shared bridge with fixed Tauri commands and validated event handling. Handle asynchronous listener cleanup safely.
 4. Add a small pilot screen showing runtime/version and live `agentd` health, native file/folder selection, and credential set/exists/delete controls. Clear typed credential input immediately after a completed set attempt.

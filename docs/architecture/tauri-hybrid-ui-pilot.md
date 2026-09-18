@@ -22,25 +22,19 @@ npm ci
 The scripts below are opt-in and leave Electron commands intact.
 
 ```sh
-# Compile agentd, stage the Node runtime + agentd resources, then launch Tauri/Vite
+# Prepare the packaged Node agentd runtime/resources, then launch Tauri/Vite
 npm run dev:tauri
 
 # Build only the Tauri web frontend (no native app bundle)
 npm run build:tauri:web
 
-# Compile the agentd TypeScript entry point
-npm run build:agentd
-
-# Prepare target-specific sidecar files explicitly
-npm run prepare:tauri:sidecar
-
-# Build the frontend, prepare the sidecar, and invoke the Tauri bundler
+# Build the frontend, prepare the agentd/keyring resources, and invoke the Tauri bundler
 npm run build:tauri
 ```
 
 `dev:tauri` and `build:tauri` rely on the Tauri configuration's before-dev/before-build hooks to prepare frontend and sidecar inputs. The lockfile records Tauri CLI's platform-specific optional bindings so npm can install the matching native CLI package on supported hosts. A successful `build:tauri:web` validates only the frontend; it does not validate Rust compilation, OS WebView startup, native dialogs/keychain, tray behavior, or packaging. Run the native build on each supported target OS/architecture before treating those paths as verified.
 
-The sidecar preparation script compiles `src/agentd/index.ts`, copies the current `process.execPath` to Tauri's target-triple-named external binary, and stages the compiled agentd entry under `src-tauri/sidecar`. Generated executable/resource artifacts are build outputs and must not be committed. The script verifies Node's OS/architecture against the Rust host triple and rejects a `TAURI_ENV_TARGET_TRIPLE` different from `rustc -vV`'s host triple. Build separately on each target OS/architecture; copying a host Node executable does not produce a cross-compiled runtime. This pilot has no Node runtime download or cross-target packaging workflow.
+The current Tauri hooks run `scripts/prepare-tauri-agentd.mjs` and the keyring-helper preparation script. They stage the fixed Node runtime, HTTP `agentd` entrypoint and native helper under `src-tauri/sidecar`; generated executable/resource artifacts are build outputs and must not be committed. Preparation verifies Node's OS/architecture against the Rust host triple and rejects a `TAURI_ENV_TARGET_TRIPLE` different from `rustc -vV`'s host triple. Build separately on each target OS/architecture; copying a host Node executable does not produce a cross-compiled runtime. This pilot has no Node runtime download or cross-target packaging workflow.
 
 ## Pilot capabilities
 
