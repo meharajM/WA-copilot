@@ -19,7 +19,7 @@ Electron remains the transition fallback until the browser and `agentd` reach pa
 - Current host uses Node `24.7.0`, npm `11.5.1`, Rust `1.94.1` and Cargo `1.94.1`.
 - Tauri host requires Rust `>=1.88.0` because locked `keyring` 4.2.0 requires that MSRV.
 - `npm ci` succeeds with the existing lockfile.
-- Existing `npm run typecheck` and `npm run build` fail before this work because `src/main/ipc/antigravity.ts` imports missing `src/main/services/AntigravityAuthService`.
+- Historical baseline: existing `npm run typecheck` failed before this work because `src/main/ipc/antigravity.ts` imported a missing `AntigravityAuthService`; the migration branch now restores that Electron-only fallback with environment-provided credentials and fail-closed defaults.
 - Existing `npm test` can remain idle for more than two minutes without reporting results on this checkout. Focused tests and bounded runs are required; these baseline failures must not be attributed to Tauri changes.
 
 ## Global constraints
@@ -158,7 +158,7 @@ Acceptance:
 
 - `npm run build:tauri:web` and `npm run typecheck:renderer` pass.
 - UI code contains no secret getter and does not persist credential values.
-- Existing `npm run build` result is no worse than baseline and fails only for the documented missing Antigravity service if still unresolved.
+- Existing `npm run build` remains available; the historical missing Antigravity service is now restored as an environment-configured, fail-closed Electron fallback.
 
 ## Task 5: Integrated verification and operator notes
 
@@ -185,7 +185,7 @@ Acceptance:
 ## Execution record — September 15, 2026
 
 - Tasks 1–4 are implemented on `codex/tauri-hybrid-ui`; Electron remains the default path. Independent review found no Critical, Important, or Moderate findings. A custom Tauri file-picker button label now fails explicitly because the pinned native dialog API does not expose that option; Electron behavior is unchanged.
-- `npm run test:unit` passed (133 tests), `npm run test:integration` passed (185 tests), `npm run typecheck:renderer`, `npm run build:tauri:web`, and `npm run lint` passed. Lint reports existing repository warnings; the baseline full `npm run typecheck` and Electron `npm run build` remain blocked by the pre-existing missing `AntigravityAuthService` import.
+- `npm run test:unit` passed (133 tests), `npm run test:integration` passed (185 tests), `npm run typecheck:renderer`, `npm run build:tauri:web`, and `npm run lint` passed. Lint reports existing repository warnings; the historical baseline typecheck blocker is resolved on the migration branch.
 - Sidecar preparation passed for the current `aarch64-apple-darwin` host and rejected an intentionally mismatched `x86_64-apple-darwin` target. Generated runtime and sidecar files remain ignored.
 - `package-lock.json` now contains only the missing platform-filtered Tauri CLI optional bindings in addition to the existing lock graph. A clean `npm ci --ignore-scripts --no-audit --no-fund` installed 1,189 packages on Darwin arm64; `npm exec -- tauri --version` reports 2.11.4 and `tauri build --help` works.
 - `cargo fmt --check`, `cargo check --locked`, and `cargo test --locked` pass for the Rust host (6 tests, including unsupported picker-label behavior). The first bundle attempt exposed the invalid 1×1 placeholder; after adding a valid 512×512 RGBA icon generator, `npm run build:tauri` succeeded on the current Apple Silicon host. It produced `/tmp/wa-copilot-tauri-host/src-tauri/target/release/bundle/macos/AICA Native Pilot.app` and `/tmp/wa-copilot-tauri-host/src-tauri/target/release/bundle/dmg/AICA Native Pilot_1.0.0_aarch64.dmg`. The DMG checksum verified, and the app contains the packaged Node runtime and `sidecar/agentd` resources. Its code signature is ad-hoc only, not a Developer ID distribution signature.

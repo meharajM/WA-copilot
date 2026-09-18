@@ -83,4 +83,4 @@ Test host: macOS 26.6.2, arm64, `aarch64-apple-darwin`, Node 24.7.0, Rust 1.94.1
 - [x] Packaged contents include the Node runtime and `Resources/sidecar/agentd` files; generated executables, resources and icons remain ignored by Git. Review the CSP/capability source before release, and keep checking that app data and credentials remain separate from Electron.
 - [ ] Benchmark full process tree with UI open/closed and local model loaded/unloaded before making resource-use claims.
 
-The repository baseline currently has unrelated failures documented in `tauri-hybrid-ui-execution-plan.md` (including missing `AntigravityAuthService`). Report them separately rather than attributing them to the pilot.
+The pilot record predates the source-controlled Antigravity fallback restored on the migration branch. Its other historical baseline and release limitations remain; do not attribute them to current browser/Tauri parity work.
