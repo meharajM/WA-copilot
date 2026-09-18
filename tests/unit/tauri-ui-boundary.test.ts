@@ -14,6 +14,7 @@ describe('browser-first UI boundary', () => {
     expect(entry).toContain("import BrowserProduct from './BrowserProduct'")
     expect(entry).toContain('{isTauriRuntime() ? <NativeHostDiagnostics /> : <BrowserProduct />}')
     expect(entry).not.toContain('TauriChatPreview')
+    expect(entry).not.toMatch(/workspace\s*=|location\.(search|hash)/)
   })
 
   it('keeps the native host free of product workspace imports', () => {
