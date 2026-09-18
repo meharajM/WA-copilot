@@ -251,7 +251,12 @@ class EmailInboundWorker {
       && settings.gmailAuthMode === 'app-password' && settings.imapTls && settings.imapHost
     if (gated && this.credentials) {
       try {
-        const password = await this.credentials.get('email_imap_password')
+        // `email_mcp_password` was the browser credential name used by the
+        // first agentd email slice. Keep it as a read-only fallback so an
+        // existing browser setup continues to work while new writes use the
+        // transport-specific IMAP key.
+        let password = await this.credentials.get('email_imap_password')
+        if (!password) password = await this.credentials.get('email_mcp_password')
         if (password) {
           this.active = this.poll(settings, password, this.getCursor())
           const messages = await this.active

@@ -93,6 +93,17 @@ describe('browser-first UI boundary', () => {
     expect(settings).toContain('automatic replies are not migrated yet.')
   })
 
+  it('keeps browser email credentials transport-scoped and review-only', () => {
+    const emailSettings = readSource('components/settings/EmailSettingsPanel.tsx')
+    const drafts = readSource('components/email/DraftApprovalPanel.tsx')
+
+    expect(emailSettings).toContain("client.setCredential('email_imap_password', value)")
+    expect(emailSettings).toContain("client.setCredential('email_smtp_password', value)")
+    expect(emailSettings).toContain('does not generate or send automatic replies')
+    expect(drafts).toContain('gated text-only IMAP/Gmail polling')
+    expect(drafts).not.toContain('IMAP polling, OAuth, attachments, and insecure SMTP remain unavailable.')
+  })
+
   it('describes browser knowledge as bounded text instead of binary or visual ingestion', () => {
     const knowledge = readSource('components/chat/KnowledgeBrowser.tsx')
 

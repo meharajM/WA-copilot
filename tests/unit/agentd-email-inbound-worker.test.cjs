@@ -106,6 +106,32 @@ test('worker persists the cursor after each accepted message', async () => {
   assert.deepEqual(cursors, [1])
 })
 
+test('worker preserves the legacy browser app-password credential as a fallback', async () => {
+  const credentialKeys = []
+  let receivedPassword = null
+  const worker = new EmailInboundWorker({
+    credentials: {
+      get: async key => {
+        credentialKeys.push(key)
+        return key === 'email_mcp_password' ? 'legacy-app-password' : null
+      },
+    },
+    getSettings: () => ({ enabled: true, provider: 'imap-smtp', gmailAuthMode: 'app-password', imapHost: 'x', imapTls: true, pollingIntervalSeconds: 60 }),
+    getCursor: () => 0,
+    setCursor: () => {},
+    onMessage: () => {},
+    poll: async (_settings, password) => {
+      receivedPassword = password
+      return []
+    },
+    logger: { warn() {} },
+  })
+  await worker.start()
+  worker.stop()
+  assert.deepEqual(credentialKeys, ['email_imap_password', 'email_mcp_password'])
+  assert.equal(receivedPassword, 'legacy-app-password')
+})
+
 test('inbound worker fail-closes when browser email TLS/app-password gate is incomplete', async () => {
   let calls = 0
   const worker = new EmailInboundWorker({

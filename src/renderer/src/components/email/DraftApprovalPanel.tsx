@@ -103,7 +103,7 @@ export function DraftApprovalPanel() {
       </div>
       {browserRuntime && drafts.length > 0 && (
         <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2 text-xs text-amber-200">
-          Browser mode sends only explicitly approved text drafts through the local agentd SMTP transport. IMAP polling, OAuth, attachments, and insecure SMTP remain unavailable.
+          Browser mode uses local agentd for gated text-only IMAP/Gmail polling and explicitly approved SMTP/Gmail delivery. Attachments, custom MCP, and insecure transport remain unavailable.
         </div>
       )}
 

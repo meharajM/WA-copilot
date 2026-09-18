@@ -2304,7 +2304,9 @@ class AgentdServer {
     if (!gmailOAuthTransport && !this.credentials) { releaseOperation(); return json(res, 503, { success: false, error: 'Credential store unavailable' }) }
     let password = null
     if (!gmailOAuthTransport) {
-      for (const key of ['email_smtp_password', 'email_imap_password']) {
+      // Keep the original browser email credential as a read-only fallback;
+      // new browser writes use transport-specific keys.
+      for (const key of ['email_smtp_password', 'email_imap_password', 'email_mcp_password']) {
         try {
           password = await this.credentials.get(key)
           if (password) break

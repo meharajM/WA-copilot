@@ -256,11 +256,11 @@ Pass evidence:
 - The primary path is IMAP/SMTP.
 - Gmail is presented as a first-class option, but defaults to app-password mode.
 - Google sign-in is optional, not required.
-- Browser Email settings never use renderer `localStorage` and app-password values are write-only through the authenticated daemon credential route; the browser cannot read them back.
+- Browser Email settings never use renderer `localStorage` and app-password values are write-only through the authenticated daemon credential route; the browser cannot read them back. New browser writes populate the daemon's `email_imap_password` and `email_smtp_password` slots; the legacy `email_mcp_password` slot remains a read-only fallback for continuity.
 - Browser email drafts are persisted as bounded, authenticated `agentd` records. Reloading Edge/Chrome rehydrates the same pending/rejected/approved history; the browser does not use renderer `localStorage` as a second draft authority.
 - On the first browser startup after this migration, a legacy `aica-email-drafts-v1` renderer record is validated and handed off to agentd; the legacy key is removed only after every draft is accepted, so malformed or partially migrated data remains recoverable for owner review.
-- In browser mode, enabling the Email Channel persists the desired state and starts the daemon IMAP poller only when app-password mode, IMAP TLS, an IMAP host, and the OS credential are present, or starts the Gmail API poller only when Google Sign-In is active. `Auto-Reply` controls whether the browser claims events and creates sessions; it does not control mailbox ingestion. Outbound SMTP/Gmail API delivery is available only through the explicit approved-draft send route and its gates.
-- When browser Auto-Reply is enabled, the page reads only queued normalized events and acknowledges each event through an authenticated agentd mutation after its session and message are durably hydrated. Acknowledgement is idempotent; an interrupted tab leaves the event queued for retry after reload. Completed events are not reprocessed by another browser tab.
+- In browser mode, enabling the Email Channel persists the desired state and starts the daemon IMAP poller only when app-password mode, IMAP TLS, an IMAP host, and an OS credential are present, or starts the Gmail API poller only when Google Sign-In is active. `Auto-Reply` controls whether the browser claims queued events and creates review sessions; it does not control mailbox ingestion, invoke the LLM, or send automatic replies. Outbound SMTP/Gmail API delivery is available only through the explicit approved-draft send route and its gates.
+- When browser Auto-Reply is enabled, the page reads only queued normalized events and acknowledges each event through an authenticated agentd mutation after its session and message are durably hydrated. Acknowledgement is idempotent; an interrupted tab leaves the event queued for retry after reload. Completed events are not reprocessed by another browser tab. The browser slice does not yet run the Electron confidence-policy/automatic-reply loop.
 
 ### Provider and auth behavior
 
@@ -294,13 +294,13 @@ Browser parity boundary:
 
 - In Electron, `Enable Email Channel` controls whether the background email bridge starts. In browser mode, it persists the desired state and controls whether the daemon's gated IMAP poller runs; it does not authorize SMTP delivery by itself.
 - `Draft Mode` controls whether even high-confidence outbound replies are held as drafts.
-- `Auto-Reply` controls whether the browser claims queued inbound email messages and submits them into the agent pipeline. The daemon may still ingest and retain normalized events while this gate is off.
-- Current behavior: if `Auto-Reply` is off, inbound emails do not create browser email sessions; enabling it claims queued events after durable session/message hydration.
+- `Auto-Reply` controls whether the browser claims queued inbound email messages and hydrates review sessions. It does not submit browser email into the LLM or authorize an automatic outbound reply. The daemon may still ingest and retain normalized events while this gate is off.
+- Current behavior: if `Auto-Reply` is off, inbound emails do not create browser email sessions; enabling it claims queued events after durable session/message hydration, with no automatic response generation.
 
 Pass evidence:
 
 - With `Auto-Reply` off, inbound email does not create an email session.
-- With `Auto-Reply` on and the channel enabled, inbound email can create a session.
+- With `Auto-Reply` on and the channel enabled, inbound email can create a review session; no browser automatic reply is generated.
 - Browser `Test Connection` reaches the local agentd endpoint, rejects missing credentials, and never returns the stored app password.
 - Browser inbound processing is restart-safe: the daemon IMAP worker or Gmail API worker queues deduplicated events, then the browser atomically claims them as `processing` before mapping them to sessions/messages, and agentd marks them completed only after persistence succeeds; duplicate claims and acknowledgements do not create another chat message. Gmail polling advances a bounded timestamp cursor with overlap and durable provider-event deduplication.
 - In browser mode, the Drafts panel allows review/edit/approve/reject and invokes the daemon-owned send route only for approved text-only drafts. It must not call an Electron IPC fallback or append a synthetic send failure to the draft text.
@@ -546,12 +546,12 @@ Pass evidence:
 - A mode-600 atomic backup records imported rows, prior affected rows, manifest/hash and rollback metadata. Status, token consumption, backup hash/path, source hash, and interrupted-apply recovery state persist in agentd SQLite; restart converts `applying` to `needs-recovery` and keeps the hold active. Rollback verifies backup integrity and removes only unchanged rows imported by this cutover.
 - Windows no-reparse smoke against junction/symlink replacement, credential/keychain handoff, Electron retirement, and release smoke remain open gates. The native bridge/UI wiring and packaged migration reader cover this bounded file-read gate; they do not claim full continuity migration or Windows release readiness.
 
-- Browser Email inbound polling is daemon-owned and starts only when `Enable Email Channel` is on and either app-password mode has IMAP TLS, an IMAP host, and an OS-stored `email_imap_password`, or Gmail OAuth mode has a signed-in agentd OAuth session. The IMAP worker uses UID-based durable deduplication; the Gmail worker uses a bounded timestamp overlap plus provider-event IDs. Both normalize bounded text-only events for the browser; Gmail HTML is reduced to text, while attachments and unsupported content fail closed. Auto-Reply controls response policy, not mailbox ingestion. STARTTLS is supported for non-993 IMAP endpoints. Approved text-only drafts can deliver through the separately gated daemon SMTP or Gmail API route.
+- Browser Email inbound polling is daemon-owned and starts only when `Enable Email Channel` is on and either app-password mode has IMAP TLS, an IMAP host, and an OS-stored `email_imap_password` (with legacy `email_mcp_password` fallback), or Gmail OAuth mode has a signed-in agentd OAuth session. The IMAP worker uses UID-based durable deduplication; the Gmail worker uses a bounded timestamp overlap plus provider-event IDs. Both normalize bounded text-only events for the browser; Gmail HTML is reduced to text, while attachments and unsupported content fail closed. Auto-Reply only controls browser claim/session hydration, not mailbox ingestion or automatic reply generation. STARTTLS is supported for non-993 IMAP endpoints. Approved text-only drafts can deliver through the separately gated daemon SMTP or Gmail API route.
 - Browser knowledge imports are text-only and cannot open the original native file after indexing; Electron retains native parser and file-reveal behavior.
 - The browser Autonomy panel does not render Electron-only WhatsApp Web automation, native backup staging, or local-retention controls. Baileys reconnect is daemon-owned and surfaced through bounded connection state; native-only controls remain in the Electron transition client until their agentd adapters are migrated.
 - Browser audit logs are downloaded as redacted NDJSON; native log-folder reveal remains Electron-only.
 - Lead Directory supports non-WhatsApp sessions in the data model, but some copy still describes it as WhatsApp-only.
-- The LLM provider selector includes `browser`, but there is no dedicated browser-provider configuration card in the panel yet.
+- The LLM provider selector includes `browser`, but the browser product filters that legacy option out; there is no dedicated browser-provider configuration card in the panel yet.
 - Resolution-audit helper text in some logs/comments still references older timing language, but the actual timeout is 10 minutes.
 
 ## QA Reporting Format

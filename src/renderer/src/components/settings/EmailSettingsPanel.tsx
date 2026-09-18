@@ -141,7 +141,7 @@ export function EmailSettingsPanel() {
   }, [localPassword, oauthStatus.signedIn, wantsGmailOAuth])
   const canGoLive = readyForAuth && readyForVerify
   const transportVerified = testState.status === 'success' || (config.enabled && connectionState.status === 'connected')
-  const isVerified = transportVerified && !browserRuntime
+  const isVerified = transportVerified
 
   useEffect(() => {
     setLocalProvider(config.provider)
@@ -197,8 +197,20 @@ export function EmailSettingsPanel() {
     })
     setPollingInterval(localPollingInterval)
     if (localPassword.trim()) {
-      if (isElectron()) await electron.secure.set('email_mcp_password', localPassword.trim())
-      else await getBrowserAgentdClient().setCredential('email_mcp_password', localPassword.trim())
+      if (isElectron()) {
+        await electron.secure.set('email_mcp_password', localPassword.trim())
+      } else {
+        const client = getBrowserAgentdClient()
+        // The browser daemon has separate IMAP and SMTP workers. Store the
+        // same user-entered app password in both OS-backed slots; the page
+        // never reads either value back.
+        const value = localPassword.trim()
+        const [imap, smtp] = await Promise.all([
+          client.setCredential('email_imap_password', value),
+          client.setCredential('email_smtp_password', value),
+        ])
+        if (!imap.success || !smtp.success) throw new Error('Email credential could not be stored securely')
+      }
     }
   }
 
@@ -677,7 +689,7 @@ export function EmailSettingsPanel() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm text-[var(--color-text-primary)] font-medium">Auto-Reply</p>
-              <p className="text-xs text-[var(--color-text-dim)]">{browserRuntime ? 'Controls whether queued agentd inbound events are consumed; daemon polling has separate enable, TLS, and credential gates.' : 'Only enable after successful testing'}</p>
+              <p className="text-xs text-[var(--color-text-dim)]">{browserRuntime ? 'Consumes queued agentd events into review sessions; it does not generate or send automatic replies. Polling has separate enable, TLS, and credential gates.' : 'Only enable after successful testing'}</p>
             </div>
             <button onClick={() => setAutoReplyMode(!config.autoReplyMode)} className="text-[var(--color-brand-teal)]">
               {config.autoReplyMode ? <ToggleRight size={28} /> : <ToggleLeft size={28} />}
