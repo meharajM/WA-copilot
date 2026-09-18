@@ -454,6 +454,7 @@ export function useAgent(): UseAgentReturn {
                                 sessionId: originSessionId,
                                 requestId,
                                 content,
+                                ...(daemonAttachments?.length ? { attachments: daemonAttachments } : {}),
                             },
                             (event) => {
                                 if (event.type === 'error') throw new Error(event.message);
