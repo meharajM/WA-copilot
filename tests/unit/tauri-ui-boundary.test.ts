@@ -106,12 +106,18 @@ describe('browser-first UI boundary', () => {
   it('keeps browser email auto-reply inside the authenticated agentd policy path', () => {
     const agent = readSource('hooks/useAgent.ts')
     const bridge = readSource('hooks/useEmailBridge.ts')
+    const mcp = readSource('lib/mcp.ts')
 
     expect(agent).toContain('client.saveEmailDraft(draft)')
     expect(agent).toContain('client.sendEmailDraft(saved.id)')
     expect(agent).toContain('emailAlreadyHydrated')
     expect(agent).toContain('if ((isEmailFlow || browserWhatsAppFlow) && options?.skipUserMessage) throw error')
     expect(agent).toContain('const browserEmailSend = async')
+    expect(agent).toContain('WebGPU generation is local to the browser, but email policy')
+    expect(agent).toContain('if (browserRuntime) {')
+    expect(agent).toContain('await applyBrowserEmailPolicy(responseText)')
+    expect(mcp).toContain('Browser Email tool calls are disabled')
+    expect(mcp).not.toContain('isBrowserProduct()) return await electron.email.send')
     expect(bridge).toContain('emailGenerationRequestId: `email_${event.id}`')
     expect(bridge).toContain('emailDraftId: `draft_email_${event.id}`')
     expect(bridge).toContain('const durableDrafts = await client.listEmailDrafts()')

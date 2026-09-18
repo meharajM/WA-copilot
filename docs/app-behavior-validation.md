@@ -364,6 +364,29 @@ because the GitHub account has failed payments or an exhausted spending limit.
 No Windows runtime, Credential Manager, packaging, signing, install/upgrade,
 or native resource evidence can be claimed from that run.
 
+### Finding 6: browser WebGPU Email could fall through to Electron delivery — resolved
+
+Severity: high
+
+The browser’s explicit WebGPU provider intentionally keeps model generation in
+the tab, but the Email response-policy step was still using the legacy
+Electron branch. In a normal Edge/Chrome session this could turn an inbound
+Email response into an unsupported Electron send attempt instead of a durable
+agentd draft/send-policy operation.
+
+The browser policy handler is now shared by agentd-backed and WebGPU
+generation. WebGPU responses remain local only until the result is passed to the
+same authenticated confidence gate, deterministic event-scoped draft record,
+approval state, and text-only delivery route. Electron keeps its existing
+`electron.email.send` path, and the browser boundary test asserts that the
+WebGPU path uses the agentd handler.
+
+Evidence:
+
+- [src/renderer/src/hooks/useAgent.ts](/Users/meharaj/WA-copilot/src/renderer/src/hooks/useAgent.ts):434
+- [src/renderer/src/hooks/useAgent.ts](/Users/meharaj/WA-copilot/src/renderer/src/hooks/useAgent.ts):901
+- [tests/unit/tauri-ui-boundary.test.ts](/Users/meharaj/WA-copilot/tests/unit/tauri-ui-boundary.test.ts):115
+
 ## Recommended Source-of-Truth Order
 
 Use this order:

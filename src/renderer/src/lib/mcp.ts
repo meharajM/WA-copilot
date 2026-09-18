@@ -373,6 +373,12 @@ export async function executeToolCall(
 
      // FALLBACK: Check if it's an internal email tool
      if (toolName.startsWith('email_')) {
+       if (isBrowserProduct()) {
+         return {
+           result: null,
+           error: 'Browser Email tool calls are disabled; the host applies the authenticated email policy and delivery route.',
+         };
+       }
        logMcpRenderer("info", "Executing email tool via direct IPC fallback", { tool: toolName });
        try {
          if (toolName === 'email_send_message') {

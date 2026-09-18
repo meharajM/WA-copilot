@@ -434,6 +434,70 @@ export function useAgent(): UseAgentReturn {
                         content: 'WhatsApp response drafted for review. Open Autonomy to approve or discard it.',
                     });
                 };
+                const applyBrowserEmailPolicy = async (responseText: string): Promise<void> => {
+                    if (!browserRuntime || !isEmailFlow || !inboundEmailMessage) return;
+                    const client = getBrowserAgentdClient();
+                    const session = useChatStore.getState().sessions.find((s) => s.id === originSessionId);
+                    const toolCallCount = session?.messages
+                        .filter((m) => m.role === 'assistant')
+                        .reduce((count, m) => count + (m.toolCalls?.length || 0), 0) || 0;
+                    const usedRag = session?.messages.some((m) =>
+                        (m.toolCalls || []).some((t) => t.name === 'rag_search')
+                    ) || false;
+                    const decision = evaluateEmailPolicy({
+                        responseText,
+                        originalContent: inboundEmailMessage.body || content,
+                        usedRag,
+                        hasUncertaintyMarkers: false,
+                        toolCallCount,
+                        citesKnowledgeBase: usedRag,
+                    });
+                    const browserEmailSend = async (payload: Parameters<EmailPostResponseDependencies['send']>[0]) => {
+                        try {
+                            const deliveryDraftId = payload.body === LOW_CONFIDENCE_EMAIL_ACKNOWLEDGEMENT && options?.emailDraftId
+                                ? `${options.emailDraftId}_ack`
+                                : options?.emailDraftId;
+                            const draft = createDraftResponse(payload.body, decision, {
+                                from: inboundEmailMessage.from,
+                                subject: inboundEmailMessage.subject,
+                                to: payload.to,
+                                inReplyTo: payload.inReplyTo,
+                                references: payload.references,
+                                accountName: payload.accountName,
+                            }, deliveryDraftId);
+                            const saved = await client.saveEmailDraft(draft);
+                            await client.updateEmailDraft(saved.id, { status: 'approved' });
+                            const sent = await client.sendEmailDraft(saved.id);
+                            return sent.status === 'sent'
+                                ? { success: true }
+                                : { success: false, error: 'Agentd did not confirm email delivery' };
+                        } catch (error) {
+                            return { success: false, error: error instanceof Error ? error.message : 'Browser email delivery failed' };
+                        }
+                    };
+                    await handleEmailPostResponse(
+                        {
+                            responseText,
+                            inboundEmailMessage,
+                            decision,
+                            draftMode: emailConfig.draftMode,
+                            accountName: emailConfig.accountName,
+                            emailSendHandledByAgent,
+                            draftId: options?.emailDraftId,
+                        },
+                        {
+                            send: browserEmailSend,
+                            addDraft: (draft) => useDraftStore.getState().addDraft(draft),
+                            addReviewNotice: (notice) => {
+                                useChatStore.getState().addSessionMessage(originSessionId, {
+                                    role: 'assistant',
+                                    content: notice,
+                                    actions: [{ type: 'custom', label: 'Open Drafts', payload: { action: 'open_drafts' } }],
+                                });
+                            },
+                        },
+                    );
+                };
                 if (browserRuntime && !localBrowserProvider && (useBrowserWhatsAppFlow || (!targetJid && !multimodalWhatsAppMessage))) {
                     const client = getBrowserAgentdClient();
                     const requestId = options?.requestId || addedUserMessage.id;
@@ -532,69 +596,7 @@ export function useAgent(): UseAgentReturn {
                         if (!responseText) throw new Error('Agentd returned an empty WhatsApp draft');
                         await admitBrowserWhatsAppDraft(responseText);
                     }
-                    if (isEmailFlow && inboundEmailMessage) {
-                        const responseText = assistantContent.trim();
-                        const session = useChatStore.getState().sessions.find((s) => s.id === originSessionId);
-                        const toolCallCount = session?.messages
-                            .filter((m) => m.role === 'assistant')
-                            .reduce((count, m) => count + (m.toolCalls?.length || 0), 0) || 0;
-                        const usedRag = session?.messages.some((m) =>
-                            (m.toolCalls || []).some((t) => t.name === 'rag_search')
-                        ) || false;
-                        const decision = evaluateEmailPolicy({
-                            responseText,
-                            originalContent: inboundEmailMessage.body || content,
-                            usedRag,
-                            hasUncertaintyMarkers: false,
-                            toolCallCount,
-                            citesKnowledgeBase: usedRag,
-                        });
-                        const browserEmailSend = async (payload: Parameters<EmailPostResponseDependencies['send']>[0]) => {
-                            try {
-                                const deliveryDraftId = payload.body === LOW_CONFIDENCE_EMAIL_ACKNOWLEDGEMENT && options?.emailDraftId
-                                    ? `${options.emailDraftId}_ack`
-                                    : options?.emailDraftId;
-                                const draft = createDraftResponse(payload.body, decision, {
-                                    from: inboundEmailMessage.from,
-                                    subject: inboundEmailMessage.subject,
-                                    to: payload.to,
-                                    inReplyTo: payload.inReplyTo,
-                                    references: payload.references,
-                                    accountName: payload.accountName,
-                                }, deliveryDraftId);
-                                const saved = await client.saveEmailDraft(draft);
-                                await client.updateEmailDraft(saved.id, { status: 'approved' });
-                                const sent = await client.sendEmailDraft(saved.id);
-                                return sent.status === 'sent'
-                                    ? { success: true }
-                                    : { success: false, error: 'Agentd did not confirm email delivery' };
-                            } catch (error) {
-                                return { success: false, error: error instanceof Error ? error.message : 'Browser email delivery failed' };
-                            }
-                        };
-                        await handleEmailPostResponse(
-                            {
-                                responseText,
-                                inboundEmailMessage,
-                                decision,
-                                draftMode: emailConfig.draftMode,
-                                accountName: emailConfig.accountName,
-                                emailSendHandledByAgent: false,
-                                draftId: options?.emailDraftId,
-                            },
-                            {
-                                send: browserEmailSend,
-                                addDraft: (draft) => useDraftStore.getState().addDraft(draft),
-                                addReviewNotice: (notice) => {
-                                    useChatStore.getState().addSessionMessage(originSessionId, {
-                                        role: 'assistant',
-                                        content: notice,
-                                        actions: [{ type: 'custom', label: 'Open Drafts', payload: { action: 'open_drafts' } }],
-                                    });
-                                },
-                            },
-                        );
-                    }
+                    if (isEmailFlow && inboundEmailMessage) await applyBrowserEmailPolicy(assistantContent.trim());
                     return;
                 }
 
@@ -887,29 +889,36 @@ export function useAgent(): UseAgentReturn {
                         citesKnowledgeBase: usedRag,
                     });
 
-                    await handleEmailPostResponse(
-                        {
-                            responseText,
-                            inboundEmailMessage,
-                            decision,
-                            draftMode: emailConfig.draftMode,
-                            accountName: emailConfig.accountName,
-                            emailSendHandledByAgent,
-                        },
-                        {
-                            send: (payload) => electron.email.send(payload),
-                            addDraft: (draft) => useDraftStore.getState().addDraft(draft),
-                            addReviewNotice: (notice) => {
-                                useChatStore.getState().addSessionMessage(originSessionId, {
-                                    role: 'assistant',
-                                    content: notice,
-                                    actions: [
-                                        { type: 'custom', label: 'Open Drafts', payload: { action: 'open_drafts' } }
-                                    ],
-                                });
+                    if (browserRuntime) {
+                        // WebGPU generation is local to the browser, but email policy,
+                        // drafts, approval and delivery remain agentd-owned. Never use
+                        // the Electron email bridge from the browser product.
+                        await applyBrowserEmailPolicy(responseText);
+                    } else {
+                        await handleEmailPostResponse(
+                            {
+                                responseText,
+                                inboundEmailMessage,
+                                decision,
+                                draftMode: emailConfig.draftMode,
+                                accountName: emailConfig.accountName,
+                                emailSendHandledByAgent,
                             },
-                        }
-                    );
+                            {
+                                send: (payload) => electron.email.send(payload),
+                                addDraft: (draft) => useDraftStore.getState().addDraft(draft),
+                                addReviewNotice: (notice) => {
+                                    useChatStore.getState().addSessionMessage(originSessionId, {
+                                        role: 'assistant',
+                                        content: notice,
+                                        actions: [
+                                            { type: 'custom', label: 'Open Drafts', payload: { action: 'open_drafts' } }
+                                        ],
+                                    });
+                                },
+                            }
+                        );
+                    }
                 }
 
             } catch (error) {
