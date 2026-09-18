@@ -7,6 +7,7 @@ const root = path.resolve(__dirname, '../..')
 const config = JSON.parse(fs.readFileSync(path.join(root, 'src-tauri/tauri.conf.json'), 'utf8'))
 const rust = fs.readFileSync(path.join(root, 'src-tauri/src/main.rs'), 'utf8')
 const runner = fs.readFileSync(path.join(root, 'scripts/tauri-agentd-runner.cjs'), 'utf8')
+const windowsWorkflow = fs.readFileSync(path.join(root, '.github/workflows/tauri-windows.yml'), 'utf8')
 
 test('Tauri package declares fixed agentd runtime, entrypoint, and keyring helper resources', () => {
   assert.deepEqual(config.bundle.resources, {
@@ -34,4 +35,12 @@ test('packaged runner owns agentd startup and does not accept renderer-selected 
   assert.match(runner, /process\.env\.AICA_AGENTD_KEYRING_HELPER/)
   assert.match(runner, /process\.env\.AICA_AGENTD_UI_ROOT/)
   assert.doesNotMatch(runner, /process\.argv\.slice/)
+})
+
+test('Windows CI runs target-specific native host tests before packaging', () => {
+  const nativeTests = windowsWorkflow.indexOf('cargo test --locked --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc')
+  const bundle = windowsWorkflow.indexOf('npm run build:tauri:win')
+  assert.notEqual(nativeTests, -1)
+  assert.notEqual(bundle, -1)
+  assert.ok(nativeTests < bundle, 'native host tests must run before packaging')
 })

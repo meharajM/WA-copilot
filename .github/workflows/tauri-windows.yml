@@ -55,6 +55,9 @@ jobs:
           $cjsTests = @(Get-ChildItem -Path tests/unit -Filter '*.test.cjs' | Select-Object -ExpandProperty FullName)
           node --test $cjsTests
 
+      - name: Run Windows native host tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc
+
       - name: Build signed-input Windows bundle
         run: npm run build:tauri:win
 
