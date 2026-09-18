@@ -20,7 +20,7 @@ Focused verification:
 - `cargo test --manifest-path src-tauri/Cargo.toml` — 17 passed (warnings only).
 - `git diff --check` — passed.
 
-Concerns: cutover status/token records are process-memory only (durable backup survives restart, but restart-safe status/idempotency recovery is not implemented); Node pathname operations retain the prior platform TOCTOU limitation documented by the staging hardening report; focused tests do not yet independently inject token expiry, transaction failure, backup hash tampering, or source mutation between confirmation and apply. Chat history, credentials/OAuth, and Electron removal remain intentionally out of scope.
+Concern: Node pathname operations retain the prior platform TOCTOU limitation documented by the staging hardening report; chat history, credentials/OAuth, and Electron removal remain intentionally out of scope.
 
 ## Reviewer fixes and re-verification (2026-09-18)
 
@@ -40,3 +40,22 @@ Verification:
 - `git diff --check` — passed.
 
 Concern: focused test file still needs expanded injected cases for each reviewer scenario; implementation paths are covered by existing smoke plus manual focused checks. Windows native no-reparse descriptor support remains a release blocker, documented above.
+
+## Final hardening pass — 2026-09-18
+
+Result: DONE_WITH_CONCERNS
+
+- Draft WhatsApp send admission now acquires the active-operation fence before claiming a pending outbox row, preventing a migration race from leaving a permanent pending claim.
+- Prior `agent_state` values are parsed with the strict existing persona/LLM/Ollama/preferences parsers before backup creation. Unknown fields, malformed JSON, and secret-looking values fail closed with `needs-recovery` and no backup file.
+- Backup path/hash are durably recorded while state is `applying`, before the settings transaction. Startup converts interrupted `applying` records into `needs-recovery` with an explicit manual-recovery indicator and keeps the hold active. Restarted confirmed records require fresh native confirmation; plaintext tokens remain memory-only.
+- LLM, persona, product-preference, and Ollama PUT routes hold an active-operation admission through validation and write, so browser writes cannot race the migration owner. Post-provider hold assertions were removed for direct WhatsApp, SMTP, draft WhatsApp, and generation work; admitted provider work drains and commits its accepted result.
+- Added focused regression coverage for unsafe prior backup rejection, applying restart recovery, fresh confirmation after restart, settings-write fencing, and draft claim admission.
+
+Verification:
+
+- `node --test tests/unit/agentd-settings-persona.test.cjs tests/unit/agentd-whatsapp-drafts.test.cjs` — 14 passed.
+- `node --test tests/unit/agentd*.test.cjs` — 58 passed.
+- `node --check agentd/server.cjs` — passed.
+- `git diff --check` — passed.
+
+Remaining concern: Windows native no-reparse descriptor support remains a release blocker; chat/credential migration remains intentionally out of scope.

@@ -1171,6 +1171,13 @@ class AgentdServer {
       let manifest; let result
       try { manifest = JSON.parse(row.manifest); result = row.result ? JSON.parse(row.result) : undefined } catch { continue }
       const record = { previewId: row.preview_id, manifest, manifestHash: row.manifest_hash, scope: row.scope, targetRuntime: row.target_runtime, state: row.state, confirmedAt: row.confirmed_at || undefined, expiresAt: row.expires_at || undefined, consumedAt: row.consumed_at || undefined, backupPath: row.backup_path || undefined, backupSha256: row.backup_sha256 || undefined, result, error: row.error || undefined }
+      if (record.state === 'applying') {
+        record.state = 'needs-recovery'
+        record.error = record.backupPath
+          ? 'Migration interrupted after backup creation; manual rollback required'
+          : 'Migration interrupted before backup reference; manual recovery required'
+        this.persistSettingsPersonaCutover(record)
+      }
       this.settingsPersonaCutovers.set(record.previewId, record)
       if (record.state === 'needs-recovery' || record.state === 'applying') this.migrationHold = true
     }
@@ -1280,6 +1287,32 @@ class AgentdServer {
     return { path: filename, sha256: crypto.createHash('sha256').update(complete).digest('hex') }
   }
 
+  validateMigrationBackupPrior(prior) {
+    const parsers = {
+      persona_settings: parsePersonaSettings,
+      llm_settings: parseLlmSettings,
+      ollama_settings: parseOllamaSettings,
+      product_preferences: parseProductPreferences,
+    }
+    const keys = Object.keys(parsers)
+    if (!prior || typeof prior !== 'object' || Array.isArray(prior) || Object.keys(prior).length !== keys.length
+      || keys.some(key => !Object.prototype.hasOwnProperty.call(prior, key))) {
+      throw Object.assign(new Error('Current settings are not safe to back up'), { migrationRecovery: true })
+    }
+    for (const key of keys) {
+      const raw = prior[key]
+      if (raw === null) continue
+      if (typeof raw !== 'string') throw Object.assign(new Error(`Current ${key} value is not safe to back up`), { migrationRecovery: true })
+      let parsed
+      try { parsed = JSON.parse(raw) } catch { throw Object.assign(new Error(`Current ${key} value is not valid JSON`), { migrationRecovery: true }) }
+      const normalized = parsers[key](parsed)
+      if (!normalized || JSON.stringify(normalized) !== JSON.stringify(parsed)
+        || /(?:sk-[A-Za-z0-9_-]{16,}|AIza[0-9A-Za-z_-]{20,}|-----BEGIN [^-]+ PRIVATE KEY-----|Bearer\s+[A-Za-z0-9._~-]{16,})/.test(JSON.stringify(parsed))) {
+        throw Object.assign(new Error(`Current ${key} value is not safe to back up`), { migrationRecovery: true })
+      }
+    }
+  }
+
   readVerifiedMigrationBackup(record) {
     const bytes = readMigrationFile(record.backupPath)
     const expected = Buffer.from(String(record.backupSha256 || ''), 'hex')
@@ -1318,7 +1351,18 @@ class AgentdServer {
   }
 
   settingsPersonaPublic(record) {
-    const output = { previewId: record.previewId, scope: record.scope, targetRuntime: record.targetRuntime, state: record.state, manifestHash: record.manifestHash, ...(record.expiresAt ? { expiresAt: record.expiresAt } : {}), ...(record.token ? { confirmationToken: record.token } : {}), ...(record.result || {}) }
+    const output = {
+      previewId: record.previewId,
+      scope: record.scope,
+      targetRuntime: record.targetRuntime,
+      state: record.state,
+      manifestHash: record.manifestHash,
+      ...(record.expiresAt ? { expiresAt: record.expiresAt } : {}),
+      ...(record.token ? { confirmationToken: record.token } : {}),
+      ...(record.state === 'confirmed' && !record.token ? { requiresReconfirmation: true } : {}),
+      ...(record.state === 'needs-recovery' ? { manualRecoveryRequired: true } : {}),
+      ...(record.result || {}),
+    }
     return output
   }
 
@@ -1349,7 +1393,11 @@ class AgentdServer {
       const input = this.readSettingsPersonaInput(this.cutoverPreview(record))
       if (input.manifestHash !== record.manifestHash) throw Object.assign(new Error('Preview changed after confirmation'), { statusCode: 409 })
       prior = Object.fromEntries(['persona_settings', 'llm_settings', 'ollama_settings', 'product_preferences'].map(key => [key, this.getState(key, null)]))
+      this.validateMigrationBackupPrior(prior)
       const backup = this.writeMigrationBackup(record, prior)
+      record.backupPath = backup.path
+      record.backupSha256 = backup.sha256
+      this.persistSettingsPersonaCutover(record)
       const finalInput = this.readSettingsPersonaInput(this.cutoverPreview(record))
       if (finalInput.manifestHash !== record.manifestHash || JSON.stringify(finalInput) !== JSON.stringify(input)) throw Object.assign(new Error('Source or staged migration changed before commit'), { statusCode: 409 })
       this.assertMigrationCommitReady()
@@ -1359,7 +1407,7 @@ class AgentdServer {
         this.setState('ollama_settings', JSON.stringify(finalInput.ollama))
         this.setState('product_preferences', JSON.stringify(finalInput.preferences))
       })()
-      record.state = 'applied'; record.appliedAt = Date.now(); record.backupPath = backup.path; record.backupSha256 = backup.sha256
+      record.state = 'applied'; record.appliedAt = Date.now()
       record.result = { backupSha256: backup.sha256, liveDataChanged: true }
       this.persistSettingsPersonaCutover(record)
       this.migrationHold = priorHold
@@ -1369,9 +1417,10 @@ class AgentdServer {
     } catch (error) {
       const keys = ['persona_settings', 'llm_settings', 'ollama_settings', 'product_preferences']
       const restored = !prior || keys.every(key => this.getState(key, null) === prior[key])
-      record.state = restored ? 'rolled-back' : 'needs-recovery'; record.error = error.message
+      const requiresRecovery = error?.migrationRecovery === true
+      record.state = requiresRecovery || !restored ? 'needs-recovery' : 'rolled-back'; record.error = error.message
       this.persistSettingsPersonaCutover(record)
-      this.migrationHold = restored ? priorHold : true
+      this.migrationHold = requiresRecovery || !restored ? true : priorHold
       this.migrationOwner = false
       if (restored && !this.migrationHold) this.startEmailInboundPolling()
       return json(res, error.statusCode || 500, { ...this.settingsPersonaPublic(record), error: error.message })
@@ -1421,14 +1470,18 @@ class AgentdServer {
       try { stored = JSON.parse(this.getState('llm_settings', 'null')) } catch {}
       return json(res, 200, parseLlmSettings(stored) || LLM_SETTINGS_DEFAULTS)
     }
-    if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
-    const body = await readBody(req, 16 * 1024)
-    const settings = parseLlmSettings(body)
-    if (!settings) {
-      return json(res, 400, { error: 'Invalid LLM settings' })
+    const releaseOperation = this.beginActiveOperation()
+    if (!releaseOperation) return json(res, 409, { error: 'Settings migration is committing' })
+    try {
+      if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
+      const body = await readBody(req, 16 * 1024)
+      const settings = parseLlmSettings(body)
+      if (!settings) return json(res, 400, { error: 'Invalid LLM settings' })
+      this.setState('llm_settings', JSON.stringify(settings))
+      return json(res, 200, settings)
+    } finally {
+      releaseOperation()
     }
-    this.setState('llm_settings', JSON.stringify(settings))
-    return json(res, 200, settings)
   }
 
   async personaSettings(req, res) {
@@ -1438,12 +1491,18 @@ class AgentdServer {
       try { stored = JSON.parse(this.getState('persona_settings', 'null')) } catch {}
       return json(res, 200, parsePersonaSettings(stored) || PERSONA_DEFAULTS)
     }
-    if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
-    const body = await readBody(req, 32 * 1024)
-    const settings = parsePersonaSettings(body)
-    if (!settings) return json(res, 400, { error: 'Invalid persona settings' })
-    this.setState('persona_settings', JSON.stringify(settings))
-    return json(res, 200, settings)
+    const releaseOperation = this.beginActiveOperation()
+    if (!releaseOperation) return json(res, 409, { error: 'Settings migration is committing' })
+    try {
+      if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
+      const body = await readBody(req, 32 * 1024)
+      const settings = parsePersonaSettings(body)
+      if (!settings) return json(res, 400, { error: 'Invalid persona settings' })
+      this.setState('persona_settings', JSON.stringify(settings))
+      return json(res, 200, settings)
+    } finally {
+      releaseOperation()
+    }
   }
 
   async productPreferences(req, res) {
@@ -1453,12 +1512,18 @@ class AgentdServer {
       try { stored = JSON.parse(this.getState('product_preferences', 'null')) } catch {}
       return json(res, 200, parseProductPreferences(stored) || PRODUCT_PREFERENCES_DEFAULTS)
     }
-    if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
-    const body = await readBody(req, 16 * 1024)
-    const preferences = parseProductPreferences(body)
-    if (!preferences) return json(res, 400, { error: 'Invalid product preferences' })
-    this.setState('product_preferences', JSON.stringify(preferences))
-    return json(res, 200, preferences)
+    const releaseOperation = this.beginActiveOperation()
+    if (!releaseOperation) return json(res, 409, { error: 'Settings migration is committing' })
+    try {
+      if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
+      const body = await readBody(req, 16 * 1024)
+      const preferences = parseProductPreferences(body)
+      if (!preferences) return json(res, 400, { error: 'Invalid product preferences' })
+      this.setState('product_preferences', JSON.stringify(preferences))
+      return json(res, 200, preferences)
+    } finally {
+      releaseOperation()
+    }
   }
 
   async emailSettings(req, res) {
@@ -1726,7 +1791,6 @@ class AgentdServer {
         inReplyTo: draft.inReplyTo,
         references: draft.references,
       })
-      this.assertMigrationOpen()
       const sent = { ...draft, status: 'sent' }
       this.db.prepare('UPDATE email_drafts SET status = ?, payload = ?, updated_at = ? WHERE id = ? AND status = ?').run('sent', JSON.stringify(sent), Date.now(), id, 'approved')
       this.db.prepare('DELETE FROM email_delivery_locks WHERE draft_id = ?').run(id)
@@ -2038,12 +2102,18 @@ class AgentdServer {
       try { stored = JSON.parse(this.getState('ollama_settings', 'null')) } catch {}
       return json(res, 200, parseOllamaSettings(stored) || OLLAMA_SETTINGS_DEFAULTS)
     }
-    if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
-    const body = await readBody(req, 8 * 1024)
-    const settings = parseOllamaSettings(body)
-    if (!settings) return json(res, 400, { error: 'Invalid Ollama settings' })
-    this.setState('ollama_settings', JSON.stringify(settings))
-    return json(res, 200, settings)
+    const releaseOperation = this.beginActiveOperation()
+    if (!releaseOperation) return json(res, 409, { error: 'Settings migration is committing' })
+    try {
+      if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
+      const body = await readBody(req, 8 * 1024)
+      const settings = parseOllamaSettings(body)
+      if (!settings) return json(res, 400, { error: 'Invalid Ollama settings' })
+      this.setState('ollama_settings', JSON.stringify(settings))
+      return json(res, 200, settings)
+    } finally {
+      releaseOperation()
+    }
   }
 
   async ollamaModels() {
@@ -2121,7 +2191,6 @@ class AgentdServer {
       if (!releaseOperation) return json(res, 409, { error: 'Settings migration is committing' })
       this.assertMigrationOpen()
       const { providerMessageId } = await this.sendWhatsAppCloudMessage(body.to, body.text)
-      this.assertMigrationOpen()
       releaseOperation()
       return json(res, 200, { success: true, providerMessageId })
     } catch (error) {
@@ -2543,7 +2612,6 @@ class AgentdServer {
         if (wantsStream && typeof content === 'string' && content && !writeSse(res, { type: 'assistant.delta', sessionId: rawId, requestId: body.requestId, sequence: 1, delta: content })) throw new Error('Client disconnected')
       }
       if (typeof content !== 'string' || !content || content.length > MAX_CHAT_CONTENT_LENGTH || Buffer.byteLength(content, 'utf8') > MAX_CHAT_CONTENT_LENGTH) throw new Error('Provider response invalid')
-      if (this.migrationHold) throw Object.assign(new Error('Settings migration is committing'), { statusCode: 409 })
       const assistantMessageId = `assistant_${body.requestId}`
       const result = this.db.transaction(() => {
         const current = this.db.prepare('SELECT * FROM chat_generations WHERE request_id = ? AND session_id = ?').get(body.requestId, rawId)
@@ -2734,46 +2802,45 @@ class AgentdServer {
   }
 
   async performWhatsAppDraftSend(id) {
-    const draft = this.db.prepare('SELECT * FROM whatsapp_drafts WHERE id = ?').get(id)
-    if (!draft) return { status: 404, body: { error: 'Draft not found' } }
-    if (!['approved', 'sent'].includes(draft.status)) return { status: 409, body: { error: 'Draft must be approved before sending' } }
-
-    const existing = this.db.prepare('SELECT * FROM whatsapp_outbox WHERE draft_id = ?').get(id)
-    if (existing?.status === 'failed' && [OUTBOX_QUARANTINED_ERROR, OUTBOX_CANCELLED_ERROR].includes(existing.error)) {
-      return { status: 409, body: { error: `Draft outbox is ${existing.error.toLowerCase()}` } }
-    }
-    if (existing?.status === 'sent' && existing.provider_message_id) {
-      return { status: 200, body: { success: true, duplicate: true, providerMessageId: existing.provider_message_id, draft: this.draftView(draft) } }
-    }
-    if (existing?.status === 'pending') return { status: 409, body: { error: 'WhatsApp send is already pending' } }
-
-    const now = Date.now()
-    const claimed = this.db.transaction(() => {
-      const current = this.db.prepare('SELECT * FROM whatsapp_drafts WHERE id = ?').get(id)
-      if (!current) return { missing: true }
-      if (!['approved', 'sent'].includes(current.status)) return { invalid: true }
-      const prior = this.db.prepare('SELECT * FROM whatsapp_outbox WHERE draft_id = ?').get(id)
-      if (prior?.status === 'sent' && prior.provider_message_id) return { sent: prior }
-      if (prior?.status === 'pending') return { pending: true }
-      this.db.prepare(`INSERT INTO whatsapp_outbox(draft_id,status,attempts,created_at,updated_at)
-        VALUES (?,?,?,?,?)
-        ON CONFLICT(draft_id) DO UPDATE SET status = 'pending', error = NULL, attempts = whatsapp_outbox.attempts + 1, updated_at = excluded.updated_at`).run(id, 'pending', prior?.attempts ? prior.attempts + 1 : 1, now, now)
-      return { current }
-    })()
-    if (claimed.missing) return { status: 404, body: { error: 'Draft not found' } }
-    if (claimed.invalid) return { status: 409, body: { error: 'Draft must be approved before sending' } }
-    if (claimed.sent) return { status: 200, body: { success: true, duplicate: true, providerMessageId: claimed.sent.provider_message_id, draft: this.draftView(draft) } }
-    if (claimed.pending) return { status: 409, body: { error: 'WhatsApp send is already pending' } }
     const releaseOperation = this.beginActiveOperation()
     if (!releaseOperation) return { status: 409, body: { error: 'Settings migration is committing' } }
-
-    // Inbound conversation IDs may be stored as `+15551234567` or as a
-    // WhatsApp JID. Strip only the known JID suffix; never guess a recipient.
-    const recipient = draft.conversation_id.replace(/@s\.whatsapp\.net$/i, '')
     try {
+      const draft = this.db.prepare('SELECT * FROM whatsapp_drafts WHERE id = ?').get(id)
+      if (!draft) return { status: 404, body: { error: 'Draft not found' } }
+      if (!['approved', 'sent'].includes(draft.status)) return { status: 409, body: { error: 'Draft must be approved before sending' } }
+
+      const existing = this.db.prepare('SELECT * FROM whatsapp_outbox WHERE draft_id = ?').get(id)
+      if (existing?.status === 'failed' && [OUTBOX_QUARANTINED_ERROR, OUTBOX_CANCELLED_ERROR].includes(existing.error)) {
+        return { status: 409, body: { error: `Draft outbox is ${existing.error.toLowerCase()}` } }
+      }
+      if (existing?.status === 'sent' && existing.provider_message_id) {
+        return { status: 200, body: { success: true, duplicate: true, providerMessageId: existing.provider_message_id, draft: this.draftView(draft) } }
+      }
+      if (existing?.status === 'pending') return { status: 409, body: { error: 'WhatsApp send is already pending' } }
+
+      const now = Date.now()
+      const claimed = this.db.transaction(() => {
+        const current = this.db.prepare('SELECT * FROM whatsapp_drafts WHERE id = ?').get(id)
+        if (!current) return { missing: true }
+        if (!['approved', 'sent'].includes(current.status)) return { invalid: true }
+        const prior = this.db.prepare('SELECT * FROM whatsapp_outbox WHERE draft_id = ?').get(id)
+        if (prior?.status === 'sent' && prior.provider_message_id) return { sent: prior }
+        if (prior?.status === 'pending') return { pending: true }
+        this.db.prepare(`INSERT INTO whatsapp_outbox(draft_id,status,attempts,created_at,updated_at)
+          VALUES (?,?,?,?,?)
+          ON CONFLICT(draft_id) DO UPDATE SET status = 'pending', error = NULL, attempts = whatsapp_outbox.attempts + 1, updated_at = excluded.updated_at`).run(id, 'pending', prior?.attempts ? prior.attempts + 1 : 1, now, now)
+        return { current }
+      })()
+      if (claimed.missing) return { status: 404, body: { error: 'Draft not found' } }
+      if (claimed.invalid) return { status: 409, body: { error: 'Draft must be approved before sending' } }
+      if (claimed.sent) return { status: 200, body: { success: true, duplicate: true, providerMessageId: claimed.sent.provider_message_id, draft: this.draftView(draft) } }
+      if (claimed.pending) return { status: 409, body: { error: 'WhatsApp send is already pending' } }
+
+      // Inbound conversation IDs may be stored as `+15551234567` or as a
+      // WhatsApp JID. Strip only the known JID suffix; never guess a recipient.
+      const recipient = draft.conversation_id.replace(/@s\.whatsapp\.net$/i, '')
       this.assertMigrationOpen()
       const { providerMessageId } = await this.sendWhatsAppCloudMessage(recipient, draft.response_text)
-      this.assertMigrationOpen()
       this.db.transaction(() => {
         this.db.prepare("UPDATE whatsapp_outbox SET status = 'sent', provider_message_id = ?, error = NULL, updated_at = ? WHERE draft_id = ?").run(providerMessageId, Date.now(), id)
         this.db.prepare("UPDATE whatsapp_drafts SET status = 'sent', updated_at = ? WHERE id = ? AND status = 'approved'").run(Date.now(), id)

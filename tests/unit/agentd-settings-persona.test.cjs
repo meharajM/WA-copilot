@@ -123,3 +123,88 @@ test('cutover status survives restart and rollback rejects tampered backups', as
   assert.equal(server.migrationHold, true)
   await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true }); fs.rmSync(sourceRoot, { recursive: true, force: true })
 })
+
+test('cutover refuses malformed or secret-bearing prior settings before creating a backup', async () => {
+  const dataDir = makeTempDir('aica-agentd-settings-unsafe-prior-')
+  const sourceRoot = sourceFixture()
+  const secret = 'u'.repeat(32)
+  const server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
+  const { origin } = await server.start()
+  const bearer = { authorization: `Bearer ${secret}` }
+  const preview = await request(origin, 'POST', '/api/v1/continuity/preview', { sourceRoot }, bearer)
+  await request(origin, 'POST', '/api/v1/continuity/import', { previewId: preview.body.previewId, ownerConfirmation: 'IMPORT_ELECTRON_DATA' }, bearer)
+  const confirmation = await request(origin, 'POST', '/api/v1/continuity/settings-persona/confirm', { previewId: preview.body.previewId, scope: 'settings-persona' }, bearer)
+  server.db.prepare('INSERT INTO agent_state(key,value,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at')
+    .run('llm_settings', JSON.stringify({ preferredProvider: 'ollama', openaiModel: 'gpt-4o-mini', openrouterModel: 'openai/gpt-4o', openaiApiKey: 'sk-secret-value' }), Date.now())
+  const applied = await request(origin, 'POST', '/api/v1/continuity/settings-persona/apply', { previewId: preview.body.previewId, confirmationToken: confirmation.body.confirmationToken }, bearer)
+  assert.equal(applied.status, 500)
+  assert.equal(applied.body.state, 'needs-recovery')
+  assert.equal(applied.body.manualRecoveryRequired, true)
+  assert.equal(server.migrationHold, true)
+  assert.equal(fs.existsSync(path.join(dataDir, 'migration-backups')), false)
+  await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true }); fs.rmSync(sourceRoot, { recursive: true, force: true })
+})
+
+test('restart converts an interrupted applying cutover with a backup reference into manual recovery', async () => {
+  const dataDir = makeTempDir('aica-agentd-settings-applying-restart-')
+  const sourceRoot = sourceFixture()
+  const secret = 'v'.repeat(32)
+  let server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
+  let { origin } = await server.start()
+  const bearer = { authorization: `Bearer ${secret}` }
+  const preview = await request(origin, 'POST', '/api/v1/continuity/preview', { sourceRoot }, bearer)
+  await request(origin, 'POST', '/api/v1/continuity/import', { previewId: preview.body.previewId, ownerConfirmation: 'IMPORT_ELECTRON_DATA' }, bearer)
+  await request(origin, 'POST', '/api/v1/continuity/settings-persona/confirm', { previewId: preview.body.previewId, scope: 'settings-persona' }, bearer)
+  server.db.prepare('UPDATE settings_persona_cutovers SET state = ?, backup_path = ?, backup_sha256 = ? WHERE preview_id = ?')
+    .run('applying', path.join(dataDir, 'migration-backups', 'interrupted.json'), '00'.repeat(32), preview.body.previewId)
+  await server.stop()
+  server = new AgentdServer({ dataDir, secret, logger: { log() {} } }); ({ origin } = await server.start())
+  const status = await request(origin, 'GET', `/api/v1/continuity/settings-persona/status?previewId=${preview.body.previewId}`, undefined, bearer)
+  assert.equal(status.body.state, 'needs-recovery')
+  assert.equal(status.body.manualRecoveryRequired, true)
+  assert.equal(server.migrationHold, true)
+  await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true }); fs.rmSync(sourceRoot, { recursive: true, force: true })
+})
+
+test('confirmed cutover restart requires fresh native confirmation', async () => {
+  const dataDir = makeTempDir('aica-agentd-settings-token-restart-')
+  const sourceRoot = sourceFixture()
+  const secret = 'x'.repeat(32)
+  let server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
+  let { origin } = await server.start()
+  const bearer = { authorization: `Bearer ${secret}` }
+  const preview = await request(origin, 'POST', '/api/v1/continuity/preview', { sourceRoot }, bearer)
+  await request(origin, 'POST', '/api/v1/continuity/import', { previewId: preview.body.previewId, ownerConfirmation: 'IMPORT_ELECTRON_DATA' }, bearer)
+  const first = await request(origin, 'POST', '/api/v1/continuity/settings-persona/confirm', { previewId: preview.body.previewId, scope: 'settings-persona' }, bearer)
+  const oldToken = first.body.confirmationToken
+  await server.stop()
+  server = new AgentdServer({ dataDir, secret, logger: { log() {} } }); ({ origin } = await server.start())
+  const status = await request(origin, 'GET', `/api/v1/continuity/settings-persona/status?previewId=${preview.body.previewId}`, undefined, bearer)
+  assert.equal(status.body.state, 'confirmed')
+  assert.equal(status.body.confirmationToken, undefined)
+  assert.equal(status.body.requiresReconfirmation, true)
+  assert.equal((await request(origin, 'POST', '/api/v1/continuity/settings-persona/apply', { previewId: preview.body.previewId, confirmationToken: oldToken }, bearer)).status, 403)
+  const second = await request(origin, 'POST', '/api/v1/continuity/settings-persona/confirm', { previewId: preview.body.previewId, scope: 'settings-persona' }, bearer)
+  assert.equal(second.status, 200)
+  assert.notEqual(second.body.confirmationToken, oldToken)
+  assert.equal((await request(origin, 'POST', '/api/v1/continuity/settings-persona/apply', { previewId: preview.body.previewId, confirmationToken: second.body.confirmationToken }, bearer)).status, 200)
+  await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true }); fs.rmSync(sourceRoot, { recursive: true, force: true })
+})
+
+test('settings PUT routes are fenced while cutover owns the migration hold', async () => {
+  const dataDir = makeTempDir('aica-agentd-settings-put-fence-')
+  const secret = 'z'.repeat(32)
+  const server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
+  const { origin } = await server.start()
+  const bearer = { authorization: `Bearer ${secret}` }
+  server.migrationHold = true
+  server.migrationOwner = true
+  const bodies = {
+    '/api/v1/settings/llm': { preferredProvider: 'ollama', openaiModel: 'gpt-4o-mini', openrouterModel: 'openai/gpt-4o' },
+    '/api/v1/settings/persona': { name: 'AICA', industry: 'Support', tone: 'professional', coreKnowledge: [] },
+    '/api/v1/settings/preferences': settings,
+    '/api/v1/settings/ollama': { baseUrl: 'http://127.0.0.1:11434', model: 'qwen2.5:3b' },
+  }
+  for (const [pathname, body] of Object.entries(bodies)) assert.equal((await request(origin, 'PUT', pathname, body, bearer)).status, 409)
+  await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true })
+})

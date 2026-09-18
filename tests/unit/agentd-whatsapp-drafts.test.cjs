@@ -231,3 +231,23 @@ test('failed browser outbox attempts support retry and explicit operator disposi
 
   await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true })
 })
+
+test('draft send acquires migration admission before claiming the outbox', async () => {
+  const dataDir = makeTempDir('aica-agentd-wa-claim-fence-')
+  const secret = 'q'.repeat(32)
+  const server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
+  await server.start()
+  const now = Date.now()
+  const draft = server.db.prepare('INSERT INTO whatsapp_drafts(channel,provider_event_id,conversation_id,response_text,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?)')
+    .run('whatsapp', 'claim-fence', '14155551212@s.whatsapp.net', 'reply', 'approved', now, now)
+  const originalBegin = server.beginActiveOperation.bind(server)
+  server.beginActiveOperation = () => {
+    server.migrationHold = true
+    return null
+  }
+  const result = await server.performWhatsAppDraftSend(draft.lastInsertRowid)
+  assert.equal(result.status, 409)
+  assert.equal(server.db.prepare('SELECT 1 FROM whatsapp_outbox WHERE draft_id = ?').get(draft.lastInsertRowid), undefined)
+  server.beginActiveOperation = originalBegin
+  await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true })
+})
