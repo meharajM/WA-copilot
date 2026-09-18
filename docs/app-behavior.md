@@ -206,6 +206,7 @@ Pass evidence:
   - `Autonomous Bot Mode` (`businessBotMode`)
 - Incoming self-messages are ignored.
 - On disconnect or connection error, `Response Permission` is automatically turned off.
+- In browser mode, `Autonomous Bot Mode` is disabled and any legacy persisted value is cleared; inbound events remain review-only until the daemon supervisor can safely execute the response-policy path. Explicit text sends and approved drafts remain separately gated.
 
 Pass evidence:
 

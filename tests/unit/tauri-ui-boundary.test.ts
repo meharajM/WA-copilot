@@ -85,6 +85,14 @@ describe('browser-first UI boundary', () => {
     expect(autonomy).not.toContain("browserRuntime ? electron.whatsapp.web")
   })
 
+  it('does not present browser WhatsApp autonomous-send as an available toggle', () => {
+    const settings = readSource('components/SettingsPanel.tsx')
+
+    expect(settings).toContain('Autonomous Bot Mode (unavailable)')
+    expect(settings).toContain('disabled={browserRuntime}')
+    expect(settings).toContain('automatic replies are not migrated yet.')
+  })
+
   it('describes browser knowledge as bounded text instead of binary or visual ingestion', () => {
     const knowledge = readSource('components/chat/KnowledgeBrowser.tsx')
 
