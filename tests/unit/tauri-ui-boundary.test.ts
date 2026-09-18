@@ -110,6 +110,19 @@ describe('browser-first UI boundary', () => {
     expect(actions).not.toContain("electron.mcp.callTool('internal-rag', 'rag_save_correction'")
   })
 
+  it('does not load browser sign-in secrets through the Electron secure-store bridge', () => {
+    const settings = readSource('stores/settingsStore.ts')
+    const loader = settings.indexOf('loadUserSecrets: async')
+    const browserGuard = settings.indexOf('if (isBrowserProduct()) {', loader)
+    const electronSecureRead = settings.indexOf("electron.secure.get('openai_api_key', uid)", loader)
+
+    expect(loader).toBeGreaterThan(-1)
+    expect(browserGuard).toBeGreaterThan(loader)
+    expect(electronSecureRead).toBeGreaterThan(browserGuard)
+    expect(settings.slice(browserGuard, electronSecureRead)).toContain('openaiApiKey:')
+    expect(settings.slice(browserGuard, electronSecureRead)).toContain('return')
+  })
+
   it('does not expose Electron-only autonomy controls in the browser workspace', () => {
     const autonomy = readSource('components/AutonomyPanel.tsx')
 

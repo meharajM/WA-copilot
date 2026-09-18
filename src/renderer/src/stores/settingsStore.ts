@@ -313,6 +313,7 @@ export const useSettingsStore = create<SettingsState>()(
                     ollamaBaseUrl: ollama.baseUrl,
                     // Credential values are intentionally never read back from agentd.
                     openaiApiKey: '',
+                    geminiApiKey: '',
                     openrouterApiKey: '',
                     ...preferences,
                 })
@@ -320,6 +321,19 @@ export const useSettingsStore = create<SettingsState>()(
 
             loadUserSecrets: async (uid: string) => {
                 set({ activeUserId: uid })
+                // Browser credentials are owned by authenticated agentd and
+                // are intentionally write-only from the page. Do not fall
+                // through to the Electron secure-store bridge in Edge/Chrome.
+                // Provider routes resolve stored values inside agentd; the
+                // renderer keeps empty placeholders after sign-in.
+                if (isBrowserProduct()) {
+                    set({
+                        openaiApiKey: '',
+                        geminiApiKey: '',
+                        openrouterApiKey: '',
+                    })
+                    return
+                }
                 // Load scoped secrets from encrypted secure storage
                 const openaiResult = await electron.secure.get('openai_api_key', uid)
                 const geminiResult = await electron.secure.get('gemini_api_key', uid)

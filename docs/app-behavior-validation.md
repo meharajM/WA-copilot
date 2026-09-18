@@ -95,6 +95,13 @@ Evidence:
 - [src/renderer/src/components/settings/MemoryPreferencesPanel.tsx](/Users/meharaj/WA-copilot/src/renderer/src/components/settings/MemoryPreferencesPanel.tsx): browser-specific backend copy
 - [docs/app-behavior.md](/Users/meharaj/WA-copilot/docs/app-behavior.md): browser/Electron memory backend contract
 
+The same code-first pass found a browser auth boundary defect: Firebase sign-in
+called the Electron-only scoped secret loader even though browser credentials
+are write-only through authenticated agentd. `loadUserSecrets` now short-circuits
+in browser mode, clears renderer key placeholders, and leaves provider
+credential resolution to the daemon. This avoids an Electron IPC attempt in
+Edge/Chrome and preserves the no-secret-in-renderer contract.
+
 ### Real-user browser smoke
 
 On 2026-09-18, the browser entry was opened at `http://127.0.0.1:5173/tauri.html?workspace=1` with no local daemon available. The UI showed `AICA / BROWSER WORKSPACE`, `Local service unavailable`, and `Retry connection`; activating retry kept the same fail-closed state and did not mount the product workspace. This passes the unavailable-service contract. Pairing and full workspace navigation require a running owner-supervised agentd instance and were not claimed by this smoke.

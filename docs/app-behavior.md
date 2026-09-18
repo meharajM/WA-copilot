@@ -270,6 +270,8 @@ Pass evidence:
 
 ### Provider and auth behavior
 
+- Browser Firebase sign-in does not hydrate API-key values through the Electron secure-store bridge. The browser keeps provider fields empty in renderer memory and resolves configured credentials only inside authenticated `agentd`; auth transitions therefore cannot call Electron IPC or expose a secret to the page. Re-entering a provider key in browser Settings writes it to the daemon's OS-backed credential adapter and clears the input after the write succeeds.
+
 - Gmail preset server values are:
   - `imap.gmail.com:993`
   - `smtp.gmail.com:587`
@@ -283,6 +285,7 @@ Pass evidence:
 
 Pass evidence:
 
+- After a browser Firebase sign-in or reload, provider key inputs remain empty while configured provider checks still resolve through agentd; browser developer logs show no Electron secure-store call and no API-key value in the response/state payloads.
 - Electron Gmail app-password mode can test and start without requiring OAuth. Browser Gmail app-password mode can persist credentials, run the bounded transport probe, start the gated text-only IMAP poller, and deliver explicitly approved text-only drafts through authenticated SMTP.
 - Browser Gmail Google Sign-In starts a PKCE loopback flow from the local agentd, opens the provider consent page in a browser tab, stores only the refresh token in the agentd OS credential adapter, and exposes only bounded status. The callback is one-time and short-lived; access/refresh tokens never enter browser state, URLs after callback, logs, or API responses.
 - Browser Gmail OAuth mode requires configured `GMAIL_OAUTH_CLIENT_ID` (and the server-managed client secret when the provider requires it) and a signed-in status. It runs bounded Gmail API inbox polling and approved text-only sends; expired/revoked refresh tokens fail closed and require explicit sign-in again.
