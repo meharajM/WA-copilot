@@ -84,6 +84,13 @@ async fn agentd_origin(client: State<'_, AgentdClient>) -> Result<String, String
 }
 
 #[tauri::command]
+fn agentd_pairing_code(client: State<'_, AgentdClient>) -> Result<String, String> {
+    client
+        .pairing_code()
+        .map_err(|_| "Pairing code unavailable; it may already be used or expired".into())
+}
+
+#[tauri::command]
 async fn credential_set(
     client: State<'_, AgentdClient>,
     key: String,
@@ -368,6 +375,7 @@ fn main() {
             app_version,
             agentd_health,
             agentd_origin,
+            agentd_pairing_code,
             open_browser_workspace,
             credential_set,
             credential_exists,

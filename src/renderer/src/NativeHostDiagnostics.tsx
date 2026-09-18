@@ -14,6 +14,7 @@ const messageFrom = (error: unknown, fallback: string): string => (
 export default function NativeHostDiagnostics() {
   const [version, setVersion] = useState('loading')
   const [agentdOrigin, setAgentdOrigin] = useState<string | null>(null)
+  const [pairingCode, setPairingCode] = useState<string | null>(null)
   const [health, setHealth] = useState<NativeHealth>({ status: 'unavailable', error: 'Checking agentd…' })
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
   const [credential, setCredential] = useState<CredentialKey>('openai_api_key')
@@ -53,6 +54,17 @@ export default function NativeHostDiagnostics() {
       setNotice('Opened the product workspace in your default browser')
     } catch (reason) { setError(messageFrom(reason, 'Browser workspace unavailable')) }
     finally { setBusy(null) }
+  }
+
+  const revealPairingCode = async () => {
+    setBusy('pairing'); setError(null); setNotice(null)
+    try {
+      setPairingCode(await tauriNativeBridge.agentdPairingCode())
+      setNotice('Pairing code revealed locally. Enter it in the browser workspace; it is not copied or persisted.')
+    } catch (reason) {
+      setPairingCode(null)
+      setError(messageFrom(reason, 'Pairing code unavailable; it may already be used or expired'))
+    } finally { setBusy(null) }
   }
 
   const checkCredential = async () => {
@@ -112,11 +124,12 @@ export default function NativeHostDiagnostics() {
           <div className="pilot-panel-heading"><div><p className="pilot-label">01 / local service</p><h2>Agentd status</h2></div><span className="pilot-status" role="status">{healthy ? 'READY' : 'UNAVAILABLE'}</span></div>
           <p className="pilot-copy">The daemon owns product data, workflows and credentials. Its lifetime is independent from this window.</p><p className="pilot-health-readout">{health.error || 'Native companion connected to agentd.'}</p>
           <p className="pilot-path" title={agentdOrigin || undefined}>{agentdOrigin ? `Browser workspace: ${agentdOrigin}` : 'Browser workspace URL unavailable until agentd is ready'}</p>
-          <div className="pilot-actions"><button type="button" className="pilot-button pilot-button-primary" onClick={() => void openBrowserWorkspace()} disabled={busy !== null || !agentdOrigin}>{busy === 'browser' ? 'Opening…' : 'Open browser workspace'}</button><button type="button" className="pilot-button" onClick={() => void refresh()} disabled={busy !== null}>Refresh status</button></div>
+          <div className="pilot-actions"><button type="button" className="pilot-button pilot-button-primary" onClick={() => void openBrowserWorkspace()} disabled={busy !== null || !agentdOrigin}>{busy === 'browser' ? 'Opening…' : 'Open browser workspace'}</button><button type="button" className="pilot-button" onClick={() => void revealPairingCode()} disabled={busy !== null || !agentdOrigin}>{busy === 'pairing' ? 'Reading…' : pairingCode ? 'Refresh pairing code' : 'Show pairing code'}</button><button type="button" className="pilot-button" onClick={() => void refresh()} disabled={busy !== null}>Refresh status</button></div>
+          {pairingCode && <p className="pilot-pairing-code" aria-live="polite"><span>Browser pairing code</span><strong>{pairingCode}</strong></p>}
         </article>
         <article className="pilot-panel">
           <div className="pilot-panel-heading"><div><p className="pilot-label">02 / file access</p><h2>Owner-selected paths</h2></div><span className="pilot-index">OS PICKER</span></div>
-          <p className="pilot-copy">Choose a path here, then use it in the browser workflow. Arbitrary filesystem access is not exposed.</p>
+          <p className="pilot-copy">Choose a path for an owner-approved native workflow. Product uploads use the browser picker; arbitrary filesystem access is not exposed.</p>
           <div className="pilot-actions"><button type="button" className="pilot-button pilot-button-primary" onClick={() => void choose('file')} disabled={busy !== null}>{busy === 'file' ? 'Opening…' : 'Choose file'}</button><button type="button" className="pilot-button" onClick={() => void choose('folder')} disabled={busy !== null}>{busy === 'folder' ? 'Opening…' : 'Choose folder'}</button></div>
           <p className="pilot-path" aria-live="polite">{selectedPath || 'No path selected yet'}</p>
         </article>

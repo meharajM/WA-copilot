@@ -12,6 +12,7 @@ export const TAURI_COMMANDS = {
   appVersion: 'app_version',
   agentdHealth: 'agentd_health',
   agentdOrigin: 'agentd_origin',
+  agentdPairingCode: 'agentd_pairing_code',
   openBrowserWorkspace: 'open_browser_workspace',
   credentialSet: 'credential_set',
   credentialExists: 'credential_exists',
@@ -170,6 +171,7 @@ export const createTauriNativeBridge = (
 ): NativeBridge & {
   appVersion: () => Promise<string>
   agentdOrigin: () => Promise<string>
+  agentdPairingCode: () => Promise<string>
   openBrowserWorkspace: () => Promise<NativeResult>
   continuityPreview: (sourceRoot: string) => Promise<NativeContinuityPreview>
   continuityImport: (previewId: string) => Promise<NativeContinuityImport>
@@ -196,6 +198,12 @@ export const createTauriNativeBridge = (
   const agentdOrigin = async (): Promise<string> => {
     const value = await invoke<unknown>(TAURI_COMMANDS.agentdOrigin)
     if (typeof value !== 'string' || !/^http:\/\/127\.0\.0\.1:\d+$/.test(value)) throw new Error('Invalid agentd origin response')
+    return value
+  }
+
+  const agentdPairingCode = async (): Promise<string> => {
+    const value = await invoke<unknown>(TAURI_COMMANDS.agentdPairingCode)
+    if (typeof value !== 'string' || !/^\d{6}$/.test(value)) throw new Error('Invalid pairing code response')
     return value
   }
 
@@ -275,6 +283,7 @@ export const createTauriNativeBridge = (
     deleteCredential,
     appVersion,
     agentdOrigin,
+    agentdPairingCode,
     openBrowserWorkspace,
     continuityPreview,
     continuityImport,

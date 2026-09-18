@@ -11,6 +11,7 @@ describe('tauri native bridge', () => {
       'app_version',
       'agentd_health',
       'agentd_origin',
+      'agentd_pairing_code',
       'open_browser_workspace',
       'credential_set',
       'credential_exists',
@@ -34,6 +35,7 @@ describe('tauri native bridge', () => {
     const invoke = vi.fn(async (command: string) => {
       if (command === TAURI_COMMANDS.appVersion) return '1.2.3'
       if (command === TAURI_COMMANDS.agentdOrigin) return 'http://127.0.0.1:4141'
+      if (command === TAURI_COMMANDS.agentdPairingCode) return '123456'
       if (command === TAURI_COMMANDS.openBrowserWorkspace) return null
       if (command === TAURI_COMMANDS.agentdHealth) return { status: 'ready', version: 'agentd protocol v1', paused: false, queueDepth: 2, events: 4 }
       if (command === TAURI_COMMANDS.credentialSet) return { success: true }
@@ -45,6 +47,7 @@ describe('tauri native bridge', () => {
 
     await expect(bridge.appVersion()).resolves.toBe('1.2.3')
     await expect(bridge.agentdOrigin()).resolves.toBe('http://127.0.0.1:4141')
+    await expect(bridge.agentdPairingCode()).resolves.toBe('123456')
     await expect(bridge.openBrowserWorkspace()).resolves.toEqual({ success: true })
     await expect(bridge.health()).resolves.toMatchObject({ status: 'ready', paused: false, queueDepth: 2, events: 4 })
     await expect(bridge.setCredential('openai_api_key', 'secret')).resolves.toEqual({ success: true })

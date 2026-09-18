@@ -159,6 +159,8 @@
 .pilot-button-primary:hover:not(:disabled) { color: #11130f; background: #d3f88e; }
 .pilot-button-danger { color: #e7a49e; }
 .pilot-path { min-height: 16px; margin: 24px 0 0; overflow: hidden; color: #898880; font: 11px/1.4 'SF Mono', Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.pilot-pairing-code { display: flex; align-items: baseline; gap: 12px; margin: 18px 0 0; color: var(--pilot-muted); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; }
+.pilot-pairing-code strong { color: var(--pilot-lime); font: 700 22px/1 'SF Mono', Menlo, monospace; letter-spacing: .18em; }
 .pilot-form-row { display: grid; grid-template-columns: 72px minmax(0, 1fr); align-items: center; gap: 14px; margin-top: 10px; }
 .pilot-form-row label { color: var(--pilot-muted); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
 .pilot-form-row input, .pilot-form-row select { width: 100%; min-height: 38px; box-sizing: border-box; padding: 0 11px; border: 1px solid var(--pilot-line); border-radius: 0; outline: none; color: #e9e7df; background: rgba(255, 255, 255, .045); font: 12px 'SF Mono', Menlo, monospace; }

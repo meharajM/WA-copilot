@@ -37,6 +37,7 @@ describe('browser-first UI boundary', () => {
     const handler = native.slice(native.indexOf('.invoke_handler('), native.indexOf('.setup('))
 
     expect(handler).toContain('agentd_health')
+    expect(handler).toContain('agentd_pairing_code')
     expect(handler).toContain('credential_set')
     expect(handler).toContain('credential_exists')
     expect(handler).toContain('credential_delete')

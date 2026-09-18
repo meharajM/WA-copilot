@@ -22,6 +22,7 @@ use zeroize::Zeroizing;
 
 const PROTOCOL_VERSION: u64 = 1;
 const MAX_DESCRIPTOR_BYTES: u64 = 4096;
+const MAX_PAIRING_CODE_BYTES: u64 = 64;
 const MAX_RESPONSE_BYTES: usize = 256 * 1024;
 const MAX_CREDENTIAL_BYTES: usize = 64 * 1024;
 const MAX_CHAT_ID_BYTES: usize = 128;
@@ -870,6 +871,31 @@ impl AgentdClient {
         Ok(self.validated_descriptor()?.origin)
     }
 
+    /// Read the short-lived owner pairing handoff without exposing the daemon
+    /// bearer secret. The file is created with private permissions by agentd;
+    /// reject symlinks, oversized values and anything other than six digits.
+    pub fn pairing_code(&self) -> Result<String, ()> {
+        let data_dir = self.data_dir.as_ref().map_err(|_| ())?;
+        let path = data_dir.join("agentd.pairing-code");
+        let metadata = std::fs::symlink_metadata(&path).map_err(|_| ())?;
+        if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_PAIRING_CODE_BYTES {
+            return Err(());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if metadata.mode() & 0o077 != 0 || metadata.uid() != unsafe { libc::geteuid() } {
+                return Err(());
+            }
+        }
+        let code = std::fs::read_to_string(path).map_err(|_| ())?;
+        let code = code.trim();
+        if code.len() != 6 || !code.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(());
+        }
+        Ok(code.to_owned())
+    }
+
     pub async fn status(&self) -> Result<AgentdStatus, ()> {
         self.request(Route::Status, None).await
     }
@@ -1357,6 +1383,27 @@ mod tests {
         )
         .is_err());
         assert!(RuntimeDescriptor::parse(&vec![b'x'; MAX_DESCRIPTOR_BYTES as usize + 1]).is_err());
+    }
+
+    #[test]
+    fn pairing_code_is_bounded_and_numeric() {
+        let data_dir = env::temp_dir().join(format!("aica-agentd-pairing-{}", std::process::id()));
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let path = data_dir.join("agentd.pairing-code");
+        std::fs::write(&path, "123456\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let client = AgentdClient {
+            data_dir: Ok(data_dir.clone()),
+            http: None,
+        };
+        assert_eq!(client.pairing_code().unwrap(), "123456");
+        std::fs::write(&path, "abcdef\n").unwrap();
+        assert!(client.pairing_code().is_err());
+        std::fs::remove_dir_all(data_dir).unwrap();
     }
 
     #[test]
