@@ -89,9 +89,9 @@ export function useResolutionAudit() {
             actions.forEach((action) => {
                 if (action.type === 'send_followup') {
                     addSessionMessage(action.sessionId, {
-                        role: 'assistant',
-                        content: action.prompt,
-                        thought: '[Resolution Audit] 15min inactivity detected. Prompting for closure.',
+                            role: 'assistant',
+                            content: action.prompt,
+                            thought: '[Resolution Audit] 10min inactivity detected. Prompting for closure.',
                     })
 
                     electron.whatsapp

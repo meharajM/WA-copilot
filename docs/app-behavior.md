@@ -567,7 +567,7 @@ Pass evidence:
 - Browser audit logs are downloaded as redacted NDJSON. Tauri native diagnostics can open the fixed agentd data folder; the browser never receives that path or a generic native file-open bridge. Electron retains its existing reveal behavior during transition.
 - Lead Directory supports non-WhatsApp sessions in the data model, but some copy still describes it as WhatsApp-only.
 - The LLM provider selector includes `browser`. In Edge/Chrome it is an explicit WebGPU mode backed by the existing WebLLM worker/cache; remote providers remain agentd-owned. Tauri still renders no product settings UI, and Electron keeps its existing local path during transition.
-- Resolution-audit helper text in some logs/comments still references older timing language, but the actual timeout is 10 minutes.
+- Electron resolution-audit helper text and the agentd browser audit both use the documented 10-minute inactivity threshold.
 
 ## QA Reporting Format
 
