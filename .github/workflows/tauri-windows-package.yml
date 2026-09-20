@@ -1,6 +1,17 @@
 name: Tauri Windows package
 
 on:
+  pull_request:
+    paths:
+      - '.github/workflows/tauri-windows-package.yml'
+      - 'agentd/**'
+      - 'scripts/**'
+      - 'src-tauri/**'
+      - 'src/renderer/**'
+      - 'src/shared/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'vite.tauri.config.ts'
   workflow_dispatch:
 
 concurrency:
