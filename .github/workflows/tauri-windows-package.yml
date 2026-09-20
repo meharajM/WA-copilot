@@ -52,6 +52,9 @@ jobs:
       - name: Prepare Windows keyring helper
         run: npm run prepare:agentd:keyring-helper
 
+      - name: Run Windows Credential Manager runtime smoke
+        run: node --test tests/unit/windows-keyring-runtime.test.cjs
+
       - name: Prepare Windows agentd sidecar
         run: npm run prepare:tauri:agentd
 
