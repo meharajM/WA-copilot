@@ -14,6 +14,7 @@ export const TAURI_COMMANDS = {
   agentdOrigin: 'agentd_origin',
   agentdPairingCode: 'agentd_pairing_code',
   openBrowserWorkspace: 'open_browser_workspace',
+  openAgentdDataFolder: 'open_agentd_data_folder',
   serviceStatus: 'service_status',
   serviceInstall: 'service_install',
   serviceUninstall: 'service_uninstall',
@@ -314,6 +315,7 @@ export const createTauriNativeBridge = (
   agentdOrigin: () => Promise<string>
   agentdPairingCode: () => Promise<string>
   openBrowserWorkspace: () => Promise<NativeResult>
+  openAgentdDataFolder: () => Promise<NativeResult>
   serviceStatus: () => Promise<NativeServiceStatus>
   serviceInstall: () => Promise<NativeServiceStatus>
   serviceUninstall: () => Promise<NativeServiceStatus>
@@ -366,6 +368,15 @@ export const createTauriNativeBridge = (
       return { success: true }
     } catch (error) {
       return failed(error instanceof Error ? error.message : error, 'Could not open the browser workspace')
+    }
+  }
+
+  const openAgentdDataFolder = async (): Promise<NativeResult> => {
+    try {
+      await invoke<unknown>(TAURI_COMMANDS.openAgentdDataFolder)
+      return { success: true }
+    } catch (error) {
+      return failed(error instanceof Error ? error.message : error, 'Could not open the agentd data folder')
     }
   }
 
@@ -463,6 +474,7 @@ export const createTauriNativeBridge = (
     agentdOrigin,
     agentdPairingCode,
     openBrowserWorkspace,
+    openAgentdDataFolder,
     serviceStatus,
     serviceInstall,
     serviceUninstall,

@@ -85,6 +85,16 @@ export default function NativeHostDiagnostics() {
     finally { setBusy(null) }
   }
 
+  const openAgentdDataFolder = async () => {
+    setBusy('data-folder'); setError(null); setNotice(null)
+    try {
+      const result = await tauriNativeBridge.openAgentdDataFolder()
+      if (!result.success) throw new Error(result.error || 'Agentd data folder unavailable')
+      setNotice('Opened the agentd data folder in the native file manager')
+    } catch (reason) { setError(messageFrom(reason, 'Agentd data folder unavailable')) }
+    finally { setBusy(null) }
+  }
+
   const revealPairingCode = async () => {
     setBusy('pairing'); setError(null); setNotice(null)
     try {
@@ -233,7 +243,7 @@ export default function NativeHostDiagnostics() {
           <div className="pilot-panel-heading"><div><p className="pilot-label">01 / local service</p><h2>Agentd status</h2></div><span className="pilot-status" role="status">{healthy ? 'READY' : 'UNAVAILABLE'}</span></div>
           <p className="pilot-copy">The daemon owns product data, workflows and credentials. Its lifetime is independent from this window.</p><p className="pilot-health-readout">{health.error || 'Native companion connected to agentd.'}</p>
           <p className="pilot-path" title={agentdOrigin || undefined}>{agentdOrigin ? `Browser workspace: ${agentdOrigin}` : 'Browser workspace URL unavailable until agentd is ready'}</p>
-          <div className="pilot-actions"><button type="button" className="pilot-button pilot-button-primary" onClick={() => void openBrowserWorkspace()} disabled={busy !== null || !agentdOrigin}>{busy === 'browser' ? 'Opening…' : 'Open browser workspace'}</button><button type="button" className="pilot-button" onClick={() => void revealPairingCode()} disabled={busy !== null || !agentdOrigin}>{busy === 'pairing' ? 'Reading…' : pairingCode ? 'Refresh pairing code' : 'Show pairing code'}</button><button type="button" className="pilot-button" onClick={() => void refresh()} disabled={busy !== null}>Refresh status</button></div>
+          <div className="pilot-actions"><button type="button" className="pilot-button pilot-button-primary" onClick={() => void openBrowserWorkspace()} disabled={busy !== null || !agentdOrigin}>{busy === 'browser' ? 'Opening…' : 'Open browser workspace'}</button><button type="button" className="pilot-button" onClick={() => void openAgentdDataFolder()} disabled={busy !== null}>{busy === 'data-folder' ? 'Opening…' : 'Open agentd data folder'}</button><button type="button" className="pilot-button" onClick={() => void revealPairingCode()} disabled={busy !== null || !agentdOrigin}>{busy === 'pairing' ? 'Reading…' : pairingCode ? 'Refresh pairing code' : 'Show pairing code'}</button><button type="button" className="pilot-button" onClick={() => void refresh()} disabled={busy !== null}>Refresh status</button></div>
           {pairingCode && <p className="pilot-pairing-code" aria-live="polite"><span>Browser pairing code</span><strong>{pairingCode}</strong></p>}
         </article>
         <article className="pilot-panel">

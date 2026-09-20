@@ -1021,6 +1021,13 @@ impl AgentdClient {
         Ok(self.validated_descriptor()?.origin)
     }
 
+    /// Return the host-selected agentd data directory to native-only commands.
+    /// The browser never receives this path and cannot provide an arbitrary
+    /// path to the native bridge.
+    pub fn data_directory(&self) -> Result<PathBuf, ()> {
+        self.data_dir.clone().map_err(|_| ())
+    }
+
     /// Read the short-lived owner pairing handoff without exposing the daemon
     /// bearer secret. The file is created with private permissions by agentd;
     /// reject symlinks, oversized values and anything other than six digits.

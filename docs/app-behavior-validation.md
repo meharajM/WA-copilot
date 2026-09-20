@@ -424,6 +424,24 @@ Evidence:
 - [src/renderer/src/lib/browser-agentd-client.ts](/Users/meharaj/WA-copilot/src/renderer/src/lib/browser-agentd-client.ts):75
 - [tests/unit/agentd-email-attachments.test.cjs](/Users/meharaj/WA-copilot/tests/unit/agentd-email-attachments.test.cjs):22
 
+### Finding 8: Tauri had no safe replacement for Electron folder reveal — resolved
+
+Severity: medium
+
+The browser correctly avoided exposing an agentd database path, but the native
+companion had no equivalent for an operator who needs to inspect host-owned
+diagnostics. Tauri now exposes a no-argument `open_agentd_data_folder` command.
+It resolves the data directory from native host state, creates it if needed,
+and launches only that fixed path using the platform file manager. The browser
+bridge receives no path and cannot supply an arbitrary one.
+
+Evidence:
+
+- [src-tauri/src/main.rs](/Users/meharaj/WA-copilot/src-tauri/src/main.rs)
+- [src-tauri/src/agentd_api.rs](/Users/meharaj/WA-copilot/src-tauri/src/agentd_api.rs)
+- [src/renderer/src/lib/tauri-native-bridge.ts](/Users/meharaj/WA-copilot/src/renderer/src/lib/tauri-native-bridge.ts)
+- [tests/unit/tauri-native-bridge.test.ts](/Users/meharaj/WA-copilot/tests/unit/tauri-native-bridge.test.ts)
+
 ## Recommended Source-of-Truth Order
 
 Use this order:

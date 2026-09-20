@@ -493,14 +493,14 @@ Pass evidence:
 ## Audit Logs
 
 - Audit Logs show the local log path.
-- Electron exposes a reveal/open-folder action. Browser mode shows an agentd-managed label and downloads a redacted NDJSON audit export instead of exposing a native database path.
+- Electron exposes a reveal/open-folder action. The Tauri native diagnostics screen can open only the fixed agentd data folder through a no-argument native command; browser mode shows an agentd-managed label and downloads a redacted NDJSON audit export instead of exposing a native database path.
 - The UI states logs are local and append-only.
 - In the browser product, audit entries are redacted before durable SQLite persistence in `agentd` and can be downloaded as NDJSON; browser UI never receives a native database path.
 
 Pass evidence:
 
 - Log path resolves.
-- Reveal action opens the folder without crashing.
+- Electron and Tauri native reveal actions open their fixed, host-owned folders without crashing; browser audit export remains the supported browser action.
 
 ## About and System Info
 
@@ -563,7 +563,7 @@ Pass evidence:
 - Browser Email inbound polling is daemon-owned and starts only when `Enable Email Channel` is on and either app-password mode has IMAP TLS, an IMAP host, and an OS-stored `email_imap_password` (with legacy `email_mcp_password` fallback), or Gmail OAuth mode has a signed-in agentd OAuth session. The IMAP worker uses UID-based durable deduplication and remains text-only; the Gmail worker uses a bounded timestamp overlap plus provider-event IDs, retains bounded attachment metadata, and never downloads attachment bytes during polling or generation. Gmail attachment bytes are available only through the authenticated operator inspection route and pass the same size/MIME/magic-byte gate before download. Auto-Reply only controls browser claim/session hydration, not mailbox ingestion or automatic reply generation. STARTTLS is supported for non-993 IMAP endpoints. Approved text-only drafts can deliver through the separately gated daemon SMTP or Gmail API route.
 - Browser knowledge imports support bounded text plus supervised PDF/Office/document conversion, but cannot open the original native file after indexing; Electron retains broader parser and file-reveal behavior.
 - The browser Autonomy panel does not render Electron-only WhatsApp Web automation, native backup staging, or local-retention controls. Baileys reconnect is daemon-owned and surfaced through bounded connection state; native-only controls remain in the Electron transition client until their agentd adapters are migrated.
-- Browser audit logs are downloaded as redacted NDJSON; native log-folder reveal remains Electron-only.
+- Browser audit logs are downloaded as redacted NDJSON. Tauri native diagnostics can open the fixed agentd data folder; the browser never receives that path or a generic native file-open bridge. Electron retains its existing reveal behavior during transition.
 - Lead Directory supports non-WhatsApp sessions in the data model, but some copy still describes it as WhatsApp-only.
 - The LLM provider selector includes `browser`. In Edge/Chrome it is an explicit WebGPU mode backed by the existing WebLLM worker/cache; remote providers remain agentd-owned. Tauri still renders no product settings UI, and Electron keeps its existing local path during transition.
 - Resolution-audit helper text in some logs/comments still references older timing language, but the actual timeout is 10 minutes.

@@ -8,7 +8,7 @@ use std::sync::{
 };
 use std::{
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::Mutex,
     thread::{self, JoinHandle},
@@ -403,6 +403,34 @@ fn open_external_url(url: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn open_native_folder(path: &Path) -> Result<(), String> {
+    if !path.is_absolute() {
+        return Err("Native data folder path is not absolute".into());
+    }
+    #[cfg(windows)]
+    {
+        Command::new("explorer.exe")
+            .arg(path)
+            .spawn()
+            .map_err(|_| "Could not open the agentd data folder".to_string())?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg(path)
+            .spawn()
+            .map_err(|_| "Could not open the agentd data folder".to_string())?;
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        Command::new("xdg-open")
+            .arg(path)
+            .spawn()
+            .map_err(|_| "Could not open the agentd data folder".to_string())?;
+    }
+    Ok(())
+}
+
 fn open_browser_workspace_for_app<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     let origin = app
         .state::<AgentdClient>()
@@ -419,6 +447,15 @@ fn open_browser_workspace(client: State<'_, AgentdClient>) -> Result<(), String>
         .map_err(|_| "Agentd workspace URL unavailable".to_string())?;
     let url = browser_workspace_url(&origin)?;
     open_external_url(&url)
+}
+
+#[tauri::command]
+fn open_agentd_data_folder(client: State<'_, AgentdClient>) -> Result<(), String> {
+    let path = client
+        .data_directory()
+        .map_err(|_| "Agentd data directory unavailable".to_string())?;
+    fs::create_dir_all(&path).map_err(|_| "Agentd data directory unavailable".to_string())?;
+    open_native_folder(&path)
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -527,7 +564,9 @@ fn run_schtasks(args: &[&OsStr]) -> Result<Output, String> {
     let system_root = env::var_os("SystemRoot")
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "Windows system root unavailable".to_string())?;
-    let executable = PathBuf::from(system_root).join("System32").join("schtasks.exe");
+    let executable = PathBuf::from(system_root)
+        .join("System32")
+        .join("schtasks.exe");
     if !fs::metadata(&executable)
         .map(|metadata| metadata.is_file())
         .unwrap_or(false)
@@ -821,6 +860,7 @@ fn main() {
             agentd_origin,
             agentd_pairing_code,
             open_browser_workspace,
+            open_agentd_data_folder,
             service_status,
             service_install,
             service_uninstall,
