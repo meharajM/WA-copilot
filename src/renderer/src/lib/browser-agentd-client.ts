@@ -286,7 +286,7 @@ const readNativeHealth = (value: unknown): NativeHealth => {
   if (value.extension !== undefined) {
     if (!isRecord(value.extension)
       || !['disabled', 'connecting', 'connected', 'error'].includes(value.extension.status as string)
-      || !Number.isSafeInteger(value.extension.port) || value.extension.port < 1024 || value.extension.port > 65_535
+      || typeof value.extension.port !== 'number' || !Number.isSafeInteger(value.extension.port) || value.extension.port < 1024 || value.extension.port > 65_535
       || (value.extension.lastStatus !== null && typeof value.extension.lastStatus !== 'string')
       || (value.extension.error !== null && typeof value.extension.error !== 'string')) throw new Error('Invalid agentd extension status response')
   }
