@@ -48,6 +48,14 @@ jobs:
         # must compile its native binding on the Windows runner.
         run: npm ci --no-audit --no-fund
 
+      - name: Build browser bundle for native host tests
+        # The Tauri build script embeds ../dist even for `cargo test`, so
+        # prepare the browser-first product assets before compiling Rust.
+        run: npm run build:tauri:web
+
+      - name: Prepare Windows migration reader
+        run: npm run prepare:agentd:migration-reader
+
       - name: Typecheck browser renderer
         run: npm run typecheck:renderer
 
@@ -63,14 +71,6 @@ jobs:
           npx vitest run tests/unit --exclude tests/unit/email-channel-service.test.ts
           $cjsTests = @(Get-ChildItem -Path tests/unit -Filter '*.test.cjs' | Select-Object -ExpandProperty FullName)
           node --test $cjsTests
-
-      - name: Build browser bundle for native host tests
-        # The Tauri build script embeds ../dist even for `cargo test`, so
-        # prepare the browser-first product assets before compiling Rust.
-        run: npm run build:tauri:web
-
-      - name: Prepare Windows migration reader
-        run: npm run prepare:agentd:migration-reader
 
       - name: Run Windows migration reader reparse smoke
         run: node --test tests/unit/windows-migration-reader-runtime.test.cjs
