@@ -315,7 +315,7 @@ Browser parity boundary:
 Pass evidence:
 
 - With `Auto-Reply` off, inbound email does not create an email session.
-- With `Auto-Reply` on and the channel enabled, inbound email can create a review session; no browser automatic reply is generated.
+- With `Auto-Reply` on and the channel enabled, inbound email can create a review session and run authenticated generation; any response remains subject to confidence, sensitive-topic, Draft Mode, and approved-delivery gates.
 - Browser `Test Connection` reaches the local agentd endpoint, rejects missing credentials, and never returns the stored app password.
 - Browser inbound processing is restart-safe: the daemon IMAP worker or Gmail API worker queues deduplicated events, then the browser atomically claims them as `processing` before mapping them to sessions/messages, and agentd marks them completed only after persistence succeeds; duplicate claims and acknowledgements do not create another chat message. Gmail polling advances a bounded timestamp cursor with overlap and durable provider-event deduplication.
 - In browser mode, the Drafts panel allows review/edit/approve/reject, lets an operator select bounded safe attachments, and invokes the daemon-owned send route only for approved drafts. It must not call an Electron IPC fallback or append a synthetic send failure to the draft text.

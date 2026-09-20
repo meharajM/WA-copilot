@@ -692,7 +692,7 @@ export function EmailSettingsPanel() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm text-[var(--color-text-primary)] font-medium">Auto-Reply</p>
-              <p className="text-xs text-[var(--color-text-dim)]">{browserRuntime ? 'Consumes queued agentd events into review sessions; it does not generate or send automatic replies. Polling has separate enable, TLS, and credential gates.' : 'Only enable after successful testing'}</p>
+              <p className="text-xs text-[var(--color-text-dim)]">{browserRuntime ? 'Consumes queued agentd events, runs authenticated generation and confidence policy, and never bypasses Draft Mode or approved delivery gates. Polling has separate enable, TLS, and credential gates.' : 'Only enable after successful testing'}</p>
             </div>
             <button onClick={() => setAutoReplyMode(!config.autoReplyMode)} className="text-[var(--color-brand-teal)]">
               {config.autoReplyMode ? <ToggleRight size={28} /> : <ToggleLeft size={28} />}
