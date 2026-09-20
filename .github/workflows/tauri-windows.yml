@@ -84,6 +84,9 @@ jobs:
       - name: Build signed-input Windows bundle
         run: npm run build:tauri:win
 
+      - name: Verify Windows installer artifacts
+        run: node scripts/verify-tauri-windows-bundle.mjs --bundle-root src-tauri/target/x86_64-pc-windows-msvc/release/bundle
+
       - name: Upload unsigned Windows artifacts
         uses: actions/upload-artifact@v4
         with:

@@ -104,6 +104,17 @@ test('Windows CI verifies prepared sidecar and browser resources before packagin
   assert.ok(resourceGate < bundle, 'resource verification must run before packaging')
 })
 
+test('Windows CI verifies installer artifacts before upload', () => {
+  const bundle = windowsWorkflow.indexOf('npm run build:tauri:win')
+  const artifactGate = windowsWorkflow.indexOf('node scripts/verify-tauri-windows-bundle.mjs')
+  const upload = windowsWorkflow.indexOf('Upload unsigned Windows artifacts')
+  assert.notEqual(bundle, -1)
+  assert.notEqual(artifactGate, -1)
+  assert.notEqual(upload, -1)
+  assert.ok(bundle < artifactGate, 'installer artifacts must exist before verification')
+  assert.ok(artifactGate < upload, 'installer artifacts must pass verification before upload')
+})
+
 test('Windows CI runs Credential Manager runtime smoke after preparing the helper', () => {
   const helper = windowsWorkflow.indexOf('npm run prepare:agentd:keyring-helper')
   const runtimeSmoke = windowsWorkflow.indexOf('node --test tests/unit/windows-keyring-runtime.test.cjs')
