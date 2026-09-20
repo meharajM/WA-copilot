@@ -42,6 +42,7 @@ await cp(join(projectRoot, 'agentd', 'gmail-api.cjs'), join(stageRoot, 'gmail-ap
 await cp(join(projectRoot, 'agentd', 'whatsapp-baileys.cjs'), join(stageRoot, 'whatsapp-baileys.cjs'))
 await cp(join(projectRoot, 'agentd', 'continuity-migration.cjs'), join(stageRoot, 'continuity-migration.cjs'))
 await cp(join(projectRoot, 'agentd', 'email-mime.cjs'), join(stageRoot, 'email-mime.cjs'))
+await cp(join(projectRoot, 'agentd', 'email-attachment-safety.cjs'), join(stageRoot, 'email-attachment-safety.cjs'))
 await cp(join(projectRoot, 'agentd', 'email-transport.cjs'), join(stageRoot, 'email-transport.cjs'))
 await cp(join(projectRoot, 'agentd', 'email-inbound-worker.cjs'), join(stageRoot, 'email-inbound-worker.cjs'))
 await cp(join(projectRoot, 'agentd', 'mcp-worker.cjs'), join(stageRoot, 'mcp-worker.cjs'))
