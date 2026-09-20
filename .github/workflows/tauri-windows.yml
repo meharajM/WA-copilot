@@ -48,9 +48,6 @@ jobs:
         # must compile its native binding on the Windows runner.
         run: npm ci --no-audit --no-fund
 
-      - name: Prepare Windows migration reader
-        run: npm run prepare:agentd:migration-reader
-
       - name: Typecheck browser renderer
         run: npm run typecheck:renderer
 
