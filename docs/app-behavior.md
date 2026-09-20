@@ -500,7 +500,7 @@ Pass evidence:
 
 ## Audit Logs
 
-- Audit Logs show the local log path.
+- Electron Audit Logs show the local log path. Browser Audit Logs show the agentd-managed audit storage label and expose only the redacted NDJSON export.
 - Electron exposes a reveal/open-folder action. The Tauri native diagnostics screen can open only the fixed agentd data folder through a no-argument native command; browser mode shows an agentd-managed label and downloads a redacted NDJSON audit export instead of exposing a native database path.
 - The UI states logs are local and append-only.
 - In the browser product, audit entries are redacted before durable SQLite persistence in `agentd` and can be downloaded as NDJSON; browser UI never receives a native database path.
