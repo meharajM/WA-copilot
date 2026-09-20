@@ -181,11 +181,7 @@ mod tests {
             "/tmp/file"
         };
         assert!(parse_args(&[absolute_path.into(), "0".into()]).is_err());
-        assert!(parse_args(&[
-            absolute_path.into(),
-            (DEFAULT_MAX_BYTES + 1).to_string()
-        ])
-        .is_err());
+        assert!(parse_args(&[absolute_path.into(), (DEFAULT_MAX_BYTES + 1).to_string()]).is_err());
         assert_eq!(
             parse_args(&[absolute_path.into()]).unwrap().1,
             DEFAULT_MAX_BYTES

@@ -20,6 +20,8 @@ use std::env;
 #[cfg(windows)]
 use std::ffi::OsStr;
 #[cfg(windows)]
+use std::io;
+#[cfg(windows)]
 use std::process::Output;
 
 use agentd_api::{
@@ -493,7 +495,7 @@ fn windows_task_xml(executable: &str, user_id: &str) -> String {
     let executable = escape(executable);
     let user_id = escape(user_id);
     format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
+        r#"<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
     <Description>Starts the AICA native companion and local agentd service for the signed-in user.</Description>
@@ -533,6 +535,19 @@ fn windows_task_xml(executable: &str, user_id: &str) -> String {
 </Task>
 "#
     )
+}
+
+#[cfg(windows)]
+fn write_windows_task_xml(path: &Path, xml: &str) -> io::Result<()> {
+    // schtasks expects Task Scheduler XML in UTF-16LE with a BOM. Keep the
+    // declaration and byte representation aligned so registration works on
+    // clean Windows hosts as well as developer machines.
+    let mut bytes = Vec::with_capacity(2 + xml.len() * 2);
+    bytes.extend_from_slice(&[0xFF, 0xFE]);
+    for unit in xml.encode_utf16() {
+        bytes.extend_from_slice(&unit.to_le_bytes());
+    }
+    fs::write(path, bytes)
 }
 
 #[cfg(windows)]
@@ -640,7 +655,7 @@ fn install_windows_service(app: &AppHandle) -> Result<NativeServiceStatus, Strin
         .map_err(|_| "Agentd data directory unavailable".to_string())?;
     fs::create_dir_all(&data_dir).map_err(|_| "Agentd data directory unavailable".to_string())?;
     let xml_path = data_dir.join("aica-companion-task.xml");
-    fs::write(&xml_path, windows_task_xml(executable, &user_id))
+    write_windows_task_xml(&xml_path, &windows_task_xml(executable, &user_id))
         .map_err(|_| "Could not prepare Windows service registration".to_string())?;
     let task_name = OsStr::new(WINDOWS_COMPANION_TASK_NAME);
     let xml_path_arg = xml_path
@@ -998,7 +1013,8 @@ mod tests {
             .to_str()
             .expect("test executable path is Unicode");
         let user = current_windows_user().expect("Windows user identity");
-        std::fs::write(&xml_path, windows_task_xml(executable, &user)).expect("write task XML");
+        write_windows_task_xml(&xml_path, &windows_task_xml(executable, &user))
+            .expect("write task XML");
 
         let _ = run_schtasks(&[
             OsStr::new("/Delete"),
