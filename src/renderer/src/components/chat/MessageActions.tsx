@@ -3,7 +3,7 @@ import { RotateCcw, Brain, Check, X } from 'lucide-react'
 import { CopyButton } from '../primitives/CopyButton'
 import { IconButton } from '../primitives/IconButton'
 import { useChatStore } from '../../stores/chatStore'
-import electron from '../../lib/electron'
+import { executeToolCall } from '../../lib/mcp'
 
 interface MessageAction {
   type: string
@@ -39,11 +39,13 @@ export function MessageActions({ messageId, content, actions }: MessageActionsPr
       const msgIndex = session?.messages.findIndex(m => m.id === messageId) ?? -1;
       const userQuestion = msgIndex > 0 ? session?.messages[msgIndex - 1].content : 'General Inquiry';
 
-      // Call the RAG ingestion tool via the fallback mcp executor or directly if exposed
-      await electron.mcp.callTool('internal-rag', 'rag_save_correction', {
+      // Route through the runtime-aware executor so browser product uses agentd
+      // and Electron keeps its legacy internal-rag path.
+      const result = await executeToolCall('rag_save_correction', {
           question: userQuestion,
           answer: correction
       })
+      if (result.error) throw new Error(result.error)
 
       setIsSaved(true)
       setTimeout(() => setIsCorrecting(false), 2000)

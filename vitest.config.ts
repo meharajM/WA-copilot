@@ -6,6 +6,7 @@ export default defineConfig({
     environment: 'node',
     setupFiles: ['tests/setup.ts'],
     globals: true,
+    maxWorkers: 1,
     clearMocks: true,
     restoreMocks: true,
     testTimeout: 30_000,

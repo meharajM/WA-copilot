@@ -18,10 +18,13 @@
 import React, { useState, useCallback, useEffect } from "react";
 import {
     getAvailableProviders,
+    checkBrowserLLM,
     subscribeToWebLLMStatus,
     type WebLLMStatus,
 } from "../lib/llm";
 import { useSettingsStore } from "../stores/settingsStore";
+import { getBrowserAgentdClient } from "../lib/browser-agentd-client";
+import { isTauriRuntime } from "../lib/tauri-native-bridge";
 
 /** Shape of the LLM status returned by this hook. */
 export interface LLMStatus {
@@ -46,6 +49,7 @@ export interface LLMStatus {
  */
 export function useLLMStatus(currentView: string): { llmStatus: LLMStatus } {
     const settings = useSettingsStore();
+    const browserRuntime = typeof window !== 'undefined' && !window.electron && !isTauriRuntime();
 
     const [llmStatus, setLlmStatus] = useState<LLMStatus>({
         provider: null,
@@ -74,6 +78,45 @@ export function useLLMStatus(currentView: string): { llmStatus: LLMStatus } {
 
         const promise = (async () => {
             try {
+                if (browserRuntime) {
+                    const client = getBrowserAgentdClient();
+                    const saved = await client.getLlmSettings();
+                    const ollamaSettings = await client.getOllamaSettings();
+                    const preferred = saved.preferredProvider === 'auto'
+                        ? ['openai', 'openrouter', 'gemini', 'ollama'] as const
+                        : [saved.preferredProvider] as const;
+                    for (const provider of preferred) {
+                        if (provider === 'browser') {
+                            const result = await checkBrowserLLM();
+                            if (result.available && result.isLoaded) {
+                                setLlmStatus({ provider: `On-Device (${result.model || saved.openaiModel})`, available: true });
+                            } else if (result.isLoading) {
+                                setLlmStatus({ provider: 'On-Device (Loading...)', available: false });
+                            } else {
+                                setLlmStatus({ provider: null, available: false });
+                            }
+                            return;
+                        }
+                        if (provider === 'ollama') {
+                            const result = await client.testOllama();
+                            if (result.success) {
+                                setLlmStatus({ provider: `Ollama (${ollamaSettings.model})`, available: true });
+                                return;
+                            }
+                            continue;
+                        }
+                        const key = provider === 'openai' ? 'openai_api_key' : provider === 'gemini' ? 'gemini_api_key' : 'openrouter_api_key';
+                        const presence = await client.hasCredential(key);
+                        if (presence.success && presence.exists) {
+                            const model = provider === 'openai' ? saved.openaiModel : provider === 'gemini' ? saved.geminiModel : saved.openrouterModel;
+                            const label = provider === 'openai' ? 'OpenAI' : provider === 'gemini' ? 'Gemini' : 'OpenRouter';
+                            setLlmStatus({ provider: `${label} (${model})`, available: true });
+                            return;
+                        }
+                    }
+                    setLlmStatus({ provider: null, available: false });
+                    return;
+                }
                 // Build a plain settings object — we don't pass the full Zustand store
                 // to avoid coupling llm.ts to the store shape.
                 const settingsForLLM = {
@@ -147,6 +190,7 @@ export function useLLMStatus(currentView: string): { llmStatus: LLMStatus } {
         settings.openrouterApiKey,
         settings.openrouterModel,
         settings.browserModel,
+        browserRuntime,
         currentView,
     ]);
 
@@ -171,6 +215,10 @@ export function useLLMStatus(currentView: string): { llmStatus: LLMStatus } {
     // WebLLM fires events as the model downloads/loads. We update the status
     // immediately so the user sees "Loading 45%..." without waiting for the poll.
     useEffect(() => {
+        // In browser mode, the explicit on-device provider owns status updates.
+        // For auto/remote modes, do not let a stale WebLLM event overwrite the
+        // authenticated agentd provider status.
+        if (browserRuntime && settings.preferredProvider !== 'browser') return;
         const unsubscribe = subscribeToWebLLMStatus((status: WebLLMStatus) => {
             if (status.isLoaded && status.currentModel) {
                 setLlmStatus({ provider: `On-Device (${status.currentModel})`, available: true });
@@ -185,7 +233,7 @@ export function useLLMStatus(currentView: string): { llmStatus: LLMStatus } {
             }
         });
         return () => unsubscribe();
-    }, [checkLLM]);
+    }, [browserRuntime, checkLLM, settings.preferredProvider]);
 
     return { llmStatus };
 }

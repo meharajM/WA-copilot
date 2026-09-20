@@ -5,6 +5,8 @@
 import React, { useState } from 'react'
 import { useSettingsStore } from '../../../stores/settingsStore'
 import { testOllamaConnection } from '../../../lib/llm'
+import { getBrowserAgentdClient } from '../../../lib/browser-agentd-client'
+import { isTauriRuntime } from '../../../lib/tauri-native-bridge'
 import { ModelSelect } from '../../ModelSelect'
 import { ProviderCard } from './ProviderCard'
 
@@ -24,10 +26,10 @@ export function OllamaSettings({ available, models, checking, onRefresh }: Ollam
         setTesting(true)
         setTestResult(undefined)
         try {
-            const result = await testOllamaConnection(
-                settings.ollamaBaseUrl || 'http://localhost:11434',
-                settings.ollamaModel || 'qwen2.5:3b'
-            )
+            const browserRuntime = typeof window !== 'undefined' && !window.electron && !isTauriRuntime()
+            const result = browserRuntime
+                ? await getBrowserAgentdClient().testOllama()
+                : await testOllamaConnection(settings.ollamaBaseUrl || 'http://localhost:11434', settings.ollamaModel || 'qwen2.5:3b')
             if (result.success) {
                 setTestResult('Connection successful!')
                 await onRefresh()

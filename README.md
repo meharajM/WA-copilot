@@ -150,16 +150,20 @@ Mitigation:
 ## 5. System Architecture (Text Diagram)
 
 ```
-Owner Laptop
-├── Electron / Tauri Desktop App (main process)
-│   ├── WhatsApp Module (Baileys multi-device)
-│   ├── Local LLM Runner (Ollama or LM Studio API)
-│   ├── RAG Engine (ChromaDB local or LanceDB)
-│   ├── Anti-Ban Scheduler
-│   └── SQLite DB (chats, knowledge, logs)
-├── Local Web Dashboard (Vite + React, served on :3000)
-├── Background Service (node.exe or daemon)
+Windows owner machine
+├── Edge/Chrome browser (the only product workspace)
+│   └── React console served by the authenticated local agentd API
+├── agentd (independent Node service)
+│   ├── WhatsApp, email, LLM, RAG and autonomy workers
+│   ├── SQLite DB (chats, knowledge, logs)
+│   └── OS credential adapter (Windows Credential Manager)
+├── Tauri native companion (small/tray-first)
+│   └── Native dialogs, credentials, notifications and service supervision only
 └── Voice TTS (Edge TTS or Piper local)
+
+Electron remains an optional transition/fallback client until browser + agentd
+feature/data parity and Windows release gates are proven. It is not the target
+product UI.
 ```
 
 **Data Flow**  
@@ -169,15 +173,15 @@ Customer WhatsApp → Baileys event → RAG query → LLM prompt → reply → s
 
 ## 6. Recommended Tech Stack (2026 Stable)
 
-- **Runtime:** Node.js 22 + Electron 32 (or Tauri 2.0 for smaller binary)  
+- **Runtime:** Node.js 22 `agentd` + Tauri 2.0 native companion; Edge/Chrome owns the product UI
 - **WhatsApp:** Baileys (latest multi-device fork – https://github.com/WhiskeySockets/Baileys)  
 - **LLM Local:** Ollama (default) + Llama-3.2-3B / Phi-3 / Gemma-2-9B  
 - **Vector DB:** Chroma (local) or LanceDB (lighter)  
 - **Frontend Dashboard:** Vite + React + Tailwind + shadcn/ui  
 - **Database:** SQLite + Drizzle ORM  
 - **TTS:** Edge-TTS or Piper (offline)  
-- **Installer:** electron-builder (Windows .exe, Mac .dmg, Linux AppImage)  
-- **Packaging:** Single 120–180 MB executable
+- **Installer:** Tauri/Windows installer for the native companion and agentd service
+- **Packaging:** Small native companion plus independently supervised agentd; no bundled Chromium product shell
 
 **Optional Cloud Fallback (user controlled):**  
 Groq (fastest) or Anthropic – API key stored locally only.
@@ -188,22 +192,18 @@ Groq (fastest) or Anthropic – API key stored locally only.
 
 ```
 /wa-co-pilot-selfhosted
+├── agentd/                    # Independent local service and HTTP API
 ├── src/
-│   ├── main/                  # Electron main process
-│   │   ├── whatsapp/          # Baileys connection + events
-│   │   ├── rag/               # Chroma + document loader
-│   │   ├── llm/               # Ollama wrapper + prompt templates
-│   │   ├── anti-ban/          # Jitter + throttle engine
-│   │   ├── dashboard/         # Express local server
-│   │   └── summary/           # Daily voice + report generator
-│   ├── renderer/              # React dashboard UI
+│   ├── main/                  # Electron transition client (temporary fallback)
+│   ├── renderer/              # React product UI used by Edge/Chrome
 │   ├── shared/                # Types, prompts, vertical packs
 │   └── utils/
+├── src-tauri/                 # Native companion only; no product workspace
 ├── knowledge-base/            # Default JSON packs (HVAC.json, Clinic.json)
 ├── db/
 │   └── app.db                 # SQLite
 ├── public/                    # Icons, videos
-├── electron-builder.json
+├── tauri.conf.json
 ├── package.json
 ├── ollama-setup-guide.md
 └── RISK-DISCLAIMER.md         # Must show on launch

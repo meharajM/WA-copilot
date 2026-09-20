@@ -3,6 +3,9 @@ import { persist, createJSONStorage } from 'zustand/middleware'
 import { VOICE_CONFIG, LLM_CONFIG, STORAGE_KEYS } from '../lib/constants'
 import electron from '../lib/electron'
 import { getUserProfile } from '../lib/firebase'
+import { getBrowserAgentdClient } from '../lib/browser-agentd-client'
+import { isTauriRuntime } from '../lib/tauri-native-bridge'
+import type { ProductPreferences } from '../../../shared/native-bridge'
 
 export type Theme = 'dark' | 'light' | 'system'
 export type LLMProviderType = 'auto' | 'ollama' | 'openai' | 'gemini' | 'openrouter' | 'browser' | 'anthropic' | 'groq'
@@ -79,6 +82,7 @@ interface SettingsState {
     // Sync Actions
     setActiveUserId: (uid: string | null) => void
     loadRemoteSettings: (uid: string) => Promise<void>
+    loadAgentdSettings: () => Promise<void>
     hydrateSettings: (settings: Partial<SettingsState>) => void
     loadUserSecrets: (uid: string) => Promise<void>
     clearUserSecrets: () => void
@@ -116,6 +120,80 @@ const defaultSettings = {
     lastSyncTime: 0,
 }
 
+const isBrowserProduct = (): boolean => (
+    typeof window !== 'undefined' && !window.electron && !isTauriRuntime()
+)
+
+const isAgentdProvider = (provider: LLMProviderType): provider is 'auto' | 'openai' | 'openrouter' | 'ollama' | 'gemini' | 'browser' => (
+    provider === 'auto' || provider === 'openai' || provider === 'openrouter' || provider === 'ollama' || provider === 'gemini' || provider === 'browser'
+)
+
+const syncBrowserLlmSettings = (state: Pick<SettingsState, 'preferredProvider' | 'openaiModel' | 'geminiModel' | 'openrouterModel'>): void => {
+    if (!isBrowserProduct() || !isAgentdProvider(state.preferredProvider)) return
+    void getBrowserAgentdClient().saveLlmSettings({
+        preferredProvider: state.preferredProvider,
+        openaiModel: state.openaiModel,
+        geminiModel: state.geminiModel,
+        openrouterModel: state.openrouterModel,
+    }).catch((error) => console.warn('[Settings] Failed to persist browser LLM settings:', error))
+}
+
+const syncBrowserOllamaSettings = (state: Pick<SettingsState, 'ollamaModel' | 'ollamaBaseUrl'>): void => {
+    if (!isBrowserProduct()) return
+    void getBrowserAgentdClient().saveOllamaSettings({ model: state.ollamaModel, baseUrl: state.ollamaBaseUrl }).catch((error) => console.warn('[Settings] Failed to persist browser Ollama settings:', error))
+}
+
+const browserPreferencesFrom = (state: Pick<SettingsState, keyof ProductPreferences>): ProductPreferences => ({
+    theme: state.theme,
+    playwrightBrowser: state.playwrightBrowser,
+    playwrightHeadless: state.playwrightHeadless,
+    fileSystemSafeMode: state.fileSystemSafeMode,
+    memoryBackend: state.memoryBackend,
+    ttsEnabled: state.ttsEnabled,
+    ttsRate: state.ttsRate,
+    ttsPitch: state.ttsPitch,
+    ttsVoice: state.ttsVoice,
+    speechLang: state.speechLang,
+    offlineSpeech: state.offlineSpeech,
+    voskModel: state.voskModel,
+    browserModel: state.browserModel,
+})
+
+const syncBrowserPreferences = (state: SettingsState): void => {
+    if (!isBrowserProduct()) return
+    void getBrowserAgentdClient().saveProductPreferences(browserPreferencesFrom(state)).catch((error) => {
+        console.warn('[Settings] Failed to persist browser preferences:', error)
+    })
+}
+
+const createSettingsStorage = () => ({
+    getItem: async (name: string): Promise<string | null> => {
+        if (isBrowserProduct()) {
+            try {
+                const preferences = await getBrowserAgentdClient().getProductPreferences()
+                return JSON.stringify({ state: preferences, version: 0 })
+            } catch (error) {
+                console.warn('[Settings] Browser preferences unavailable:', error)
+                return null
+            }
+        }
+        const value = await electron.store.get(name)
+        return value ? JSON.stringify(value) : null
+    },
+    setItem: async (name: string, value: string): Promise<void> => {
+        if (isBrowserProduct()) {
+            const parsed = JSON.parse(value) as { state?: SettingsState }
+            if (parsed.state) await getBrowserAgentdClient().saveProductPreferences(browserPreferencesFrom(parsed.state))
+            return
+        }
+        await electron.store.set(name, JSON.parse(value))
+    },
+    removeItem: async (name: string): Promise<void> => {
+        if (isBrowserProduct()) return
+        await electron.store.delete(name)
+    },
+})
+
 // ... existing migration code ...
 
 export const useSettingsStore = create<SettingsState>()(
@@ -124,72 +202,92 @@ export const useSettingsStore = create<SettingsState>()(
             ...defaultSettings,
 
 
-            setTtsEnabled: (enabled) => set({ ttsEnabled: enabled }),
-            setTtsRate: (rate) => set({ ttsRate: rate }),
-            setTtsPitch: (pitch) => set({ ttsPitch: pitch }),
-            setTtsVoice: (voice) => set({ ttsVoice: voice }),
-            setSpeechLang: (lang) => set({ speechLang: lang }),
-            setOfflineSpeech: (enabled) => set({ offlineSpeech: enabled }),
-            setVoskModel: (model: string) => set({ voskModel: model }),
-            setPreferredProvider: (provider) => set({ preferredProvider: provider }),
-            setOllamaModel: (model) => set({ ollamaModel: model }),
-            setOllamaBaseUrl: (url) => set({ ollamaBaseUrl: url }),
+            setTtsEnabled: (enabled) => { set({ ttsEnabled: enabled }); syncBrowserPreferences({ ...get(), ttsEnabled: enabled }) },
+            setTtsRate: (rate) => { set({ ttsRate: rate }); syncBrowserPreferences({ ...get(), ttsRate: rate }) },
+            setTtsPitch: (pitch) => { set({ ttsPitch: pitch }); syncBrowserPreferences({ ...get(), ttsPitch: pitch }) },
+            setTtsVoice: (voice) => { set({ ttsVoice: voice }); syncBrowserPreferences({ ...get(), ttsVoice: voice }) },
+            setSpeechLang: (lang) => { set({ speechLang: lang }); syncBrowserPreferences({ ...get(), speechLang: lang }) },
+            setOfflineSpeech: (enabled) => { set({ offlineSpeech: enabled }); syncBrowserPreferences({ ...get(), offlineSpeech: enabled }) },
+            setVoskModel: (model: string) => { set({ voskModel: model }); syncBrowserPreferences({ ...get(), voskModel: model }) },
+            setPreferredProvider: (provider) => {
+                set({ preferredProvider: provider })
+                syncBrowserLlmSettings({ ...get(), preferredProvider: provider })
+            },
+            setOllamaModel: (model) => { set({ ollamaModel: model }); syncBrowserOllamaSettings({ ...get(), ollamaModel: model }) },
+            setOllamaBaseUrl: (url) => { set({ ollamaBaseUrl: url }); syncBrowserOllamaSettings({ ...get(), ollamaBaseUrl: url }) },
             setOpenaiApiKey: async (key) => {
                 set({ openaiApiKey: key })
+                if (isBrowserProduct()) return
                 const uid = get().activeUserId || undefined
                 // Store API key in encrypted secure storage
                 await electron.secure.set('openai_api_key', key || '', uid)
             },
             setOpenaiBaseUrl: async (url) => {
                 set({ openaiBaseUrl: url })
+                if (isBrowserProduct()) return
                 const uid = get().activeUserId
                 // Base URL is not sensitive, use regular store
                 const storeKey = uid ? `user_${uid}_openai_base_url` : 'openai_base_url'
                 await electron.store.set(storeKey, url)
             },
-            setOpenaiModel: (model) => set({ openaiModel: model }),
+            setOpenaiModel: (model) => {
+                set({ openaiModel: model })
+                syncBrowserLlmSettings({ ...get(), openaiModel: model })
+            },
             setGeminiApiKey: async (key) => {
                 set({ geminiApiKey: key })
+                if (isBrowserProduct()) return
                 const uid = get().activeUserId || undefined
                 // Store API key in encrypted secure storage
                 await electron.secure.set('gemini_api_key', key || '', uid)
             },
-            setGeminiModel: (model) => set({ geminiModel: model }),
+            setGeminiModel: (model) => {
+                set({ geminiModel: model })
+                syncBrowserLlmSettings({ ...get(), geminiModel: model })
+            },
             setOpenrouterApiKey: async (key) => {
                 set({ openrouterApiKey: key })
+                if (isBrowserProduct()) return
                 const uid = get().activeUserId || undefined
                 // Store API key in encrypted secure storage
                 await electron.secure.set('openrouter_api_key', key || '', uid)
             },
-            setOpenrouterModel: (model) => set({ openrouterModel: model }),
-            setBrowserModel: (model) => set({ browserModel: model }),
-            setTheme: (theme) => set({ theme }),
+            setOpenrouterModel: (model) => {
+                set({ openrouterModel: model })
+                syncBrowserLlmSettings({ ...get(), openrouterModel: model })
+            },
+            setBrowserModel: (model) => { set({ browserModel: model }); syncBrowserPreferences({ ...get(), browserModel: model }) },
+            setTheme: (theme) => { set({ theme }); syncBrowserPreferences({ ...get(), theme }) },
             setPlaywrightBrowser: async (browser) => {
                 set({ playwrightBrowser: browser })
+                if (isBrowserProduct()) { syncBrowserPreferences({ ...get(), playwrightBrowser: browser }); return }
                 // Also save to main process store for PlaywrightService to read
                 const browserValue = browser === 'auto' ? undefined : browser
                 await electron.store.set('mcpPlaywright', { browser: browserValue })
             },
             setPlaywrightHeadless: async (headless) => {
                 set({ playwrightHeadless: headless })
+                if (isBrowserProduct()) { syncBrowserPreferences({ ...get(), playwrightHeadless: headless }); return }
                 // Also save to main process store for PlaywrightService to read
                 const current = await electron.store.get<Record<string, unknown>>('mcpPlaywright') || {}
                 await electron.store.set('mcpPlaywright', { ...current, headless })
             },
             setFileSystemSafeMode: async (enabled) => {
                 set({ fileSystemSafeMode: enabled })
+                if (isBrowserProduct()) { syncBrowserPreferences({ ...get(), fileSystemSafeMode: enabled }); return }
                 // Save to main process store for FileSystemService to read
                 const current = await electron.store.get<Record<string, unknown>>('mcpFileSystem') || {}
                 await electron.store.set('mcpFileSystem', { ...current, safeMode: enabled })
             },
             setMemoryBackend: async (backend) => {
                 set({ memoryBackend: backend })
+                if (isBrowserProduct()) { syncBrowserPreferences({ ...get(), memoryBackend: backend }); return }
                 // Update main process store (triggers migration check if changed via UI, though usually handled by IPC)
                 // We store complete config structure
                 const current = await electron.store.get<Record<string, unknown>>('memory') || {}
                 await electron.store.set('memory', { ...current, backend })
             },
-            resetToDefaults: () => set(defaultSettings),
+            resetToDefaults: () => { set(defaultSettings); syncBrowserPreferences({ ...get(), ...defaultSettings }) },
 
             setActiveUserId: (uid) => set({ activeUserId: uid }),
 
@@ -202,8 +300,40 @@ export const useSettingsStore = create<SettingsState>()(
                 }))
             },
 
+            loadAgentdSettings: async () => {
+                if (!isBrowserProduct()) return
+                const client = getBrowserAgentdClient()
+                const [saved, ollama, preferences] = await Promise.all([client.getLlmSettings(), client.getOllamaSettings(), client.getProductPreferences()])
+                set({
+                    preferredProvider: saved.preferredProvider,
+                    openaiModel: saved.openaiModel,
+                    geminiModel: saved.geminiModel,
+                    openrouterModel: saved.openrouterModel,
+                    ollamaModel: ollama.model,
+                    ollamaBaseUrl: ollama.baseUrl,
+                    // Credential values are intentionally never read back from agentd.
+                    openaiApiKey: '',
+                    geminiApiKey: '',
+                    openrouterApiKey: '',
+                    ...preferences,
+                })
+            },
+
             loadUserSecrets: async (uid: string) => {
                 set({ activeUserId: uid })
+                // Browser credentials are owned by authenticated agentd and
+                // are intentionally write-only from the page. Do not fall
+                // through to the Electron secure-store bridge in Edge/Chrome.
+                // Provider routes resolve stored values inside agentd; the
+                // renderer keeps empty placeholders after sign-in.
+                if (isBrowserProduct()) {
+                    set({
+                        openaiApiKey: '',
+                        geminiApiKey: '',
+                        openrouterApiKey: '',
+                    })
+                    return
+                }
                 // Load scoped secrets from encrypted secure storage
                 const openaiResult = await electron.secure.get('openai_api_key', uid)
                 const geminiResult = await electron.secure.get('gemini_api_key', uid)
@@ -300,18 +430,13 @@ export const useSettingsStore = create<SettingsState>()(
         }),
         {
             name: STORAGE_KEYS.SETTINGS,
-            storage: createJSONStorage(() => ({
-                getItem: async (name: string): Promise<string | null> => {
-                    const value = await electron.store.get(name)
-                    return value ? JSON.stringify(value) : null
-                },
-                setItem: async (name: string, value: string): Promise<void> => {
-                    await electron.store.set(name, JSON.parse(value))
-                },
-                removeItem: async (name: string): Promise<void> => {
-                    await electron.store.delete(name)
-                },
-            })),
+            // Provider credentials stay in OS/agentd storage. Never persist them
+            // in renderer state (including browser localStorage).
+            partialize: (state) => {
+                const { openaiApiKey: _openaiApiKey, geminiApiKey: _geminiApiKey, openrouterApiKey: _openrouterApiKey, ...safeState } = state
+                return safeState
+            },
+            storage: createJSONStorage(() => createSettingsStorage()),
             // Force offlineSpeech to true in Electron after rehydration
             onRehydrateStorage: () => (state) => {
                 if (state && window.electron) {

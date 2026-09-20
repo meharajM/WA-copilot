@@ -85,7 +85,7 @@ export const VOICE_CONFIG = {
 // App Info
 export const APP_INFO = {
     NAME: 'AIConsumerAgent',
-    VERSION: '1.0.0',
+    VERSION: '1.0.1',
     CLIENT_ID: 'WA-CoPilot-Client',
 }
 

@@ -2,6 +2,7 @@
 
 // Vite environment variables
 interface ImportMetaEnv {
+    readonly VITE_TAURI_CHAT_FAKE?: string
     readonly VITE_FIREBASE_API_KEY?: string
     readonly VITE_FIREBASE_AUTH_DOMAIN?: string
     readonly VITE_FIREBASE_PROJECT_ID?: string
@@ -38,6 +39,12 @@ interface ElectronAPI {
         get: (key: string) => Promise<unknown>
         set: (key: string, value: unknown) => Promise<boolean>
         delete: (key: string) => Promise<boolean>
+    }
+
+    chat: {
+        loadSessions: () => Promise<{ success: boolean; sessions?: unknown[]; error?: string }>
+        saveSessionsWithMirror: (sessions: unknown[]) => Promise<{ success: boolean; error?: string }>
+        deleteSession: (id: string) => Promise<{ success: boolean; error?: string }>
     }
 
     shell: {
@@ -108,8 +115,20 @@ interface ElectronAPI {
     intelligence?: {
         getKnowledge: () => Promise<Array<{ id: number; file_path: string; file_name: string; created_at: string }>>
         deleteKnowledge: (id: number) => Promise<boolean>
-        getPersona: () => Promise<unknown>
-        updatePersona: (updates: Record<string, unknown>) => Promise<unknown>
+        getPersona: () => Promise<{
+            name: string
+            industry: string
+            tone: 'professional' | 'casual' | 'enthusiastic' | 'concise'
+            coreKnowledge: string[]
+            customRules?: string
+        }>
+        updatePersona: (updates: {
+            name?: string
+            industry?: string
+            tone?: 'professional' | 'casual' | 'enthusiastic' | 'concise'
+            coreKnowledge?: string[]
+            customRules?: string
+        }) => Promise<void>
         getLogs: (limit?: number) => Promise<{ success: boolean; logs?: Array<{ id: number; type: string; event: string; details?: string; timestamp?: string }>; error?: string }>
         getStats: () => Promise<{ success: boolean; stats?: { totalQueries: number; resolvedQueries: number; autonomyRate: number; trainingCount: number; learningCount: number }; error?: string }>
         logAccuracy: (payload: { event: string; details?: string }) => Promise<{ success: boolean; error?: string }>
@@ -216,10 +235,10 @@ interface ElectronAPI {
         onDeliveryStatus: (callback: (status: unknown) => void) => () => void
     }
     emailOAuth?: {
-        initialize: () => Promise<{ signedIn: boolean; email: string | null }>
-        signInGoogle: () => Promise<{ signedIn: boolean; email: string | null }>
+        initialize: () => Promise<{ signedIn: boolean; email: string | null; requiresReauthentication: boolean }>
+        signInGoogle: () => Promise<{ signedIn: boolean; email: string | null; requiresReauthentication: boolean }>
         signOut: () => Promise<{ success: boolean }>
-        getStatus: () => Promise<{ signedIn: boolean; email: string | null }>
+        getStatus: () => Promise<{ signedIn: boolean; email: string | null; requiresReauthentication: boolean }>
         getAccessToken: () => Promise<{ token: string | null }>
     }
 }

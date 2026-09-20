@@ -1,8 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-vi.mock('electron', () => ({
-  app: { getPath: () => '/tmp' }
+const { dataDir } = vi.hoisted(() => ({
+  dataDir: `/tmp/aica-email-channel-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
 }))
+
+vi.mock('electron', () => {
+  const fs = process.getBuiltinModule('node:fs')
+  fs.mkdirSync(dataDir, { recursive: true })
+  return { app: { getPath: () => dataDir } }
+})
 
 vi.mock('electron-store', () => ({
   default: class MockStore {

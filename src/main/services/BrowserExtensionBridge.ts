@@ -1,6 +1,8 @@
 import { createHash, timingSafeEqual } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import type { WhatsAppMessage } from '../whatsapp/WhatsAppService'
+import { isSameWhatsAppIdentity } from '../utils/whatsapp'
+import { allowsBrowserExtensionInbound } from './WhatsAppTransportPolicy'
 
 const MAX_BODY_BYTES = 256 * 1024
 const DEFAULT_PORT = 8790
@@ -12,6 +14,24 @@ export interface BrowserExtensionBridgeState {
   port: number
   lastStatus: string | null
   error: string | null
+}
+
+export interface BrowserExtensionIngressContext {
+  selectedTransport: unknown
+  phoneNumber?: string | null
+  workerNumber?: string | null
+}
+
+/**
+ * Extension ingress is explicit WhatsApp Web transport only. The owner identity
+ * is required so an unauthenticated/unknown local session cannot enqueue spoofed
+ * messages; owner echoes and messages addressed to another account are rejected.
+ */
+export function allowsBrowserExtensionMessage(message: WhatsAppMessage, context: BrowserExtensionIngressContext): boolean {
+  if (!allowsBrowserExtensionInbound(context.selectedTransport)) return false
+  const ownerIdentity = context.workerNumber || context.phoneNumber
+  if (!ownerIdentity || message.isFromMe || isSameWhatsAppIdentity(message.from, ownerIdentity)) return false
+  return !message.to || isSameWhatsAppIdentity(message.to, ownerIdentity)
 }
 
 export function normalizeExtensionMessage(value: unknown): WhatsAppMessage | null {
@@ -34,7 +54,10 @@ export class BrowserExtensionBridge {
   private server: Server | null = null
   private state: BrowserExtensionBridgeState = { status: 'disabled', port: configuredPort(), lastStatus: null, error: null }
 
-  constructor(private readonly onMessage: (message: WhatsAppMessage) => void) {}
+  constructor(
+    private readonly onMessage: (message: WhatsAppMessage) => void,
+    private readonly allowMessage: (message: WhatsAppMessage) => boolean = () => false,
+  ) {}
 
   async start(): Promise<BrowserExtensionBridgeState> {
     const token = (process.env.AICA_EXTENSION_BRIDGE_TOKEN || '').trim()
@@ -46,6 +69,12 @@ export class BrowserExtensionBridge {
     if (this.server) return this.getState()
     this.state = { ...this.state, status: 'connecting', error: null }
     this.server = createServer((request, response) => void this.handle(request, response, token))
+    // Loopback is still an untrusted local boundary: bound idle connections and headers
+    // so a client cannot hold the bridge open indefinitely before sending JSON.
+    this.server.requestTimeout = 10_000
+    this.server.headersTimeout = 5_000
+    this.server.keepAliveTimeout = 5_000
+    this.server.maxHeadersCount = 32
     try {
       await new Promise<void>((resolve, reject) => {
         this.server?.once('error', reject)
@@ -86,6 +115,9 @@ export class BrowserExtensionBridge {
     }
     const message = normalizeExtensionMessage(body.message ?? body)
     if (!message) { this.json(response, 400, { error: 'invalid_message' }); return }
+    let allowed = false
+    try { allowed = this.allowMessage(message) } catch { allowed = false }
+    if (!allowed) { this.json(response, 403, { accepted: false, error: 'extension_transport_not_enabled' }); return }
     this.onMessage(message)
     this.json(response, 202, { accepted: true, id: message.id })
   }

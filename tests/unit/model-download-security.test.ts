@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { isSha256Digest, ModelManager, sha256File, validateModelArchiveEntries } from '../../src/main/services/ModelManager'
+import { isSha256Digest, ModelManager, sha256File, validateExtractedModelTree, validateModelArchiveEntries } from '../../src/main/services/ModelManager'
 import { ModelServer } from '../../src/main/services/ModelServer'
 
 const servers: ModelServer[] = []
@@ -81,5 +81,28 @@ describe('model download security boundary', () => {
     expect(response.status).toBe(403)
     fs.rmSync(root, { recursive: true, force: true })
     fs.rmSync(secret, { force: true })
+  })
+
+  it('rejects symlinks and special entries before model promotion', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aica-model-stage-'))
+    const outside = path.join(root, 'outside.txt')
+    const model = path.join(root, 'model')
+    fs.mkdirSync(model)
+    fs.writeFileSync(outside, 'secret')
+    fs.writeFileSync(path.join(model, 'weights.bin'), 'weights')
+    fs.symlinkSync(outside, path.join(model, 'link'))
+    expect(() => validateExtractedModelTree(model)).toThrow('symlink or special entry')
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+
+  it('returns a client error for malformed percent-encoded model paths', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aica-model-'))
+    const server = new ModelServer(root)
+    servers.push(server)
+    const base = await server.start()
+    const response = await fetch(`${base}/%E0%A4%A`)
+    expect(response.status).toBe(400)
+    expect(await response.text()).toBe('Bad Request')
+    fs.rmSync(root, { recursive: true, force: true })
   })
 })

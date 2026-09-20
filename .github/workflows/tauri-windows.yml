@@ -1,0 +1,94 @@
+name: Tauri Windows
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/tauri-windows.yml'
+      - 'agentd/**'
+      - 'scripts/**'
+      - 'src-tauri/**'
+      - 'src/renderer/**'
+      - 'src/shared/**'
+      - 'tests/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'vite.tauri.config.ts'
+  workflow_dispatch:
+
+concurrency:
+  group: tauri-windows-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    # Cross-target Rust bundling can take more than 30 minutes on a cold
+    # Windows runner; native tests still run before this longer packaging gate.
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install JavaScript dependencies
+        # better-sqlite3 is part of the daemon/migration verification path and
+        # must compile its native binding on the Windows runner.
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck browser renderer
+        run: npm run typecheck:renderer
+
+      - name: Run browser and agentd tests
+        shell: pwsh
+        run: |
+          npx vitest run tests/unit --exclude tests/unit/email-channel-service.test.ts
+          $cjsTests = @(Get-ChildItem -Path tests/unit -Filter '*.test.cjs' | Select-Object -ExpandProperty FullName)
+          node --test $cjsTests
+
+      - name: Build browser bundle for native host tests
+        # The Tauri build script embeds ../dist even for `cargo test`, so
+        # prepare the browser-first product assets before compiling Rust.
+        run: npm run build:tauri:web
+
+      - name: Prepare Windows migration reader
+        run: npm run prepare:agentd:migration-reader
+
+      - name: Prepare Windows keyring helper
+        run: npm run prepare:agentd:keyring-helper
+
+      - name: Run Windows Credential Manager runtime smoke
+        run: node --test tests/unit/windows-keyring-runtime.test.cjs
+
+      - name: Prepare Windows agentd sidecar
+        run: npm run prepare:tauri:agentd
+
+      - name: Verify staged Tauri resources
+        run: node scripts/verify-tauri-resources.mjs --platform win32 --target-triple x86_64-pc-windows-msvc --sidecar-root src-tauri/sidecar --ui-root dist
+
+      - name: Run Windows native host tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc
+
+      - name: Build signed-input Windows bundle
+        run: npm run build:tauri:win
+
+      - name: Upload unsigned Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: aica-tauri-windows-${{ github.sha }}
+          if-no-files-found: error
+          path: |
+            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi

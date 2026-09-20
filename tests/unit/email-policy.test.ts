@@ -447,4 +447,18 @@ describe('createDraftResponse', () => {
 
     expect(draft1.id).not.toBe(draft2.id)
   })
+
+  it('accepts an event-scoped ID for retry-safe browser drafts', () => {
+    const policyDecision: EmailPolicyDecision = {
+      action: 'draft',
+      confidence: 0.7,
+      rationale: 'Test',
+      hasSensitiveTopic: false,
+      sensitiveTopics: [],
+    }
+
+    const draft = createDraftResponse('Response', policyDecision, { from: 'a@b.com', subject: 'Test' }, 'draft_email_42')
+
+    expect(draft.id).toBe('draft_email_42')
+  })
 })

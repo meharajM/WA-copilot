@@ -7,6 +7,8 @@ import { useSettingsStore } from '../../../stores/settingsStore'
 import { testOpenAIConnection } from '../../../lib/llm'
 import { ModelSelect } from '../../ModelSelect'
 import { ProviderCard } from './ProviderCard'
+import { getBrowserAgentdClient } from '../../../lib/browser-agentd-client'
+import { isTauriRuntime } from '../../../lib/tauri-native-bridge'
 
 interface OpenAISettingsProps {
     available?: boolean
@@ -37,15 +39,32 @@ export function OpenAISettings({
     const baseUrl = isOpenRouter ? 'https://openrouter.ai/api/v1' : (settings.openaiBaseUrl || 'https://api.openai.com/v1')
     const model = isOpenRouter ? settings.openrouterModel : settings.openaiModel
     const setModel = isOpenRouter ? settings.setOpenrouterModel : settings.setOpenaiModel
+    const browserRuntime = typeof window !== 'undefined' && !window.electron && !isTauriRuntime()
 
     async function handleTest() {
-        if (!apiKey) {
+        const canUseStoredBrowserCredential = browserRuntime && available === true
+        if (!apiKey && !canUseStoredBrowserCredential) {
             setTestResult('Error: Please enter an API key first')
             return
         }
         setTesting(true)
         setTestResult(undefined)
         try {
+            if (browserRuntime) {
+                const client = getBrowserAgentdClient()
+                const key = isOpenRouter ? 'openrouter_api_key' : 'openai_api_key'
+                if (apiKey) {
+                    const saved = await client.setCredential(key, apiKey)
+                    if (!saved.success) throw new Error(saved.error || 'Credential could not be stored')
+                }
+                const result = await client.testProvider(isOpenRouter ? 'openrouter' : 'openai')
+                if (!result.success) throw new Error(result.error || 'Connection failed')
+                setTestResult(`Connection successful! Found ${result.modelCount ?? 0} model(s).`)
+                // Keep secret values out of renderer state after the write completes.
+                setApiKey('')
+                await onRefresh()
+                return
+            }
             const result = await testOpenAIConnection(baseUrl, apiKey, model || (isOpenRouter ? 'anthropic/claude-3-haiku' : 'gpt-4o-mini'))
             if (result.success) {
                 let msg = 'Connection successful!'
@@ -95,7 +114,7 @@ export function OpenAISettings({
             }
             testLabel="Test Connection & Fetch Models"
             testing={testing}
-            testDisabled={testing || !apiKey}
+            testDisabled={testing || (!apiKey && !(browserRuntime && available === true))}
             onTest={handleTest}
             testResult={testResult}
         >
@@ -124,7 +143,7 @@ export function OpenAISettings({
             </div>
 
             {/* Base URL — only for OpenAI-compatible, not OpenRouter */}
-            {!isOpenRouter && (
+            {!isOpenRouter && !browserRuntime && (
                 <div>
                     <label className="block text-xs text-[var(--color-text-muted)] mb-1">Base URL</label>
                     <input
@@ -135,6 +154,9 @@ export function OpenAISettings({
                         className="w-full bg-[var(--color-input-bg)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-sm placeholder:text-[var(--color-text-dim)] text-[var(--color-text-primary)] focus:border-[var(--color-primary)] focus:outline-none"
                     />
                 </div>
+            )}
+            {!isOpenRouter && browserRuntime && (
+                <p className="text-xs text-[var(--color-text-dim)]">Browser workspace uses the fixed OpenAI endpoint through the local agentd service.</p>
             )}
 
             {/* Model */}

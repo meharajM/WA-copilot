@@ -34,7 +34,7 @@ async function loadChatWithMocks(availability: ProviderAvailability) {
   }))
 
   vi.doMock('../../src/renderer/src/lib/webllm', () => ({
-    getWebLLMStatus: async () => ({
+    getWebLLMStatus: () => ({
       isSupported: availability.browser?.available ?? false,
       isLoaded: availability.browser?.isLoaded ?? false,
       downloadedModels: [],
@@ -135,6 +135,22 @@ describe('LLM routing contracts', () => {
     expect(callOpenAI).toHaveBeenCalledTimes(1)
     expect(callOpenAI.mock.calls[0][5]).toBe(true)
     expect(response.provider).toBe('openrouter')
+  })
+
+  it('preferred browser routes through the local WebGPU provider', async () => {
+    const { chat, callBrowserLLM, callOllama } = await loadChatWithMocks({
+      browser: { available: true, isLoaded: true },
+      ollama: true,
+    })
+
+    const response = await chat([{ role: 'user', content: 'hello' }], [], {
+      preferredProvider: 'browser',
+      browserModel: 'Qwen2.5-1.5B-Instruct-q4f16_1-MLC',
+    })
+
+    expect(callBrowserLLM).toHaveBeenCalledTimes(1)
+    expect(callOllama).not.toHaveBeenCalled()
+    expect(response.provider).toBe('browser')
   })
 
   it('throws a clear error when no providers are available', async () => {

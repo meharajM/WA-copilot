@@ -19,6 +19,8 @@ import { useLogStore } from '../../stores/logStore'
 import { useChatStore } from '../../stores/chatStore'
 import { useWhatsAppStore } from '../../stores/whatsappStore'
 import electron from '../../lib/electron'
+import { isTauriRuntime } from '../../lib/tauri-native-bridge'
+import { getBrowserAgentdClient } from '../../lib/browser-agentd-client'
 
 import { VoiceButton } from './VoiceButton'
 import { TextArea } from './TextArea'
@@ -122,7 +124,10 @@ export function ChatInput({ onSubmit, disabled = false, onAbort }: ChatInputProp
   // Handle folder selection
   const handleSelectFolder = useCallback(async () => {
     try {
-      const selectedPath = await electron.app.selectFolder()
+      const browserRuntime = typeof window !== 'undefined' && !window.electron && !isTauriRuntime()
+      const selectedPath = browserRuntime && typeof (window as Window & { showDirectoryPicker?: () => Promise<{ name: string }> }).showDirectoryPicker === 'function'
+        ? `browser://workspace/${encodeURIComponent((await (window as unknown as { showDirectoryPicker: () => Promise<{ name: string }> }).showDirectoryPicker()).name)}`
+        : await electron.app.selectFolder()
       if (selectedPath) {
         setWorkspacePath(selectedPath)
         const {
@@ -209,11 +214,23 @@ export function ChatInput({ onSubmit, disabled = false, onAbort }: ChatInputProp
     const message = textInput.trim()
     const hasAttachments = attachments.length > 0
     if ((message || hasAttachments) && !disabled) {
-      // If WhatsApp mode is active and connected, also send via WhatsApp
-      if (whatsappEnabled && connectionState.status === 'connected' && message) {
+      // If WhatsApp mode is active, send through the selected transport.
+      const browserRuntime = typeof window !== 'undefined' && !window.electron && !isTauriRuntime()
+      if (whatsappEnabled && (browserRuntime || connectionState.status === 'connected') && message) {
         const targetNumber = useWhatsAppStore.getState().targetPhoneNumber
         if (targetNumber) {
-          electron.whatsapp.sendMessage(targetNumber, message).catch(console.error)
+          const send = browserRuntime
+            ? getBrowserAgentdClient().sendWhatsAppText(targetNumber, message)
+            : electron.whatsapp.sendMessage(targetNumber, message)
+          send.catch((error) => {
+            console.error('Failed to send WhatsApp message:', error)
+            addLog({
+              eventType: 'ERROR',
+              sessionId: activeSessionId || 'unknown',
+              component: 'ChatInput',
+              details: { error: error instanceof Error ? error.message : String(error) },
+            })
+          })
         }
       }
       onSubmit(message, attachments, isHeadless)
@@ -221,7 +238,7 @@ export function ChatInput({ onSubmit, disabled = false, onAbort }: ChatInputProp
       setAttachments([])
       resetTranscript()
     }
-  }, [textInput, attachments, disabled, onSubmit, resetTranscript, isHeadless, whatsappEnabled, connectionState.status])
+  }, [textInput, attachments, disabled, onSubmit, resetTranscript, isHeadless, whatsappEnabled, connectionState.status, addLog, activeSessionId])
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {

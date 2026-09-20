@@ -64,9 +64,17 @@ export class ModelServer {
             return
         }
 
-        // Critical Fix: Ensure no accidental spaces in URL parsing
-        const requestUrl = new URL(req.url, 'http://127.0.0.1')
-        const pathname = decodeURIComponent(requestUrl.pathname)
+        // Critical Fix: Ensure no accidental spaces in URL parsing. Malformed
+        // percent escapes must become a client error, not an uncaught handler throw.
+        let pathname: string
+        try {
+            const requestUrl = new URL(req.url, 'http://127.0.0.1')
+            pathname = decodeURIComponent(requestUrl.pathname)
+        } catch {
+            res.statusCode = 400
+            res.end('Bad Request')
+            return
+        }
 
         if (!pathname.startsWith('/models/')) {
             res.statusCode = 404

@@ -15,6 +15,7 @@ export function CommandPalette({ onViewChange }: CommandPaletteProps) {
   const { clearMessages, toggleSidebar } = useChatStore();
   const { connectionState, openDialog, setWhatsAppEnabled } = useWhatsAppStore();
   const isWhatsAppConnected = connectionState.status === 'connected';
+  const modifier = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform) ? 'Cmd' : 'Ctrl';
 
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
@@ -81,7 +82,7 @@ export function CommandPalette({ onViewChange }: CommandPaletteProps) {
                   >
                     <Trash2 size={16} />
                     <span>Clear Chat</span>
-                    <span className="ml-auto text-xs opacity-50 font-mono">Cmd+Del</span>
+                    <span className="ml-auto text-xs opacity-50 font-mono">{modifier}+Del</span>
                   </Command.Item>
                 </Command.Group>
 
@@ -95,7 +96,7 @@ export function CommandPalette({ onViewChange }: CommandPaletteProps) {
                   >
                     <Layout size={16} />
                     <span>Toggle Sidebar</span>
-                    <span className="ml-auto text-xs opacity-50 font-mono">Cmd+B</span>
+                    <span className="ml-auto text-xs opacity-50 font-mono">{modifier}+B</span>
                   </Command.Item>
                   <Command.Item
                     onSelect={() => {
@@ -106,7 +107,7 @@ export function CommandPalette({ onViewChange }: CommandPaletteProps) {
                   >
                     <Search size={16} />
                     <span>MCP Connections</span>
-                    <span className="ml-auto text-xs opacity-50 font-mono">Cmd+K</span>
+                    <span className="ml-auto text-xs opacity-50 font-mono">{modifier}+K</span>
                   </Command.Item>
                   <Command.Item
                     onSelect={() => {
@@ -117,7 +118,7 @@ export function CommandPalette({ onViewChange }: CommandPaletteProps) {
                   >
                     <Settings size={16} />
                     <span>Settings</span>
-                    <span className="ml-auto text-xs opacity-50 font-mono">Cmd+,</span>
+                    <span className="ml-auto text-xs opacity-50 font-mono">{modifier}+,</span>
                   </Command.Item>
                 </Command.Group>
 

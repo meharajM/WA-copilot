@@ -40,8 +40,15 @@ export function readSecureSecret(key: string, userId?: string): string | null {
   if (!isAllowedSecretKey(key)) return null;
   const stored = secretStore.get(getUserSecretKey(key, userId));
   if (!stored) return null;
-  if (!safeStorage.isEncryptionAvailable()) return stored;
-  try { return safeStorage.decryptString(Buffer.from(stored, "base64")); } catch { return stored; }
+  // Never treat an Electron-store value as plaintext. If safeStorage is
+  // unavailable, defer use until the OS-backed encryption service is ready.
+  if (!safeStorage.isEncryptionAvailable()) return null;
+  try { return safeStorage.decryptString(Buffer.from(stored, "base64")); } catch {
+    // A value that cannot be decrypted may be legacy plaintext or ciphertext
+    // from another profile. Preserve it for explicit owner migration/recovery,
+    // but never return or log it.
+    return null;
+  }
 }
 
 export function registerSecureHandlers(): void {
@@ -119,16 +126,14 @@ export function registerSecureHandlers(): void {
       const buffer = Buffer.from(stored, "base64");
       const decrypted = safeStorage.decryptString(buffer);
       return { success: true, value: decrypted, encrypted: true };
-    } catch (error) {
-      console.error("[Secure] Decryption failed:", error);
-      // Old versions could persist plaintext. Remove any undecryptable value so
-      // it cannot be silently accepted as a secret or remain on disk.
-      secretStore.delete(storeKey);
+    } catch {
+      // Preserve undecryptable source bytes for explicit owner migration or
+      // recovery. Never return or log them; caller must reauthenticate.
       return {
         success: false,
         value: null,
         encrypted: false,
-        error: "Stored secret was not securely encrypted and has been removed",
+        error: "Stored secret could not be decrypted; reauthentication required",
       };
     }
   });

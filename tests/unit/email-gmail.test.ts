@@ -3,6 +3,7 @@ import {
   buildGmailQuery,
   decodeGmailBase64,
   extractGmailBody,
+  extractGmailAttachments,
   toInboundGmailMessage,
 } from '../../src/main/services/email-gmail'
 
@@ -109,5 +110,24 @@ describe('toInboundGmailMessage', () => {
       references: '<root@example.com>',
       isFromMe: true,
     })
+  })
+
+  it('preserves bounded Gmail attachment metadata without downloading bytes', () => {
+    const payload = {
+      mimeType: 'multipart/mixed',
+      parts: [
+        { filename: 'guide.pdf', mimeType: 'application/pdf', body: { attachmentId: 'att-pdf', size: 3 } },
+        { filename: 'guide.pdf', mimeType: 'application/pdf', body: { attachmentId: 'att-pdf', size: 3 } },
+        { filename: 'notes.txt', mimeType: 'text/plain', body: { attachmentId: 'att-text', size: 12 } },
+      ],
+    }
+    expect(extractGmailAttachments(payload)).toEqual([
+      { id: 'att-pdf', name: 'guide.pdf', mimeType: 'application/pdf', size: 3 },
+      { id: 'att-text', name: 'notes.txt', mimeType: 'text/plain', size: 12 },
+    ])
+    expect(toInboundGmailMessage({ id: 'gmail-attachments', payload: { ...payload, headers: [{ name: 'From', value: 'sender@example.com' }], parts: payload.parts } })?.attachments).toEqual([
+      { id: 'att-pdf', name: 'guide.pdf', mimeType: 'application/pdf', size: 3 },
+      { id: 'att-text', name: 'notes.txt', mimeType: 'text/plain', size: 12 },
+    ])
   })
 })

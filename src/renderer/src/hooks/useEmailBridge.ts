@@ -1,8 +1,12 @@
 import { useEffect } from 'react'
-import electron from '../lib/electron'
-import { useEmailStore } from '../stores/emailStore'
+import electron, { isElectron } from '../lib/electron'
+import { flushEmailSettingsPersistence, useEmailStore } from '../stores/emailStore'
+import { useChatStore, type ChatSession } from '../stores/chatStore'
 import { buildEmailRuntimeConfig } from '../lib/email-runtime'
-import { normalizeEmailAddress, type EmailMessage } from '../lib/email-integration'
+import { generateEmailSessionKey, generateEmailSessionTitle, convertEmailToLLMMessage, normalizeEmailAddress, type EmailMessage } from '../lib/email-integration'
+import { BrowserAgentdError, getBrowserAgentdClient, type BrowserEmailInboundEvent } from '../lib/browser-agentd-client'
+import { isTauriRuntime } from '../lib/tauri-native-bridge'
+import type { ChatSession as AgentdChatSession } from '../../../shared/chat-protocol'
 
 interface EmailConnectionState {
   status: 'disconnected' | 'connecting' | 'connected' | 'error'
@@ -28,11 +32,109 @@ export function dispatchInboundEmailToAgent(email: EmailMessage): boolean {
   return true
 }
 
+const isBrowserProduct = (): boolean => typeof window !== 'undefined' && !window.electron && !isTauriRuntime()
+
+const stableEmailSessionId = (key: string): string => {
+  // FNV-1a keeps deterministic thread IDs within agentd's bounded ID grammar.
+  let hash = 2166136261
+  for (let index = 0; index < key.length; index += 1) hash = Math.imul(hash ^ key.charCodeAt(index), 16777619)
+  return `email_${(hash >>> 0).toString(16)}`
+}
+
+const toRendererSession = (session: AgentdChatSession): ChatSession => ({
+  id: session.id,
+  title: session.title,
+  createdAt: session.createdAt,
+  updatedAt: session.updatedAt,
+  status: session.status,
+  ...(session.channel ? { channel: session.channel as ChatSession['channel'] } : {}),
+  ...(session.contactId ? { contact_id: session.contactId } : {}),
+  ...(session.threadId ? { thread_id: session.threadId } : {}),
+  ...(session.workspacePath ? { workspacePath: session.workspacePath } : {}),
+  ...(session.topic ? { topic: session.topic } : {}),
+  messages: session.messages.map((message) => ({
+    id: message.id,
+    role: message.role,
+    content: message.content,
+    timestamp: message.timestamp,
+    ...(message.attachments?.length ? { attachments: message.attachments.map((attachment) => ({ name: attachment.name, path: '', type: attachment.type })) } : {}),
+  })),
+})
+
+const ingestBrowserInboundEmail = async (event: BrowserEmailInboundEvent): Promise<{ email: EmailMessage; content: string; alreadyHandled: boolean }> => {
+  const payload = event.payload
+  const email: EmailMessage = {
+    id: event.providerEventId,
+    from: payload.from,
+    to: payload.to,
+    subject: payload.subject,
+    body: payload.body,
+    bodyType: payload.bodyType,
+    timestamp: payload.timestamp,
+    isFromMe: payload.isFromMe === true,
+    ...(payload.messageId ? { messageId: payload.messageId } : {}),
+    ...(payload.inReplyTo ? { inReplyTo: payload.inReplyTo } : {}),
+    ...(payload.references ? { references: payload.references } : {}),
+    ...(payload.attachments?.length ? {
+      attachments: payload.attachments.map((attachment) => ({
+        filename: attachment.name || attachment.id,
+        contentType: attachment.mimeType || 'application/octet-stream',
+        size: attachment.size || 0,
+      })),
+    } : {}),
+  }
+  const sessionKey = generateEmailSessionKey(email)
+  let sessionId = stableEmailSessionId(sessionKey.key)
+  const client = getBrowserAgentdClient()
+  const sessions = await client.loadSessions()
+  const session = sessions.find((candidate) => candidate.id === sessionId)
+    || sessions.find((candidate) => candidate.channel === 'email' && candidate.contactId === sessionKey.sender && candidate.threadId === sessionKey.threadId)
+  if (!session) {
+    await client.createSession(sessionId, generateEmailSessionTitle(email), undefined, { channel: 'email', contactId: sessionKey.sender, threadId: sessionKey.threadId })
+  } else {
+    sessionId = session.id
+  }
+  const llmMessage = convertEmailToLLMMessage(email)
+  const content = typeof llmMessage.content === 'string'
+    ? llmMessage.content
+    : llmMessage.content.map((part) => 'text' in part ? part.text : '[Attachment]').join('\n')
+  try {
+    await client.appendMessage(sessionId, {
+      id: `email_${event.id}`,
+      role: 'user',
+      content,
+      timestamp: email.timestamp,
+      ...(email.attachments?.length ? {
+        attachments: email.attachments.map((attachment) => ({
+          name: attachment.filename,
+          type: attachment.contentType,
+          size: attachment.size,
+        })),
+      } : {}),
+    })
+  } catch (error) {
+    if (!(error instanceof BrowserAgentdError) || error.status !== 409) throw error
+  }
+  const refreshed = await client.loadSessions()
+  const activeSessionId = useChatStore.getState().activeSessionId
+  useChatStore.setState({
+    sessions: refreshed.map(toRendererSession),
+    activeSessionId: activeSessionId && refreshed.some((candidate) => candidate.id === activeSessionId) ? activeSessionId : sessionId,
+  })
+  // A completed generation alone is not enough to acknowledge the event: the
+  // confidence policy may still need to persist a draft or send it. The
+  // deterministic browser draft id is the durable completion marker for both
+  // review and delivery paths.
+  const durableDrafts = await client.listEmailDrafts()
+  return { email, content, alreadyHandled: durableDrafts.some((draft) => draft.id === `draft_email_${event.id}`) }
+}
+
 export function useEmailBridge(): void {
   const config = useEmailStore((s) => s.config)
   const setConnectionState = useEmailStore((s) => s.setConnectionState)
 
   useEffect(() => {
+    if (!isElectron()) return
     let cancelled = false
     electron.email.getState().then((state) => {
       if (!cancelled) {
@@ -43,6 +145,71 @@ export function useEmailBridge(): void {
   }, [setConnectionState])
 
   useEffect(() => {
+    if (!isBrowserProduct()) return
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const poll = async () => {
+      if (cancelled) return
+      // Enable/Auto-Reply toggles persist through an async agentd queue. Do
+      // not report connected or claim events until that mutation is durable.
+      await flushEmailSettingsPersistence()
+      if (cancelled) return
+      if (!config.enabled) {
+        setConnectionState({ status: 'disconnected', error: null, lastSyncAt: null, unreadCount: 0 })
+      } else {
+        try {
+          const client = getBrowserAgentdClient()
+          let processed = 0
+          if (config.autoReplyMode) {
+            const events = await client.claimEmailInbound(50)
+            for (const event of events) {
+              const hydrated = await ingestBrowserInboundEmail(event)
+              if (!hydrated.alreadyHandled) {
+                // The product hook owns generation/policy execution. It reports
+                // completion back through the event detail so the daemon event is
+                // acknowledged only after the response is durably handled.
+                await new Promise<void>((resolve, reject) => {
+                  let handedOff = false
+                  const completion = (promise: Promise<void>) => {
+                    handedOff = true
+                    promise.then(resolve, reject)
+                  }
+                  window.dispatchEvent(new CustomEvent('app:submit-message', {
+                    detail: {
+                      content: hydrated.content,
+                      emailMessage: hydrated.email,
+                      emailAlreadyHydrated: true,
+                      emailGenerationRequestId: `email_${event.id}`,
+                      emailDraftId: `draft_email_${event.id}`,
+                      onComplete: completion,
+                    },
+                  }))
+                  if (!handedOff) reject(new Error('Browser email agent is unavailable'))
+                })
+              }
+              // Acknowledge only after durable session/message hydration. If the
+              // generation or draft/send policy fails, daemon keeps event queued
+              // for retry after reload.
+              await client.acknowledgeEmailInbound([event.id])
+              processed += 1
+            }
+          }
+          if (!cancelled) setConnectionState({ status: 'connected', error: config.autoReplyMode ? null : 'Inbound events are stored; enable Auto-Reply to create email sessions.', lastSyncAt: Date.now(), unreadCount: processed })
+        } catch (error) {
+          if (!cancelled) setConnectionState({ status: 'error', error: error instanceof Error ? error.message : 'Browser email inbox unavailable', lastSyncAt: null, unreadCount: 0 })
+        }
+      }
+      if (!cancelled) timer = setTimeout(() => void poll(), Math.max(30_000, config.pollingIntervalSeconds * 1000))
+    }
+    void poll()
+    return () => {
+      cancelled = true
+      if (timer) clearTimeout(timer)
+    }
+  }, [config.enabled, config.autoReplyMode, config.pollingIntervalSeconds, setConnectionState])
+
+  useEffect(() => {
+    if (!isElectron()) return
     const unsubConnection = electron.email.onConnectionChange((state) => {
       setConnectionState(state as EmailConnectionState)
     })
@@ -77,6 +244,7 @@ export function useEmailBridge(): void {
 
   useEffect(() => {
     const run = async () => {
+      if (!isElectron()) return
       console.log('[EmailBridge] run', {
         enabled: config.enabled,
         provider: config.provider,
@@ -98,7 +266,9 @@ export function useEmailBridge(): void {
       if (wantsGmailOAuth && !oauthStatus.signedIn) {
         setConnectionState({
           status: 'error',
-          error: 'Gmail is set to Google sign-in, but the Google account is not connected.',
+          error: oauthStatus.requiresReauthentication
+            ? 'Gmail authorization expired or was revoked. Sign in with Google again.'
+            : 'Gmail is set to Google sign-in, but the Google account is not connected.',
           lastSyncAt: null,
           unreadCount: 0
         })

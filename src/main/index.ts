@@ -7,17 +7,26 @@ import { setupIpcHandlers } from './ipc'
 import { McpProcessManager } from './services/McpProcessManager'
 import { emailChannelService } from './services/EmailChannelService'
 import { autonomousSupervisor } from './services/AutonomousSupervisor'
+import { whatsappService } from './whatsapp/WhatsAppService'
 import { whatsAppCloudWebhookServer } from './services/WhatsAppCloudWebhookServer'
 import { MetaWebhookServer } from './services/MetaWebhookServer'
 import type { MetaMessagingChannel } from './services/MetaMessaging'
 import { XWebhookServer } from './services/XWebhookServer'
 import { shouldAutoResume } from './services/AutonomyPolicy'
-import { BrowserExtensionBridge } from './services/BrowserExtensionBridge'
+import { allowsBrowserExtensionMessage, BrowserExtensionBridge } from './services/BrowserExtensionBridge'
+import Store from 'electron-store'
 import { isSafeExternalUrl } from './utils/external-url'
 
 const metaWebhookServer = new MetaWebhookServer(message => autonomousSupervisor.onMetaMessage(message), lead => autonomousSupervisor.recordMetaLead(lead), update => autonomousSupervisor.onDeliveryUpdate(update))
 const xWebhookServer = new XWebhookServer(message => autonomousSupervisor.onMetaMessage(message))
-const browserExtensionBridge = new BrowserExtensionBridge(message => autonomousSupervisor.onMessage(message))
+const extensionSettings = new Store<Record<string, unknown>>({ name: 'aica-store', defaults: {} }) as Store<Record<string, unknown>> & { get: (key: string) => unknown }
+const browserExtensionBridge = new BrowserExtensionBridge(
+    message => autonomousSupervisor.onMessage(message),
+    message => allowsBrowserExtensionMessage(message, {
+        selectedTransport: process.env.WHATSAPP_TRANSPORT || extensionSettings.get('whatsapp_transport'),
+        ...whatsappService.getConnectionState(),
+    }),
+)
 autonomousSupervisor.attachExtensionBridge(browserExtensionBridge)
 
 

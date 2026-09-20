@@ -92,7 +92,7 @@ async function callBrowserLLM(
     // Check if model is loaded
     if (!status.isLoaded) {
       console.log('[WebLLM] Model not loaded, attempting to load...');
-      await loadWebLLMModel();
+      await loadWebLLMModel(settings?.browserModel);
     }
 
     // Don't pass tools to WebLLM - the system prompt already contains tool definitions

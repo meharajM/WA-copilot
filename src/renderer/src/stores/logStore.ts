@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { getBrowserAgentdClient } from '../lib/browser-agentd-client'
 
 export type LogEventType =
     | 'SYSTEM_INIT'      // App startup
@@ -32,10 +33,10 @@ interface LogState {
     addLog: (entry: Omit<CorporateLogEntry, 'timestamp'>) => Promise<void>
     getLogPath: () => Promise<string>
     openLogFolder: () => Promise<void>
+    downloadAuditLog: () => Promise<void>
 }
 
-// Global reference to electron API (defined in preload)
-const electron = (window as unknown as { electron: { logs: { add: (e: CorporateLogEntry) => Promise<void>; getPath: () => Promise<string>; openFolder: () => Promise<void> } } }).electron
+const isBrowserProduct = (): boolean => typeof window !== 'undefined' && !window.electron
 
 // Keys to scrub from logs
 const SENSITIVE_KEYS = [
@@ -67,8 +68,6 @@ function sanitize(obj: unknown): unknown {
 
 export const useLogStore = create<LogState>(() => ({
     addLog: async (entry) => {
-        if (!electron?.logs) return
-
         // Deep sanitize the details object to prevent credential leakage
         const sanitizedDetails = sanitize(entry.details)
 
@@ -78,19 +77,38 @@ export const useLogStore = create<LogState>(() => ({
             timestamp: new Date().toISOString(),
         }
 
-        // Fire and forget - don't block the UI for logging
-        electron.logs.add(fullEntry).catch((err: unknown) =>
-            console.error('Failed to persist log:', err)
+        if (isBrowserProduct()) {
+            // Fire and forget - don't block the UI for logging.
+            void getBrowserAgentdClient().appendAuditLog(fullEntry as unknown as Record<string, unknown>).catch((err: unknown) =>
+                console.error('Failed to persist browser audit log:', err),
+            )
+            return
+        }
+        const electron = window.electron
+        if (electron?.logs) void electron.logs.add(fullEntry).catch((err: unknown) =>
+            console.error('Failed to persist log:', err),
         )
     },
 
     getLogPath: async () => {
-        if (!electron?.logs) return ''
-        return await electron.logs.getPath()
+        if (isBrowserProduct()) return 'Managed by local agentd (audit database)'
+        return window.electron?.logs ? await window.electron.logs.getPath() : ''
     },
 
     openLogFolder: async () => {
-        if (!electron?.logs) return
-        await electron.logs.openFolder()
-    }
+        if (isBrowserProduct()) return
+        if (window.electron?.logs) await window.electron.logs.openFolder()
+    },
+
+    downloadAuditLog: async () => {
+        if (!isBrowserProduct()) return
+        const entries = await getBrowserAgentdClient().listAuditLogs(500)
+        const blob = new Blob([entries.map((entry) => JSON.stringify(entry)).join('\n')], { type: 'application/x-ndjson' })
+        const url = URL.createObjectURL(blob)
+        const anchor = document.createElement('a')
+        anchor.href = url
+        anchor.download = `aica-audit-${new Date().toISOString().slice(0, 10)}.ndjson`
+        anchor.click()
+        URL.revokeObjectURL(url)
+    },
 }))

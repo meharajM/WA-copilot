@@ -47,7 +47,7 @@ vi.mock('electron-store', () => ({
   },
 }))
 
-import { registerSecureHandlers } from '../../src/main/ipc/secure'
+import { readSecureSecret, registerSecureHandlers } from '../../src/main/ipc/secure'
 
 function handler(channel: string): (...args: any[]) => any {
   const registered = mocks.handlers.get(channel)
@@ -92,7 +92,24 @@ describe('secure storage IPC', () => {
     expect(mocks.decryptString).not.toHaveBeenCalled()
   })
 
-  it('removes legacy plaintext instead of returning it', async () => {
+  it('never returns raw aica-secrets bytes through the main-process reader', () => {
+    mocks.values.set('openai_api_key', 'ciphertext-or-legacy-plaintext')
+    mocks.isEncryptionAvailable.mockReturnValue(false)
+
+    expect(readSecureSecret('openai_api_key')).toBeNull()
+    expect(mocks.decryptString).not.toHaveBeenCalled()
+  })
+
+  it('preserves undecryptable aica-secrets bytes without returning them', () => {
+    mocks.values.set('openai_api_key', 'not-valid-ciphertext')
+    mocks.isEncryptionAvailable.mockReturnValue(true)
+    mocks.decryptString.mockImplementation(() => { throw new Error('not encrypted') })
+
+    expect(readSecureSecret('openai_api_key')).toBeNull()
+    expect(mocks.values.has('openai_api_key')).toBe(true)
+  })
+
+  it('preserves legacy plaintext instead of returning it', async () => {
     mocks.values.set('user_alice_openai_api_key', 'legacy-plaintext')
     mocks.isEncryptionAvailable.mockReturnValue(true)
     mocks.decryptString.mockImplementation(() => {
@@ -105,10 +122,9 @@ describe('secure storage IPC', () => {
       success: false,
       value: null,
       encrypted: false,
-      error: 'Stored secret was not securely encrypted and has been removed',
+      error: 'Stored secret could not be decrypted; reauthentication required',
     })
-    expect(mocks.delete).toHaveBeenCalledWith('user_alice_openai_api_key')
-    expect(mocks.values.has('user_alice_openai_api_key')).toBe(false)
+    expect(mocks.values.has('user_alice_openai_api_key')).toBe(true)
   })
 
   it('stores and retrieves encrypted secrets normally', async () => {

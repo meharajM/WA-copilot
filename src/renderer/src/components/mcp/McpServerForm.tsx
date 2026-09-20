@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from "react";
 import { Server, Terminal, Globe, Plus, Trash2 } from "lucide-react";
 import { MCPServer } from "../../stores/mcpStore";
+import { isElectron } from "../../lib/electron";
+import { isTauriRuntime } from "../../lib/tauri-native-bridge";
 
 interface McpServerFormProps {
   editingServer: MCPServer | null;
@@ -8,11 +10,17 @@ interface McpServerFormProps {
   onCancel: () => void;
 }
 
-// Default values for Sequential Thinking server when creating new
-const DEFAULT_SEQUENTIAL_THINKING = {
+// Keep Electron's existing starter server while browser mode defaults to the
+// first package accepted by the supervised agentd worker.
+const DEFAULT_ELECTRON_SERVER = {
   name: "sequential-thinking",
   command: "npx",
   args: "-y @modelcontextprotocol/server-sequential-thinking",
+};
+const DEFAULT_BROWSER_SERVER = {
+  name: "markitdown",
+  command: "uvx",
+  args: "markitdown-mcp[all]",
 };
 
 export function McpServerForm({
@@ -20,17 +28,19 @@ export function McpServerForm({
   onSubmit, 
   onCancel,
 }: McpServerFormProps) {
+  const browserRuntime = typeof window !== 'undefined' && !isElectron() && !isTauriRuntime();
+  const defaultServer = browserRuntime ? DEFAULT_BROWSER_SERVER : DEFAULT_ELECTRON_SERVER;
   const [name, setName] = useState(
-    editingServer?.name || DEFAULT_SEQUENTIAL_THINKING.name
+    editingServer?.name || defaultServer.name
   );
-  const [serverType, setServerType] = useState<"stdio" | "sse">(
+  const [serverType, setServerType] = useState<"stdio" | "sse" | "http">(
     (editingServer?.type as any) || "stdio"
   );
   const [command, setCommand] = useState(
-    editingServer?.command || DEFAULT_SEQUENTIAL_THINKING.command
+    editingServer?.command || defaultServer.command
   );
   const [args, setArgs] = useState(
-    editingServer?.args?.join(" ") || DEFAULT_SEQUENTIAL_THINKING.args
+    editingServer?.args?.join(" ") || defaultServer.args
   );
   const [url, setUrl] = useState(editingServer?.url || "");
   // Using explicit Record<string, string> to match the type
@@ -42,6 +52,8 @@ export function McpServerForm({
   useEffect(() => {
     if (editingServer?.env) {
         setEnvPairs(Object.entries(editingServer.env).map(([key, value]) => ({ key, value })));
+    } else if (editingServer?.envKeys) {
+        setEnvPairs(editingServer.envKeys.map((key) => ({ key, value: '' })));
     } else {
         setEnvPairs([]);
     }
@@ -62,28 +74,28 @@ export function McpServerForm({
   useEffect(() => {
     if (editingServer) {
       setName(editingServer.name);
-      setServerType(editingServer.type as any);
+      setServerType(editingServer.type as "stdio" | "sse" | "http");
       setCommand(editingServer.command || "");
       setArgs(editingServer.args?.join(" ") || "");
       setUrl(editingServer.url || "");
     } else {
       // Reset to defaults when creating new server
-      setName(DEFAULT_SEQUENTIAL_THINKING.name);
+      setName(defaultServer.name);
       setServerType("stdio");
-      setCommand(DEFAULT_SEQUENTIAL_THINKING.command);
-      setArgs(DEFAULT_SEQUENTIAL_THINKING.args);
+      setCommand(defaultServer.command);
+      setArgs(defaultServer.args);
       setUrl("");
     }
-  }, [editingServer]);
+  }, [defaultServer, editingServer]);
 
   const handleSubmit = () => {
     if (!name.trim()) return;
     if (serverType === "stdio" && !command.trim()) return;
-    if (serverType === "sse" && !url.trim()) return;
+    if (serverType !== "stdio" && !url.trim()) return;
 
     // Generate description based on server type and name
     let description =
-      serverType === "stdio" ? "Local CLI Tool" : "Remote SSE Server";
+      serverType === "stdio" ? "Local CLI Tool" : serverType === "sse" ? "Remote SSE Server" : "Remote Streamable HTTP Server";
     if (
       name.toLowerCase().includes("sequential") ||
       name.toLowerCase().includes("thinking")
@@ -105,8 +117,10 @@ export function McpServerForm({
       command: serverType === "stdio" ? command.trim() : undefined,
       args:
         serverType === "stdio" ? args.split(" ").filter(Boolean) : undefined,
-      url: serverType === "sse" ? url.trim() : undefined,
-      env: Object.keys(envObject).length > 0 ? envObject : undefined
+      url: serverType !== "stdio" ? url.trim() : undefined,
+      ...(browserRuntime
+        ? { envKeys: Object.keys(envObject) }
+        : { env: Object.keys(envObject).length > 0 ? envObject : undefined })
     });
   };
 
@@ -168,6 +182,17 @@ export function McpServerForm({
               <Globe size={16} />
               SSE (Remote)
             </button>
+            <button
+              onClick={() => setServerType("http")}
+              className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-lg text-sm transition-colors border ${
+                serverType === "http"
+                  ? "bg-[var(--color-brand-teal)]/10 border-[var(--color-brand-teal)] text-[var(--color-brand-teal)]"
+                  : "bg-[var(--color-input-bg)] border-[var(--color-border)] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]"
+              }`}
+            >
+              <Globe size={16} />
+              HTTP
+            </button>
           </div>
         </div>
 
@@ -180,7 +205,7 @@ export function McpServerForm({
               </label>
               <input
                 type="text"
-                placeholder="npx, python, node..."
+                placeholder="uvx"
                 value={command}
                 onChange={(e) => setCommand(e.target.value)}
                 className="w-full bg-[var(--color-input-bg)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-sm text-[var(--color-text-primary)]
@@ -208,7 +233,7 @@ export function McpServerForm({
             </label>
             <input
               type="text"
-              placeholder="http://localhost:8000/sse"
+              placeholder="https://example.com/mcp"
               value={url}
               onChange={(e) => setUrl(e.target.value)}
               className="w-full bg-[var(--color-input-bg)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-sm text-[var(--color-text-primary)]
@@ -232,7 +257,9 @@ export function McpServerForm({
                 <div className="p-3 bg-[var(--color-warning)]/10 border border-[var(--color-warning)]/20 rounded-lg mb-3">
                     <p className="text-[var(--color-warning)] text-[11px] leading-relaxed flex gap-2">
                         <span className="shrink-0">⚠️</span>
-                        Secrets like API Keys are stored locally on this device only. We do not sync them to the cloud. If you switch devices or clear data, you will need to re-enter them.
+                        {browserRuntime
+                          ? 'Browser mode stores supported credential names only. Values are resolved inside agentd from the OS credential store and never sent to this page.'
+                          : 'Secrets like API Keys are stored locally on this device only. We do not sync them to the cloud. If you switch devices or clear data, you will need to re-enter them.'}
                     </p>
                 </div>
 
@@ -250,6 +277,7 @@ export function McpServerForm({
                                 placeholder="VALUE" 
                                 value={pair.value}
                                 type="password"
+                                disabled={browserRuntime}
                                 onChange={(e) => updateEnvPair(index, 'value', e.target.value)}
                                 className="flex-1 bg-[var(--color-input-bg)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-sm font-mono placeholder:text-[var(--color-text-dim)] text-[var(--color-text-primary)] focus:border-[var(--color-brand-teal)]/50 focus:outline-none"
                             />

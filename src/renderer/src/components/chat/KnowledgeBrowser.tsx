@@ -1,20 +1,27 @@
 import { Brain, Search, Trash2, FileText, Calendar, Plus, ExternalLink, Zap } from 'lucide-react'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef, type ChangeEvent } from 'react'
 import electron from '../../lib/electron'
 import { executeToolCall } from '../../lib/mcp'
+import { getBrowserAgentdClient, readBrowserKnowledgeBinaryFile, readBrowserKnowledgeFile } from '../../lib/browser-agentd-client'
+import { isTauriRuntime } from '../../lib/tauri-native-bridge'
 
 interface Document {
     id: number
     file_path: string
     file_name: string
     created_at: string
+    file_type?: string
+    size?: number
 }
+
+const isBrowserProduct = (): boolean => typeof window !== 'undefined' && !window.electron && !isTauriRuntime()
 
 export function KnowledgeBrowser() {
     const [docs, setDocs] = useState<Document[]>([])
     const [search, setSearch] = useState('')
     const [loading, setLoading] = useState(true)
     const [uploading, setUploading] = useState(false)
+    const fileInputRef = useRef<HTMLInputElement>(null)
 
     useEffect(() => {
         fetchDocs()
@@ -43,6 +50,10 @@ export function KnowledgeBrowser() {
     }
 
     const handleAddKnowledge = async () => {
+        if (isBrowserProduct()) {
+            fileInputRef.current?.click()
+            return
+        }
         try {
             const filePath = await electron.app.selectFile({
                 title: 'Select Knowledge Resource',
@@ -91,6 +102,36 @@ export function KnowledgeBrowser() {
         }
     }
 
+    const handleBrowserFile = async (event: ChangeEvent<HTMLInputElement>) => {
+        const file = event.target.files?.[0]
+        event.target.value = ''
+        if (!file) return
+        const extension = file.name.split('.').pop()?.toLowerCase() || ''
+        const isText = file.type.startsWith('text/') || ['txt', 'md', 'csv', 'json', 'xml', 'html', 'log'].includes(extension)
+        setUploading(true)
+        try {
+            const client = getBrowserAgentdClient()
+            if (isText) {
+                const browserFile = await readBrowserKnowledgeFile(file)
+                await client.ingestKnowledge({
+                  fileName: file.name,
+                  filePath: `browser://knowledge/${encodeURIComponent(file.name)}`,
+                  ...browserFile,
+                })
+            } else {
+                const browserFile = await readBrowserKnowledgeBinaryFile(file)
+                await client.convertKnowledge({ fileName: file.name, ...browserFile })
+            }
+            await fetchDocs()
+            alert(`Successfully ${isText ? 'ingested' : 'converted and ingested'}: ${file.name}`)
+        } catch (error) {
+            console.error('Failed to add browser knowledge:', error)
+            alert(`Failed to index: ${error instanceof Error ? error.message : String(error)}`)
+        } finally {
+            setUploading(false)
+        }
+    }
+
     const filteredDocs = docs.filter(d => 
         d.file_name.toLowerCase().includes(search.toLowerCase())
     )
@@ -106,7 +147,7 @@ export function KnowledgeBrowser() {
                         </div>
                         <div>
                             <h1 className="text-2xl font-bold">Knowledge Brain</h1>
-                            <p className="text-gray-400 text-sm">Manage the documents and visual data your agent learns from.</p>
+                            <p className="text-gray-400 text-sm">Manage bounded text and document files your agent learns from.</p>
                         </div>
                     </div>
                     <button 
@@ -121,6 +162,7 @@ export function KnowledgeBrowser() {
                         )}
                         <span>{uploading ? 'Injecting...' : 'Add Knowledge'}</span>
                     </button>
+                    {isBrowserProduct() && <input ref={fileInputRef} type="file" hidden accept=".txt,.md,.csv,.json,.xml,.html,.log,.pdf,.docx,.xlsx,.xls,.pptx,text/*" onChange={handleBrowserFile} />}
                 </div>
 
                 {/* Stats Bar */}
@@ -161,7 +203,7 @@ export function KnowledgeBrowser() {
                             <FileText className="w-8 h-8 text-gray-600" />
                         </div>
                         <h3 className="text-lg font-bold text-gray-400">Empty Brain</h3>
-                        <p className="text-gray-500 text-sm max-w-xs">ToIndex documents, spreadsheets or images. The higher the coverage, the smarter the agent.</p>
+                        <p className="text-gray-500 text-sm max-w-xs">Index bounded text files or convert common PDF, Office, and document formats through the local agent.</p>
                     </div>
                 ) : (
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -175,13 +217,13 @@ export function KnowledgeBrowser() {
                                         <FileText className="w-5 h-5 text-gray-400 group-hover:text-blue-400" />
                                     </div>
                                     <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                        <button 
+                                        {!isBrowserProduct() && <button
                                             onClick={() => electron.openExternal(`file://${doc.file_path}`)}
                                             title="Open file location"
                                             className="p-2 rounded-lg hover:bg-white/10 transition-colors text-gray-400 hover:text-white"
                                         >
                                             <ExternalLink className="w-4 h-4" />
-                                        </button>
+                                        </button>}
                                         <button 
                                             onClick={() => handleDelete(doc.id)}
                                             className="p-2 rounded-lg hover:bg-red-500/20 text-gray-400 hover:text-red-400 transition-colors"

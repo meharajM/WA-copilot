@@ -39,12 +39,15 @@ import { useWhatsAppStore } from "../stores/whatsappStore";
 import { useEmailStore } from "../stores/emailStore";
 import { useDraftStore } from "../stores/draftStore";
 import electron from "../lib/electron";
+import { getBrowserAgentdClient } from "../lib/browser-agentd-client";
+import { isTauriRuntime } from "../lib/tauri-native-bridge";
 import { type LLMMessage } from "../lib/types";
 import { resolveWhatsAppTarget, setWhatsAppTyping, setWhatsAppPaused, getWhatsAppSystemPrompt, sendWhatsAppResponse, resolveWhatsAppMessageToLLM } from "../lib/whatsapp-integration";
 import { getEmailSystemPrompt, normalizeSubject, type EmailMessage } from "../lib/email-integration";
 import { createDraftResponse, evaluateEmailPolicy, getConfidenceGatePrompt } from "../lib/email-policy";
 import { buildAttachmentLLMParts } from "../lib/media-utils";
 import { isSameWhatsAppIdentity, normalizeWhatsAppId } from "../../../shared/whatsappIdentity";
+import type { ChatAttachment } from '../../../shared/chat-protocol';
 
 /**
  * State returned by `useAgent`.
@@ -65,7 +68,13 @@ export interface UseAgentReturn {
       attachments?: File[],
       isHeadless?: boolean,
       multimodalWhatsAppMessage?: import('../lib/whatsapp-integration').WhatsAppMessage,
-      inboundEmailMessage?: EmailMessage
+      inboundEmailMessage?: EmailMessage,
+      options?: {
+        skipUserMessage?: boolean
+        requestId?: string
+        emailDraftId?: string
+        whatsappEvent?: { providerEventId: string; conversationId: string; payload: Record<string, unknown> }
+      }
     ) => Promise<void>;
 }
 
@@ -94,6 +103,56 @@ function isHandledEmailSendResult(result: unknown): boolean {
     }
 }
 
+export function readableAgentError(error: unknown): string {
+    if (error instanceof Error && error.message) return error.message
+    if (typeof error === 'string' && error.trim()) return error
+    if (error && typeof error === 'object') {
+        const record = error as Record<string, unknown>
+        if (typeof record.message === 'string' && record.message.trim()) return record.message
+        if (typeof record.error === 'string' && record.error.trim()) return record.error
+    }
+    return 'Unknown error'
+}
+
+const isAbortError = (error: unknown): boolean => (
+    !!error && typeof error === 'object' && (error as { name?: unknown }).name === 'AbortError'
+)
+
+const MAX_BROWSER_ATTACHMENT_TEXT = 64 * 1024
+const MAX_BROWSER_ATTACHMENT_IMAGE = 256 * 1024
+const TEXT_FILE_EXTENSIONS = new Set(['.txt', '.md', '.csv', '.tsv', '.json', '.xml', '.html', '.htm', '.css', '.js', '.ts', '.yaml', '.yml', '.sql'])
+
+const isTextAttachment = (file: File): boolean => (
+    file.type.startsWith('text/') || TEXT_FILE_EXTENSIONS.has(file.name.slice(file.name.lastIndexOf('.')).toLowerCase())
+)
+
+const toBase64 = (bytes: Uint8Array): string => {
+    let binary = ''
+    const chunkSize = 0x8000
+    for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+        binary += String.fromCharCode(...bytes.subarray(offset, Math.min(offset + chunkSize, bytes.length)))
+    }
+    return btoa(binary)
+}
+
+const prepareBrowserAttachments = async (files: File[]): Promise<ChatAttachment[]> => {
+    const prepared: ChatAttachment[] = []
+    for (const file of files.slice(0, 8)) {
+        const attachment: ChatAttachment = {
+            name: file.name.slice(0, 256),
+            type: file.type || 'application/octet-stream',
+            size: file.size,
+        }
+        if (isTextAttachment(file) && file.size <= MAX_BROWSER_ATTACHMENT_TEXT) {
+            attachment.text = await file.text()
+        } else if (file.type.startsWith('image/') && file.size <= MAX_BROWSER_ATTACHMENT_IMAGE) {
+            attachment.dataUrl = `data:${attachment.type};base64,${toBase64(new Uint8Array(await file.arrayBuffer()))}`
+        }
+        prepared.push(attachment)
+    }
+    return prepared
+}
+
 export function hasHandledEmailSendToolCall(toolCalls: unknown): boolean {
     if (!Array.isArray(toolCalls)) return false;
 
@@ -118,7 +177,7 @@ interface EmailPostResponseDependencies {
         references?: string;
         accountName?: string;
     }) => Promise<{ success: boolean; error?: string }>;
-    addDraft: (draft: ReturnType<typeof createDraftResponse>) => void;
+    addDraft: (draft: ReturnType<typeof createDraftResponse>) => void | Promise<void>;
     addReviewNotice?: (content: string) => void;
 }
 
@@ -129,6 +188,7 @@ interface HandleEmailPostResponseInput {
     draftMode: boolean;
     accountName?: string;
     emailSendHandledByAgent: boolean;
+    draftId?: string;
 }
 
 async function attemptEmailSend(
@@ -180,7 +240,7 @@ export async function handleEmailPostResponse(
                 rationale: `${decision.rationale} Neutral acknowledgement failed (${acknowledgement.error || 'unknown error'}); owner reply required.`,
             };
 
-        dependencies.addDraft(createDraftResponse(input.responseText, reviewDecision, originalEmail));
+        await dependencies.addDraft(createDraftResponse(input.responseText, reviewDecision, originalEmail, input.draftId));
         dependencies.addReviewNotice?.(
             acknowledgement.success
                 ? 'Low-confidence email acknowledged; response escalated for owner review in Drafts.'
@@ -190,7 +250,7 @@ export async function handleEmailPostResponse(
     }
 
     if (input.draftMode || decision.action !== 'send') {
-        dependencies.addDraft(createDraftResponse(input.responseText, decision, originalEmail));
+        await dependencies.addDraft(createDraftResponse(input.responseText, decision, originalEmail, input.draftId));
         dependencies.addReviewNotice?.('Email response drafted for review in Drafts panel.');
         return 'drafted';
     }
@@ -206,7 +266,7 @@ export async function handleEmailPostResponse(
         action: 'draft' as const,
         rationale: `Direct send failed (${sendResult.error || 'unknown error'}). Draft created for review.`,
     };
-    dependencies.addDraft(createDraftResponse(input.responseText, fallbackDecision, originalEmail));
+    await dependencies.addDraft(createDraftResponse(input.responseText, fallbackDecision, originalEmail, input.draftId));
     return 'send_failed_drafted';
 }
 
@@ -244,11 +304,18 @@ export function useAgent(): UseAgentReturn {
           attachments?: File[],
           isHeadless?: boolean,
           multimodalWhatsAppMessage?: import('../lib/whatsapp-integration').WhatsAppMessage,
-          inboundEmailMessage?: EmailMessage
+          inboundEmailMessage?: EmailMessage,
+          options?: {
+            skipUserMessage?: boolean
+            requestId?: string
+            emailDraftId?: string
+            whatsappEvent?: { providerEventId: string; conversationId: string; payload: Record<string, unknown> }
+          }
         ) => {
             if (!content.trim() && (!attachments || attachments.length === 0) && !multimodalWhatsAppMessage && !inboundEmailMessage) return;
 
             const { addMessage, startProcessing } = useChatStore.getState();
+            const isEmailFlow = !!inboundEmailMessage;
 
             // 1. Resolve starting message shape
             let userLLMMessage: LLMMessage | null = null;
@@ -268,10 +335,15 @@ export function useAgent(): UseAgentReturn {
 
             // Add the user's message to the store immediately so it appears in the
             // chat UI before the agent starts processing.
-            addMessage({ 
-                role: "user", 
-                content: userLLMMessage ? (typeof userLLMMessage.content === 'string' ? userLLMMessage.content : "[Media Message]") : content, 
-                attachments: userLLMMessage?.attachments ?? attachmentData 
+            const hydratedMessage = options?.skipUserMessage && options.requestId
+                ? useChatStore.getState().sessions
+                    .find((session) => session.id === useChatStore.getState().activeSessionId)
+                    ?.messages.find((message) => message.id === options.requestId)
+                : undefined;
+            const addedUserMessage = hydratedMessage || addMessage({
+                role: "user",
+                content: userLLMMessage ? (typeof userLLMMessage.content === 'string' ? userLLMMessage.content : "[Media Message]") : content,
+                attachments: userLLMMessage?.attachments ?? attachmentData
             });
 
             // ── CRITICAL: Capture originSessionId before any await ─────────────
@@ -311,11 +383,11 @@ export function useAgent(): UseAgentReturn {
             // Resolve Roles
             const cleanFrom = normalizeWhatsAppId(fromJid) ?? fromJid ?? 'unknown';
             const isAdmin = isSameWhatsAppIdentity(fromJid, adminJid);
-            const isEmailFlow = !!inboundEmailMessage;
             let emailSendHandledByAgent = false;
+            const browserWhatsAppFlow = typeof window !== 'undefined' && !window.electron && !isTauriRuntime() && !!multimodalWhatsAppMessage;
 
             // 1.5 Handle Customer Multimedia Rejection
-            if (multimodalWhatsAppMessage && !isAdmin && multimodalWhatsAppMessage.type !== 'text') {
+            if (multimodalWhatsAppMessage && !browserWhatsAppFlow && !isAdmin && multimodalWhatsAppMessage.type !== 'text') {
                 const rejectionContent = "I'm sorry, I currently only support text-based inquiries for customer assistance. 🤖 Please describe your question in text so I can help you correctly.";
                 
                 // Update Local UI
@@ -337,6 +409,293 @@ export function useAgent(): UseAgentReturn {
             const abortSignal = startProcessing(originSessionId);
 
             try {
+                // The browser workspace uses local agentd for provider
+                // credentials and generation, except explicit WebGPU on-device
+                // mode. Tauri never mounts this product hook; Electron keeps
+                // its existing local AgentRuntime path.
+                // The daemon persists the user message idempotently using the
+                // local message id as request id, so the chat-store write queue
+                // can safely replay the same message after this call.
+                const browserRuntime = typeof window !== 'undefined' && !window.electron && !isTauriRuntime();
+                const localBrowserProvider = browserRuntime && settings.preferredProvider === 'browser';
+                const useBrowserWhatsAppFlow = browserRuntime && browserWhatsAppFlow;
+                const isWhatsAppEscalation = (responseText: string): boolean => (
+                    responseText.includes('flagged this for our human team')
+                    || responseText.includes('escalating this to a human')
+                    || responseText.includes('whatsapp_notify_admin')
+                );
+                const auxiliaryWhatsAppEventId = (providerEventId: string, kind: string): string => {
+                    let hash = 2166136261;
+                    for (const character of providerEventId) hash = Math.imul(hash ^ character.charCodeAt(0), 16777619);
+                    return `${providerEventId.slice(0, 240)}:${(hash >>> 0).toString(16)}:${kind}`;
+                };
+                const admitBrowserWhatsAppDraft = async (responseText: string): Promise<{ duplicate: boolean; sent: boolean }> => {
+                    if (!options?.whatsappEvent) throw new Error('Browser WhatsApp event metadata is unavailable');
+                    const client = getBrowserAgentdClient();
+                    const draft = await client.createWhatsAppDraft({
+                        providerEventId: options.whatsappEvent.providerEventId,
+                        conversationId: options.whatsappEvent.conversationId,
+                        payload: options.whatsappEvent.payload,
+                        draftText: responseText,
+                    });
+                    if (!draft.accepted || draft.paused) throw new Error('Browser WhatsApp draft admission is paused');
+                    if (draft.duplicate) {
+                        useChatStore.getState().addSessionMessage(originSessionId, {
+                            role: 'assistant',
+                            content: 'WhatsApp response was already queued for this inbound event.',
+                        });
+                        return { duplicate: true, sent: false };
+                    }
+                    const { businessBotMode } = useWhatsAppStore.getState();
+                    if (businessBotMode && draft.draftId) {
+                        // Autonomous browser replies still use the durable
+                        // approval/outbox state machine. The explicit status
+                        // transition makes the policy decision observable and
+                        // keeps provider calls idempotent across reloads.
+                        await client.updateDraftStatus(draft.draftId, 'approved');
+                        const sent = await client.sendWhatsAppDraft(draft.draftId);
+                        if (!sent.providerMessageId) throw new Error('Browser WhatsApp delivery was not confirmed');
+                        useChatStore.getState().addSessionMessage(originSessionId, {
+                            role: 'assistant',
+                            content: sent.duplicate
+                                ? 'WhatsApp response was already delivered.'
+                                : 'WhatsApp response sent automatically.',
+                        });
+                        return { duplicate: false, sent: true };
+                    }
+                    useChatStore.getState().addSessionMessage(originSessionId, {
+                        role: 'assistant',
+                        content: 'WhatsApp response drafted for review. Open Autonomy to approve or discard it.',
+                    });
+                    return { duplicate: false, sent: false };
+                };
+                const sendBrowserWhatsAppAuxiliary = async (input: {
+                    providerEventId: string;
+                    conversationId: string;
+                    payload: Record<string, unknown>;
+                    text: string;
+                }): Promise<boolean> => {
+                    if (!useBrowserWhatsAppFlow || !useWhatsAppStore.getState().businessBotMode) return false;
+                    const client = getBrowserAgentdClient();
+                    const draft = await client.createWhatsAppDraft({
+                        providerEventId: input.providerEventId,
+                        conversationId: input.conversationId,
+                        payload: input.payload,
+                        draftText: input.text,
+                    });
+                    if (!draft.accepted || draft.paused || draft.duplicate || !draft.draftId) return false;
+                    await client.updateDraftStatus(draft.draftId, 'approved');
+                    await client.sendWhatsAppDraft(draft.draftId);
+                    return true;
+                };
+                const applyBrowserEmailPolicy = async (responseText: string): Promise<void> => {
+                    if (!browserRuntime || !isEmailFlow || !inboundEmailMessage) return;
+                    const client = getBrowserAgentdClient();
+                    const session = useChatStore.getState().sessions.find((s) => s.id === originSessionId);
+                    const toolCallCount = session?.messages
+                        .filter((m) => m.role === 'assistant')
+                        .reduce((count, m) => count + (m.toolCalls?.length || 0), 0) || 0;
+                    const usedRag = session?.messages.some((m) =>
+                        (m.toolCalls || []).some((t) => t.name === 'rag_search')
+                    ) || false;
+                    const decision = evaluateEmailPolicy({
+                        responseText,
+                        originalContent: inboundEmailMessage.body || content,
+                        usedRag,
+                        hasUncertaintyMarkers: false,
+                        toolCallCount,
+                        citesKnowledgeBase: usedRag,
+                    });
+                    const browserEmailSend = async (payload: Parameters<EmailPostResponseDependencies['send']>[0]) => {
+                        try {
+                            const deliveryDraftId = payload.body === LOW_CONFIDENCE_EMAIL_ACKNOWLEDGEMENT && options?.emailDraftId
+                                ? `${options.emailDraftId}_ack`
+                                : options?.emailDraftId;
+                            const draft = createDraftResponse(payload.body, decision, {
+                                from: inboundEmailMessage.from,
+                                subject: inboundEmailMessage.subject,
+                                to: payload.to,
+                                inReplyTo: payload.inReplyTo,
+                                references: payload.references,
+                                accountName: payload.accountName,
+                            }, deliveryDraftId);
+                            const saved = await client.saveEmailDraft(draft);
+                            await client.updateEmailDraft(saved.id, { status: 'approved' });
+                            const sent = await client.sendEmailDraft(saved.id);
+                            return sent.status === 'sent'
+                                ? { success: true }
+                                : { success: false, error: 'Agentd did not confirm email delivery' };
+                        } catch (error) {
+                            return { success: false, error: error instanceof Error ? error.message : 'Browser email delivery failed' };
+                        }
+                    };
+                    await handleEmailPostResponse(
+                        {
+                            responseText,
+                            inboundEmailMessage,
+                            decision,
+                            draftMode: emailConfig.draftMode,
+                            accountName: emailConfig.accountName,
+                            emailSendHandledByAgent,
+                            draftId: options?.emailDraftId,
+                        },
+                        {
+                            send: browserEmailSend,
+                            addDraft: (draft) => useDraftStore.getState().addDraft(draft),
+                            addReviewNotice: (notice) => {
+                                useChatStore.getState().addSessionMessage(originSessionId, {
+                                    role: 'assistant',
+                                    content: notice,
+                                    actions: [{ type: 'custom', label: 'Open Drafts', payload: { action: 'open_drafts' } }],
+                                });
+                            },
+                        },
+                    );
+                };
+                if (browserRuntime && !localBrowserProvider && (useBrowserWhatsAppFlow || (!targetJid && !multimodalWhatsAppMessage))) {
+                    const client = getBrowserAgentdClient();
+                    const requestId = options?.requestId || addedUserMessage.id;
+                    const daemonAttachments = attachments?.length
+                        ? browserRuntime
+                            ? await prepareBrowserAttachments(attachments)
+                            : attachmentData?.map((item, index) => ({ ...item, size: attachments[index]?.size || 0 }))
+                        : undefined;
+                    const daemonSession = useChatStore.getState().sessions.find((session) => session.id === originSessionId);
+                    // Zustand persistence is intentionally asynchronous. Ensure the
+                    // daemon owns the session/message before generation instead of
+                    // racing the persistence middleware after a fresh browser chat.
+                    const sessionMetadata = daemonSession ? {
+                        ...(daemonSession.status ? { status: daemonSession.status } : {}),
+                        ...(daemonSession.channel ? { channel: daemonSession.channel } : {}),
+                        ...(daemonSession.contact_id ? { contactId: daemonSession.contact_id } : {}),
+                        ...(daemonSession.thread_id ? { threadId: daemonSession.thread_id } : {}),
+                    } : undefined;
+                    if (daemonSession?.workspacePath) await client.createSession(originSessionId, daemonSession.title || 'New Chat', daemonSession.workspacePath, sessionMetadata);
+                    else await client.createSession(originSessionId, daemonSession?.title || 'New Chat', undefined, sessionMetadata);
+                    if (!options?.skipUserMessage) {
+                        await client.appendMessage(originSessionId, {
+                            id: requestId,
+                            role: 'user',
+                            content,
+                            timestamp: addedUserMessage.timestamp,
+                            ...(daemonAttachments?.length ? { attachments: daemonAttachments } : {}),
+                        });
+                    }
+                    let assistantContent = '';
+                    let assistantAdded = false;
+                    let assistantCompleted = false;
+                    let assistantMessageId: string | null = null;
+                    let browserCourtesyTimer: ReturnType<typeof setTimeout> | null = null;
+                    if (useBrowserWhatsAppFlow && multimodalWhatsAppMessage && options?.whatsappEvent && targetJid && !isAdmin && useWhatsAppStore.getState().businessBotMode) {
+                        browserCourtesyTimer = setTimeout(() => {
+                            const event = options.whatsappEvent;
+                            if (!event) return;
+                            void sendBrowserWhatsAppAuxiliary({
+                                providerEventId: auxiliaryWhatsAppEventId(event.providerEventId, 'courtesy'),
+                                conversationId: targetJid,
+                                payload: { kind: 'courtesy', relatedProviderEventId: event.providerEventId },
+                                text: "I'm still working on your request and will notify you once done. 🤖",
+                            }).then((sent) => {
+                                if (sent) useChatStore.getState().addSessionMessage(originSessionId, {
+                                    role: 'assistant',
+                                    content: '(System: Sent 60s courtesy notification through the durable WhatsApp outbox)',
+                                });
+                            }).catch((error) => console.warn('[useAgent] Browser WhatsApp courtesy delivery failed', error));
+                        }, 60_000);
+                    }
+                    const appendAssistantDelta = (delta: string) => {
+                        if (!delta) return;
+                        assistantContent += delta;
+                        const store = useChatStore.getState();
+                        if (!assistantAdded) {
+                            const message = store.addSessionMessage(originSessionId, {
+                                id: `assistant_${requestId}`,
+                                role: 'assistant',
+                                content: assistantContent,
+                            });
+                            assistantAdded = true;
+                            assistantMessageId = message.id;
+                            return;
+                        }
+                        if (assistantMessageId) {
+                            store.updateSessionMessage(originSessionId, assistantMessageId, {
+                                content: assistantContent,
+                            });
+                        }
+                    };
+                    try {
+                        await client.generate(
+                            {
+                                sessionId: originSessionId,
+                                requestId,
+                                content,
+                                ...(daemonAttachments?.length ? { attachments: daemonAttachments } : {}),
+                            },
+                            (event) => {
+                                if (event.type === 'error') throw new Error(event.message);
+                                if (event.type === 'assistant.delta') appendAssistantDelta(event.delta);
+                                if (event.type === 'assistant.done') {
+                                    assistantCompleted = true;
+                                    if (!assistantAdded) {
+                                        // A provider may legally emit an empty stream. Keep
+                                        // the invariant that a completed generation creates
+                                        // one assistant message, while normal SSE chunks are
+                                        // already visible incrementally via appendAssistantDelta.
+                                        const message = useChatStore.getState().addSessionMessage(originSessionId, {
+                                            id: `assistant_${requestId}`,
+                                            role: 'assistant',
+                                            content: assistantContent,
+                                        });
+                                        assistantAdded = true;
+                                        assistantMessageId = message.id;
+                                    }
+                                }
+                            },
+                            abortSignal,
+                        );
+                    } catch (error) {
+                        // Deltas are optimistic UI only. Do not leave a partial
+                        // assistant bubble after cancel/provider failure; agentd
+                        // persists only completed generations and a retry must be clean.
+                        if (!assistantCompleted && assistantMessageId) {
+                            useChatStore.getState().removeSessionMessage(originSessionId, assistantMessageId);
+                        }
+                        throw error;
+                    } finally {
+                        if (browserCourtesyTimer) clearTimeout(browserCourtesyTimer);
+                    }
+                    if (!assistantAdded) throw new Error('Agentd returned no assistant response');
+                    if (useBrowserWhatsAppFlow && multimodalWhatsAppMessage && options?.whatsappEvent) {
+                        const responseText = assistantContent.trim();
+                        if (!responseText) throw new Error('Agentd returned an empty WhatsApp draft');
+                        const admission = await admitBrowserWhatsAppDraft(responseText);
+                        const { businessBotMode } = useWhatsAppStore.getState();
+                        if (businessBotMode && !admission.duplicate && !isAdmin) {
+                            const client = getBrowserAgentdClient();
+                            if (isWhatsAppEscalation(responseText)) {
+                                if (adminJid) {
+                                    const adminNotification = `⚠️ *Action Required: Unknown Inquiry*\n\nA customer (${cleanFrom}) asked a question not found in the training data:\n\n> "${content}"\n\nPlease answer them directly. I will learn from your response for next time.`;
+                                    try {
+                                        await sendBrowserWhatsAppAuxiliary({
+                                            providerEventId: auxiliaryWhatsAppEventId(options.whatsappEvent.providerEventId, 'admin'),
+                                            conversationId: adminJid,
+                                            payload: { kind: 'admin_escalation', relatedProviderEventId: options.whatsappEvent.providerEventId, customer: cleanFrom },
+                                            text: adminNotification,
+                                        });
+                                    } catch (error) {
+                                        console.warn('[useAgent] Browser WhatsApp admin escalation delivery failed', error);
+                                    }
+                                }
+                                await client.logAccuracy({ event: 'forwarded', details: `Unanswered query from ${targetJid} forwarded to Admin` }).catch(() => undefined);
+                            } else {
+                                await client.logAccuracy({ event: 'resolved', details: `Successfully answered customer query: "${content.substring(0, 30)}..."` }).catch(() => undefined);
+                            }
+                        }
+                    }
+                    if (isEmailFlow && inboundEmailMessage) await applyBrowserEmailPolicy(assistantContent.trim());
+                    return;
+                }
+
                 // ── Step 1: Reconstruct LLM message history ────────────────────────
                 // WHY getState() here: We need the freshest messages AFTER addMessage()
                 // has been committed to the store.
@@ -549,10 +908,59 @@ export function useAgent(): UseAgentReturn {
                     }, 60000); // 1 minute
                 }
 
-                const llmResponse = await runtime.chat(agentContent, agentAttachments);
-                
-                // Clear timer as response received
-                if (courtesyTimer) clearTimeout(courtesyTimer);
+                let browserWebGpuCourtesyTimer: ReturnType<typeof setTimeout> | null = null;
+                if (useBrowserWhatsAppFlow && multimodalWhatsAppMessage && options?.whatsappEvent && targetJid && !isAdmin && useWhatsAppStore.getState().businessBotMode) {
+                    browserWebGpuCourtesyTimer = setTimeout(() => {
+                        const event = options.whatsappEvent;
+                        if (!event) return;
+                        void sendBrowserWhatsAppAuxiliary({
+                            providerEventId: auxiliaryWhatsAppEventId(event.providerEventId, 'courtesy'),
+                            conversationId: targetJid,
+                            payload: { kind: 'courtesy', relatedProviderEventId: event.providerEventId },
+                            text: "I'm still working on your request and will notify you once done. 🤖",
+                        }).then((sent) => {
+                            if (sent) useChatStore.getState().addSessionMessage(originSessionId, {
+                                role: 'assistant',
+                                content: '(System: Sent 60s courtesy notification through the durable WhatsApp outbox)',
+                            });
+                        }).catch((error) => console.warn('[useAgent] Browser WebGPU courtesy delivery failed', error));
+                    }, 60_000);
+                }
+                let llmResponse: Awaited<ReturnType<typeof runtime.chat>>;
+                try {
+                    llmResponse = await runtime.chat(agentContent, agentAttachments);
+                } finally {
+                    if (courtesyTimer) clearTimeout(courtesyTimer);
+                    if (browserWebGpuCourtesyTimer) clearTimeout(browserWebGpuCourtesyTimer);
+                }
+
+                // Browser WhatsApp always stays on the agentd path, even when
+                // the selected provider is the renderer's WebGPU model. The
+                // admission helper decides review-only versus autonomous
+                // outbox delivery; never fall through to Electron IPC.
+                if (browserWhatsAppFlow) {
+                    const responseText = typeof llmResponse.content === 'string' ? llmResponse.content.trim() : '';
+                    if (!responseText) throw new Error('Browser WhatsApp returned an empty draft');
+                    const admission = await admitBrowserWhatsAppDraft(responseText);
+                    const { businessBotMode } = useWhatsAppStore.getState();
+                    if (businessBotMode && !admission.duplicate && !isAdmin && isWhatsAppEscalation(responseText) && adminJid && options?.whatsappEvent) {
+                        const adminNotification = `⚠️ *Action Required: Unknown Inquiry*\n\nA customer (${cleanFrom}) asked a question not found in the training data:\n\n> "${content}"\n\nPlease answer them directly. I will learn from your response for next time.`;
+                        try {
+                            await sendBrowserWhatsAppAuxiliary({
+                                providerEventId: auxiliaryWhatsAppEventId(options.whatsappEvent.providerEventId, 'admin'),
+                                conversationId: adminJid,
+                                payload: { kind: 'admin_escalation', relatedProviderEventId: options.whatsappEvent.providerEventId, customer: cleanFrom },
+                                text: adminNotification,
+                            });
+                        } catch (error) {
+                            console.warn('[useAgent] Browser WebGPU admin escalation delivery failed', error);
+                        }
+                        await getBrowserAgentdClient().logAccuracy({ event: 'forwarded', details: `Unanswered query from ${targetJid} forwarded to Admin` }).catch(() => undefined);
+                    } else if (businessBotMode && !admission.duplicate && !isAdmin) {
+                        await getBrowserAgentdClient().logAccuracy({ event: 'resolved', details: `Successfully answered customer query: "${content.substring(0, 30)}..."` }).catch(() => undefined);
+                    }
+                    return;
+                }
 
                 // ── Step 7: Handle Outbound WhatsApp Messages ──────────────────────
                 // If WhatsApp mode is enabled, we need to send the final assistant response
@@ -616,39 +1024,54 @@ export function useAgent(): UseAgentReturn {
                         citesKnowledgeBase: usedRag,
                     });
 
-                    await handleEmailPostResponse(
-                        {
-                            responseText,
-                            inboundEmailMessage,
-                            decision,
-                            draftMode: emailConfig.draftMode,
-                            accountName: emailConfig.accountName,
-                            emailSendHandledByAgent,
-                        },
-                        {
-                            send: (payload) => electron.email.send(payload),
-                            addDraft: (draft) => useDraftStore.getState().addDraft(draft),
-                            addReviewNotice: (notice) => {
-                                useChatStore.getState().addSessionMessage(originSessionId, {
-                                    role: 'assistant',
-                                    content: notice,
-                                    actions: [
-                                        { type: 'custom', label: 'Open Drafts', payload: { action: 'open_drafts' } }
-                                    ],
-                                });
+                    if (browserRuntime) {
+                        // WebGPU generation is local to the browser, but email policy,
+                        // drafts, approval and delivery remain agentd-owned. Never use
+                        // the Electron email bridge from the browser product.
+                        await applyBrowserEmailPolicy(responseText);
+                    } else {
+                        await handleEmailPostResponse(
+                            {
+                                responseText,
+                                inboundEmailMessage,
+                                decision,
+                                draftMode: emailConfig.draftMode,
+                                accountName: emailConfig.accountName,
+                                emailSendHandledByAgent,
                             },
-                        }
-                    );
+                            {
+                                send: (payload) => electron.email.send(payload),
+                                addDraft: (draft) => useDraftStore.getState().addDraft(draft),
+                                addReviewNotice: (notice) => {
+                                    useChatStore.getState().addSessionMessage(originSessionId, {
+                                        role: 'assistant',
+                                        content: notice,
+                                        actions: [
+                                            { type: 'custom', label: 'Open Drafts', payload: { action: 'open_drafts' } }
+                                        ],
+                                    });
+                                },
+                            }
+                        );
+                    }
                 }
 
             } catch (error) {
+                if (isAbortError(error)) {
+                    if ((isEmailFlow || browserWhatsAppFlow) && options?.skipUserMessage) throw error;
+                    return;
+                }
                 console.error("[useAgent] Handler error:", error);
                 // Write the error to originSessionId — not whatever is currently active
                 const { addSessionMessage: addMsg } = useChatStore.getState();
                 addMsg(originSessionId, {
                     role: "assistant",
-                    content: `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
+                    content: `Error: ${readableAgentError(error)}`,
                 });
+                // Browser Email polling must not acknowledge a claimed event
+                // when generation or policy handling failed; agentd can reclaim
+                // the processing claim on the next retry window.
+                if ((isEmailFlow || browserWhatsAppFlow) && options?.skipUserMessage) throw error;
             } finally {
                 // Clear the composing state if this was a WhatsApp message.
                 // Uses the same targetJid captured before the try block — safe even if
@@ -709,7 +1132,15 @@ export function useAgent(): UseAgentReturn {
             const customEvent = e as CustomEvent<{
                 content: string,
                 whatsappMessage?: import('../lib/whatsapp-integration').WhatsAppMessage,
-                emailMessage?: EmailMessage
+                emailMessage?: EmailMessage,
+                emailAlreadyHydrated?: boolean,
+                emailGenerationRequestId?: string,
+                emailDraftId?: string,
+                whatsappAlreadyHydrated?: boolean,
+                whatsappGenerationRequestId?: string,
+                whatsappSessionId?: string | null,
+                whatsappEvent?: { providerEventId: string; conversationId: string; payload: Record<string, unknown> },
+                onComplete?: (promise: Promise<void>) => void,
             }>;
             const content = customEvent.detail?.content;
             const whatsappMessage = customEvent.detail?.whatsappMessage;
@@ -728,31 +1159,39 @@ export function useAgent(): UseAgentReturn {
             let sessionId = activeSessionId;
             
             if (whatsappMessage?.from) {
-                const existingSession = sessions.find(s => 
-                    s.whatsapp_jid === whatsappMessage.from || 
-                    s.contact_id === whatsappMessage.from
-                );
-                
-                if (existingSession) {
-                    sessionId = existingSession.id;
-                    setActiveSession(sessionId);
+                const hydratedWhatsAppSession = customEvent.detail?.whatsappSessionId
+                    ? sessions.find((session) => session.id === customEvent.detail?.whatsappSessionId)
+                    : undefined
+                if (hydratedWhatsAppSession) {
+                    sessionId = hydratedWhatsAppSession.id
+                    setActiveSession(sessionId)
                 } else {
-                    sessionId = createSession();
-                    // Set the omnichannel session metadata so future messages map here
-                    useChatStore.setState(state => ({
-                        sessions: state.sessions.map(s => 
-                            s.id === sessionId 
-                                ? { 
-                                    ...s, 
-                                    channel: 'whatsapp',
-                                    contact_id: whatsappMessage.from,
-                                    whatsapp_jid: whatsappMessage.from, // Legacy fallback
-                                    title: `💬 ${whatsappMessage.from.split('@')[0]}` 
-                                  } 
-                                : s
-                        )
-                    }));
-                    console.log(`[useAgent] Created NEW omnichannel session for: ${whatsappMessage.from}`);
+                    const existingSession = sessions.find(s =>
+                        s.whatsapp_jid === whatsappMessage.from ||
+                        s.contact_id === whatsappMessage.from
+                    )
+
+                    if (existingSession) {
+                        sessionId = existingSession.id
+                        setActiveSession(sessionId)
+                    } else {
+                        sessionId = createSession()
+                        // Set the omnichannel session metadata so future messages map here
+                        useChatStore.setState(state => ({
+                            sessions: state.sessions.map(s =>
+                                s.id === sessionId
+                                    ? {
+                                        ...s,
+                                        channel: 'whatsapp',
+                                        contact_id: whatsappMessage.from,
+                                        whatsapp_jid: whatsappMessage.from, // Legacy fallback
+                                        title: `💬 ${whatsappMessage.from.split('@')[0]}`
+                                      }
+                                    : s
+                            )
+                        }))
+                        console.log(`[useAgent] Created NEW omnichannel session for: ${whatsappMessage.from}`)
+                    }
                 }
             } else if (emailMessage?.from) {
                 const sender = emailMessage.from.toLowerCase()
@@ -787,7 +1226,13 @@ export function useAgent(): UseAgentReturn {
                 console.log('[useAgent] Created new general session for prompt:', sessionId);
             }
             
-            handleSubmit(content || '', undefined, false, whatsappMessage, emailMessage);
+            const completion = handleSubmit(content || '', undefined, false, whatsappMessage, emailMessage, {
+                skipUserMessage: customEvent.detail?.emailAlreadyHydrated === true || customEvent.detail?.whatsappAlreadyHydrated === true,
+                requestId: customEvent.detail?.emailGenerationRequestId || customEvent.detail?.whatsappGenerationRequestId,
+                emailDraftId: customEvent.detail?.emailDraftId,
+                whatsappEvent: customEvent.detail?.whatsappEvent,
+            });
+            customEvent.detail?.onComplete?.(completion);
         };
 
         window.addEventListener("agent-action", handleAgentAction as EventListener);

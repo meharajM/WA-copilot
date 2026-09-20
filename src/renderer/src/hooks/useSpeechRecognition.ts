@@ -5,6 +5,12 @@ import { isElectron } from '../lib/electron'
 import { voskService } from '../lib/vosk'
 import { useLogStore } from '../stores/logStore'
 import { useChatStore } from '../stores/chatStore'
+import {
+    browserSpeechErrorMessage,
+    browserSpeechRecognitionSupported,
+    browserSpeechShouldRestart,
+    getBrowserSpeechRecognitionConstructor,
+} from '../lib/speech-capabilities'
 
 interface UseSpeechRecognitionReturn {
     isListening: boolean
@@ -47,6 +53,7 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
 
     // Refs for Web Speech API
     const recognitionRef = useRef<SpeechRecognition | null>(null)
+    const browserRestartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
     // Refs for WASM / Audio
     const visMediaStreamRef = useRef<MediaStream | null>(null)
@@ -84,8 +91,7 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
     // Check Web Speech API support in browser
     useEffect(() => {
         if (!useNativeSpeech) {
-            const SpeechRecognitionAPI = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
-            if (SpeechRecognitionAPI) {
+            if (browserSpeechRecognitionSupported()) {
                 setIsSupported(true)
                 console.log('[Speech] Web Speech API supported')
             } else {
@@ -102,13 +108,21 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
     useEffect(() => {
         if (useNativeSpeech) return // Skip for Electron
 
-        const SpeechRecognitionAPI = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+        const SpeechRecognitionAPI = getBrowserSpeechRecognitionConstructor()
         if (!SpeechRecognitionAPI) return
 
-        const recognition = new SpeechRecognitionAPI()
+        let recognition: SpeechRecognition
+        try {
+            recognition = new SpeechRecognitionAPI()
+        } catch (error) {
+            console.warn('[Speech] Browser speech initialization failed:', error)
+            setIsSupported(false)
+            setError(browserSpeechErrorMessage(error, settings.speechLang || VOICE_CONFIG.SPEECH_LANG))
+            return
+        }
         recognition.continuous = true
         recognition.interimResults = true
-        recognition.lang = VOICE_CONFIG.SPEECH_LANG // 'en-US'
+        recognition.lang = settings.speechLang || VOICE_CONFIG.SPEECH_LANG
 
         recognition.onresult = (event: any) => {
             let finalTranscript = ''
@@ -129,38 +143,57 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
             setInterimTranscript(interimResult)
         }
 
-        recognition.onerror = (event: any) => {
+        recognition.onerror = (event) => {
             console.error('[Speech] Web Speech API error:', event.error)
             if (event.error !== 'no-speech' && event.error !== 'aborted') {
-                setError(`Speech recognition error: ${event.error}`)
+                setError(browserSpeechErrorMessage(event, recognition.lang))
             }
-            setIsListening(false)
+            if (!browserSpeechShouldRestart(event)) {
+                shouldListenRef.current = false
+            }
+            if (!shouldListenRef.current) setIsListening(false)
         }
 
         recognition.onend = () => {
-            // Only update if we didn't manually stop
-            if (shouldListenRef.current) {
-                // Auto-restart for continuous recognition
+            if (!shouldListenRef.current) {
+                setIsListening(false)
+                return
+            }
+
+            // Chrome/Edge end continuous recognition periodically. Restart with
+            // a short delay, but avoid a tight loop when the browser rejects it.
+            if (browserRestartTimerRef.current !== null) return
+            browserRestartTimerRef.current = setTimeout(() => {
+                browserRestartTimerRef.current = null
+                if (!shouldListenRef.current) return
                 try {
                     recognition.start()
-                } catch (e) {
-                    console.log('[Speech] Recognition ended')
+                    setIsListening(true)
+                } catch (error) {
+                    console.warn('[Speech] Recognition restart failed:', error)
+                    shouldListenRef.current = false
                     setIsListening(false)
+                    setError(browserSpeechErrorMessage(error, recognition.lang))
                 }
-            } else {
-                setIsListening(false)
-            }
+            }, 100)
         }
 
         recognitionRef.current = recognition
 
         return () => {
+            // Abort from cleanup must never be mistaken for a user-requested
+            // continuous session by the old recognition instance.
+            shouldListenRef.current = false
+            if (browserRestartTimerRef.current !== null) {
+                clearTimeout(browserRestartTimerRef.current)
+                browserRestartTimerRef.current = null
+            }
             if (recognitionRef.current) {
                 recognitionRef.current.abort()
                 recognitionRef.current = null
             }
         }
-    }, [useNativeSpeech])
+    }, [useNativeSpeech, settings.speechLang])
 
 
     // Setup IPC listeners for Download Progress
@@ -401,7 +434,7 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
             } catch (e: any) {
                 if (shouldListenRef.current) {
                     console.error('[Speech] Start failed:', e)
-                    setError(`Setup failed: \${e}`)
+                    setError(`Setup failed: ${e?.message || String(e)}`)
                     setIsListening(false)
                     addLog({ eventType: 'ERROR', sessionId, component: 'useSpeechRecognition', details: { error: e.message || String(e) } })
                 }
@@ -413,13 +446,15 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
         } else {
             // Web Speech API fallback
             if (!recognitionRef.current) {
-                setError('Speech recognition not available')
+                shouldListenRef.current = false
+                setIsListening(false)
+                setError('Browser speech recognition is not supported in this browser. Use text input.')
                 return
             }
             try {
+                recognitionRef.current.lang = settings.speechLang || VOICE_CONFIG.SPEECH_LANG
                 recognitionRef.current.start()
                 setIsListening(true)
-                await startVisualization()
                 addLog({
                     eventType: 'STATE_CHANGE',
                     sessionId,
@@ -428,10 +463,12 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
                 })
             } catch (e: any) {
                 console.error('[Speech] Failed to start Web Speech API:', e)
-                setError(`Failed to start: ${e.message}`)
+                shouldListenRef.current = false
+                setIsListening(false)
+                setError(browserSpeechErrorMessage(e, settings.speechLang || VOICE_CONFIG.SPEECH_LANG))
             }
         }
-    }, [isListening, isInitializing, useNativeSpeech, addLog, currentModel, settings.voskModel, startVisualization])
+    }, [isListening, isInitializing, useNativeSpeech, addLog, currentModel, settings.voskModel, settings.speechLang, startVisualization])
 
     const stopListening = useCallback(async () => {
         const sessionId = useChatStore.getState().activeSessionId || 'unknown'
@@ -443,8 +480,17 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
             setIsInitializing(false)
             stopVisualization()
         } else {
-            if (!recognitionRef.current) return
-            recognitionRef.current.stop()
+            if (browserRestartTimerRef.current !== null) {
+                clearTimeout(browserRestartTimerRef.current)
+                browserRestartTimerRef.current = null
+            }
+            if (recognitionRef.current) {
+                try {
+                    recognitionRef.current.stop()
+                } catch (error) {
+                    console.debug('[Speech] Recognition was already stopped:', error)
+                }
+            }
             setIsListening(false)
             stopVisualization()
         }

@@ -10,7 +10,84 @@
  */
 
 import { create } from 'zustand'
-import { persist, createJSONStorage } from 'zustand/middleware'
+import { persist, createJSONStorage, type StateStorage } from 'zustand/middleware'
+import { getBrowserAgentdClient, type BrowserWhatsAppUiSettings } from '../lib/browser-agentd-client'
+import { isTauriRuntime } from '../lib/tauri-native-bridge'
+
+const isBrowserProduct = (): boolean => typeof window !== 'undefined' && !window.electron && !isTauriRuntime()
+
+const hasBrowserSession = (): boolean => {
+    if (typeof window === 'undefined') return false
+    const token = (window as Window & { __AICA_AGENTD_CSRF_TOKEN__?: unknown }).__AICA_AGENTD_CSRF_TOKEN__
+    return typeof token === 'string' && token.length > 0
+}
+
+const validPhone = (value: unknown): value is string => typeof value === 'string'
+    && value.length <= 32
+    && /^\+?[0-9\s().-]+$/.test(value)
+    && /^\d{8,15}$/.test(value.replace(/\D/g, ''))
+
+const toBrowserSettings = (value: unknown): BrowserWhatsAppUiSettings => {
+    const state = (value && typeof value === 'object' && !Array.isArray(value))
+        ? value as { whatsappEnabled?: unknown; businessBotMode?: unknown; targetPhoneNumber?: unknown }
+        : {}
+    return {
+        whatsappEnabled: state.whatsappEnabled === true,
+        businessBotMode: state.businessBotMode === true,
+        targetPhoneNumber: validPhone(state.targetPhoneNumber) ? state.targetPhoneNumber : null,
+    }
+}
+
+const encodeBrowserState = (settings: BrowserWhatsAppUiSettings): string => JSON.stringify({
+    state: {
+        ...settings,
+    },
+    version: 0,
+})
+
+const createBrowserWhatsAppStorage = (): StateStorage => ({
+    getItem: async (name: string) => {
+        if (!hasBrowserSession()) return null
+        const client = getBrowserAgentdClient()
+        let settings = await client.getWhatsAppUiSettings()
+        const legacy = window.localStorage.getItem(name)
+        if (legacy) {
+            let legacyState: unknown
+            try {
+                const parsed = JSON.parse(legacy) as unknown
+                legacyState = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+                    ? (parsed as { state?: unknown }).state
+                    : undefined
+            } catch {
+                window.localStorage.removeItem(name)
+            }
+            const migrated = toBrowserSettings(legacyState)
+            if ((migrated.whatsappEnabled || migrated.businessBotMode || migrated.targetPhoneNumber)
+                && !settings.whatsappEnabled && !settings.businessBotMode && !settings.targetPhoneNumber) {
+                try {
+                    settings = await client.saveWhatsAppUiSettings(migrated)
+                } catch {
+                    // Keep the legacy value for a later paired retry if the
+                    // daemon is temporarily unavailable during hydration.
+                    return encodeBrowserState(settings)
+                }
+            }
+            // The old browser-only copy is never authoritative after the
+            // paired agentd store has been consulted.
+            window.localStorage.removeItem(name)
+        }
+        return encodeBrowserState(settings)
+    },
+    setItem: async (_name: string, value: string) => {
+        if (!hasBrowserSession()) return
+        const parsed = JSON.parse(value) as { state?: unknown }
+        await getBrowserAgentdClient().saveWhatsAppUiSettings(toBrowserSettings(parsed.state))
+    },
+    removeItem: async () => {
+        if (!hasBrowserSession()) return
+        await getBrowserAgentdClient().saveWhatsAppUiSettings({ whatsappEnabled: false, businessBotMode: false, targetPhoneNumber: null })
+    },
+})
 
 export interface WhatsAppConnectionState {
     status: 'disconnected' | 'connecting' | 'qr_required' | 'connected' | 'logged_out' | 'blocked' | 'error'
@@ -74,7 +151,7 @@ export const useWhatsAppStore = create<WhatsAppState>()(
         }),
         {
             name: 'aica-whatsapp-v1',
-            storage: createJSONStorage(() => localStorage),
+            storage: createJSONStorage(() => isBrowserProduct() ? createBrowserWhatsAppStorage() : localStorage),
             partialize: (state) => ({
                 whatsappEnabled: state.whatsappEnabled,
                 businessBotMode: state.businessBotMode,

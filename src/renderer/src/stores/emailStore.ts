@@ -9,7 +9,10 @@
  */
 
 import { create } from 'zustand'
-import { persist, createJSONStorage } from 'zustand/middleware'
+import { persist, createJSONStorage, type StateStorage } from 'zustand/middleware'
+import type { EmailSettings } from '../../../shared/native-bridge'
+import { getBrowserAgentdClient } from '../lib/browser-agentd-client'
+import { isTauriRuntime } from '../lib/tauri-native-bridge'
 
 /** Supported email providers for MCP integration */
 export type EmailProvider = 'imap-smtp' | 'gmail-api' | 'outlook-api' | 'custom-mcp'
@@ -26,7 +29,7 @@ export interface EmailConnectionState {
 }
 
 /** Email channel configuration — persisted */
-interface EmailConfig {
+export interface EmailConfig extends EmailSettings {
   /** Logical mailbox account label for MCP server */
   accountName: string
   /** Selected email provider type */
@@ -116,6 +119,39 @@ const DEFAULT_CONFIG: EmailConfig = {
   draftMode: true, // Safe default: drafts only until user approves
 }
 
+const isBrowserProduct = (): boolean => typeof window !== 'undefined' && !window.electron && !isTauriRuntime()
+const browserStorage: StateStorage = {
+  getItem: async () => null,
+  setItem: async () => undefined,
+  removeItem: async () => undefined,
+}
+
+// Browser settings are durable agentd state, not renderer state. Serialize
+// writes so rapid form edits cannot finish out of order and overwrite newer
+// values. Keep this queue module-local; it is only a transport concern.
+let browserHydrationPromise: Promise<void> = Promise.resolve()
+let browserHydrated = !isBrowserProduct()
+let browserDirtyBeforeHydration = false
+let applyingBrowserSettings = false
+let browserSaveQueue: Promise<void> = Promise.resolve()
+
+const queueBrowserSettingsSave = (config: EmailConfig): void => {
+  if (!isBrowserProduct() || !browserHydrated) return
+  const queued = browserSaveQueue
+    .catch(() => undefined)
+    .then(() => getBrowserAgentdClient().saveEmailSettings(config))
+    .then(() => undefined)
+  browserSaveQueue = queued
+  void queued.catch(() => undefined)
+}
+
+/** Wait until browser email settings writes have reached authenticated agentd. */
+export const flushEmailSettingsPersistence = async (): Promise<void> => {
+  if (!isBrowserProduct()) return
+  await browserHydrationPromise
+  await browserSaveQueue
+}
+
 export const useEmailStore = create<EmailState>()(
   persist(
     (set) => ({
@@ -169,7 +205,8 @@ export const useEmailStore = create<EmailState>()(
     }),
     {
       name: 'aica-email-v1',
-      storage: createJSONStorage(() => localStorage),
+      // Browser settings are owned by authenticated agentd, never renderer storage.
+      storage: createJSONStorage(() => isBrowserProduct() ? browserStorage : localStorage),
       merge: (persistedState, currentState) => {
         const persisted = persistedState as Partial<EmailState> | undefined
         return {
@@ -188,3 +225,26 @@ export const useEmailStore = create<EmailState>()(
     }
   )
 )
+
+if (isBrowserProduct()) {
+  browserHydrationPromise = getBrowserAgentdClient().getEmailSettings().then((config) => {
+    if (!browserDirtyBeforeHydration) {
+      applyingBrowserSettings = true
+      useEmailStore.setState({ config })
+      applyingBrowserSettings = false
+    }
+    browserHydrated = true
+    if (browserDirtyBeforeHydration) queueBrowserSettingsSave(useEmailStore.getState().config)
+  }).catch(() => {
+    browserHydrated = true
+    if (browserDirtyBeforeHydration) queueBrowserSettingsSave(useEmailStore.getState().config)
+  })
+  useEmailStore.subscribe((state, previous) => {
+    if (state.config === previous.config || applyingBrowserSettings) return
+    if (!browserHydrated) {
+      browserDirtyBeforeHydration = true
+      return
+    }
+    queueBrowserSettingsSave(state.config)
+  })
+}

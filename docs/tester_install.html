@@ -119,8 +119,26 @@
         </div>
     </section>
 
+    <section id="windows-runtime">
+        <h2>2. Windows Browser-First Runtime</h2>
+        <p>For Windows users, the product workspace runs in Edge or Chrome. The small AICA native companion is used only for OS capabilities and local service lifecycle; it is not a second chat/settings application.</p>
+        <div class="setup-step">
+            <div class="setup-step-number">1</div>
+            <div class="setup-step-content"><b>Start the companion</b>: Launch the AICA native companion and wait for the local service to report ready.</div>
+        </div>
+        <div class="setup-step">
+            <div class="setup-step-number">2</div>
+            <div class="setup-step-content"><b>Open the workspace</b>: Choose <b>Open browser workspace</b> from the native diagnostics screen or tray menu.</div>
+        </div>
+        <div class="setup-step">
+            <div class="setup-step-number">3</div>
+            <div class="setup-step-content"><b>Pair once</b>: Enter the six-digit code shown by the explicit native <b>Show pairing code</b> action. The code expires, is single-use, and is not stored in the browser.</div>
+        </div>
+        <div class="alert-info"><b>Native boundary</b>: File/folder dialogs, credential presence, continuity staging and service diagnostics stay in the companion. Chat, channels, settings, Brain, memory and approvals stay in the browser tab. See <code>docs/app-behavior.md</code> for pass/fail behavior and known migration limits.</div>
+    </section>
+
     <section id="openrouter">
-        <h2>2. Connecting the AI (OpenRouter Guide)</h2>
+        <h2>3. Connecting the AI (OpenRouter Guide)</h2>
         <p>To enable the agent's "Brain," you must connect an LLM Provider. We recommend <b>OpenRouter</b> for access to top-tier models like GPT-4o or Claude 3.5 Sonnet.</p>
 
         <div class="setup-step">
@@ -157,18 +175,18 @@
     </section>
 
     <section id="usage-flow">
-        <h2>3. App Usage Lifecycle Flow</h2>
+        <h2>4. App Usage Lifecycle Flow</h2>
         <p>This flowchart summarizes the onboarding journey from first install to autonomous business support.</p>
 
         <div class="usage-grid">
             <div class="usage-card">
                 <div class="usage-card-icon">1️⃣</div>
-                <div class="usage-card-text"><b>Identity Verification</b>: Pair your "Admin" phone to receive relay notifications.</div>
+                <div class="usage-card-text"><b>Local pairing</b>: Pair the Edge/Chrome workspace with the six-digit code from the native companion.</div>
             </div>
             <div class="connector"></div>
             <div class="usage-card">
                 <div class="usage-card-icon">2️⃣</div>
-                <div class="usage-card-text"><b>Doc Training</b>: Upload Company PDFs/XLS to the Dashboard's "Train AI" section.</div>
+                <div class="usage-card-text"><b>Doc Training</b>: Upload bounded text/Markdown/CSV/JSON/XML/HTML/log content or supported PDF/DOCX/XLS/XLSX/PPTX files in the browser "Train AI" section. The local agentd converter caps source files at 16 MiB and Markdown output at 512 KiB; unsupported or malformed documents fail closed.</div>
             </div>
             <div class="connector"></div>
             <div class="usage-card">
@@ -178,7 +196,7 @@
             <div class="connector"></div>
             <div class="usage-card">
                 <div class="usage-card-icon">4️⃣</div>
-                <div class="usage-card-text"><b>Go Live</b>: After pairing WhatsApp, enable <b>Response Permission</b> to allow sending and optionally enable <b>Autonomous Bot Mode</b> for automatic handling.</div>
+                <div class="usage-card-text"><b>Go Live</b>: In the browser workspace, enable <b>Response Permission</b> only for explicit text sends and approved drafts. <b>Autonomous Bot Mode</b> is intentionally disabled in browser mode; it remains an Electron transition-client capability until the supervised agentd response-policy path is migrated.</div>
             </div>
             <div class="connector"></div>
             <div class="usage-card" style="border: 2px solid var(--accent); background: #EFF6FF;">

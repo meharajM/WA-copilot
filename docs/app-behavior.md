@@ -1,6 +1,6 @@
 # App Behavior
 
-Last updated: 2026-07-10
+Last updated: 2026-09-18
 
 ## Purpose
 
@@ -20,9 +20,28 @@ Use this document to answer:
 
 If older manuals, screenshots, or marketing copy disagree with the running code, treat this file and the current code as authoritative for QA.
 
+## Runtime boundary
+
+- The supported product workspace is rendered in the user's web browser (Windows Edge or Chrome are the primary targets) and talks to the local authenticated `agentd` service over loopback HTTP.
+- The Tauri companion is a lightweight native host for OS-only capabilities such as keychain access, file/folder dialogs, service lifecycle and diagnostics. It must not render a second product workspace or own business workflows.
+- In a real Tauri runtime, the only rendered surface is the native-host diagnostics/onboarding screen. Chat, settings, channels, Brain/knowledge, memory, approvals and all other product screens are browser-only; no query parameter can opt a Tauri window into them.
+- The runtime entrypoints are intentionally different: Electron's `index.html` mounts the legacy `App.tsx` client, while `tauri.html` mounts `tauri-main.tsx`. In a normal Edge/Chrome tab, `tauri-main.tsx` mounts `BrowserProduct`; inside a Tauri webview it mounts `NativeHostDiagnostics` only.
+- In the browser product, native dependency installation/checks are skipped explicitly; host tools are owned by the companion/agentd boundary and the browser must not show an Electron terminal-install gate.
+- The expected Windows flow is: start the native companion/service, choose `Open browser workspace` from the native diagnostics/tray, pair once in Edge or Chrome with the six-digit code revealed by the owner action, and keep using the browser tab. The companion also displays the bounded loopback URL for manual copy. The code is one-time, short-lived, never copied into browser storage, and never returned by the product API.
+- `agentd` owns the loopback HTTP listener, pairing/session state and durable product database. The native host validates the private runtime descriptor and reuses a live daemon; it starts a packaged child only when no valid daemon is available. While the companion is running, its supervisor reaps and restarts a child that it started after a crash, while refusing to start a second writer when another valid descriptor exists. On Windows, an owner can register the lightweight companion for the current user's sign-in from native diagnostics; the per-user Task Scheduler entry starts it with `--background` and retries a failed companion with bounded restart settings. Closing the browser or companion does not stop a running `agentd`; explicit agent controls own processing state. Installer-driven enrollment, signed Windows install/upgrade evidence and recovery after an intentional user quit remain release checks.
+- When the daemon serves the bundled UI, a request for `/` falls back to the `tauri.html` entry when no `index.html` exists. Direct requests for unsupported or traversal paths fail closed rather than exposing files outside the UI root.
+- Electron remains a transition client until browser plus `agentd` feature/data parity is evidenced.
+
+### Native-host-only actions
+
+- The native diagnostics screen may report daemon health/origin/version, reveal the owner pairing code, open the browser workspace, select a file or folder for an explicitly initiated workflow, check credential presence, and stage/rollback the bounded continuity snapshot.
+- On Windows, the native diagnostics screen may install or remove the current-user sign-in service. Registration is owner-triggered, runs with least privilege, starts the companion without opening a second product workspace, and never accepts a user-selected executable or command.
+- Native commands return paths or status only to the native host workflow that requested them. Browser product code does not receive arbitrary native filesystem paths, secret values, pairing codes or a generic native command proxy.
+- A custom button label for the native file picker is rejected because the Tauri dialog does not support that option; callers must use the platform picker labels.
+
 ## Verification Order
 
-1. Startup and dependency gate
+1. Startup, daemon readiness, and pairing
 2. Navigation and session model
 3. Channel flows: WhatsApp, Email
 4. Knowledge and memory
@@ -44,19 +63,26 @@ For packaged-app testing, also verify one of:
 - `/Applications/AIConsumerAgent.app`
 - `dist/mac-arm64/AIConsumerAgent.app`
 
+Repository validation note:
+
+- The repository-wide `npm run typecheck` covers both transition Electron code and browser/Tauri code. The Electron-only Antigravity service is source-controlled without embedded OAuth credentials; runtime client credentials are environment-provided, and missing configuration fails closed at sign-in. Browser/Tauri product paths continue to use authenticated `agentd` providers and never call this service.
+- The browser/Tauri migration checks remain independently runnable: `npm run typecheck:renderer`, `npm run test:unit`, `npm run test:integration`, `npm run test:agentd`, `npm run test:agentd:credentials`, `cargo test --locked --manifest-path src-tauri/Cargo.toml`, and `npm run build:tauri:web`. Report each command separately and include the native Windows CI result when evaluating a Windows release candidate.
+
 ## Global Contract
 
 ### Launch and dependency gate
 
-- On app launch, missing system dependencies can block normal use with a full-screen dependency modal.
-- If no dependencies are missing, the modal dismisses automatically.
-- The dependency modal can re-check on window focus.
-- The dependency modal allows a local install script or a skip path.
+- Electron transition-client launch may show a full-screen dependency modal when host tools are missing. The modal can re-check on window focus and offers the existing install/skip path.
+- Edge/Chrome browser launch does not run the Electron dependency check, install tools, or inspect host binaries. The browser entry first checks authenticated loopback `agentd` readiness.
+- Tauri launch renders only native diagnostics/onboarding. It does not mount the product dependency modal or product workspace.
+- Browser readiness has three observable states: `Connecting to local agent…`, `Local service unavailable` (with `Retry connection`), and `Pair this browser` (with a six-digit owner-code form). Successful one-time pairing mounts the full browser workspace.
+- The browser does not start `agentd` itself. On Windows, start the native companion/service, then retry or pair from Edge/Chrome. The browser page never persists or receives the pairing code through a product API response.
 
 Pass evidence:
 
-- Missing dependencies are listed when present.
-- Running the install path or resolving dependencies clears the blocker.
+- Electron: missing dependencies are listed when present and the install path or resolving dependencies clears the blocker.
+- Browser: an unavailable daemon shows the explicit retry state; a live unpaired daemon shows the pairing form; successful pairing opens the product shell without a second native/product window.
+- Tauri: native diagnostics can report daemon health and expose the owner action to open the browser workspace; no product workspace is mounted in the native window.
 
 ### Main navigation
 
@@ -85,6 +111,7 @@ Pass evidence:
   - title
   - messages
   - active/resolved status
+  - channel, contact identifier, and optional thread identifier for omnichannel sessions
   - optional workspace path
   - optional topic classification
 - Agent execution is isolated per session. Switching sessions while one is running must not move output into the wrong session.
@@ -98,13 +125,18 @@ Pass evidence:
 
 - The dashboard view is the operational home screen.
 - It surfaces live-ish metrics derived from session, RAG, memory, and intelligence stats.
+- In the browser product, memory statistics and intelligence statistics/logs are read from authenticated `agentd` endpoints; the dashboard must not depend on Electron IPC. Electron remains the transition-client path only.
 - It offers at least:
   - WhatsApp connect or toggle action
   - knowledge upload
   - knowledge test drive
   - topic analysis of sessions
-- Knowledge upload accepts documents and images.
+- Conversation Topics stays empty until real sessions are analyzed; the browser must not display seeded percentages as if they were activity.
+- A fresh browser workspace reports `0%` autonomy until at least one authenticated accuracy event exists; it must not present an empty dataset as successful automation.
+- Knowledge upload accepts documents and images in the legacy Electron flow. In the browser product, the authenticated agentd adapter accepts bounded text/Markdown/CSV/JSON/XML/HTML/log files directly and converts supported PDF, DOCX, XLS/XLSX, and PPTX files through the supervised `markitdown-mcp[all]` worker. Browser uploads are limited to 16 MiB source bytes and 512 KiB converted Markdown; password-protected, unsupported, malformed, or oversized documents fail closed without exposing a native path.
+- Legacy `.doc`/`.ppt`, ODT, RTF, and image parser parity is not claimed by the browser converter; those files remain explicit fail-closed cases until a compatible converter is added.
 - Knowledge test drive runs a RAG search and then asks the selected LLM to answer only from retrieved context.
+- Assistant corrections use the same runtime-aware knowledge route: browser corrections are persisted by authenticated agentd, while Electron uses its internal RAG tool. The UI only reports success after the route returns success.
 
 Pass evidence:
 
@@ -119,9 +151,26 @@ Pass evidence:
 - `Shift+Enter` keeps a newline.
 - File attachments are supported.
 - If no workspace is set and a file has a native path, the parent folder becomes the session workspace.
+- In the browser, supported text and small image attachments are bounded and persisted through `agentd`; the browser directory picker records a workspace reference without exposing arbitrary native paths to page JavaScript.
+- Browser generation forwards those validated text/image parts through the authenticated `agentd` request, so providers receive the same bounded attachment content that durable chat history records; unsupported binary formats remain metadata-only and are never uploaded as raw bytes.
 - Voice input is supported through the speech hook.
-- In Electron, offline/native speech is the default path.
+- In Electron, offline/native Vosk speech remains the default path and keeps its
+  model-download/setup flow.
+- In the browser product (including Windows Edge/Chrome), voice input uses the
+  browser Web Speech API when `SpeechRecognition` or
+  `webkitSpeechRecognition` is available. Browser speech is browser/provider-
+  controlled and may require network access; it does not download or execute
+  Vosk models in the browser.
+- Browser voice starts only after the user presses the microphone control, so
+  microphone permission is not requested at page load. A browser that does not
+  expose Web Speech API keeps the microphone control disabled and remains fully
+  usable for text input. Permission, missing-device, unsupported-language and
+  speech-service errors show actionable text instead of silently retrying.
+- The browser path does not open a second `getUserMedia` stream for a level
+  meter; the Web Speech API owns microphone capture. Native Vosk visualization
+  remains unchanged in Electron.
 - Agent execution writes user messages immediately, then streams assistant/tool progress into the owning session.
+- In the browser product, assistant text arrives through authenticated `agentd` SSE events. Canceling a generation aborts daemon/provider work, leaves no partial assistant message, and allows retry with the same request id; cancellation is not shown as an error message.
 - Background memory reflection runs asynchronously after submission.
 
 Pass evidence:
@@ -129,6 +178,9 @@ Pass evidence:
 - Text submit creates or updates the correct session.
 - Attachments appear in the session and do not break submit.
 - Voice transcript populates the input when supported.
+- In browser QA, grant microphone permission only after clicking the mic; verify
+  interim text, final text, stop/restart, configured `speechLang`, and fallback
+  to text when permission or browser support is unavailable.
 
 ## WhatsApp Channel
 
@@ -150,14 +202,17 @@ Pass evidence:
 
 - Dialog step transitions match actual connection state.
 - Clearing auth requires re-scan on next connect.
+- In browser mode, the QR, connection state, handshake, disconnect and auth-directory lifecycle are owned by authenticated local `agentd`; Tauri remains a native capability host and does not render this dialog.
 
 ### Runtime gating
 
-- Incoming WhatsApp messages are ignored if both of these are off:
+- In Electron, incoming WhatsApp messages are ignored if both of these are off:
   - `Response Permission` (`whatsappEnabled`)
   - `Autonomous Bot Mode` (`businessBotMode`)
+- In the browser product, `Autonomous Bot Mode` is available as an explicit authenticated `agentd` setting. Bounded inbound text/caption generation is gated by either `Response Permission` or `Autonomous Bot Mode`; the former creates a durable review draft, while the latter approves and sends through the same durable outbox used by operator-approved drafts.
 - Incoming self-messages are ignored.
 - On disconnect or connection error, `Response Permission` is automatically turned off.
+- In browser mode, `Response Permission`, `Autonomous Bot Mode`, and the selected target number are persisted in authenticated `agentd` UI state; a one-time legacy renderer copy may be imported only after pairing and is removed after a successful read. Inbound text/caption events enter the authenticated agentd generation path only when either gate is on. Response Permission leaves the result as a durable review draft; Autonomous Bot Mode performs an explicit `draft -> approved -> outbox send` transition, so retries and duplicate provider calls remain safe. Explicit text sends and approved drafts remain separately gated.
 
 Pass evidence:
 
@@ -166,16 +221,30 @@ Pass evidence:
 
 ### Response behavior
 
-- Customer non-text WhatsApp media is rejected with a text-only support message.
+- Electron customer non-text WhatsApp media is rejected with a text-only support message. Browser Baileys consumes only bounded text and media captions; media without captions is ignored and no media bytes are downloaded. The browser compatibility wrapper also returns an explicit unsupported result for `sendMediaMessage` and `sendPresence`; it must not pretend that native media/presence operations succeeded.
+- Browser inbound text/caption events can generate a response through the browser runtime (agentd-backed providers or the explicitly selected WebGPU model). Review mode admits the result as a durable draft; Autonomous Bot Mode immediately performs the authenticated approval/outbox transition. Neither path calls the Electron agent or sends directly from the browser.
+- Browser Email Auto-Reply uses a deterministic per-event draft record as its completion marker. A completed chat generation without a persisted draft is retried, and inbound acknowledgement waits for the draft/send policy write to finish; this prevents reloads or transient agentd failures from silently dropping a response.
+- When the browser user explicitly selects WebGPU for Email generation, only response generation runs in the tab. The confidence policy, deterministic draft record, approval state, and any approved delivery still run through authenticated agentd; the browser must never call `electron.email.send` or treat a local WebGPU response as delivered.
 - During long-running customer handling, a courtesy message is sent after 60 seconds.
 - If the generated response indicates escalation, the admin/personal phone is notified.
 - Successful customer resolutions are logged to intelligence stats.
+
+### Browser-first transport
+
+- Edge/Chrome owns the product workflow. With Baileys selected, the browser calls authenticated local `agentd` routes for QR/session state, handshake, disconnect and text sends; the daemon keeps the multi-file auth directory on the local machine and never returns auth keys to the page. With Cloud transport selected, explicit sends use the authenticated `agentd` Cloud API route; the access token stays in the OS credential store and never reaches the page.
+- The agentd WhatsApp worker is lazy: constructing the daemon does not import Baileys or open a WhatsApp socket. Baileys dependencies load only after the operator explicitly starts a Baileys connection, preserving local CPU/network resources for the model and browser workspace.
+- Browser sends fail closed when the selected transport or credentials are unavailable. The migrated Baileys path supports explicit text sends, approved drafts, and Autonomous Bot Mode through the same idempotent text-only outbox; `agentd` records a durable pending/sent/failed entry and suppresses duplicate provider calls for either Baileys or Cloud. Failed attempts can be retried through the authenticated browser route; an operator can quarantine or cancel a failed attempt, and those dispositions block accidental re-send. Pending provider work cannot be cancelled or quarantined and returns an explicit conflict. Browser autonomous text handling now also emits at most one durable 60-second courtesy message, durable admin escalation notification, and resolved/forwarded intelligence log per inbound event. WhatsApp Web automation, media delivery, inactivity follow-up parity and full continuity remain unavailable.
+- The local Baileys worker normalizes bounded text and media captions into durable inbound events using stable provider message IDs. Self-messages and broadcast/system messages are ignored; media bytes are not downloaded into the browser path, so unsupported media remains fail-closed.
+- A failed channel send does not discard the local chat submission; the browser records the failure through its normal audit/error path so the operator can retry after fixing configuration.
+- Browser autonomy metrics come from authenticated agentd durable state (inbound events, draft/outbox statuses, and completed generations). Unsupported decision-review and recovery metrics remain explicitly zero until their agentd adapters are migrated; the UI must not present fabricated success activity.
+- The browser Autonomy panel refreshes its authenticated agentd supervisor state every five seconds while mounted, so pause/resume, queue, and outbox changes made by another browser tab or the native companion become visible without a reload. Electron keeps its push-event subscription.
 
 Pass evidence:
 
 - Non-text customer media does not enter the normal autonomous handling path.
 - Long-running requests send exactly one courtesy notification.
 - Escalations notify the admin channel.
+- A configured Baileys send reaches the connected local session, or a configured Cloud send reaches Meta through `agentd`, while no credential/auth value appears in browser responses, logs or persisted renderer state.
 
 ### Resolution audit
 
@@ -193,12 +262,19 @@ Pass evidence:
 
 ### Positioning
 
-- Email is a client-side local connector flow.
+- Electron currently runs the legacy client-side local connector flow. In the browser product, non-secret Email configuration, app-password IMAP/SMTP, bounded Gmail OAuth/API transport, and bounded operator-selected outbound MIME attachments are owned by authenticated `agentd`; custom MCP paths remain explicitly unavailable. Gmail OAuth inbound attachment metadata is retained for operator inspection only.
 - The primary path is IMAP/SMTP.
 - Gmail is presented as a first-class option, but defaults to app-password mode.
 - Google sign-in is optional, not required.
+- Browser Email settings never use renderer `localStorage` and app-password values are write-only through the authenticated daemon credential route; the browser cannot read them back. New browser writes populate the daemon's `email_imap_password` and `email_smtp_password` slots; the legacy `email_mcp_password` slot remains a read-only fallback for continuity.
+- Browser email drafts are persisted as bounded, authenticated `agentd` records. Reloading Edge/Chrome rehydrates the same pending/rejected/approved history; the browser does not use renderer `localStorage` as a second draft authority.
+- On the first browser startup after this migration, a legacy `aica-email-drafts-v1` renderer record is validated and handed off to agentd; the legacy key is removed only after every draft is accepted, so malformed or partially migrated data remains recoverable for owner review.
+- In browser mode, enabling the Email Channel persists the desired state and starts the daemon IMAP poller only when app-password mode, IMAP TLS, an IMAP host, and an OS credential are present, or starts the Gmail API poller only when Google Sign-In is active. `Auto-Reply` controls whether the browser claims queued events, creates review sessions, runs the authenticated browser generation path, and applies the existing confidence/draft policy; it does not bypass Draft Mode or the explicit approved-draft delivery gates. Outbound SMTP/Gmail API delivery is available only through the authenticated agentd send route and its gates.
+- When browser Auto-Reply is enabled, the page reads only queued normalized events, hydrates the durable session/message, generates through authenticated agentd, and acknowledges each event only after generation and policy handling complete. Acknowledgement is idempotent; a failed generation or policy operation leaves the claimed event unacknowledged for daemon retry. Completed events are not reprocessed by another browser tab. Sensitive/low-confidence responses remain escalated or drafted, while high-confidence responses may use the same approved delivery gate when Draft Mode is off.
 
 ### Provider and auth behavior
+
+- Browser Firebase sign-in does not hydrate API-key values through the Electron secure-store bridge. The browser keeps provider fields empty in renderer memory and resolves configured credentials only inside authenticated `agentd`; auth transitions therefore cannot call Electron IPC or expose a secret to the page. Re-entering a provider key in browser Settings writes it to the daemon's OS-backed credential adapter and clears the input after the write succeeds.
 
 - Gmail preset server values are:
   - `imap.gmail.com:993`
@@ -213,24 +289,38 @@ Pass evidence:
 
 Pass evidence:
 
-- Gmail app-password mode can test and start without requiring OAuth.
-- Gmail Google sign-in mode fails cleanly when OAuth is not configured or not signed in.
+- After a browser Firebase sign-in or reload, provider key inputs remain empty while configured provider checks still resolve through agentd; browser developer logs show no Electron secure-store call and no API-key value in the response/state payloads.
+- Electron Gmail app-password mode can test and start without requiring OAuth. Browser Gmail app-password mode can persist credentials, run the bounded transport probe, start the gated text-only IMAP poller, and deliver explicitly approved drafts through authenticated SMTP, including optional bounded operator-selected attachments.
+- Browser Gmail Google Sign-In starts a PKCE loopback flow from the local agentd, opens the provider consent page in a browser tab, stores only the refresh token in the agentd OS credential adapter, and exposes only bounded status. The callback is one-time and short-lived; access/refresh tokens never enter browser state, URLs after callback, logs, or API responses.
+- Browser Gmail OAuth mode requires configured `GMAIL_OAUTH_CLIENT_ID` (and the server-managed client secret when the provider requires it) and a signed-in status. It runs bounded Gmail API inbox polling and approved sends with optional bounded operator-selected attachments; expired/revoked refresh tokens fail closed and require explicit sign-in again.
+
+Browser parity boundary:
+
+- In browser mode, email settings and app-password credentials are stored by authenticated local `agentd`; the renderer never reads password values back.
+- `Test Connection` performs a server-side IMAP/SMTP secure-transport probe or Gmail API profile probe and reports only bounded reachability/TLS results. It does not expose credentials or guarantee that the separately gated background mailbox worker is currently healthy.
+- Browser Gmail Google Sign-In and its bounded Gmail API worker are agentd-owned. The worker retains bounded attachment metadata without downloading it into the agent context; an authenticated operator may inspect a Gmail attachment through the daemon only after a size, MIME and magic-byte check. Custom MCP transports remain explicitly unavailable; Electron retains its existing legacy connector behavior during transition.
+- Browser settings survive reload/restart without exposing the credential value; rapid form edits are serialized before `Test Connection`, `Save Setup`, or any go-live feedback so an older network response cannot overwrite newer settings. Browser test/start uses the daemon probe/worker gates and never probes Electron IPC.
+- Draft edits, approvals, rejection, deletion, and explicit send use authenticated agentd mutations with CSRF protection. Only an approved draft, enabled app-password transport with an OS-stored SMTP credential, or enabled signed-in Gmail OAuth transport can trigger delivery. The daemon sends text/plain or bounded multipart/mixed attachments over authenticated TLS/STARTTLS or Gmail API, marks the draft `sent` only after provider success, and marks failed attempts `failed`; custom MCP and multipart HTML remain fail-closed. Browser-selected attachments are limited to five files/10 MiB total, validated for filename/MIME/base64 integrity, and scanned for supported PDF/image/text magic bytes before delivery. Operator-only Gmail attachment inspection returns bytes only after the bounded safety scan passes and never feeds those bytes to autonomous generation.
+- Browser continuity status is read-only and authenticated. It reports agentd-owned record counts, the allowlisted Electron-to-agentd store contract, and per-key credential presence (`present`/`available`) without returning secret values. Electron stores remain `pending` until an explicit owner-approved native migration flow validates, backs up, imports, and requires reauthentication; the browser endpoint never reads or imports Electron files. Native staging is hash-checked and retry-safe after a lost response; a tampered or partial snapshot fails closed and must be explicitly rolled back.
 
 ### Channel gating
 
-- `Enable Email Channel` controls whether the background email bridge starts.
+- In Electron, `Enable Email Channel` controls whether the background email bridge starts. In browser mode, it persists the desired state and controls whether the daemon's gated IMAP poller runs; it does not authorize SMTP delivery by itself.
 - `Draft Mode` controls whether even high-confidence outbound replies are held as drafts.
-- `Auto-Reply` controls whether inbound email messages are submitted into the agent pipeline.
-- Current behavior: if `Auto-Reply` is off, inbound emails are ignored by the email bridge and no session is created from inbound mail.
+- `Auto-Reply` controls whether the browser claims queued inbound email messages, hydrates sessions, and submits them to the authenticated agentd generation/policy path. It does not bypass Draft Mode, sensitive-topic escalation, or the approved delivery gate. The daemon may still ingest and retain normalized events while this gate is off.
+- Current behavior: if `Auto-Reply` is off, inbound emails do not create browser email sessions; enabling it claims queued events, runs the browser confidence policy, creates durable review drafts when required, and acknowledges only after the policy result is durably handled.
 
 Pass evidence:
 
 - With `Auto-Reply` off, inbound email does not create an email session.
-- With `Auto-Reply` on and the channel enabled, inbound email can create a session.
+- With `Auto-Reply` on and the channel enabled, inbound email can create a review session; no browser automatic reply is generated.
+- Browser `Test Connection` reaches the local agentd endpoint, rejects missing credentials, and never returns the stored app password.
+- Browser inbound processing is restart-safe: the daemon IMAP worker or Gmail API worker queues deduplicated events, then the browser atomically claims them as `processing` before mapping them to sessions/messages, and agentd marks them completed only after persistence succeeds; duplicate claims and acknowledgements do not create another chat message. Gmail polling advances a bounded timestamp cursor with overlap and durable provider-event deduplication.
+- In browser mode, the Drafts panel allows review/edit/approve/reject, lets an operator select bounded safe attachments, and invokes the daemon-owned send route only for approved drafts. It must not call an Electron IPC fallback or append a synthetic send failure to the draft text.
 
 ### Safety and reply behavior
 
-- Test connection starts and stops the email channel to verify connectivity.
+- Electron `Test Connection` starts and stops the legacy email channel to verify connectivity. Browser `Test Connection` runs the authenticated agentd secure-transport or Gmail API profile probe; background IMAP/Gmail polling has its own enable/auth gates. Browser draft send performs the separate authenticated SMTP or Gmail API transaction.
 - Drafts are the safe default.
 - Sensitive topics such as refunds, legal, disputes, fraud, and account-deletion style requests escalate.
 - Medium-confidence replies become drafts.
@@ -256,7 +346,7 @@ Pass evidence:
   - pending review
   - escalated
   - recent history
-- Drafts can be edited, approved, rejected, or sent.
+- Drafts can be edited, approved, rejected, or sent. In Edge/Chrome, approval and sending are separate explicit actions; status cannot be changed to `sent` without a successful provider-backed outbox call.
 - Sending a draft uses reply headers and normalized `Re:` behavior.
 
 Pass evidence:
@@ -272,9 +362,10 @@ Pass evidence:
 - Users can:
   - add knowledge
   - search documents by name
-  - open the original file
+  - open the original file in Electron when a native path exists
   - delete indexed knowledge
-- Ingestion uses the internal RAG tool path.
+- Electron ingestion uses the internal RAG tool path. Browser ingestion uses authenticated agentd knowledge routes and stores bounded text or converted Markdown content in the daemon-owned SQLite database; the browser sends file bytes, never an arbitrary native path.
+- Browser-indexed `browser://knowledge/...` entries do not expose an original native file path or an open-in-Explorer action. Binary conversion runs only through the fixed supervised MarkItDown capability, with a private daemon temp file removed after conversion; native-file reveal remains unsupported in the browser.
 
 Pass evidence:
 
@@ -284,16 +375,20 @@ Pass evidence:
 ### Knowledge Base settings
 
 - Knowledge Base settings expose long-term memory configuration, not just RAG files.
-- Supported memory backends are:
+- Electron supports two selectable memory backends:
   - `sqlite` (recommended default)
   - `server-memory` (compatibility backend)
+- The browser product has one instantiated memory backend: daemon-owned SQLite (`agentd-sqlite`). A legacy browser preference containing `server-memory` is accepted only for recovery and canonicalized to SQLite before it is returned or persisted; the browser never starts an MCP `server-memory` process.
 - The panel shows entity count, relation count, storage size, and average search latency.
 - `memento-mcp` is not selectable until its adapter is implemented. Persisted legacy selections fall back to SQLite.
 - A memory inspector is available.
+- In the browser product, memory stats, bounded graph tool calls, and raw JSON export use authenticated agentd routes. The browser does not expose the daemon's native database path; opening the file location remains a desktop-only capability.
+
+Browser session channel/contact metadata is also persisted by authenticated `agentd` session routes, so Lead Directory entries survive browser reload and daemon restart without renderer-local storage.
 
 Pass evidence:
 
-- Backend change persists.
+- Electron backend changes persist after restart. In the browser, selecting SQLite persists the browser preference and a legacy `server-memory` value is visibly normalized to SQLite; no second memory process is started.
 - Stats refresh works.
 - Test write updates memory state when the backend is working.
 
@@ -310,8 +405,11 @@ Pass evidence:
 
 ## Business Tools and MCP
 
-- The Business Tools section manages MCP servers except the hidden internal Playwright entry.
-- Supported actions include:
+- The browser workspace is the primary Windows user interface. It talks to the
+  paired loopback `agentd` service; it does not load Electron IPC or a generic
+  native-command proxy for MCP.
+- In Electron, the Business Tools section manages MCP servers except the hidden internal Playwright entry.
+- Electron-supported actions include:
   - add
   - edit
   - connect
@@ -320,11 +418,13 @@ Pass evidence:
   - toggle auto-connect
   - troubleshoot
 - Troubleshoot injects a prompt into chat for the AI to inspect a tool failure.
+- In the browser product, migrated agentd-owned memory and knowledge tools remain available, and the supervised MCP worker owns approved external MCP execution. Authenticated `GET /api/v1/mcp` and `GET /api/v1/mcp/servers` expose bounded lifecycle/identity/runtime metadata; browser add/edit/remove, auto-connect, connect/disconnect, tool-list, tool-call, and cancellation actions use the same authenticated agentd authority. The worker accepts only policy-approved `uvx` stdio packages (`markitdown-mcp[all]` and the pinned email server) plus validated SSE/HTTP endpoints, allowlists tool names, bounds schemas/arguments/results, rate-limits calls, and resolves supported credential names inside the OS-backed daemon store. Environment values never reach the page or logs. Internal Playwright/filesystem/native command definitions remain unavailable in the browser and must fail explicitly; Electron retains its existing MCP path during transition.
 
 Pass evidence:
 
-- MCP server form can create and update entries.
-- Connection state changes reflect in the UI.
+- Electron MCP server form can create and update entries.
+- Electron connection state changes reflect in the UI.
+- Browser shows the supervised MCP management and execution state, with explicit errors for disallowed legacy/internal definitions; authenticated memory/knowledge routes remain usable. Tauri exposes no MCP UI or generic MCP/native command bridge.
 
 ## Bot Identity
 
@@ -350,12 +450,12 @@ Pass evidence:
   - `browser`
 - Provider availability is checked from the settings panel.
 - API keys are stored through secure storage, not plain text inputs only.
-- Current UI exposes cards for:
-  - Ollama
-  - OpenAI / Compatible
-  - Gemini
-  - OpenRouter
-- Current limitation: `browser` exists in the provider selector, but there is no dedicated settings card in this panel yet.
+- In Edge/Chrome, loopback Ollama is a daemon-owned local-model path and WebGPU/WebLLM is an explicit browser-owned on-device path. For Ollama, the browser sends only validated model/base-URL settings; `agentd` reads no Ollama secret and performs the local `/api/tags` and OpenAI-compatible chat calls. Browser Ollama URLs are restricted to `http://localhost`, `http://127.0.0.1`, or `http://[::1]`.
+- Tauri does not render this product settings card. It exposes only native-host diagnostics and OS capability controls; the browser owns the LLM UI.
+- Browser UI exposes cards for Ollama, OpenAI / Compatible, Gemini, OpenRouter, and explicit On-Device (WebGPU). Gemini uses the authenticated agentd credential/test/generation routes; the API key never enters browser responses or durable renderer state.
+- Browser `auto` uses only the fixed daemon provider order (`openai`, `openrouter`, `gemini`, then loopback Ollama). The browser never downloads a local model implicitly. Selecting `On-Device` is an explicit local WebGPU choice: the user downloads a supported model in Edge/Chrome, selects it, and then generation runs in the browser renderer rather than through agentd.
+- On-Device model bytes remain in the browser's model cache/profile. The browser checks WebGPU support, shows download progress, allows deletion of inactive cached models, and fails closed with an actionable error when the selected model has not been downloaded. The selected model is persisted through the authenticated product-preferences route; the agentd LLM settings schema accepts the `browser` preference only for persistence and never executes it server-side. A real Windows Edge/Chrome smoke is still required to prove adapter availability, first-download completion, cache reuse after reload, and switching back to an agentd provider; headless CI cannot prove those hardware-dependent states.
+- Electron UI retains its existing Ollama, OpenAI / Compatible, Gemini, OpenRouter, and on-device/browser options. Electron routing and storage remain unchanged while it is the transition client.
 
 Pass evidence:
 
@@ -393,17 +493,19 @@ Pass evidence:
 ## Audit Logs
 
 - Audit Logs show the local log path.
-- A reveal/open-folder action is available.
+- Electron exposes a reveal/open-folder action. The Tauri native diagnostics screen can open only the fixed agentd data folder through a no-argument native command; browser mode shows an agentd-managed label and downloads a redacted NDJSON audit export instead of exposing a native database path.
 - The UI states logs are local and append-only.
+- In the browser product, audit entries are redacted before durable SQLite persistence in `agentd` and can be downloaded as NDJSON; browser UI never receives a native database path.
 
 Pass evidence:
 
 - Log path resolves.
-- Reveal action opens the folder without crashing.
+- Electron and Tauri native reveal actions open their fixed, host-owned folders without crashing; browser audit export remains the supported browser action.
 
 ## About and System Info
 
 - About shows product name, version, status, platform, and engine labels.
+- In the browser product, version, host platform, runtime and engine labels come from the authenticated `agentd` system-info route; Electron retains its native app/platform labels.
 - It is informational, not a primary configuration surface.
 
 Pass evidence:
@@ -413,6 +515,7 @@ Pass evidence:
 ## Command Palette
 
 - Command palette opens with `Cmd/Ctrl+K`.
+- Shortcut labels use `Ctrl` on Windows/Linux browser sessions and `Cmd` on macOS, while the handler accepts either modifier for cross-platform parity.
 - It supports at least:
   - clear chat
   - toggle sidebar
@@ -428,9 +531,41 @@ Pass evidence:
 
 ## Known Current Limitations
 
-- Email inbound automation currently depends on `Auto-Reply` being on. This is stricter than a passive "monitor-only" email mode.
+### Native settings/persona continuity cutover
+
+- Tauri native owner controls can preview, confirm, apply, inspect status, and roll back the `settings-persona` scope after the existing Electron snapshot is staged.
+- The cutover copies only validated `business_profile.json` persona fields and the browser-safe `aica-settings` LLM, Ollama, and product-preference fields into agentd `agent_state`; omitted fields retain current agentd values.
+- Confirmation uses a short-lived, single-use native bearer token bound to the preview manifest and runtime. Browser sessions cannot confirm or apply this scope, and credentials, OAuth material, MCP command/env values, and chat history remain excluded.
+- A mode-600 atomic backup is created before the SQLite transaction, and its path/hash are persisted while the cutover is still `applying`, before any settings mutation. Generation, inbound polling, outbound send admission, and affected settings writes are fenced during commit; admitted provider work drains and completes consistently before the transaction.
+- Cutover state, token consumption, idempotency, and backup references survive agentd restart in SQLite; status never returns token or credential values. A restart after confirmation requires fresh native confirmation, while an interrupted `applying` record becomes `needs-recovery` with a manual-recovery indicator and the migration hold active. Rollback verifies the backup's SHA-256 in constant time and keeps `needs-recovery` plus the migration hold active on tamper or restore failure.
+- Source and staged identities are revalidated after backup creation immediately before the transaction. The settings wrapper rejects duplicate JSON keys, unknown/conflicting fields, and secret-looking values; known Electron sync/base-URL metadata is ignored rather than copied.
+- Windows reads use the packaged `aica-migration-reader` Rust sidecar. It opens every parent directory and the final file with `FILE_FLAG_OPEN_REPARSE_POINT`, rejects reparse attributes, holds parent handles across final open, and enforces the same bounded regular-file checks. If the sidecar is missing or fails, Node fails closed with a 503; Unix remains on descriptor-level `O_NOFOLLOW`.
+- Chat-history migration is now a separate native-owner cutover; credential/keychain migration and Electron removal remain deferred release gates.
+
+### Native credential continuity and reauthentication
+
+- The native owner may request a read-only credential inventory after selecting an Electron user-data folder. The native-only route is `POST /api/v1/continuity/credentials/preview` with the explicit confirmation `INSPECT_ELECTRON_CREDENTIALS`; browser sessions cannot submit source paths or invoke it.
+- The inventory reads only the top-level key names from Electron's `aica-secrets.json` and `gmail-oauth.json`. It returns bounded store/key presence, default-vs-user scope, and whether the target agentd credential key is supported. It never returns secret values, encrypted blobs, user identifiers, source paths, file hashes, or raw Electron key names for OAuth session material.
+- Electron `safeStorage` ciphertext is intentionally not copied or decrypted. The result is `state: reauthentication-required` and `transferable: false`; each supported key must be entered again through the native owner/browser credential write flow, which stores it through agentd's OS credential adapter. Gmail OAuth session material is reported as requiring reauthentication and is never copied; the owner completes a fresh browser Google Sign-In flow.
+- Electron secure stores fail closed when OS encryption is unavailable: stored values are never treated as plaintext, returned as ciphertext, or copied into agentd. A Gmail OAuth refresh failure caused by expiry/revocation changes native OAuth status to `requiresReauthentication: true`; the client must show “sign in again” and keep the account disconnected until a fresh owner sign-in succeeds.
+- Source files are bounded, regular-file-only, duplicate-JSON-key rejected, and read through the native no-follow/reparse-safe migration reader. Missing stores return an explicit not-found result; malformed, oversized, replaced, or unsafe files fail closed without touching the Electron source or live agentd state.
+- The inventory is metadata-only and non-persistent. It does not mark a credential migrated, delete Electron data, or bypass owner reauthentication. A successful inventory therefore proves only that the owner can see which credentials need re-entry, not credential parity.
+- Windows credential continuity remains a release gate until the native no-reparse descriptor guarantee and the packaged Credential Manager runtime test are both evidenced. The target-specific `aica-keyring-helper.exe` is the only agentd credential handoff and uses the OS keyring backend (Windows Credential Manager); the Windows smoke must round-trip a scoped throwaway secret through write/read/exists/delete without printing its bytes. CI resource checks prove the helper is staged, but runtime evidence remains open until that smoke passes. Credential values, OAuth refresh tokens, and decrypted Electron `safeStorage` data must never appear in logs, temporary files, browser responses, or renderer state.
+
+### Native chat-history continuity cutover
+
+- The daemon exposes a separate native-owner-only `chat-history` confirmation/apply/status/rollback scope after the allowlisted Electron `chat_history.v2.db` has been staged. The Tauri native diagnostics screen invokes these typed commands only after the owner selects and reviews the Electron data folder; it never renders the product workspace. Browser sessions cannot submit source paths, confirmation tokens, or mutate this scope. Confirmation tokens are transient, never displayed or persisted by the renderer, and never returned by browser APIs.
+- The cutover reads only the staged snapshot, rechecks manifest/file hashes and SQLite integrity/schema, and copies the already-verified bytes into a private, short-lived, non-writable snapshot directory before opening SQLite by pathname. A replacement/reparse of that pathname fails closed before parsing. It also fails closed if the source or staged chat-history file has a `chat_history.v2.db-wal`/`chat_history.v2.db-shm` (or corresponding staged-file) sidecar; only a checkpointed, closed database is accepted. It rejects missing/unknown session/message references, duplicate IDs, invalid roles/metadata, the shared migration secret-key denylist (including `session`) and bounded-size violations, then imports sessions/messages into the existing `agentd` tables in one transaction. Legacy `thought`, `toolCalls`, `actions`, `findings`, `plan`, and session `extra_data` are retained in bounded agentd metadata columns; credentials and derived stores remain excluded.
+- Existing IDs are deterministic: byte-for-byte equivalent rows are idempotent, while any conflicting session/message row fails closed before mutation. A consumed token cannot replay. Generation, chat writes, inbound polling, and outbound send admission are held/drained during apply.
+- A mode-600 atomic backup records imported rows, prior affected rows, manifest/hash and rollback metadata. Status, token consumption, backup hash/path, source hash, and interrupted-apply recovery state persist in agentd SQLite; restart converts `applying` to `needs-recovery` and keeps the hold active. Rollback verifies backup integrity and removes only unchanged rows imported by this cutover.
+- Windows no-reparse smoke against junction/symlink replacement, credential/keychain handoff, Electron retirement, and release smoke remain open gates. The native bridge/UI wiring and packaged migration reader cover this bounded file-read gate; they do not claim full continuity migration or Windows release readiness.
+
+- Browser Email inbound polling is daemon-owned and starts only when `Enable Email Channel` is on and either app-password mode has IMAP TLS, an IMAP host, and an OS-stored `email_imap_password` (with legacy `email_mcp_password` fallback), or Gmail OAuth mode has a signed-in agentd OAuth session. The IMAP worker uses UID-based durable deduplication and remains text-only; the Gmail worker uses a bounded timestamp overlap plus provider-event IDs, retains bounded attachment metadata, and never downloads attachment bytes during polling or generation. Gmail attachment bytes are available only through the authenticated operator inspection route and pass the same size/MIME/magic-byte gate before download. Auto-Reply only controls browser claim/session hydration, not mailbox ingestion or automatic reply generation. STARTTLS is supported for non-993 IMAP endpoints. Approved drafts, with optional bounded operator-selected attachments, can deliver through the separately gated daemon SMTP or Gmail API route.
+- Browser knowledge imports support bounded text plus supervised PDF/Office/document conversion, but cannot open the original native file after indexing; Electron retains broader parser and file-reveal behavior.
+- The browser Autonomy panel does not render Electron-only WhatsApp Web automation, native backup staging, or local-retention controls. Baileys reconnect is daemon-owned and surfaced through bounded connection state; native-only controls remain in the Electron transition client until their agentd adapters are migrated.
+- Browser audit logs are downloaded as redacted NDJSON. Tauri native diagnostics can open the fixed agentd data folder; the browser never receives that path or a generic native file-open bridge. Electron retains its existing reveal behavior during transition.
 - Lead Directory supports non-WhatsApp sessions in the data model, but some copy still describes it as WhatsApp-only.
-- The LLM provider selector includes `browser`, but there is no dedicated browser-provider configuration card in the panel yet.
+- The LLM provider selector includes `browser`. In Edge/Chrome it is an explicit WebGPU mode backed by the existing WebLLM worker/cache; remote providers remain agentd-owned. Tauri still renders no product settings UI, and Electron keeps its existing local path during transition.
 - Resolution-audit helper text in some logs/comments still references older timing language, but the actual timeout is 10 minutes.
 
 ## QA Reporting Format
@@ -438,6 +573,8 @@ Pass evidence:
 For every manual test run, capture:
 
 - build and test preflight result
+- runtime boundary used (`Edge`/`Chrome` browser workspace, Tauri native diagnostics, or Electron transition client)
+- Windows host/packaging evidence when claiming Windows readiness (native-host tests, staged-resource verification, bundle, signing/install smoke, and resource measurements are separate gates). The staged-resource gate checks the target-specific agentd runtime and keyring helper, agentd entrypoint/dependencies including the compiled `better-sqlite3` native binding, and browser `tauri.html` plus JavaScript/CSS assets before bundling; it does not claim signing, installation, upgrade, or Windows Credential Manager runtime evidence.
 - app build or install path used
 - exact feature area tested
 - expected behavior from this document

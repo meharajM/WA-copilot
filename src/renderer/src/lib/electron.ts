@@ -1,4 +1,7 @@
 import '../env.d.ts'
+import { getBrowserAgentdClient } from './browser-agentd-client'
+import { isTauriRuntime } from './tauri-native-bridge'
+import { useWhatsAppStore } from '../stores/whatsappStore'
 // Provides fallbacks for browser environment
 
 export const isElectron = (): boolean => {
@@ -14,6 +17,73 @@ export const getPlatform = (): 'mac' | 'windows' | 'linux' | 'browser' => {
         case 'win32': return 'windows'
         case 'linux': return 'linux'
         default: return 'browser'
+    }
+}
+
+const isBrowserProduct = (): boolean => typeof window !== 'undefined' && !isElectron() && !isTauriRuntime()
+
+const browserAutonomyState = async () => {
+    const whatsappState = useWhatsAppStore.getState()
+    let status
+    try {
+        status = await getBrowserAgentdClient().status()
+    } catch (error) {
+        return {
+            mode: whatsappState.businessBotMode ? 'auto' as const : whatsappState.whatsappEnabled ? 'draft' as const : 'observe' as const,
+            responsePermission: whatsappState.whatsappEnabled,
+            paused: true,
+            emergencyPaused: false,
+            recoveryMode: false,
+            status: 'unavailable',
+            queueDepth: 0,
+            activeJob: null,
+            lastProcessedMessage: null,
+            lastError: error instanceof Error ? error.message : 'agentd unavailable',
+            escalations: 0,
+            lastDeliveryStatus: null,
+            lastProviderMessageId: null,
+            lastDeliveryInboundId: null,
+            usageToday: { llmCalls: 0, outboundMessages: 0, estimatedCost: 0 },
+        }
+    }
+    return {
+        mode: whatsappState.businessBotMode ? 'auto' as const : whatsappState.whatsappEnabled ? 'draft' as const : 'observe' as const,
+        responsePermission: whatsappState.whatsappEnabled,
+        paused: status.paused !== false,
+        emergencyPaused: false,
+        recoveryMode: false,
+        status: status.paused === false ? 'running' : 'paused',
+        queueDepth: status.queueDepth || 0,
+        activeJob: null,
+        lastProcessedMessage: null,
+        lastError: null,
+        escalations: 0,
+        lastDeliveryStatus: null,
+        lastProviderMessageId: null,
+        lastDeliveryInboundId: null,
+        usageToday: { llmCalls: 0, outboundMessages: 0, estimatedCost: 0 },
+    }
+}
+
+const browserAutonomyHealth = async () => {
+    let status
+    try {
+        status = await getBrowserAgentdClient().status()
+    } catch (error) {
+        return { executionLocation: 'agentd', transport: 'unavailable', channel: { status: 'unavailable', error: error instanceof Error ? error.message : 'agentd unavailable' }, leaseHeld: false }
+    }
+    let knowledgeDocuments = 0
+    try { knowledgeDocuments = (await getBrowserAgentdClient().listKnowledge()).length } catch { /* status remains useful if the optional slice is unavailable */ }
+    let memoryBackend: string | null = null
+    try { memoryBackend = (await getBrowserAgentdClient().getMemoryStats()).backend } catch { /* the rest of the health surface remains actionable */ }
+    return {
+        executionLocation: 'agentd',
+        transport: 'authenticated loopback HTTP',
+        channel: { status: 'agentd-outbox', error: null },
+        queues: { whatsapp: status.queueDepth || 0, email: 0, meta: 0 },
+        leaseHeld: true,
+        memory: { status: memoryBackend ? 'bounded' : 'unavailable', backend: memoryBackend },
+        rag: { status: 'bounded-text', documents: knowledgeDocuments },
     }
 }
 
@@ -69,33 +139,28 @@ export const electron = {
             if (isElectron() && window.electron?.mcp) {
                 return await window.electron.mcp.connect(serverConfig)
             }
-            // Browser fallback - mock implementation
-            console.log('[Browser] MCP connect mock:', serverConfig)
-            return { success: true, serverId: `mock_${Date.now()}` }
+            return { success: false, error: 'MCP server management is not available in browser mode' }
         },
 
         disconnect: async (serverId: string) => {
             if (isElectron() && window.electron?.mcp) {
                 return await window.electron.mcp.disconnect(serverId)
             }
-            console.log('[Browser] MCP disconnect mock:', serverId)
-            return { success: true }
+            return { success: false, error: 'MCP server management is not available in browser mode' }
         },
 
         listTools: async (serverId: string) => {
             if (isElectron() && window.electron?.mcp) {
                 return await window.electron.mcp.listTools(serverId)
             }
-            console.log('[Browser] MCP list tools mock:', serverId)
-            return { tools: [] }
+            return { success: false, error: 'MCP server management is not available in browser mode', tools: [] }
         },
 
         callTool: async (serverId: string, toolName: string, args: unknown, requestId?: string) => {
             if (isElectron() && window.electron?.mcp) {
                 return await window.electron.mcp.callTool(serverId, toolName, args, requestId)
             }
-            console.log('[Browser] MCP call tool mock:', { serverId, toolName, args })
-            return { result: null }
+            return { success: false, error: 'MCP tool execution is not available in browser mode', result: null }
         },
         cancelTool: async (requestId: string) => {
             if (isElectron() && window.electron?.mcp) return await window.electron.mcp.cancelTool(requestId)
@@ -153,34 +218,28 @@ export const electron = {
             if (isElectron() && window.electron?.secure) {
                 return await window.electron.secure.set(key, value, userId)
             }
-            // Browser fallback: warn and use localStorage (insecure)
-            console.warn('[Secure] Browser fallback: storing secret in localStorage (not encrypted)')
-            localStorage.setItem(`secure_${userId ? `${userId}_` : ''}${key}`, value)
-            return { success: true, encrypted: false }
+            return { success: false, error: 'Not supported in browser mode' }
         },
 
         get: async (key: string, userId?: string): Promise<{ success: boolean; value?: string | null; encrypted?: boolean; error?: string }> => {
             if (isElectron() && window.electron?.secure) {
                 return await window.electron.secure.get(key, userId)
             }
-            // Browser fallback
-            const value = localStorage.getItem(`secure_${userId ? `${userId}_` : ''}${key}`)
-            return { success: true, value, encrypted: false }
+            return { success: false, error: 'Not supported in browser mode' }
         },
 
         delete: async (key: string, userId?: string): Promise<{ success: boolean; error?: string }> => {
             if (isElectron() && window.electron?.secure) {
                 return await window.electron.secure.delete(key, userId)
             }
-            localStorage.removeItem(`secure_${userId ? `${userId}_` : ''}${key}`)
-            return { success: true }
+            return { success: false, error: 'Not supported in browser mode' }
         },
 
         listKeys: async (userId?: string): Promise<{ success: boolean; keys?: string[]; error?: string }> => {
             if (isElectron() && window.electron?.secure?.listKeys) {
                 return await window.electron.secure.listKeys(userId)
             }
-            return { success: true, keys: [] }
+            return { success: false, error: 'Not supported in browser mode' }
         },
 
     },
@@ -227,16 +286,24 @@ export const electron = {
 
     // Memory operations
     memory: {
-        callTool: async (name: string, args: Record<string, unknown>) => {
+        callTool: async (name: string, args: Record<string, unknown>): Promise<{ success: boolean; result?: unknown; error?: string }> => {
             if (isElectron() && window.electron?.memory) {
                 return await window.electron.memory.callTool(name, args)
             }
+            if (isBrowserProduct()) return await getBrowserAgentdClient().callMemoryTool(name, args)
             console.log('[Browser] Memory call tool mock:', { name, args })
-            return { result: null }
+            return { success: false, result: null, error: 'Memory is not supported in this runtime' }
         },
         getStats: async () => {
             if (isElectron() && window.electron?.memory) {
                 return await window.electron.memory.getStats()
+            }
+            if (isBrowserProduct()) {
+                const stats = await getBrowserAgentdClient().getMemoryStats()
+                return {
+                    success: true,
+                    stats,
+                }
             }
             return {
                 success: true,
@@ -247,6 +314,13 @@ export const electron = {
             if (isElectron() && window.electron?.memory) {
                 return await window.electron.memory.openFileLocation()
             }
+            if (isBrowserProduct()) return { success: false, error: 'Memory files are owned by agentd and are not exposed as native paths in the browser.' }
+            return { success: false, error: 'Not supported in browser mode' }
+        },
+        exportAll: async () => {
+            if (isElectron() && window.electron?.memory) return await window.electron.memory.exportAll()
+            if (isBrowserProduct()) return { success: true, data: await getBrowserAgentdClient().exportMemory() }
+            return { success: false, error: 'Not supported in browser mode' }
         }
     },
     intelligence: {
@@ -254,23 +328,30 @@ export const electron = {
             if (isElectron() && window.electron?.intelligence) {
                 return await window.electron.intelligence.getKnowledge()
             }
+            if (isBrowserProduct()) return await getBrowserAgentdClient().listKnowledge()
             return []
         },
         deleteKnowledge: async (id: number) => {
             if (isElectron() && window.electron?.intelligence) {
                 return await window.electron.intelligence.deleteKnowledge(id)
             }
+            if (isBrowserProduct()) return await getBrowserAgentdClient().deleteKnowledge(id)
             return false
         },
         getPersona: async () => {
             if (isElectron() && window.electron?.intelligence) {
                 return await window.electron.intelligence.getPersona()
             }
+            if (isBrowserProduct()) return await getBrowserAgentdClient().getPersonaSettings()
             return null
         },
         updatePersona: async (updates: Record<string, unknown>) => {
             if (isElectron() && window.electron?.intelligence) {
                 return await window.electron.intelligence.updatePersona(updates)
+            }
+            if (isBrowserProduct()) {
+                const current = await getBrowserAgentdClient().getPersonaSettings()
+                return await getBrowserAgentdClient().savePersonaSettings({ ...current, ...updates } as Parameters<ReturnType<typeof getBrowserAgentdClient>['savePersonaSettings']>[0])
             }
             return null
         },
@@ -278,12 +359,14 @@ export const electron = {
             if (isElectron() && window.electron?.intelligence) {
                 return await window.electron.intelligence.getLogs(limit)
             }
+            if (isBrowserProduct()) return { success: true, logs: await getBrowserAgentdClient().listIntelligenceLogs(limit) }
             return { success: true, logs: [] }
         },
         getStats: async () => {
             if (isElectron() && window.electron?.intelligence) {
                 return await window.electron.intelligence.getStats()
             }
+            if (isBrowserProduct()) return { success: true, stats: await getBrowserAgentdClient().getIntelligenceStats() }
             return {
                 success: true,
                 stats: { totalQueries: 0, resolvedQueries: 0, autonomyRate: 100, trainingCount: 0, learningCount: 0 },
@@ -292,6 +375,10 @@ export const electron = {
         logAccuracy: async (payload: { event: string; details?: string }) => {
             if (isElectron() && window.electron?.intelligence) {
                 return await window.electron.intelligence.logAccuracy(payload)
+            }
+            if (isBrowserProduct()) {
+                await getBrowserAgentdClient().logAccuracy(payload)
+                return { success: true }
             }
             return { success: true }
         },
@@ -373,12 +460,14 @@ export const electron = {
             if (isElectron() && window.electron?.whatsapp) {
                 return window.electron.whatsapp.getState()
             }
+            if (isBrowserProduct()) return getBrowserAgentdClient().getWhatsAppConnectionState()
             return { status: 'disconnected' as const, qrCode: null, error: null, phoneNumber: null, workerNumber: null }
         },
         connect: async (phoneNumber?: string) => {
             if (isElectron() && window.electron?.whatsapp) {
                 return window.electron.whatsapp.connect(phoneNumber)
             }
+            if (isBrowserProduct()) return { success: true, ...(await getBrowserAgentdClient().connectWhatsApp(phoneNumber)) }
             console.warn('[Browser] WhatsApp not supported in browser mode')
             return { success: false, error: 'Not supported in browser mode' }
         },
@@ -386,18 +475,21 @@ export const electron = {
             if (isElectron() && window.electron?.whatsapp) {
                 return window.electron.whatsapp.setTargetNumber(phoneNumber)
             }
+            if (isBrowserProduct()) return getBrowserAgentdClient().setWhatsAppTarget(phoneNumber)
             return { success: false, error: 'Electron not available' }
         },
         disconnect: async (clearAuth?: boolean) => {
             if (isElectron() && window.electron?.whatsapp) {
                 return window.electron.whatsapp.disconnect(clearAuth)
             }
+            if (isBrowserProduct()) return { success: true, ...(await getBrowserAgentdClient().disconnectWhatsApp(clearAuth)) }
             return { success: true }
         },
         sendMessage: async (to: string, content: string) => {
             if (isElectron() && window.electron?.whatsapp) {
                 return window.electron.whatsapp.sendMessage(to, content)
             }
+            if (isBrowserProduct()) return { success: true, ...(await getBrowserAgentdClient().sendWhatsAppText(to, content)) }
             console.warn('[Browser] WhatsApp sendMessage not supported')
             return { success: false, error: 'Not supported in browser mode' }
         },
@@ -453,45 +545,128 @@ export const electron = {
         },
     },
     autonomy: {
-        getState: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.getState() : { mode: 'observe', responsePermission: false, paused: true, status: 'stopped', queueDepth: 0 },
-        getHealth: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.getHealth() : null,
-        getMetrics: async (days = 14) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.getMetrics(days) : null,
-        reconnectChannel: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.reconnectChannel() : null,
-        start: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.start() : null,
-        stop: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.stop() : null,
-        pause: async (emergency = false) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.pause(emergency) : null,
-        resume: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.resume() : null,
+        getState: async () => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.getState()
+            if (isBrowserProduct()) return browserAutonomyState()
+            return { mode: 'observe', responsePermission: false, paused: true, status: 'stopped', queueDepth: 0 }
+        },
+        getHealth: async () => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.getHealth()
+            if (isBrowserProduct()) return browserAutonomyHealth()
+            return null
+        },
+        getMetrics: async (days = 14) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.getMetrics(days) : (isBrowserProduct() ? getBrowserAgentdClient().getAutonomyMetrics(days) : null),
+        reconnectChannel: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.reconnectChannel() : (isBrowserProduct() ? browserAutonomyState() : null),
+        start: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.start() : (isBrowserProduct() ? getBrowserAgentdClient().resumeAll().then(browserAutonomyState) : null),
+        stop: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.stop() : (isBrowserProduct() ? getBrowserAgentdClient().pauseAll().then(browserAutonomyState) : null),
+        pause: async (emergency = false) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.pause(emergency) : (isBrowserProduct() ? getBrowserAgentdClient().pauseAll().then(browserAutonomyState) : null),
+        resume: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.resume() : (isBrowserProduct() ? getBrowserAgentdClient().resumeAll().then(browserAutonomyState) : null),
         enterRecoveryMode: async (reason?: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.enterRecoveryMode(reason) : null,
         clearRecoveryMode: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.clearRecoveryMode() : null,
         stageBackup: async (backupPath: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.stageBackup(backupPath) : null,
         pruneRetention: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.pruneRetention() : null,
         pauseConversation: async (jid: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.pauseConversation(jid) : null,
         resumeConversation: async (jid: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.resumeConversation(jid) : null,
-        retryDelivery: async (inboundId: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.retryDelivery(inboundId) : null,
+        retryDelivery: async (inboundId: string) => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.retryDelivery(inboundId)
+            if (!isBrowserProduct()) return null
+            const draft = (await getBrowserAgentdClient().listDrafts(100)).find(item => item.providerEventId === inboundId)
+            return draft ? getBrowserAgentdClient().retryWhatsAppDraft(draft.id).then(() => browserAutonomyState()) : null
+        },
         retryJob: async (inboundId: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.retryJob(inboundId) : null,
-        quarantineDelivery: async (inboundId: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.quarantineDelivery(inboundId) : null,
-        cancelOutbound: async (inboundId: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.cancelOutbound(inboundId) : null,
+        quarantineDelivery: async (inboundId: string) => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.quarantineDelivery(inboundId)
+            if (!isBrowserProduct()) return null
+            const draft = (await getBrowserAgentdClient().listDrafts(100)).find(item => item.providerEventId === inboundId)
+            return draft ? getBrowserAgentdClient().quarantineWhatsAppDraft(draft.id).then(() => browserAutonomyState()) : null
+        },
+        cancelOutbound: async (inboundId: string) => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.cancelOutbound(inboundId)
+            if (!isBrowserProduct()) return null
+            const draft = (await getBrowserAgentdClient().listDrafts(100)).find(item => item.providerEventId === inboundId)
+            return draft ? getBrowserAgentdClient().cancelWhatsAppDraft(draft.id).then(() => browserAutonomyState()) : null
+        },
         listApprovedTemplates: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listApprovedTemplates() : [],
         listTakeovers: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listTakeovers() : [],
         listUnresolvedOutbound: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listUnresolvedOutbound() : [],
         listDeliveryHistory: async (limit = 50) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listDeliveryHistory(limit) : [],
-        listEmailAttachments: async (limit = 20) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listEmailAttachments(limit) : [],
-        retrieveGmailAttachment: async (messageId: string, attachmentId: string, metadata?: { mimeType?: string; name?: string }) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.retrieveGmailAttachment(messageId, attachmentId, metadata) : null,
+        listEmailAttachments: async (limit = 20) => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.listEmailAttachments(limit)
+            if (isBrowserProduct()) return getBrowserAgentdClient().listEmailAttachments(limit)
+            return []
+        },
+        retrieveGmailAttachment: async (messageId: string, attachmentId: string, metadata?: { mimeType?: string; name?: string }) => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.retrieveGmailAttachment(messageId, attachmentId, metadata)
+            if (isBrowserProduct()) return getBrowserAgentdClient().retrieveGmailAttachment(messageId, attachmentId, metadata)
+            return null
+        },
         listDecisionEvidence: async (limit = 50) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listDecisionEvidence(limit) : [],
         reviewDecision: async (inboundId: string, label: string, notes = '') => isElectron() && window.electron?.autonomy ? window.electron.autonomy.reviewDecision(inboundId, label, notes) : null,
         recordConversationOutcome: async (jid: string, revision: number, outcome: string, evidence: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.recordConversationOutcome(jid, revision, outcome, evidence) : null,
-        listDrafts: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listDrafts() : [],
+        listDrafts: async () => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.listDrafts()
+            if (!isBrowserProduct()) return []
+            const drafts = await getBrowserAgentdClient().listDrafts(50)
+            return drafts.filter(draft => draft.status === 'draft' || draft.status === 'approved').map(draft => ({ inboundId: draft.providerEventId, jid: draft.conversationId, content: draft.responseText, contentHash: '', expiresAt: draft.updatedAt + 7 * 24 * 60 * 60 * 1000, status: draft.status, providerMessageId: draft.providerMessageId, sendStatus: draft.sendStatus, sendError: draft.sendError }))
+        },
         usageHistory: async (days = 30) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.usageHistory(days) : [],
         channelUsage: async (days = 1) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.channelUsage(days) : [],
-        approveDraft: async (inboundId: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.approveDraft(inboundId) : null,
+        approveDraft: async (inboundId: string) => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.approveDraft(inboundId)
+            if (!isBrowserProduct()) return null
+            const draft = (await getBrowserAgentdClient().listDrafts(100)).find(item => item.providerEventId === inboundId)
+            return draft ? getBrowserAgentdClient().updateDraftStatus(draft.id, 'approved').then(() => browserAutonomyState()) : null
+        },
+        sendApprovedDraft: async (inboundId: string) => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.approveDraft(inboundId)
+            if (!isBrowserProduct()) return null
+            const draft = (await getBrowserAgentdClient().listDrafts(100, 'approved')).find(item => item.providerEventId === inboundId)
+            return draft ? getBrowserAgentdClient().sendWhatsAppDraft(draft.id).then(() => browserAutonomyState()) : null
+        },
         sendApprovedTemplate: async (inboundId: string, name: string, languageCode: string, parameters: string[] = []) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.sendApprovedTemplate(inboundId, name, languageCode, parameters) : null,
         listNotifications: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listNotifications() : [],
         ackNotification: async (id: number) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.ackNotification(id) : null,
         onNotification: (callback: (data: unknown) => void) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.onNotification(callback) : () => {},
         registerApprovedTemplate: async (name: string, languageCode: string, category: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.registerApprovedTemplate(name, languageCode, category) : null,
         revokeApprovedTemplate: async (name: string, languageCode: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.revokeApprovedTemplate(name, languageCode) : null,
-        setMode: async (mode: string, permission: boolean) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.setMode(mode, permission) : null,
-        onState: (callback: (state: unknown) => void) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.onState(callback) : () => {},
+        setMode: async (mode: string, permission: boolean) => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.setMode(mode, permission)
+            if (!isBrowserProduct()) return null
+            const whatsapp = useWhatsAppStore.getState()
+            if (mode === 'auto') {
+                whatsapp.setBusinessBotMode(true)
+                whatsapp.setWhatsAppEnabled(permission)
+                return getBrowserAgentdClient().resumeAll().then(browserAutonomyState)
+            }
+            if (mode === 'draft') {
+                whatsapp.setBusinessBotMode(false)
+                whatsapp.setWhatsAppEnabled(permission)
+                return getBrowserAgentdClient().resumeAll().then(browserAutonomyState)
+            }
+            whatsapp.setBusinessBotMode(false)
+            whatsapp.setWhatsAppEnabled(false)
+            return getBrowserAgentdClient().pauseAll().then(browserAutonomyState)
+        },
+        onState: (callback: (state: unknown) => void) => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.onState(callback)
+            if (!isBrowserProduct()) return () => {}
+
+            // The browser has no Electron event emitter. Poll the authenticated
+            // daemon status so a second tab, the native companion, or a
+            // background worker can update the panel without a page reload.
+            let cancelled = false
+            let timer: ReturnType<typeof setTimeout> | null = null
+            const poll = async () => {
+                if (cancelled) return
+                try { callback(await browserAutonomyState()) } catch { /* state reads fail closed in the adapter */ }
+                if (!cancelled) timer = setTimeout(() => void poll(), 5_000)
+            }
+            void poll()
+            return () => {
+                cancelled = true
+                if (timer) clearTimeout(timer)
+            }
+        },
         onDecision: (callback: (data: unknown) => void) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.onDecision(callback) : () => {},
         onFailure: (callback: (data: unknown) => void) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.onFailure(callback) : () => {},
     },
@@ -550,13 +725,13 @@ export const electron = {
             if (isElectron() && window.electron?.emailOAuth) {
                 return window.electron.emailOAuth.initialize()
             }
-            return { signedIn: false, email: null }
+            return { signedIn: false, email: null, requiresReauthentication: false }
         },
         signInGoogle: async () => {
             if (isElectron() && window.electron?.emailOAuth) {
                 return window.electron.emailOAuth.signInGoogle()
             }
-            return { signedIn: false, email: null }
+            return { signedIn: false, email: null, requiresReauthentication: false }
         },
         signOut: async () => {
             if (isElectron() && window.electron?.emailOAuth) {
@@ -568,7 +743,7 @@ export const electron = {
             if (isElectron() && window.electron?.emailOAuth) {
                 return window.electron.emailOAuth.getStatus()
             }
-            return { signedIn: false, email: null }
+            return { signedIn: false, email: null, requiresReauthentication: false }
         },
         getAccessToken: async () => {
             if (isElectron() && window.electron?.emailOAuth) {

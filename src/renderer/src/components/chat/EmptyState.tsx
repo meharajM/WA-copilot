@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useCallback } from 'react'
+import React, { useMemo, useState, useCallback, useRef, type ChangeEvent } from 'react'
 import { useWhatsAppStore } from '../../stores/whatsappStore'
 import { useChatStore } from '../../stores/chatStore'
 import { executeToolCall } from '../../lib/mcp'
@@ -8,6 +8,10 @@ import { StatusBadge } from '../primitives/StatusDot'
 import { clsx } from 'clsx'
 import { KnowledgeTest } from './KnowledgeTest'
 import { ViewMode } from '../Sidebar'
+import { getBrowserAgentdClient, readBrowserKnowledgeBinaryFile, readBrowserKnowledgeFile, type BrowserKnowledgeDocument } from '../../lib/browser-agentd-client'
+import { isTauriRuntime } from '../../lib/tauri-native-bridge'
+
+const isBrowserProduct = (): boolean => typeof window !== 'undefined' && !window.electron && !isTauriRuntime()
 
 
 /**
@@ -23,9 +27,10 @@ export function EmptyState({ onNavigate }: { onNavigate?: (view: ViewMode) => vo
   const [analyzing, setAnalyzing] = useState(false)
   const [ragStats, setRagStats] = useState<{ count: number; fileTypes: Record<string, number>; totalSize: number }>({ count: 0, fileTypes: {}, totalSize: 0 })
   const [memoryStats, setMemoryStats] = useState<{ entityCount: number; relationCount: number }>({ entityCount: 0, relationCount: 0 })
-  const [intelligenceStats, setIntelligenceStats] = useState<{ totalQueries: number; resolvedQueries: number; autonomyRate: number; trainingCount: number; learningCount: number }>({ totalQueries: 0, resolvedQueries: 0, autonomyRate: 100, trainingCount: 0, learningCount: 0 })
-  interface EvolutionLog { id: number; type: string; event: string; details?: string; timestamp?: string }
+  const [intelligenceStats, setIntelligenceStats] = useState<{ totalQueries: number; resolvedQueries: number; autonomyRate: number; trainingCount: number; learningCount: number }>({ totalQueries: 0, resolvedQueries: 0, autonomyRate: 0, trainingCount: 0, learningCount: 0 })
+  interface EvolutionLog { id: number; type: string; event: string; details?: string | null; timestamp?: string }
   const [evolutionLogs, setEvolutionLogs] = useState<EvolutionLog[]>([])
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   // Load real Intelligence stats on mount
   React.useEffect(() => {
@@ -54,21 +59,47 @@ export function EmptyState({ onNavigate }: { onNavigate?: (view: ViewMode) => vo
                 }
             }
 
-            // 2. Fetch Memory Stats
-            const memoryRes = await electron.memory.getStats()
-            if (memoryRes.success && memoryRes.stats) {
-                setMemoryStats(memoryRes.stats)
-            }
+            // Memory and intelligence are daemon-owned in the browser product.
+            // Do not call the Electron bridge here: a browser tab has no IPC
+            // host, and a missing bridge would otherwise silently leave the
+            // dashboard showing stale/default metrics.
+            if (isBrowserProduct()) {
+                const client = getBrowserAgentdClient()
+                const [knowledge, memory, intelligence, logs] = await Promise.all([
+                    client.listKnowledge().catch(() => [] as BrowserKnowledgeDocument[]),
+                    client.getMemoryStats(),
+                    client.getIntelligenceStats(),
+                    client.listIntelligenceLogs(5),
+                ])
+                setRagStats({
+                    count: knowledge.length,
+                    fileTypes: knowledge.reduce<Record<string, number>>((counts, document) => {
+                        const type = document.file_type || 'unknown'
+                        counts[type] = (counts[type] || 0) + 1
+                        return counts
+                    }, {}),
+                    totalSize: knowledge.reduce((total, document) => total + (document.size || 0), 0),
+                })
+                setMemoryStats(memory)
+                setIntelligenceStats(intelligence)
+                setEvolutionLogs(logs)
+            } else {
+                // Electron transition path: retain the existing IPC behavior
+                // until the browser parity gates are complete.
+                const memoryRes = await electron.memory.getStats()
+                if (memoryRes.success && memoryRes.stats) {
+                    setMemoryStats(memoryRes.stats)
+                }
 
-            // 3. Fetch Intelligence Stats & Logs
-            const intelRes = await electron.intelligence.getStats()
-            if (intelRes.success && intelRes.stats) {
-                setIntelligenceStats(intelRes.stats)
-            }
+                const intelRes = await electron.intelligence.getStats()
+                if (intelRes.success && intelRes.stats) {
+                    setIntelligenceStats(intelRes.stats)
+                }
 
-            const logsRes = await electron.intelligence.getLogs(5)
-            if (logsRes.success && logsRes.logs) {
-                setEvolutionLogs(logsRes.logs)
+                const logsRes = await electron.intelligence.getLogs(5)
+                if (logsRes.success && logsRes.logs) {
+                    setEvolutionLogs(logsRes.logs)
+                }
             }
         } catch (err) {
             console.error("Failed to fetch analytics:", err)
@@ -110,15 +141,10 @@ export function EmptyState({ onNavigate }: { onNavigate?: (view: ViewMode) => vo
   const insights = useMemo(() => {
     const topicsLog = sessions.map(s => s.topic).filter(Boolean) as string[]
     
-    // If no sessions have been analyzed yet, show the mock/default
-    if (topicsLog.length === 0) {
-      const total = Math.max(metrics.messagesToday, 10) // default to 10 for visual mock if empty
-      return [
-        { name: 'Product Queries', percent: Math.round((total * 0.45) / total * 100) },
-        { name: 'Order Status', percent: Math.round((total * 0.35) / total * 100) },
-        { name: 'Returns/Refunds', percent: Math.round((total * 0.20) / total * 100) },
-      ]
-    }
+    // Do not seed example percentages: empty browser state must not look like
+    // real customer activity. Sync Insights can populate topics after sessions
+    // have been analyzed.
+    if (topicsLog.length === 0) return []
 
     const counts: Record<string, number> = {}
     topicsLog.forEach(t => counts[t] = (counts[t] || 0) + 1)
@@ -135,21 +161,36 @@ export function EmptyState({ onNavigate }: { onNavigate?: (view: ViewMode) => vo
     if (analyzing) return
     setAnalyzing(true)
     try {
-      // Lazy load LLM to avoid heavy imports until clicked
-      const { chat } = await import('../../lib/llm')
-      
       // Find up to 5 un-analyzed completed sessions
       const unanalyzed = sessions.filter(s => (s.messages.length > 2 || s.status === 'resolved') && !s.topic).slice(0, 5)
       
       for (const session of unanalyzed) {
         if (session.messages.length === 0) continue
         const conversationText = session.messages.map(m => `${m.role.toUpperCase()}: ${m.content}`).join('\n')
-        
-        const response = await chat([
-            { role: 'user', content: `Analyze the following customer support conversation and categorize it into exactly ONE of these short topics: "Product Queries", "Order Status", "Returns/Refunds", "Technical Support", or "Other". Reply with ONLY the exact topic name, nothing else.\n\nConversation:\n${conversationText}` }
-        ], [], undefined, undefined, undefined, undefined, true) // subAgent mode
+        const prompt = `Analyze the following customer support conversation and categorize it into exactly ONE of these short topics: "Product Queries", "Order Status", "Returns/Refunds", "Technical Support", or "Other". Reply with ONLY the exact topic name, nothing else.\n\nConversation:\n${conversationText}`
+        let responseText = ''
+        if (isBrowserProduct()) {
+          const client = getBrowserAgentdClient()
+          const analysisSessionId = `topic_${crypto.randomUUID().replaceAll('-', '')}`
+          const requestId = `topic_request_${crypto.randomUUID().replaceAll('-', '')}`
+          await client.createSession(analysisSessionId, 'Topic analysis')
+          try {
+            await client.appendMessage(analysisSessionId, { id: `${requestId}_user`, role: 'user', content: prompt, timestamp: Date.now() })
+            await client.generate({ sessionId: analysisSessionId, requestId, content: prompt }, (event) => {
+              if (event.type === 'assistant.delta') responseText += event.delta
+              if (event.type === 'error') throw new Error(event.message)
+            })
+          } finally {
+            await client.deleteSession(analysisSessionId).catch(() => undefined)
+          }
+        } else {
+          // Electron transition path keeps its existing provider behavior.
+          const { chat } = await import('../../lib/llm')
+          const response = await chat([{ role: 'user', content: prompt }], [], undefined, undefined, undefined, undefined, true)
+          responseText = response.content
+        }
 
-        let parsedTopic = response.content.trim()
+        let parsedTopic = responseText.trim()
         // Basic cleanup just in case the LLM was chatty
         if (parsedTopic.includes('Product')) parsedTopic = 'Product Queries'
         else if (parsedTopic.includes('Order')) parsedTopic = 'Order Status'
@@ -176,6 +217,10 @@ export function EmptyState({ onNavigate }: { onNavigate?: (view: ViewMode) => vo
   }
 
   const handleFileUpload = async () => {
+      if (isBrowserProduct()) {
+          fileInputRef.current?.click()
+          return
+      }
       try {
           const filePaths = await electron.app.selectFiles({
               title: 'Select Knowledge Resource',
@@ -232,6 +277,58 @@ export function EmptyState({ onNavigate }: { onNavigate?: (view: ViewMode) => vo
           }
       } catch (err) {
           alert("RAG Ingest Fatal Error: " + err)
+          setUploadStatus('idle')
+      }
+  }
+
+  const handleBrowserFileUpload = async (event: ChangeEvent<HTMLInputElement>) => {
+      const files = Array.from(event.target.files || [])
+      event.target.value = ''
+      if (!files.length) return
+      setUploadStatus('uploading')
+      const errors: string[] = []
+      let successCount = 0
+      for (const file of files) {
+          const extension = file.name.split('.').pop()?.toLowerCase() || ''
+          const isText = file.type.startsWith('text/') || ['txt', 'md', 'csv', 'json', 'xml', 'html', 'log'].includes(extension)
+          try {
+              const client = getBrowserAgentdClient()
+              if (isText) {
+                  const browserFile = await readBrowserKnowledgeFile(file)
+                  await client.ingestKnowledge({
+                    fileName: file.name,
+                    filePath: `browser://knowledge/${encodeURIComponent(file.name)}`,
+                    ...browserFile,
+                  })
+              } else {
+                  const browserFile = await readBrowserKnowledgeBinaryFile(file)
+                  await client.convertKnowledge({ fileName: file.name, ...browserFile })
+              }
+              successCount += 1
+          } catch (error) {
+              errors.push(`${file.name}: ${error instanceof Error ? error.message : String(error)}`)
+          }
+      }
+      if (successCount > 0) {
+          setUploadStatus('done')
+          if (isBrowserProduct()) {
+              const knowledge = await getBrowserAgentdClient().listKnowledge().catch(() => [] as BrowserKnowledgeDocument[])
+              setRagStats({
+                  count: knowledge.length,
+                  fileTypes: knowledge.reduce<Record<string, number>>((counts, document) => {
+                      const type = document.file_type || 'unknown'
+                      counts[type] = (counts[type] || 0) + 1
+                      return counts
+                  }, {}),
+                  totalSize: knowledge.reduce((total, document) => total + (document.size || 0), 0),
+              })
+          } else {
+              const statsRes = await executeToolCall('rag_get_stats', {})
+              if (statsRes.result && typeof statsRes.result === 'object') setRagStats(statsRes.result as typeof ragStats)
+          }
+          setTimeout(() => setUploadStatus('idle'), 5000)
+      } else {
+          alert(`Upload failed: ${errors.join(' | ')}`)
           setUploadStatus('idle')
       }
   }
@@ -315,20 +412,22 @@ export function EmptyState({ onNavigate }: { onNavigate?: (view: ViewMode) => vo
             </div>
             
             <div className="flex flex-col gap-4">
-              {insights.map((item, i) => (
+              {insights.length > 0 ? insights.map((item, i) => (
                 <div key={i} className="flex flex-col gap-2">
                   <div className="flex justify-between text-sm">
                     <span className="text-[var(--color-text-secondary)] font-medium">{item.name}</span>
                     <span className="text-[var(--color-text-primary)] font-bold">{item.percent}%</span>
                   </div>
                   <div className="w-full bg-[var(--color-border)] rounded-full h-2.5">
-                    <div 
+                    <div
                       className={`h-2.5 rounded-full ${i === 0 ? 'bg-[var(--color-brand-teal)]' : i === 1 ? 'bg-blue-500' : 'bg-purple-500'}`}
                       style={{ width: `${item.percent}%` }}
                     ></div>
                   </div>
                 </div>
-              ))}
+              )) : (
+                <p className="text-sm text-[var(--color-text-muted)] italic">No analyzed sessions yet. Use Sync Insights after a conversation is available.</p>
+              )}
             </div>
           </div>
 
@@ -509,7 +608,11 @@ export function EmptyState({ onNavigate }: { onNavigate?: (view: ViewMode) => vo
                       <>
                         <UploadCloud size={28} className="text-[var(--color-text-muted)] mb-3" />
                         <p className="text-sm text-[var(--color-text-secondary)] font-medium">Click to select files</p>
-                        <p className="text-xs text-[var(--color-text-muted)] mt-1">PDF, TXT, CSV (Multiple Files Supported)</p>
+                        <p className="text-xs text-[var(--color-text-muted)] mt-1">
+                          {isBrowserProduct()
+                            ? 'TXT, MD, CSV, JSON, XML, HTML, LOG, PDF, DOCX, XLSX, PPTX (16 MB max)'
+                            : 'PDF, TXT, CSV (Multiple Files Supported)'}
+                        </p>
                       </>
                     )}
                     {uploadStatus === 'uploading' && (
@@ -526,6 +629,7 @@ export function EmptyState({ onNavigate }: { onNavigate?: (view: ViewMode) => vo
                     )}
                   </div>
               </button>
+              {isBrowserProduct() && <input ref={fileInputRef} type="file" hidden multiple accept=".txt,.md,.csv,.json,.xml,.html,.log,.pdf,.docx,.xlsx,.xls,.pptx,text/*" onChange={handleBrowserFileUpload} />}
 
               {/* Show Knowledge Test after successful upload */}
               {ragStats.count > 0 && <KnowledgeTest />}

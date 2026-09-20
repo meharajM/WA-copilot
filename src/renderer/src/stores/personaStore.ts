@@ -1,4 +1,6 @@
 import { create } from 'zustand'
+import { getBrowserAgentdClient } from '../lib/browser-agentd-client'
+import { isTauriRuntime } from '../lib/tauri-native-bridge'
 
 export interface BusinessProfile {
     name: string
@@ -26,18 +28,22 @@ export const usePersonaStore = create<PersonaState>((set, get) => ({
     fetchProfile: async () => {
         try {
             set({ isLoading: true, error: null })
-            
-            // @ts-expect-error - electron is injected by preload script
-            if (window.electron?.ipcRenderer) {
-                // @ts-expect-error - IPC requires any type inference
-                const profile = await window.electron.ipcRenderer.invoke('intelligence:get-persona')
+            const browserRuntime = typeof window !== 'undefined' && !window.electron && !isTauriRuntime()
+            if (browserRuntime) {
+                const profile = await getBrowserAgentdClient().getPersonaSettings()
+                set({ profile, isLoading: false })
+                return
+            }
+            const intelligence = window.electron?.intelligence
+            if (intelligence) {
+                const profile = await intelligence.getPersona()
                 set({ profile, isLoading: false })
             } else {
                 throw new Error("Electron IPC not available")
             }
         } catch (error) {
             const err = error as Error;
-            console.error('[PersonaStore] Failed to fetch profile:', err)
+            if (typeof window !== 'undefined' && window.electron) console.error('[PersonaStore] Failed to fetch profile:', err)
             set({ error: err.message, isLoading: false })
             
             // Fallback default if running outside electron/dev mode
@@ -61,14 +67,19 @@ export const usePersonaStore = create<PersonaState>((set, get) => ({
             set({ profile: newProfile })
 
             // Sync to backend
-            // @ts-expect-error - electron is injected by preload script
-            if (window.electron?.ipcRenderer) {
-                // @ts-expect-error - IPC requires any type inference
-                await window.electron.ipcRenderer.invoke('intelligence:update-persona', updates)
+            const browserRuntime = typeof window !== 'undefined' && !window.electron && !isTauriRuntime()
+            if (browserRuntime) {
+                const saved = await getBrowserAgentdClient().savePersonaSettings(newProfile)
+                set({ profile: saved, error: null })
+                return
+            }
+            const intelligence = window.electron?.intelligence
+            if (intelligence) {
+                await intelligence.updatePersona(updates)
             }
         } catch (error) {
             const err = error as Error;
-            console.error('[PersonaStore] Failed to update profile:', err)
+            if (typeof window !== 'undefined' && window.electron) console.error('[PersonaStore] Failed to update profile:', err)
             set({ error: err.message })
             // Revert on failure (simple implementation)
             get().fetchProfile();

@@ -27,6 +27,12 @@ interface ElectronAPI {
         delete: (key: string) => Promise<boolean>
     }
 
+    chat: {
+        loadSessions: () => Promise<{ success: boolean; sessions?: unknown[]; error?: string }>
+        saveSessionsWithMirror: (sessions: unknown[]) => Promise<{ success: boolean; error?: string }>
+        deleteSession: (id: string) => Promise<{ success: boolean; error?: string }>
+    }
+
     shell: {
         openExternal: (url: string) => Promise<void>
     }
@@ -86,8 +92,20 @@ interface ElectronAPI {
     intelligence?: {
         getKnowledge: () => Promise<Array<{ id: number; file_path: string; file_name: string; created_at: string }>>
         deleteKnowledge: (id: number) => Promise<boolean>
-        getPersona: () => Promise<unknown>
-        updatePersona: (updates: Record<string, unknown>) => Promise<unknown>
+        getPersona: () => Promise<{
+            name: string
+            industry: string
+            tone: 'professional' | 'casual' | 'enthusiastic' | 'concise'
+            coreKnowledge: string[]
+            customRules?: string
+        }>
+        updatePersona: (updates: {
+            name?: string
+            industry?: string
+            tone?: 'professional' | 'casual' | 'enthusiastic' | 'concise'
+            coreKnowledge?: string[]
+            customRules?: string
+        }) => Promise<void>
         getLogs: (limit?: number) => Promise<{ success: boolean; logs?: Array<{ id: number; type: string; event: string; details?: string; timestamp?: string }>; error?: string }>
         getStats: () => Promise<{ success: boolean; stats?: { totalQueries: number; resolvedQueries: number; autonomyRate: number; trainingCount: number; learningCount: number }; error?: string }>
         logAccuracy: (payload: { event: string; details?: string }) => Promise<{ success: boolean; error?: string }>

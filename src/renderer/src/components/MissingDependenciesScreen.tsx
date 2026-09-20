@@ -15,7 +15,12 @@ export function MissingDependenciesScreen({ onResolved }: { onResolved: () => vo
         setLoading(true);
         try {
             const electron = window.electron as any;
-            if (!electron?.app) return;
+            if (!electron?.app) {
+                // Browser product does not own host dependency installation.
+                // Native checks belong to the companion/agentd boundary.
+                onResolved();
+                return;
+            }
             const deps: Dependency[] = await electron.app.getMissingDependencies();
             setMissing(deps);
             if (deps.length === 0) {

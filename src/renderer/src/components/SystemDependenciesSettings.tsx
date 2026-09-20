@@ -1,10 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import { Check } from 'lucide-react';
+import { isTauriRuntime } from '../lib/tauri-native-bridge';
 
 export function SystemDependenciesSettings() {
     const [dependencies, setDependencies] = useState<any[]>([]);
+    const browserRuntime = typeof window !== 'undefined' && !window.electron && !isTauriRuntime();
 
     useEffect(() => {
+        if (browserRuntime) return;
         const fetchDeps = async () => {
             const electron = window.electron as any;
             if (electron?.app?.getAllDependencies) {
@@ -13,7 +16,20 @@ export function SystemDependenciesSettings() {
             }
         };
         fetchDeps();
-    }, []);
+    }, [browserRuntime]);
+
+    if (browserRuntime) {
+        return (
+            <div className="bg-[#1a1d23] border border-white/10 rounded-xl p-6">
+                <h4 className="font-bold text-lg mb-4 flex items-center gap-2">
+                    <Check size={18} className="text-[#00a896]" /> System Dependencies
+                </h4>
+                <p className="text-sm text-white/60">
+                    Browser mode does not install or inspect host tools. Native OS dependencies are checked by the AICA native companion and local agentd.
+                </p>
+            </div>
+        );
+    }
 
     return (
         <div className="bg-[#1a1d23] border border-white/10 rounded-xl p-6">

@@ -28,6 +28,7 @@ type GoogleUserInfo = {
 export interface GmailOAuthStatus {
   signedIn: boolean
   email: string | null
+  requiresReauthentication: boolean
 }
 
 export interface GmailWatchStatus {
@@ -45,25 +46,28 @@ const gmailStore = new Store<Record<string, string>>({
 }
 
 function setSecret(key: string, value: string): void {
-  if (safeStorage.isEncryptionAvailable()) {
-    gmailStore.set(key, safeStorage.encryptString(value).toString('base64'))
-  } else {
-    gmailStore.set(key, value)
-  }
+  if (!safeStorage.isEncryptionAvailable()) throw new Error('Secure storage encryption is unavailable')
+  gmailStore.set(key, safeStorage.encryptString(value).toString('base64'))
 }
 
 function getSecret(key: string): string | null {
   const value = gmailStore.get(key)
   if (!value) return null
+  if (!safeStorage.isEncryptionAvailable()) {
+    unreadableStoredSecrets.add(key)
+    return null
+  }
   try {
-    if (safeStorage.isEncryptionAvailable()) {
-      return safeStorage.decryptString(Buffer.from(value, 'base64'))
-    }
-    return value
+    return safeStorage.decryptString(Buffer.from(value, 'base64'))
   } catch {
+    // Preserve source ciphertext for explicit owner migration/recovery. It is
+    // never returned or logged; caller treats it as requiring reauthentication.
+    unreadableStoredSecrets.add(key)
     return null
   }
 }
+
+const unreadableStoredSecrets = new Set<string>()
 
 function deleteSecret(key: string): void {
   gmailStore.delete(key)
@@ -85,9 +89,11 @@ export class GmailOAuthService {
   private email: string | null = null
   private clientId: string | null = null
   private clientSecret: string | null = null
+  private requiresReauthentication = false
 
   async initialize(): Promise<void> {
     if (this.initialized) return
+    unreadableStoredSecrets.clear()
     this.refreshToken = getSecret('gmail_refresh_token')
     this.email = getSecret('gmail_email')
     const envClientId = (process.env.GMAIL_OAUTH_CLIENT_ID || '').trim()
@@ -96,7 +102,8 @@ export class GmailOAuthService {
     // Always prefer env to avoid getting stuck on stale local client IDs.
     this.clientId = envClientId || storedClientId || null
     this.clientSecret = envClientSecret || null
-    if (this.clientId) {
+    this.requiresReauthentication = unreadableStoredSecrets.has('gmail_refresh_token')
+    if (this.clientId && safeStorage.isEncryptionAvailable()) {
       setSecret('gmail_client_id', this.clientId)
     }
     // Never persist OAuth client secret in app storage.
@@ -106,8 +113,9 @@ export class GmailOAuthService {
 
   getStatus(): GmailOAuthStatus {
     return {
-      signedIn: !!this.refreshToken,
+      signedIn: !!this.refreshToken && !this.requiresReauthentication,
       email: this.email || null,
+      requiresReauthentication: this.requiresReauthentication,
     }
   }
 
@@ -116,6 +124,9 @@ export class GmailOAuthService {
     const resolvedClientId = (clientId || this.clientId || '').trim()
     if (!resolvedClientId) {
       throw new Error('Google OAuth is not configured in this app. Please contact support.')
+    }
+    if (!safeStorage.isEncryptionAvailable()) {
+      throw new Error('Secure storage encryption is unavailable; Google Sign-In is disabled until it is restored.')
     }
 
     this.clientId = resolvedClientId
@@ -150,6 +161,7 @@ export class GmailOAuthService {
     const userInfo = await this.fetchUserInfo(this.accessToken)
     this.email = userInfo.email || null
     if (this.email) setSecret('gmail_email', this.email)
+    this.requiresReauthentication = false
 
     return this.getStatus()
   }
@@ -159,6 +171,7 @@ export class GmailOAuthService {
     this.accessTokenExpiry = null
     this.refreshToken = null
     this.email = null
+    this.requiresReauthentication = false
     deleteSecret('gmail_refresh_token')
     deleteSecret('gmail_email')
   }
@@ -186,6 +199,12 @@ export class GmailOAuthService {
     })
     const json = await response.json() as TokenResponse & { error?: string; error_description?: string }
     if (!response.ok || !json.access_token) {
+      if (response.status === 400 || response.status === 401 || response.status === 403
+        || json.error === 'invalid_grant' || json.error === 'unauthorized_client') {
+        this.accessToken = null
+        this.accessTokenExpiry = null
+        this.requiresReauthentication = true
+      }
       const detail = json.error_description || json.error || 'refresh failed'
       throw new Error(`Gmail OAuth token refresh failed: ${detail}`)
     }

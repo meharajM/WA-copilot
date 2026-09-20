@@ -22,6 +22,19 @@ out/
 .env.*
 !.env.example
 
+# Tauri generated files
+src-tauri/target/
+src-tauri/gen/
+src-tauri/binaries/
+src-tauri/sidecar/*
+!src-tauri/sidecar/agentd-http/
+src-tauri/sidecar/agentd-http/*
+!src-tauri/sidecar/agentd-http/.gitkeep
+!src-tauri/sidecar/agentd-runtime
+!src-tauri/sidecar/aica-keyring-helper
+src-tauri/icons/icon.png
+src-tauri/icons/icon.ico
+
 # TypeScript
 *.tsbuildinfo
 *.db
@@ -49,9 +62,6 @@ test-results/
 .agent/
 .vscode/
 .idea/
-
-# Secrets
-src/main/services/AntigravityAuthService.ts
 
 # Large binaries from Baileys/Playwright
 **/ffmpeg

@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState } from 'react'
 import { FileJson, FolderOpen, RefreshCw, Copy, Check } from 'lucide-react'
+import electron, { isElectron } from '../../../lib/electron'
 
 export function MemoryInspector() {
     const [data, setData] = useState<any>(null)
@@ -7,15 +8,13 @@ export function MemoryInspector() {
     const [error, setError] = useState<string | null>(null)
     const [copied, setCopied] = useState(false)
     const [expanded, setExpanded] = useState(false)
+    const nativeFileRevealAvailable = isElectron()
 
     const loadData = async () => {
         setLoading(true)
         setError(null)
         try {
-            if (!window.electron?.memory) {
-                throw new Error('Memory API not available')
-            }
-            const result = await window.electron.memory.exportAll()
+            const result = await electron.memory.exportAll()
             if (result.success) {
                 setData(result.data)
             } else {
@@ -29,8 +28,8 @@ export function MemoryInspector() {
     }
 
     const openFileLocation = async () => {
-        if (!window.electron?.memory) return
-        await window.electron.memory.openFileLocation()
+        if (!nativeFileRevealAvailable) return
+        await electron.memory.openFileLocation()
     }
 
     const handleCopy = () => {
@@ -51,8 +50,9 @@ export function MemoryInspector() {
                 <div className="flex gap-2">
                      <button
                         onClick={openFileLocation}
-                        className="p-2 hover:bg-[var(--color-surface)] rounded-lg text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
-                        title="Open File Location"
+                        disabled={!nativeFileRevealAvailable}
+                        className="p-2 hover:bg-[var(--color-surface)] rounded-lg text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors disabled:cursor-not-allowed disabled:opacity-40"
+                        title={nativeFileRevealAvailable ? 'Open File Location' : 'Native file reveal is available in the desktop app only'}
                     >
                         <FolderOpen size={16} />
                     </button>
