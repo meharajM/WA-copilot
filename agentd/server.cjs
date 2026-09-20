@@ -4469,6 +4469,7 @@ function parseEmailInbound(value) {
     || !['text', 'html'].includes(payload.bodyType)
     || !Number.isFinite(payload.timestamp) || payload.timestamp < 0
     || (payload.messageId !== undefined && !validBoundedText(payload.messageId, 998, true))
+    || (payload.sourceId !== undefined && (!validBoundedText(payload.sourceId, 256) || !/^[A-Za-z0-9_-]+$/.test(payload.sourceId)))
     || (payload.inReplyTo !== undefined && !validBoundedText(payload.inReplyTo, 998, true))
     || (payload.references !== undefined && !validBoundedText(payload.references, 8192, true))
     || (payload.isFromMe !== undefined && typeof payload.isFromMe !== 'boolean')

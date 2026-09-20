@@ -41,6 +41,14 @@ const stableEmailSessionId = (key: string): string => {
   return `email_${(hash >>> 0).toString(16)}`
 }
 
+const bytesToDataUrl = (bytes: Uint8Array, mimeType: string): string => {
+  let binary = ''
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(offset, Math.min(offset + 0x8000, bytes.length)))
+  }
+  return `data:${mimeType};base64,${btoa(binary)}`
+}
+
 const toRendererSession = (session: AgentdChatSession): ChatSession => ({
   id: session.id,
   title: session.title,
@@ -57,12 +65,38 @@ const toRendererSession = (session: AgentdChatSession): ChatSession => ({
     role: message.role,
     content: message.content,
     timestamp: message.timestamp,
-    ...(message.attachments?.length ? { attachments: message.attachments.map((attachment) => ({ name: attachment.name, path: '', type: attachment.type })) } : {}),
+    ...(message.attachments?.length ? { attachments: message.attachments.map((attachment) => ({
+      name: attachment.name,
+      path: attachment.dataUrl || '',
+      type: attachment.type,
+      ...(attachment.size !== undefined ? { size: attachment.size } : {}),
+      ...(attachment.dataUrl ? { dataUrl: attachment.dataUrl } : {}),
+    })) } : {}),
   })),
 })
 
 const ingestBrowserInboundEmail = async (event: BrowserEmailInboundEvent): Promise<{ email: EmailMessage; content: string; alreadyHandled: boolean }> => {
   const payload = event.payload
+  const client = getBrowserAgentdClient()
+  const attachments = await Promise.all((payload.attachments || []).map(async (attachment) => {
+    const metadata = {
+      filename: attachment.name || attachment.id,
+      contentType: attachment.mimeType || 'application/octet-stream',
+      size: attachment.size || 0,
+    }
+    // Gmail image bytes stay bounded and enter the model only after agentd's
+    // authenticated scan. IMAP metadata remains available without guessing a
+    // provider-specific retrieval protocol.
+    if (payload.sourceId && metadata.contentType.startsWith('image/') && metadata.size > 0 && metadata.size <= 256 * 1024) {
+      try {
+        const result = await client.retrieveGmailAttachment(payload.sourceId, attachment.id, { mimeType: metadata.contentType, name: metadata.filename })
+        if (result.scan.safe && result.bytes && result.bytes.length === metadata.size) {
+          return { ...metadata, dataUrl: bytesToDataUrl(result.bytes, metadata.contentType) }
+        }
+      } catch { /* metadata-only fallback */ }
+    }
+    return metadata
+  }))
   const email: EmailMessage = {
     id: event.providerEventId,
     from: payload.from,
@@ -75,17 +109,10 @@ const ingestBrowserInboundEmail = async (event: BrowserEmailInboundEvent): Promi
     ...(payload.messageId ? { messageId: payload.messageId } : {}),
     ...(payload.inReplyTo ? { inReplyTo: payload.inReplyTo } : {}),
     ...(payload.references ? { references: payload.references } : {}),
-    ...(payload.attachments?.length ? {
-      attachments: payload.attachments.map((attachment) => ({
-        filename: attachment.name || attachment.id,
-        contentType: attachment.mimeType || 'application/octet-stream',
-        size: attachment.size || 0,
-      })),
-    } : {}),
+    ...(attachments.length ? { attachments } : {}),
   }
   const sessionKey = generateEmailSessionKey(email)
   let sessionId = stableEmailSessionId(sessionKey.key)
-  const client = getBrowserAgentdClient()
   const sessions = await client.loadSessions()
   const session = sessions.find((candidate) => candidate.id === sessionId)
     || sessions.find((candidate) => candidate.channel === 'email' && candidate.contactId === sessionKey.sender && candidate.threadId === sessionKey.threadId)
@@ -109,6 +136,7 @@ const ingestBrowserInboundEmail = async (event: BrowserEmailInboundEvent): Promi
           name: attachment.filename,
           type: attachment.contentType,
           size: attachment.size,
+          ...(attachment.dataUrl ? { dataUrl: attachment.dataUrl } : {}),
         })),
       } : {}),
     })

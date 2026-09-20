@@ -57,6 +57,8 @@ export interface EmailAttachment {
   size: number;
   /** Local filesystem path after download */
   path?: string;
+  /** Bounded browser data URL after authenticated Gmail retrieval */
+  dataUrl?: string;
 }
 
 /**
@@ -317,11 +319,12 @@ export function convertEmailToLLMMessage(email: EmailMessage): LLMMessage {
     role: 'user',
     content: parts.length === 1 && parts[0].type === 'text' ? parts[0].text : parts,
     attachments: email.attachments
-      ?.filter(a => a.path)
+      ?.filter(a => a.path || a.dataUrl)
       .map(a => ({
         name: a.filename,
-        path: a.path!,
+        path: a.path || '',
         type: a.contentType,
+        ...(a.dataUrl ? { dataUrl: a.dataUrl } : {}),
       })),
   };
 }

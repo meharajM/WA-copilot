@@ -736,7 +736,7 @@ export function EmailSettingsPanel() {
         <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg p-3 text-xs text-[var(--color-text-dim)] flex gap-2">
           <Info size={14} className="shrink-0 mt-0.5" />
           {browserRuntime
-            ? 'Browser mode uses authenticated local agentd for bounded text-only IMAP/Gmail polling and approved SMTP/Gmail delivery. HTML/multipart, attachments, custom MCP, and unsupported providers remain fail-closed; the daemon connects directly to the selected mailbox provider.'
+            ? 'Browser mode uses authenticated local agentd for bounded IMAP/Gmail polling and approved SMTP/Gmail delivery. IMAP remains text-only; Gmail may hydrate scanned small images, while other inbound attachments stay operator-inspection-only. HTML/multipart, custom MCP, and unsupported providers remain fail-closed; the daemon connects directly to the selected mailbox provider.'
             : 'This email channel runs as a local client connector. No hosted mail server is required for Gmail, Outlook, or other IMAP/SMTP providers.'}
         </div>
       </Card>
