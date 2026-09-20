@@ -31,6 +31,7 @@ npm run typecheck:renderer
 npm run test:unit
 npm run test:integration
 npm run test:e2e
+npm run test:e2e:browser
 npm run build
 
 echo "Release gate passed for v${VERSION}."

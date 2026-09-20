@@ -38,6 +38,7 @@
         "test:robust": "npm run test:unit && npm run test:integration && npm run test:live",
         "test:watch": "vitest",
         "test:e2e": "npm run test:playwright",
+        "test:e2e:browser": "npm run build:tauri:web && node scripts/browser-e2e.cjs",
         "test:mock": "node tests/e2e/no-suite.cjs mock",
         "test:playwright": "npm run build && node scripts/electron-e2e.cjs",
         "test:e2e:packaged:mac": "npm run build:mac:qa && WA_COPILOT_E2E_EXECUTABLE=dist/qa-mac/mac-arm64/AIConsumerAgent.app/Contents/MacOS/AIConsumerAgent node tests/e2e/electron-smoke.cjs",
