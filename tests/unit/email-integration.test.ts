@@ -231,6 +231,15 @@ describe('convertEmailToLLMMessage', () => {
     expect(llmMsg.attachments?.[0].name).toBe('invoice.pdf')
   })
 
+  it('forwards bounded browser image bytes when Gmail attachment hydration succeeds', () => {
+    const llmMsg = convertEmailToLLMMessage(createMockEmail({
+      attachments: [{ filename: 'photo.jpg', contentType: 'image/jpeg', size: 3, dataUrl: 'data:image/jpeg;base64,AQID' }],
+    }))
+    expect(llmMsg.attachments).toEqual([{
+      name: 'photo.jpg', path: '', type: 'image/jpeg', dataUrl: 'data:image/jpeg;base64,AQID',
+    }])
+  })
+
   it('adds threading context when In-Reply-To is present', async () => {
     const email = createMockEmail({
       inReplyTo: '<parent@mail.example.com>',

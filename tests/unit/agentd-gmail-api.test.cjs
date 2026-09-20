@@ -17,7 +17,7 @@ test('agentd Gmail API parser prefers bounded text/plain and marks sent messages
   }
   assert.equal(extractGmailBody(payload), 'Plain body')
   assert.deepEqual(toInboundGmailMessage({ id: 'gmail-1', labelIds: ['INBOX', 'SENT'], internalDate: '1720000000000', payload }, 'owner@example.test'), {
-    id: 'gmail-1', from: 'owner@example.test', to: 'customer@example.test', subject: 'Hello', body: 'Plain body', bodyType: 'text', timestamp: 1720000000000,
+    id: 'gmail-1', sourceId: 'gmail-1', from: 'owner@example.test', to: 'customer@example.test', subject: 'Hello', body: 'Plain body', bodyType: 'text', timestamp: 1720000000000,
     messageId: '<gmail-1@example.test>', isFromMe: true,
   })
 })

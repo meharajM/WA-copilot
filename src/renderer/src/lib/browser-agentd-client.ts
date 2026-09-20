@@ -159,6 +159,7 @@ export interface BrowserEmailInboundEvent {
     body: string
     bodyType: 'text' | 'html'
     timestamp: number
+    sourceId?: string
     messageId?: string
     inReplyTo?: string
     references?: string
@@ -1190,6 +1191,7 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
       && isRecord(event.payload) && typeof event.payload.from === 'string' && typeof event.payload.to === 'string'
       && typeof event.payload.subject === 'string' && typeof event.payload.body === 'string'
       && (event.payload.bodyType === 'text' || event.payload.bodyType === 'html') && typeof event.payload.timestamp === 'number'
+      && (event.payload.sourceId === undefined || (typeof event.payload.sourceId === 'string' && /^[A-Za-z0-9_-]{1,256}$/.test(event.payload.sourceId)))
       && validInboundEmailAttachments(event.payload.attachments)
       && event.status === 'processing' && Number.isSafeInteger(event.createdAt))
     if (events.length !== value.events.length) throw new Error('Invalid email inbound claim response')
@@ -1205,6 +1207,7 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
       && isRecord(event.payload) && typeof event.payload.from === 'string' && typeof event.payload.to === 'string'
       && typeof event.payload.subject === 'string' && typeof event.payload.body === 'string'
       && (event.payload.bodyType === 'text' || event.payload.bodyType === 'html') && typeof event.payload.timestamp === 'number'
+      && (event.payload.sourceId === undefined || (typeof event.payload.sourceId === 'string' && /^[A-Za-z0-9_-]{1,256}$/.test(event.payload.sourceId)))
       && validInboundEmailAttachments(event.payload.attachments)
       && ['queued', 'draft', 'processing', 'completed'].includes(event.status as string) && Number.isSafeInteger(event.createdAt))
     if (events.length !== value.events.length) throw new Error('Invalid email inbound list response')

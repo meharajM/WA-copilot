@@ -106,6 +106,7 @@ function toInboundGmailMessage(item, ownerEmail = '') {
   const attachments = extractGmailAttachments(payload)
   return {
     id: item.id,
+    sourceId: item.id,
     from,
     to: parseEmailAddress(readHeader(headers, 'To')),
     subject: readHeader(headers, 'Subject') || '(No Subject)',
