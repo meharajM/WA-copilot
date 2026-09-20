@@ -51,4 +51,6 @@ test('Windows install smoke measures the complete native idle resource footprint
   assert.match(source, /peakResidentSetMb = \$peakRssMb/)
   assert.match(source, /averageCpuPercent = \$averageCpuPercent/)
   assert.match(source, /Native companion \+ agentd exceeded resident-memory guard/)
+  assert.match(source, /reinstallDataPreserved = \$reinstallDataPreserved/)
+  assert.match(source, /NSIS reinstall removed the user-data sentinel/)
 })

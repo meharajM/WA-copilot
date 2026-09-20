@@ -29,6 +29,8 @@ $null = New-Item -ItemType Directory -Force -Path $installRoot
 
 $companion = $null
 $agentdPids = @()
+$dataSentinel = Join-Path (Join-Path $env:LOCALAPPDATA 'com.aica.tauri-pilot') "install-smoke-$smokeId.txt"
+$reinstallDataPreserved = $false
 
 try {
   # NSIS accepts /D= only as the final argument. The generated installer is
@@ -136,6 +138,18 @@ try {
     Select-Object -ExpandProperty ProcessId)
   foreach ($agentdPid in $agentdPids) { Stop-Process -Id $agentdPid -Force -ErrorAction SilentlyContinue }
 
+  # Exercise the repair/reinstall path against the same isolated install root.
+  # The sentinel lives under the real per-user data root (not the install
+  # directory), so this proves a reinstall does not delete user data while
+  # keeping the smoke fully disposable and scoped to its unique run id.
+  $dataSentinelRoot = Split-Path -Parent $dataSentinel
+  $null = New-Item -ItemType Directory -Force -Path $dataSentinelRoot
+  Set-Content -LiteralPath $dataSentinel -Value "reinstall-sentinel-$smokeId" -NoNewline
+  $repairInstall = Start-Process -FilePath $installer -ArgumentList @('/S', "/D=$installRoot") -Wait -PassThru
+  Assert-Condition ($repairInstall.ExitCode -eq 0) "NSIS reinstall/repair failed with exit code $($repairInstall.ExitCode)"
+  Assert-Condition (Test-Path -LiteralPath $dataSentinel -PathType Leaf) 'NSIS reinstall removed the user-data sentinel'
+  $reinstallDataPreserved = $true
+
   $uninstaller = Get-ChildItem -LiteralPath $installRoot -Filter 'uninstall.exe' -File -Recurse | Select-Object -First 1
   Assert-Condition ($null -ne $uninstaller) "NSIS uninstaller was not found under $installRoot"
   $uninstall = Start-Process -FilePath $uninstaller.FullName -ArgumentList '/S' -Wait -PassThru
@@ -146,6 +160,7 @@ try {
     installer = $installer
     health = $healthBody
     installedAndUninstalled = $true
+    reinstallDataPreserved = $reinstallDataPreserved
     resourceGuard = @{
       sampleSeconds = $ResourceSampleSeconds
       peakResidentSetMb = $peakRssMb
@@ -162,4 +177,5 @@ finally {
   foreach ($agentdPid in $agentdPids) { Stop-Process -Id $agentdPid -Force -ErrorAction SilentlyContinue }
   if (Test-Path -LiteralPath $installRoot) { Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue }
   if (Test-Path -LiteralPath $startupLog) { Remove-Item -LiteralPath $startupLog -Force -ErrorAction SilentlyContinue }
+  if (Test-Path -LiteralPath $dataSentinel) { Remove-Item -LiteralPath $dataSentinel -Force -ErrorAction SilentlyContinue }
 }
