@@ -4509,6 +4509,23 @@ class AgentdServer {
     const reviewCounts = this.db.prepare('SELECT label,COUNT(*) AS count FROM autonomy_decision_reviews WHERE reviewed_at >= ? GROUP BY label').all(since)
     const reviewByLabel = Object.fromEntries(reviewCounts.map((row) => [row.label, Number(row.count) || 0]))
     const reviewedDecisions = Object.values(reviewByLabel).reduce((sum, count) => sum + count, 0)
+    const decisionRows = [
+      ...this.db.prepare('SELECT policy_decision AS policy FROM whatsapp_drafts WHERE created_at >= ? AND policy_decision IS NOT NULL').all(since),
+      ...this.db.prepare('SELECT payload AS policy FROM email_drafts WHERE created_at >= ?').all(since),
+    ]
+    let decisionCount = 0
+    let groundedDecisions = 0
+    let escalatedDecisions = 0
+    for (const row of decisionRows) {
+      try {
+        const raw = JSON.parse(row.policy)
+        const policy = raw?.policyDecision || raw
+        if (!policy || !['send', 'draft', 'escalate'].includes(policy.action)) continue
+        decisionCount += 1
+        if (policy.action === 'escalate') escalatedDecisions += 1
+        if (policy.grounding === 'grounded') groundedDecisions += 1
+      } catch {}
+    }
     const recoveryActions = this.db.prepare("SELECT action,created_at AS createdAt FROM operator_actions WHERE action IN ('enter_recovery_mode','clear_recovery_mode') AND created_at >= ? ORDER BY created_at ASC, id ASC").all(since)
     const recoveryStarts = []
     const recoveryDurations = []
@@ -4519,13 +4536,13 @@ class AgentdServer {
     return json(res, 200, {
       inbound,
       sent: outboxByStatus.sent || 0,
-      escalated: 0,
+      escalated: escalatedDecisions,
       drafts: (draftByStatus.draft || 0) + (draftByStatus.approved || 0),
       failed: outboxByStatus.failed || 0,
       averageDecisionLatencyMs: 0,
       llmCalls: generationCounts,
       averageLlmLatencyMs: 0,
-      groundedDecisionRate: 0,
+      groundedDecisionRate: decisionCount ? groundedDecisions / decisionCount : 0,
       deliveryUnknown: outboxByStatus.pending || 0,
       draftApprovalRate: totalDrafts ? approvedDrafts / totalDrafts : 0,
       averageDraftEditingTimeMs: 0,

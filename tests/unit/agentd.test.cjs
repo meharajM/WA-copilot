@@ -856,6 +856,8 @@ test('agentd exposes browser email policy evidence and durable quality reviews',
   const metrics = await request(origin, 'GET', '/api/v1/autonomy/metrics?days=7', undefined, bearer)
   assert.equal(metrics.body.reviewedDecisions, 1)
   assert.equal(metrics.body.reviewAccuracy, 1)
+  assert.equal(metrics.body.escalated, 1)
+  assert.equal(metrics.body.groundedDecisionRate, 0)
   assert.equal((await request(origin, 'POST', `/api/v1/autonomy/decision-evidence/${draft.id}/review`, { label: 'bad' }, bearer)).status, 400)
   await server.stop()
   fs.rmSync(dataDir, { recursive: true, force: true })
@@ -901,6 +903,8 @@ test('agentd exposes browser WhatsApp policy evidence and durable quality review
   const metrics = await request(origin, 'GET', '/api/v1/autonomy/metrics?days=7', undefined, bearer)
   assert.equal(metrics.body.reviewedDecisions, 1)
   assert.equal(metrics.body.reviewAccuracy, 1)
+  assert.equal(metrics.body.escalated, 0)
+  assert.equal(metrics.body.groundedDecisionRate, 0)
   const invalid = await request(origin, 'POST', '/api/v1/whatsapp/events', {
     channel: 'whatsapp', providerEventId: 'wa-evidence-invalid', conversationId: '15551234567@s.whatsapp.net',
     payload: {}, draftText: 'bad', policyDecision: { action: 'send', grounding: 'unavailable', rationale: 'ok', secret: 'nope' },
