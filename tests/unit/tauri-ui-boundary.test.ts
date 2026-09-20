@@ -247,6 +247,13 @@ describe('browser-first UI boundary', () => {
     expect(electron).toContain('getBrowserAgentdClient().ackAutonomyNotification(id)')
   })
 
+  it('derives browser unresolved and sent history from the durable agentd outbox', () => {
+    const electron = readSource('lib/electron.ts')
+    expect(electron).toContain("draft.sendStatus === 'pending' || draft.sendStatus === 'failed'")
+    expect(electron).toContain("draft.sendStatus === 'sent' && draft.providerMessageId")
+    expect(electron).toContain("channel: 'whatsapp'")
+  })
+
   it('routes browser persona reads and writes through agentd', () => {
     const electron = readSource('lib/electron.ts')
     expect(electron).toContain('getBrowserAgentdClient().getPersonaSettings()')

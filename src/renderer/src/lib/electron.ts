@@ -588,8 +588,32 @@ export const electron = {
         },
         listApprovedTemplates: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listApprovedTemplates() : [],
         listTakeovers: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listTakeovers() : [],
-        listUnresolvedOutbound: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listUnresolvedOutbound() : [],
-        listDeliveryHistory: async (limit = 50) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listDeliveryHistory(limit) : [],
+        listUnresolvedOutbound: async () => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.listUnresolvedOutbound()
+            if (!isBrowserProduct()) return []
+            const drafts = await getBrowserAgentdClient().listDrafts(100)
+            return drafts.filter(draft => draft.sendStatus === 'pending' || draft.sendStatus === 'failed').map(draft => ({
+                inboundId: draft.providerEventId,
+                jid: draft.conversationId,
+                content: draft.responseText,
+                providerMessageId: draft.providerMessageId || null,
+                sentAt: draft.updatedAt,
+                status: draft.sendStatus || 'failed',
+                error: draft.sendError || null,
+            }))
+        },
+        listDeliveryHistory: async (limit = 50) => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.listDeliveryHistory(limit)
+            if (!isBrowserProduct()) return []
+            const drafts = await getBrowserAgentdClient().listDrafts(Math.min(Math.max(limit, 1), 100))
+            return drafts.filter(draft => draft.sendStatus === 'sent' && draft.providerMessageId).map(draft => ({
+                providerMessageId: draft.providerMessageId as string,
+                channel: 'whatsapp',
+                status: 'sent',
+                eventAt: draft.updatedAt,
+                inboundId: draft.providerEventId,
+            }))
+        },
         listEmailAttachments: async (limit = 20) => {
             if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.listEmailAttachments(limit)
             if (isBrowserProduct()) return getBrowserAgentdClient().listEmailAttachments(limit)

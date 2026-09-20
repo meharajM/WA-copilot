@@ -239,6 +239,7 @@ Pass evidence:
 - Browser autonomy metrics come from authenticated agentd durable state (inbound events, draft/outbox statuses, and completed generations). Unsupported decision-review and recovery metrics remain explicitly zero until their agentd adapters are migrated; the UI must not present fabricated success activity.
 - The browser Autonomy panel refreshes its authenticated agentd supervisor state every five seconds while mounted, so pause/resume, queue, and outbox changes made by another browser tab or the native companion become visible without a reload. Electron keeps its push-event subscription.
 - Browser owner notifications are durable agentd records. The panel reads unread bounded failure/budget/recovery/escalation notifications through authenticated routes and acknowledges them explicitly; notification details are redacted before persistence and never contain credential values.
+- Browser Autonomy unresolved outbound and sent delivery history are derived from the authenticated agentd WhatsApp outbox, so failed/pending/sent states survive reloads without a renderer-side store.
 
 Pass evidence:
 
