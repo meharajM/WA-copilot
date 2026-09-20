@@ -16,6 +16,9 @@ export default defineConfig({
   plugins: [react()],
   build: {
     outDir: resolve(projectRoot, 'dist'),
+    // `outDir` lives outside Vite's project root. Empty it explicitly so
+    // repeated native builds do not accumulate stale hashed assets.
+    emptyOutDir: true,
     rollupOptions: {
       input: {
         index: resolve(projectRoot, 'src/renderer/tauri.html'),

@@ -13,5 +13,6 @@ describe('Tauri Vite output', () => {
     const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 
     expect(htmlOutput).toBe(resolve(projectRoot, 'dist/tauri.html'))
+    expect(config.build?.emptyOutDir).toBe(true)
   })
 })
