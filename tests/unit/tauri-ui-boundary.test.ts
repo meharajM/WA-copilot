@@ -254,6 +254,13 @@ describe('browser-first UI boundary', () => {
     expect(electron).toContain("channel: 'whatsapp'")
   })
 
+  it('keeps browser failed outbox rows actionable without changing Electron delivery-unknown controls', () => {
+    const autonomy = readSource('components/AutonomyPanel.tsx')
+    expect(autonomy).toContain("browserRuntime && item.status === 'failed'")
+    expect(autonomy).toContain('electron.autonomy.cancelOutbound(item.inboundId)')
+    expect(autonomy).toContain("item.status === 'delivery-unknown'")
+  })
+
   it('routes browser persona reads and writes through agentd', () => {
     const electron = readSource('lib/electron.ts')
     expect(electron).toContain('getBrowserAgentdClient().getPersonaSettings()')
