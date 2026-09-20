@@ -138,6 +138,7 @@ describe('browser-first UI boundary', () => {
     const resolutionAudit = readSource('hooks/useResolutionAudit.ts')
 
     expect(agent).toContain('client.createWhatsAppDraft')
+    expect(agent).toContain('policyDecision')
     expect(agent).toContain("client.updateDraftStatus(draft.draftId, 'approved')")
     expect(agent).toContain('client.sendWhatsAppDraft(draft.draftId)')
     expect(agent).toContain('60s courtesy notification through the durable WhatsApp outbox')

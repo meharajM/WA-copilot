@@ -611,6 +611,15 @@ export interface BrowserWhatsAppDraftResult {
   draftId?: number
 }
 
+export interface BrowserWhatsAppPolicyDecision {
+  action: 'send' | 'draft' | 'escalate'
+  rationale: string
+  grounding: 'grounded' | 'not_grounded' | 'unavailable'
+  confidence?: number
+  sensitiveTopic?: boolean
+  evidence?: Array<{ fileName: string; rank?: number }>
+}
+
 export interface BrowserAutonomyMetrics {
   inbound: number
   sent: number
@@ -811,7 +820,7 @@ export interface BrowserAgentdClient extends ChatClient {
   deleteEmailDraft(id: string): Promise<void>
   listWhatsAppInbound(afterId?: number, limit?: number): Promise<{ events: BrowserWhatsAppInboundEvent[]; nextAfterId: number }>
   getWhatsAppInboundMedia(providerEventId: string): Promise<BrowserWhatsAppInboundMedia>
-  createWhatsAppDraft(event: { providerEventId: string; conversationId: string; payload: Record<string, unknown>; draftText: string }): Promise<BrowserWhatsAppDraftResult>
+  createWhatsAppDraft(event: { providerEventId: string; conversationId: string; payload: Record<string, unknown>; draftText: string; policyDecision?: BrowserWhatsAppPolicyDecision }): Promise<BrowserWhatsAppDraftResult>
   getPersonaSettings(): Promise<PersonaSettings>
   savePersonaSettings(settings: PersonaSettings): Promise<PersonaSettings>
   getProductPreferences(): Promise<ProductPreferences>
@@ -1169,7 +1178,7 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     if (!isRecord(value) || value.success !== true || typeof value.providerMessageId !== 'string' || !value.providerMessageId) throw new Error('Invalid WhatsApp media send response')
     return { providerMessageId: value.providerMessageId }
   }
-  const createWhatsAppDraft = async (event: { providerEventId: string; conversationId: string; payload: Record<string, unknown>; draftText: string }): Promise<BrowserWhatsAppDraftResult> => {
+  const createWhatsAppDraft = async (event: { providerEventId: string; conversationId: string; payload: Record<string, unknown>; draftText: string; policyDecision?: BrowserWhatsAppPolicyDecision }): Promise<BrowserWhatsAppDraftResult> => {
     const value = await request<unknown>('/api/v1/whatsapp/events', {
       method: 'POST',
       body: JSON.stringify({ channel: 'whatsapp', ...event }),
@@ -1509,7 +1518,7 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     })
   }
   const readDecisionEvidence = (value: unknown): BrowserDecisionEvidence => {
-    if (!isRecord(value) || typeof value.inboundId !== 'string' || !/^draft_[A-Za-z0-9_-]{1,120}$/.test(value.inboundId)
+    if (!isRecord(value) || typeof value.inboundId !== 'string' || !/^(?:draft_[A-Za-z0-9_-]{1,120}|whatsapp_draft_[1-9]\d{0,18})$/.test(value.inboundId)
       || typeof value.jid !== 'string' || value.jid.length > 320 || !Number.isSafeInteger(value.createdAt) || value.createdAt < 0
       || !isRecord(value.decision) || !['grounded', 'not_grounded', 'unavailable'].includes(value.decision.grounding as string)
       || typeof value.decision.reason !== 'string' || value.decision.reason.length > 4096
@@ -1527,7 +1536,7 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     return value.evidence.map(readDecisionEvidence)
   }
   const reviewDecision = async (inboundId: string, label: BrowserDecisionReviewLabel, notes = ''): Promise<{ reviewed: boolean; inboundId: string; label: BrowserDecisionReviewLabel }> => {
-    if (!/^draft_[A-Za-z0-9_-]{1,120}$/.test(inboundId) || !['correct', 'incorrect', 'unnecessary_escalation', 'missed_escalation'].includes(label)) throw new Error('Invalid decision review')
+    if (!/^(?:draft_[A-Za-z0-9_-]{1,120}|whatsapp_draft_[1-9]\d{0,18})$/.test(inboundId) || !['correct', 'incorrect', 'unnecessary_escalation', 'missed_escalation'].includes(label)) throw new Error('Invalid decision review')
     if (typeof notes !== 'string' || notes.length > 2000) throw new Error('Invalid decision review notes')
     const value = await request<unknown>(`/api/v1/autonomy/decision-evidence/${encodeURIComponent(inboundId)}/review`, { method: 'POST', body: JSON.stringify({ label, ...(notes ? { notes } : {}) }) }, true)
     if (!isRecord(value) || value.reviewed !== true || value.inboundId !== inboundId || value.label !== label) throw new Error('Invalid agentd decision review response')

@@ -860,3 +860,52 @@ test('agentd exposes browser email policy evidence and durable quality reviews',
   await server.stop()
   fs.rmSync(dataDir, { recursive: true, force: true })
 })
+
+test('agentd exposes browser WhatsApp policy evidence and durable quality reviews', async () => {
+  const dataDir = makeTempDir('aica-agentd-whatsapp-decision-evidence-')
+  const secret = 'w'.repeat(32)
+  const server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
+  const { origin } = await server.start()
+  const bearer = { authorization: `Bearer ${secret}` }
+  const created = await request(origin, 'POST', '/api/v1/whatsapp/events', {
+    channel: 'whatsapp',
+    providerEventId: 'wa-evidence-1',
+    conversationId: '15551234567@s.whatsapp.net',
+    payload: { text: 'Where is my order?' },
+    draftText: 'I can help with that.',
+    policyDecision: {
+      action: 'send',
+      grounding: 'unavailable',
+      rationale: 'Autonomous WhatsApp response admitted to the durable outbox.',
+    },
+  }, bearer)
+  assert.equal(created.status, 202)
+  const listed = await request(origin, 'GET', '/api/v1/autonomy/decision-evidence?limit=20', undefined, bearer)
+  assert.equal(listed.status, 200)
+  const evidence = listed.body.evidence.find((item) => item.inboundId === `whatsapp_draft_${created.body.draftId}`)
+  assert.deepEqual(evidence, {
+    inboundId: `whatsapp_draft_${created.body.draftId}`,
+    jid: '15551234567@s.whatsapp.net',
+    createdAt: evidence.createdAt,
+    decision: {
+      grounding: 'unavailable',
+      reason: 'Autonomous WhatsApp response admitted to the durable outbox.',
+      escalated: false,
+      evidence: [],
+    },
+  })
+  const review = await request(origin, 'POST', `/api/v1/autonomy/decision-evidence/${evidence.inboundId}/review`, { label: 'correct' }, bearer)
+  assert.deepEqual(review.body, { reviewed: true, inboundId: evidence.inboundId, label: 'correct' })
+  const reviewed = await request(origin, 'GET', '/api/v1/autonomy/decision-evidence', undefined, bearer)
+  assert.equal(reviewed.body.evidence.find((item) => item.inboundId === evidence.inboundId).label, 'correct')
+  const metrics = await request(origin, 'GET', '/api/v1/autonomy/metrics?days=7', undefined, bearer)
+  assert.equal(metrics.body.reviewedDecisions, 1)
+  assert.equal(metrics.body.reviewAccuracy, 1)
+  const invalid = await request(origin, 'POST', '/api/v1/whatsapp/events', {
+    channel: 'whatsapp', providerEventId: 'wa-evidence-invalid', conversationId: '15551234567@s.whatsapp.net',
+    payload: {}, draftText: 'bad', policyDecision: { action: 'send', grounding: 'unavailable', rationale: 'ok', secret: 'nope' },
+  }, bearer)
+  assert.equal(invalid.status, 400)
+  await server.stop()
+  fs.rmSync(dataDir, { recursive: true, force: true })
+})

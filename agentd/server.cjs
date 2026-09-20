@@ -624,6 +624,7 @@ class AgentdServer {
           provider_event_id TEXT NOT NULL UNIQUE,
           conversation_id TEXT NOT NULL,
           response_text TEXT NOT NULL,
+          policy_decision TEXT,
           status TEXT NOT NULL CHECK(status IN ('draft','approved','rejected','sent')) DEFAULT 'draft',
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL
@@ -813,6 +814,8 @@ class AgentdServer {
       if (!sessionColumns.some((column) => column.name === 'metadata')) this.db.exec('ALTER TABLE chat_sessions ADD COLUMN metadata TEXT')
       const chatCutoverColumns = this.db.prepare('PRAGMA table_info(chat_history_cutovers)').all()
       if (!chatCutoverColumns.some((column) => column.name === 'source_hash')) this.db.exec('ALTER TABLE chat_history_cutovers ADD COLUMN source_hash TEXT')
+      const whatsappDraftColumns = this.db.prepare('PRAGMA table_info(whatsapp_drafts)').all()
+      if (!whatsappDraftColumns.some((column) => column.name === 'policy_decision')) this.db.exec('ALTER TABLE whatsapp_drafts ADD COLUMN policy_decision TEXT')
       const outboxColumns = this.db.prepare('PRAGMA table_info(whatsapp_outbox)').all()
       if (!outboxColumns.some((column) => column.name === 'cancel_requested')) this.db.exec('ALTER TABLE whatsapp_outbox ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0')
       this.db.prepare('INSERT INTO agent_state(key,value,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO NOTHING').run('paused', 'false', Date.now())
@@ -4208,6 +4211,8 @@ class AgentdServer {
     }
     const payload = body.payload === undefined ? {} : body.payload
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return json(res, 400, { error: 'Invalid WhatsApp payload' })
+    const policyDecision = parseWhatsAppPolicyDecision(body.policyDecision)
+    if (body.policyDecision !== undefined && !policyDecision) return json(res, 400, { error: 'Invalid WhatsApp policy decision' })
     let payloadJson
     try { payloadJson = JSON.stringify(redactPayload(payload)) } catch { return json(res, 400, { error: 'Invalid WhatsApp payload' }) }
     if (Buffer.byteLength(payloadJson, 'utf8') > MAX_WHATSAPP_PAYLOAD_BYTES) return json(res, 413, { error: 'WhatsApp payload too large' })
@@ -4220,7 +4225,7 @@ class AgentdServer {
       const existingDraft = this.db.prepare('SELECT id FROM whatsapp_drafts WHERE provider_event_id = ?').get(body.providerEventId)
       if (existingDraft) return { duplicate: true, draftId: existingDraft.id }
       const existingEvent = this.db.prepare('SELECT id,conversation_id FROM inbound_events WHERE channel = ? AND provider_event_id = ?').get('whatsapp', body.providerEventId)
-      const draft = this.db.prepare('INSERT INTO whatsapp_drafts(channel,provider_event_id,conversation_id,response_text,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?)').run('whatsapp', body.providerEventId, existingEvent?.conversation_id || body.conversationId, responseText, 'draft', now, now)
+      const draft = this.db.prepare('INSERT INTO whatsapp_drafts(channel,provider_event_id,conversation_id,response_text,policy_decision,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)').run('whatsapp', body.providerEventId, existingEvent?.conversation_id || body.conversationId, responseText, policyDecision ? JSON.stringify(policyDecision) : null, 'draft', now, now)
       return { duplicate: event.changes === 0, draftId: draft.lastInsertRowid }
     })()
     if (transaction.paused) return json(res, 202, { accepted: false, paused: true, duplicate: false })
@@ -4569,8 +4574,8 @@ class AgentdServer {
     this.authorize(req)
     const requestedLimit = Number.parseInt(url.searchParams.get('limit') || '20', 10)
     const limit = Number.isSafeInteger(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 50) : 20
-    const rows = this.db.prepare('SELECT id,payload FROM email_drafts ORDER BY updated_at DESC LIMIT ?').all(limit)
-    const evidence = rows.flatMap(row => {
+    const emailRows = this.db.prepare('SELECT id,payload FROM email_drafts ORDER BY updated_at DESC LIMIT ?').all(limit)
+    const emailEvidence = emailRows.flatMap(row => {
       try {
         const draft = JSON.parse(row.payload)
         const policy = draft?.policyDecision
@@ -4591,19 +4596,49 @@ class AgentdServer {
         }]
       } catch { return [] }
     })
+    const whatsappRows = this.db.prepare('SELECT id,conversation_id,policy_decision,created_at AS createdAt FROM whatsapp_drafts ORDER BY updated_at DESC LIMIT ?').all(limit)
+    const whatsappEvidence = whatsappRows.flatMap(row => {
+      let policy = null
+      if (typeof row.policy_decision === 'string') {
+        try { policy = parseWhatsAppPolicyDecision(JSON.parse(row.policy_decision)) } catch { policy = null }
+      }
+      const decision = {
+        grounding: policy?.grounding || 'unavailable',
+        reason: policy?.rationale || 'WhatsApp policy decision was not persisted',
+        ...(typeof policy?.confidence === 'number' ? { confidence: policy.confidence } : {}),
+        ...(policy ? { escalated: policy.action === 'escalate' } : {}),
+        ...(typeof policy?.sensitiveTopic === 'boolean' ? { sensitiveTopic: policy.sensitiveTopic } : {}),
+        evidence: Array.isArray(policy?.evidence) ? policy.evidence : [],
+      }
+      return [{
+        inboundId: `whatsapp_draft_${row.id}`,
+        jid: row.conversation_id,
+        createdAt: row.createdAt,
+        decision,
+        ...(this.db.prepare('SELECT label,notes,reviewed_at AS reviewedAt FROM autonomy_decision_reviews WHERE inbound_id = ?').get(`whatsapp_draft_${row.id}`) || {}),
+      }]
+    })
+    const evidence = [...emailEvidence, ...whatsappEvidence]
+      .sort((left, right) => right.createdAt - left.createdAt)
+      .slice(0, limit)
     return json(res, 200, { evidence })
   }
 
   async reviewAutonomyDecision(req, res, inboundId) {
     this.authorize(req, { mutation: true })
-    if (!/^draft_[A-Za-z0-9_-]{1,120}$/.test(inboundId)) return json(res, 400, { error: 'Invalid decision ID' })
+    if (!/^(?:draft_[A-Za-z0-9_-]{1,120}|whatsapp_draft_[1-9]\d{0,18})$/.test(inboundId)) return json(res, 400, { error: 'Invalid decision ID' })
     if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
     let body
     try { body = await readBody(req, 16 * 1024) } catch (error) { return json(res, error.statusCode || 400, { error: error.message }) }
     if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => !['label', 'notes'].includes(key))
       || !['correct', 'incorrect', 'unnecessary_escalation', 'missed_escalation'].includes(body.label)
       || (body.notes !== undefined && (typeof body.notes !== 'string' || body.notes.length > 2000))) return json(res, 400, { error: 'Invalid decision review' })
-    if (!this.db.prepare('SELECT 1 FROM email_drafts WHERE id = ?').get(inboundId)) return json(res, 404, { error: 'Decision not found' })
+    const whatsappMatch = /^whatsapp_draft_([1-9]\d{0,18})$/.exec(inboundId)
+    const emailDecision = this.db.prepare('SELECT 1 FROM email_drafts WHERE id = ?').get(inboundId)
+    const whatsappDecision = whatsappMatch && Number.isSafeInteger(Number(whatsappMatch[1]))
+      ? this.db.prepare('SELECT 1 FROM whatsapp_drafts WHERE id = ?').get(Number(whatsappMatch[1]))
+      : null
+    if (!emailDecision && !whatsappDecision) return json(res, 404, { error: 'Decision not found' })
     this.db.prepare(`INSERT INTO autonomy_decision_reviews(inbound_id,label,notes,reviewed_at) VALUES (?,?,?,?)
       ON CONFLICT(inbound_id) DO UPDATE SET label = excluded.label, notes = excluded.notes, reviewed_at = excluded.reviewed_at`)
       .run(inboundId, body.label, body.notes || null, Date.now())
@@ -4759,6 +4794,37 @@ function parseWhatsAppSettings(value) {
     whatsapp_transport: value.whatsapp_transport,
     whatsapp_cloud_phone_number_id: value.whatsapp_cloud_phone_number_id,
     whatsapp_cloud_api_version: value.whatsapp_cloud_api_version,
+  }
+}
+
+function parseWhatsAppPolicyDecision(value) {
+  if (value === undefined || value === null) return null
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const keys = Object.keys(value)
+  if (keys.some((key) => !['action', 'confidence', 'evidence', 'grounding', 'rationale', 'sensitiveTopic'].includes(key))) return null
+  if (!['send', 'draft', 'escalate'].includes(value.action)
+    || !validBoundedText(value.rationale, 4096, true)
+    || !['grounded', 'not_grounded', 'unavailable'].includes(value.grounding)
+    || (value.confidence !== undefined && (!Number.isFinite(value.confidence) || value.confidence < 0 || value.confidence > 1))
+    || (value.sensitiveTopic !== undefined && typeof value.sensitiveTopic !== 'boolean')
+    || (value.evidence !== undefined && (!Array.isArray(value.evidence) || value.evidence.length > 32 || value.evidence.some((item) => (
+      !item || typeof item !== 'object' || Array.isArray(item)
+      || Object.keys(item).some((key) => !['fileName', 'rank'].includes(key))
+      || !validBoundedText(item.fileName, 256)
+      || (item.rank !== undefined && (!Number.isSafeInteger(item.rank) || item.rank < 0 || item.rank > 100000))
+    ))))) return null
+  return {
+    action: value.action,
+    rationale: value.rationale,
+    grounding: value.grounding,
+    ...(value.confidence !== undefined ? { confidence: value.confidence } : {}),
+    ...(value.sensitiveTopic !== undefined ? { sensitiveTopic: value.sensitiveTopic } : {}),
+    ...(Array.isArray(value.evidence) ? {
+      evidence: value.evidence.map((item) => ({
+        fileName: item.fileName,
+        ...(item.rank !== undefined ? { rank: item.rank } : {}),
+      })),
+    } : {}),
   }
 }
 
