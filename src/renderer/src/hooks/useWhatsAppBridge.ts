@@ -137,16 +137,8 @@ const ingestBrowserWhatsAppEvent = async (event: BrowserWhatsAppInboundEvent): P
 export function useWhatsAppBridge(): void {
     const setConnectionState = useWhatsAppStore((s) => s.setConnectionState)
     const setWhatsAppEnabled = useWhatsAppStore((s) => s.setWhatsAppEnabled)
-    const setBusinessBotMode = useWhatsAppStore((s) => s.setBusinessBotMode)
     const whatsappEnabled = useWhatsAppStore((s) => s.whatsappEnabled)
     const businessBotMode = useWhatsAppStore((s) => s.businessBotMode)
-
-    // Browser mode has no autonomous response-policy worker. Clear a legacy
-    // Electron flag at bridge startup so a persisted value cannot briefly
-    // enable browser ingress before SettingsPanel mounts.
-    useEffect(() => {
-        if (isBrowserProduct() && businessBotMode) setBusinessBotMode(false)
-    }, [businessBotMode, setBusinessBotMode])
 
     // On mount: fetch initial state from main process
     useEffect(() => {
@@ -191,10 +183,11 @@ export function useWhatsAppBridge(): void {
     // mode is enabled. The Baileys worker owns the provider socket; this hook
     // only hydrates Lead Directory sessions through idempotent chat routes.
     useEffect(() => {
-        // Browser ingress is review/explicit-send only and is gated solely by
-        // Response Permission. The legacy autonomous flag is ignored even if
-        // an older renderer persisted it before this effect ran.
-        if (!isBrowserProduct() || !whatsappEnabled) return
+        // Browser ingress is gated by either explicit Response Permission or
+        // the separately persisted Autonomous Bot Mode. Both paths use the
+        // same durable event cursor; useAgent decides whether the resulting
+        // response remains a draft or enters the approved outbox.
+        if (!isBrowserProduct() || (!whatsappEnabled && !businessBotMode)) return
         let cancelled = false
         let timer: ReturnType<typeof setTimeout> | null = null
         let afterId = 0
@@ -242,7 +235,7 @@ export function useWhatsAppBridge(): void {
             cancelled = true
             if (timer) clearTimeout(timer)
         }
-    }, [whatsappEnabled])
+    }, [businessBotMode, whatsappEnabled])
 
     // Subscribe to connection state push events from main
     useEffect(() => {

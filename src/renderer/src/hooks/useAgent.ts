@@ -429,6 +429,30 @@ export function useAgent(): UseAgentReturn {
                         draftText: responseText,
                     });
                     if (!draft.accepted || draft.paused) throw new Error('Browser WhatsApp draft admission is paused');
+                    if (draft.duplicate) {
+                        useChatStore.getState().addSessionMessage(originSessionId, {
+                            role: 'assistant',
+                            content: 'WhatsApp response was already queued for this inbound event.',
+                        });
+                        return;
+                    }
+                    const { businessBotMode } = useWhatsAppStore.getState();
+                    if (businessBotMode && draft.draftId) {
+                        // Autonomous browser replies still use the durable
+                        // approval/outbox state machine. The explicit status
+                        // transition makes the policy decision observable and
+                        // keeps provider calls idempotent across reloads.
+                        await client.updateDraftStatus(draft.draftId, 'approved');
+                        const sent = await client.sendWhatsAppDraft(draft.draftId);
+                        if (!sent.providerMessageId) throw new Error('Browser WhatsApp delivery was not confirmed');
+                        useChatStore.getState().addSessionMessage(originSessionId, {
+                            role: 'assistant',
+                            content: sent.duplicate
+                                ? 'WhatsApp response was already delivered.'
+                                : 'WhatsApp response sent automatically.',
+                        });
+                        return;
+                    }
                     useChatStore.getState().addSessionMessage(originSessionId, {
                         role: 'assistant',
                         content: 'WhatsApp response drafted for review. Open Autonomy to approve or discard it.',
@@ -817,9 +841,10 @@ export function useAgent(): UseAgentReturn {
                 // Clear timer as response received
                 if (courtesyTimer) clearTimeout(courtesyTimer);
 
-                // Browser WhatsApp remains draft-only even when the selected
-                // provider is the renderer's WebGPU model. Never fall through
-                // to the Electron compatibility send path.
+                // Browser WhatsApp always stays on the agentd path, even when
+                // the selected provider is the renderer's WebGPU model. The
+                // admission helper decides review-only versus autonomous
+                // outbox delivery; never fall through to Electron IPC.
                 if (browserWhatsAppFlow) {
                     const responseText = typeof llmResponse.content === 'string' ? llmResponse.content.trim() : '';
                     if (!responseText) throw new Error('Browser WhatsApp returned an empty draft');

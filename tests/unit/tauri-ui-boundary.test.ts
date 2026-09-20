@@ -131,16 +131,19 @@ describe('browser-first UI boundary', () => {
     expect(bridge.indexOf('onComplete: completion')).toBeLessThan(bridge.indexOf('acknowledgeEmailInbound'))
   })
 
-  it('keeps browser WhatsApp inbound generation draft-only and replay-safe', () => {
+  it('keeps browser WhatsApp inbound generation replay-safe and routes autonomous sends through the outbox', () => {
     const agent = readSource('hooks/useAgent.ts')
     const bridge = readSource('hooks/useWhatsAppBridge.ts')
     const client = readSource('lib/browser-agentd-client.ts')
 
     expect(agent).toContain('client.createWhatsAppDraft')
+    expect(agent).toContain("client.updateDraftStatus(draft.draftId, 'approved')")
+    expect(agent).toContain('client.sendWhatsAppDraft(draft.draftId)')
     expect(agent).toContain('WhatsApp response drafted for review')
     expect(agent).toContain('!browserWhatsAppFlow && !isAdmin && multimodalWhatsAppMessage.type !== \'text\'')
     expect(agent).toContain('if (browserWhatsAppFlow) {')
-    expect(agent).toContain('provider is the renderer\'s WebGPU model. Never fall through')
+    expect(agent).toContain('selected provider is the renderer\'s WebGPU model')
+    expect(agent).toContain('never fall through to Electron IPC')
     expect(agent).toContain('whatsappAlreadyHydrated')
     expect(bridge).toContain('whatsappGenerationRequestId: `whatsapp_${event.id}`')
     expect(bridge).toContain('whatsappEvent: {')
@@ -178,16 +181,15 @@ describe('browser-first UI boundary', () => {
     expect(autonomy).not.toContain("browserRuntime ? electron.whatsapp.web")
   })
 
-  it('does not present browser WhatsApp autonomous-send as an available toggle', () => {
+  it('presents browser WhatsApp autonomous mode through the durable outbox', () => {
     const settings = readSource('components/SettingsPanel.tsx')
     const bridge = readSource('hooks/useWhatsAppBridge.ts')
 
-    expect(settings).toContain('Autonomous Bot Mode (unavailable)')
-    expect(settings).toContain('disabled={browserRuntime}')
-    expect(settings).toContain('automatic replies are not migrated yet.')
-    expect(bridge).toContain('if (isBrowserProduct() && businessBotMode) setBusinessBotMode(false)')
-    expect(bridge).toContain('if (!isBrowserProduct() || !whatsappEnabled) return')
-    expect(bridge).toContain('legacy autonomous flag is ignored')
+    expect(settings).toContain('Autonomous Bot Mode')
+    expect(settings).toContain('durable review/outbox path')
+    expect(settings).not.toContain('disabled={browserRuntime}')
+    expect(bridge).toContain('(!whatsappEnabled && !businessBotMode)')
+    expect(bridge).toContain('same durable event cursor')
   })
 
   it('keeps browser email credentials transport-scoped and review-only', () => {

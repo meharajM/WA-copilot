@@ -205,7 +205,7 @@ Evidence:
 - [src/renderer/src/components/SettingsPanel.tsx](/Users/meharaj/WA-copilot/src/renderer/src/components/SettingsPanel.tsx):179
 - [docs/app-behavior.md](/Users/meharaj/WA-copilot/docs/app-behavior.md):149
 
-Browser Response Permission and target-number state are loaded from and saved to authenticated agentd UI settings. The browser-only legacy copy is consulted once after pairing, then removed; `businessBotMode` is excluded from browser persistence and is forced off during hydration. Electron continues to use its existing renderer persistence path during the transition.
+Browser Response Permission, Autonomous Bot Mode, and target-number state are loaded from and saved to authenticated agentd UI settings. The browser-only legacy copy is consulted once after pairing, then removed; Electron continues to use its existing renderer persistence path during the transition. Autonomous replies use the durable draft/outbox path and never call Electron IPC.
 
 Evidence:
 

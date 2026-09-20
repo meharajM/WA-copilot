@@ -29,10 +29,11 @@ const validPhone = (value: unknown): value is string => typeof value === 'string
 
 const toBrowserSettings = (value: unknown): BrowserWhatsAppUiSettings => {
     const state = (value && typeof value === 'object' && !Array.isArray(value))
-        ? value as { whatsappEnabled?: unknown; targetPhoneNumber?: unknown }
+        ? value as { whatsappEnabled?: unknown; businessBotMode?: unknown; targetPhoneNumber?: unknown }
         : {}
     return {
         whatsappEnabled: state.whatsappEnabled === true,
+        businessBotMode: state.businessBotMode === true,
         targetPhoneNumber: validPhone(state.targetPhoneNumber) ? state.targetPhoneNumber : null,
     }
 }
@@ -40,8 +41,6 @@ const toBrowserSettings = (value: unknown): BrowserWhatsAppUiSettings => {
 const encodeBrowserState = (settings: BrowserWhatsAppUiSettings): string => JSON.stringify({
     state: {
         ...settings,
-        // Autonomous response policy is intentionally not a browser feature.
-        businessBotMode: false,
     },
     version: 0,
 })
@@ -63,8 +62,8 @@ const createBrowserWhatsAppStorage = (): StateStorage => ({
                 window.localStorage.removeItem(name)
             }
             const migrated = toBrowserSettings(legacyState)
-            if ((migrated.whatsappEnabled || migrated.targetPhoneNumber)
-                && !settings.whatsappEnabled && !settings.targetPhoneNumber) {
+            if ((migrated.whatsappEnabled || migrated.businessBotMode || migrated.targetPhoneNumber)
+                && !settings.whatsappEnabled && !settings.businessBotMode && !settings.targetPhoneNumber) {
                 try {
                     settings = await client.saveWhatsAppUiSettings(migrated)
                 } catch {
@@ -86,7 +85,7 @@ const createBrowserWhatsAppStorage = (): StateStorage => ({
     },
     removeItem: async () => {
         if (!hasBrowserSession()) return
-        await getBrowserAgentdClient().saveWhatsAppUiSettings({ whatsappEnabled: false, targetPhoneNumber: null })
+        await getBrowserAgentdClient().saveWhatsAppUiSettings({ whatsappEnabled: false, businessBotMode: false, targetPhoneNumber: null })
     },
 })
 
@@ -155,7 +154,7 @@ export const useWhatsAppStore = create<WhatsAppState>()(
             storage: createJSONStorage(() => isBrowserProduct() ? createBrowserWhatsAppStorage() : localStorage),
             partialize: (state) => ({
                 whatsappEnabled: state.whatsappEnabled,
-                businessBotMode: isBrowserProduct() ? false : state.businessBotMode,
+                businessBotMode: state.businessBotMode,
                 targetPhoneNumber: state.targetPhoneNumber,
                 // connectionState is NOT persisted — always fresh from main on startup
                 // isDialogOpen is NOT persisted — always start closed

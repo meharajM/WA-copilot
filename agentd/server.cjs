@@ -152,6 +152,7 @@ const WHATSAPP_SETTINGS_DEFAULTS = Object.freeze({
 })
 const WHATSAPP_UI_DEFAULTS = Object.freeze({
   whatsappEnabled: false,
+  businessBotMode: false,
   targetPhoneNumber: null,
 })
 const EMAIL_SETTINGS_DEFAULTS = Object.freeze({
@@ -4063,8 +4064,9 @@ function parseWhatsAppSettings(value) {
 function parseWhatsAppUiSettings(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   const keys = Object.keys(value).sort()
-  if (keys.length !== 2 || keys.join(',') !== 'targetPhoneNumber,whatsappEnabled'
+  if (keys.length !== 3 || keys.join(',') !== 'businessBotMode,targetPhoneNumber,whatsappEnabled'
     || typeof value.whatsappEnabled !== 'boolean'
+    || typeof value.businessBotMode !== 'boolean'
     || (value.targetPhoneNumber !== null
       && (typeof value.targetPhoneNumber !== 'string'
         || value.targetPhoneNumber.length > 32
@@ -4072,6 +4074,7 @@ function parseWhatsAppUiSettings(value) {
         || !/^\d{8,15}$/.test(value.targetPhoneNumber.replace(/\D/g, ''))))) return null
   return {
     whatsappEnabled: value.whatsappEnabled,
+    businessBotMode: value.businessBotMode,
     targetPhoneNumber: value.targetPhoneNumber,
   }
 }

@@ -74,12 +74,6 @@ export function SettingsPanel({ onClose, initialSection = 'whatsapp' }: Settings
     // authenticated browser/agentd API. This panel is not mounted by Tauri.
     const nativeApi = browserRuntime ? getBrowserAgentdClient() : null
 
-    useEffect(() => {
-        // Browser WhatsApp currently hydrates inbound events and approved drafts;
-        // it must not retain a legacy autonomous-send toggle from Electron.
-        if (browserRuntime && businessBotMode) setBusinessBotMode(false)
-    }, [browserRuntime, businessBotMode, setBusinessBotMode])
-
     // MCP Tools State
     const mcp = useMcpStore()
     const browserMcpUnavailable = isBrowserMcpUnavailable()
@@ -305,16 +299,15 @@ export function SettingsPanel({ onClose, initialSection = 'whatsapp' }: Settings
                             <div className="border-t border-[var(--color-border)] pt-6 mt-6 space-y-4">
                                 <div className="flex items-center justify-between">
                                     <div>
-                                        <p className="font-medium text-[var(--color-text-primary)]">{browserRuntime ? 'Autonomous Bot Mode (unavailable)' : 'Autonomous Bot Mode'}</p>
-                                        <p className="text-xs text-[var(--color-text-muted)]">{browserRuntime ? 'Browser mode keeps inbound messages review-only; automatic replies are not migrated yet.' : 'When enabled, the AI will automatically respond to all incoming messages.'}</p>
+                                        <p className="font-medium text-[var(--color-text-primary)]">Autonomous Bot Mode</p>
+                                        <p className="text-xs text-[var(--color-text-muted)]">When enabled, the AI will automatically respond to incoming text messages through the durable review/outbox path.</p>
                                     </div>
                                     <div className="flex items-center h-6">
                                         <input
                                             type="checkbox"
                                             className="w-10 h-5 bg-gray-700 rounded-full appearance-none cursor-pointer checked:bg-[#25D366] relative transition-colors duration-200"
                                             style={{ boxShadow: 'inset 0 2px 4px rgba(0,0,0,0.2)' }}
-                                            checked={browserRuntime ? false : businessBotMode}
-                                            disabled={browserRuntime}
+                                            checked={businessBotMode}
                                             onChange={(e) => setBusinessBotMode(e.target.checked)}
                                         />
                                     </div>
@@ -323,7 +316,7 @@ export function SettingsPanel({ onClose, initialSection = 'whatsapp' }: Settings
                                 <div className="flex items-center justify-between">
                                     <div>
                                         <p className="font-medium text-[var(--color-text-primary)]">Response Permission</p>
-                                        <p className="text-xs text-[var(--color-text-muted)]">{browserRuntime ? 'Allow explicit text sends and inbound review; automatic replies remain unavailable.' : 'Allow the bot to send messages. If disabled, it only monitors.'}</p>
+                                        <p className="text-xs text-[var(--color-text-muted)]">{browserRuntime ? 'Allow explicit text sends and inbound processing. Autonomous replies still require Autonomous Bot Mode.' : 'Allow the bot to send messages. If disabled, it only monitors.'}</p>
                                     </div>
                                     <div className="flex items-center h-6">
                                         <input

@@ -77,7 +77,7 @@ const browserAutonomyHealth = async () => {
     return {
         executionLocation: 'agentd',
         transport: 'authenticated loopback HTTP',
-        channel: { status: 'draft-only', error: null },
+        channel: { status: 'agentd-outbox', error: null },
         queues: { whatsapp: status.queueDepth || 0, email: 0, meta: 0 },
         leaseHeld: true,
         memory: { status: memoryBackend ? 'bounded' : 'unavailable', backend: memoryBackend },
@@ -630,10 +630,13 @@ export const electron = {
         setMode: async (mode: string, permission: boolean) => {
             if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.setMode(mode, permission)
             if (!isBrowserProduct()) return null
-            // Browser slice is draft-only: permission never enables direct sends.
+            // Browser supervisor pause/resume is separate from the WhatsApp
+            // Response Permission/Autonomous Bot Mode settings. Those settings
+            // are persisted through the authenticated store and autonomous
+            // sends are routed through the durable outbox by the agent hook.
             if (mode === 'draft') return getBrowserAgentdClient().resumeAll().then(browserAutonomyState)
-            // Browser slice supports observe (paused) and draft-only (running).
-            // Auto mode stays paused until a provider-backed outbox exists.
+            // Observe and auto remain supervisor controls here; the browser
+            // panel intentionally does not mutate the channel settings.
             return getBrowserAgentdClient().pauseAll().then(browserAutonomyState)
         },
         onState: (callback: (state: unknown) => void) => {

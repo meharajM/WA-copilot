@@ -12,7 +12,7 @@ describe('browser WhatsApp persistence', () => {
     delete (window as Window & { __AICA_AGENTD_CSRF_TOKEN__?: string }).__AICA_AGENTD_CSRF_TOKEN__
   })
 
-  it('migrates legacy UI state once, omits autonomous mode, and writes only to agentd', async () => {
+  it('migrates legacy UI state once, preserves autonomous mode, and writes only to agentd', async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = []
     window.localStorage.setItem('aica-whatsapp-v1', JSON.stringify({
       state: { whatsappEnabled: true, businessBotMode: true, targetPhoneNumber: '+1 (415) 555-0199' },
@@ -24,7 +24,7 @@ describe('browser WhatsApp persistence', () => {
       calls.push({ url, init })
       if (url.endsWith('/api/v1/settings/whatsapp-ui')) {
         if (init?.method === 'PUT') return jsonResponse(JSON.parse(String(init.body)))
-        return jsonResponse({ whatsappEnabled: false, targetPhoneNumber: null })
+        return jsonResponse({ whatsappEnabled: false, businessBotMode: false, targetPhoneNumber: null })
       }
       return jsonResponse({ success: true })
     }))
@@ -36,25 +36,25 @@ describe('browser WhatsApp persistence', () => {
     expect(useWhatsAppStore.getState()).toMatchObject({
       whatsappEnabled: true,
       targetPhoneNumber: '+1 (415) 555-0199',
-      businessBotMode: false,
+      businessBotMode: true,
     })
     expect(window.localStorage.getItem('aica-whatsapp-v1')).toBeNull()
     const migration = calls.find(call => call.init?.method === 'PUT')
     expect(migration).toBeDefined()
-    expect(JSON.parse(String(migration?.init?.body))).toEqual({ whatsappEnabled: true, targetPhoneNumber: '+1 (415) 555-0199' })
+    expect(JSON.parse(String(migration?.init?.body))).toEqual({ whatsappEnabled: true, businessBotMode: true, targetPhoneNumber: '+1 (415) 555-0199' })
     expect(new Headers(migration?.init?.headers).get('x-csrf-token')).toBe('csrf-token')
 
     useWhatsAppStore.getState().setWhatsAppEnabled(false)
     await new Promise(resolve => setTimeout(resolve, 0))
     const writes = calls.filter(call => call.init?.method === 'PUT')
-    expect(JSON.parse(String(writes.at(-1)?.init?.body))).toEqual({ whatsappEnabled: false, targetPhoneNumber: '+1 (415) 555-0199' })
-    expect(JSON.stringify(writes)).not.toContain('businessBotMode')
+    expect(JSON.parse(String(writes.at(-1)?.init?.body))).toEqual({ whatsappEnabled: false, businessBotMode: true, targetPhoneNumber: '+1 (415) 555-0199' })
+    expect(JSON.stringify(writes)).toContain('businessBotMode')
   })
 
   it('does not crash on a null legacy payload and clears it after paired hydration', async () => {
     window.localStorage.setItem('aica-whatsapp-v1', 'null')
     ;(window as Window & { __AICA_AGENTD_CSRF_TOKEN__?: string }).__AICA_AGENTD_CSRF_TOKEN__ = 'csrf-token'
-    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ whatsappEnabled: false, targetPhoneNumber: null })))
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ whatsappEnabled: false, businessBotMode: false, targetPhoneNumber: null })))
 
     const { useWhatsAppStore } = await import('../../src/renderer/src/stores/whatsappStore')
     await useWhatsAppStore.persist.rehydrate()

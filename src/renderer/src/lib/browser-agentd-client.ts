@@ -168,6 +168,7 @@ export interface BrowserWhatsAppConnectionState {
 
 export interface BrowserWhatsAppUiSettings {
   whatsappEnabled: boolean
+  businessBotMode: boolean
   targetPhoneNumber: string | null
 }
 
@@ -393,6 +394,7 @@ const readWhatsAppConnectionState = (value: unknown): BrowserWhatsAppConnectionS
 const readWhatsAppUiSettings = (value: unknown): BrowserWhatsAppUiSettings => {
   if (!isRecord(value)
     || typeof value.whatsappEnabled !== 'boolean'
+    || typeof value.businessBotMode !== 'boolean'
     || (value.targetPhoneNumber !== null
       && (typeof value.targetPhoneNumber !== 'string'
         || value.targetPhoneNumber.length > 32
@@ -400,6 +402,7 @@ const readWhatsAppUiSettings = (value: unknown): BrowserWhatsAppUiSettings => {
         || !/^\d{8,15}$/.test(value.targetPhoneNumber.replace(/\D/g, ''))))) throw new Error('Invalid WhatsApp UI settings response')
   return {
     whatsappEnabled: value.whatsappEnabled,
+    businessBotMode: value.businessBotMode,
     targetPhoneNumber: value.targetPhoneNumber as string | null,
   }
 }
