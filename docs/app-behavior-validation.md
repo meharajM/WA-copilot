@@ -374,6 +374,11 @@ The documentation follow-up triggered workflow `35383920744` and was rejected
 in the same three-second pre-job window, again without executable steps or
 logs. The PR therefore still has no hosted Windows runtime evidence.
 
+After merging the migration branch with the updated `main` (including PR #8),
+workflow `35500106827` was rejected in the same pre-job boundary. The merge
+itself is conflict-free and locally verified; this hosted failure still adds
+no Windows runtime evidence.
+
 ### Finding 6: browser WebGPU Email could fall through to Electron delivery — resolved
 
 Severity: high
