@@ -233,7 +233,7 @@ Pass evidence:
 
 - Edge/Chrome owns the product workflow. With Baileys selected, the browser calls authenticated local `agentd` routes for QR/session state, handshake, disconnect and text sends; the daemon keeps the multi-file auth directory on the local machine and never returns auth keys to the page. With Cloud transport selected, explicit sends use the authenticated `agentd` Cloud API route; the access token stays in the OS credential store and never reaches the page.
 - The agentd WhatsApp worker is lazy: constructing the daemon does not import Baileys or open a WhatsApp socket. Baileys dependencies load only after the operator explicitly starts a Baileys connection, preserving local CPU/network resources for the model and browser workspace.
-- Browser sends fail closed when the selected transport or credentials are unavailable. The migrated Baileys path supports explicit text sends, approved drafts, and Autonomous Bot Mode through the same idempotent text-only outbox; `agentd` records a durable pending/sent/failed entry and suppresses duplicate provider calls for either Baileys or Cloud. Failed attempts can be retried through the authenticated browser route; an operator can quarantine or cancel a failed attempt, and those dispositions block accidental re-send. Pending provider work cannot be cancelled or quarantined and returns an explicit conflict. Browser autonomous text handling now also emits at most one durable 60-second courtesy message, durable admin escalation notification, and resolved/forwarded intelligence log per inbound event. WhatsApp Web automation, media delivery, inactivity follow-up parity and full continuity remain unavailable.
+- Browser sends fail closed when the selected transport or credentials are unavailable. The migrated Baileys path supports explicit text sends, approved drafts, and Autonomous Bot Mode through the same idempotent text-only outbox; `agentd` records a durable pending/sent/failed entry and suppresses duplicate provider calls for either Baileys or Cloud. Failed attempts can be retried through the authenticated browser route; an operator can quarantine or cancel a failed attempt, and those dispositions block accidental re-send. Pending provider work cannot be cancelled or quarantined and returns an explicit conflict. Browser autonomous text handling now also emits at most one durable 60-second courtesy message, durable admin escalation notification, and resolved/forwarded intelligence log per inbound event. WhatsApp Web automation, media delivery and full continuity remain unavailable.
 - The local Baileys worker normalizes bounded text and media captions into durable inbound events using stable provider message IDs. Self-messages and broadcast/system messages are ignored; media bytes are not downloaded into the browser path, so unsupported media remains fail-closed.
 - A failed channel send does not discard the local chat submission; the browser records the failure through its normal audit/error path so the operator can retry after fixing configuration.
 - Browser autonomy metrics come from authenticated agentd durable state (inbound events, draft/outbox statuses, and completed generations). Unsupported decision-review and recovery metrics remain explicitly zero until their agentd adapters are migrated; the UI must not present fabricated success activity.
@@ -250,13 +250,14 @@ Pass evidence:
 
 - Active WhatsApp-linked sessions are audited for inactivity.
 - The current inactivity threshold is 10 minutes.
-- If the last message was from the assistant, the app sends a follow-up asking whether the issue is resolved.
-- If the last message was from the user, the app logs long user silence instead of sending another prompt.
+- Electron keeps its legacy client-side audit while it remains the transition client. Browser mode is daemon-owned: `agentd` sweeps durable sessions every minute, so a closed/reloaded tab cannot drop the audit or bypass the authenticated outbox.
+- If the last message was from the assistant, browser review mode admits one deterministic follow-up draft; Autonomous Bot Mode approves and sends it through the durable outbox. The follow-up event identity is derived from session/message identity, so retries and daemon restarts cannot create duplicates.
+- If the last message was from the user, browser mode writes one deduplicated `user_silence` intelligence log instead of sending another prompt.
 
 Pass evidence:
 
 - No repeated follow-up loop happens every minute after the first follow-up.
-- Follow-up appears only after the configured inactivity window.
+- Follow-up appears only after the configured inactivity window and survives a browser reload/close because the daemon owns admission.
 
 ## Email Channel
 
@@ -566,7 +567,7 @@ Pass evidence:
 - Browser audit logs are downloaded as redacted NDJSON. Tauri native diagnostics can open the fixed agentd data folder; the browser never receives that path or a generic native file-open bridge. Electron retains its existing reveal behavior during transition.
 - Lead Directory supports non-WhatsApp sessions in the data model, but some copy still describes it as WhatsApp-only.
 - The LLM provider selector includes `browser`. In Edge/Chrome it is an explicit WebGPU mode backed by the existing WebLLM worker/cache; remote providers remain agentd-owned. Tauri still renders no product settings UI, and Electron keeps its existing local path during transition.
-- Resolution-audit helper text in some logs/comments still references older timing language, but the actual timeout is 10 minutes.
+- Electron resolution-audit helper text and the agentd browser audit both use the documented 10-minute inactivity threshold.
 
 ## QA Reporting Format
 

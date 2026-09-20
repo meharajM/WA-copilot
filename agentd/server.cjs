@@ -39,6 +39,9 @@ const MAX_EMAIL_ATTACHMENT_MIME_LENGTH = 128
 const MAX_EMAIL_ATTACHMENT_RESPONSE_BYTES = Math.ceil(MAX_SCANNED_EMAIL_ATTACHMENT_BYTES * 4 / 3) + 32 * 1024
 const MAX_WHATSAPP_INBOUND_BATCH = 50
 const MAX_DRAFT_TEXT_LENGTH = 4096
+const WHATSAPP_INACTIVITY_TIMEOUT_MS = 10 * 60 * 1000
+const WHATSAPP_INACTIVITY_SWEEP_MS = 60 * 1000
+const WHATSAPP_RESOLUTION_PROMPT = "It's been a while! Just checking in—did that resolve your inquiry? (Reply 'Yes' or 'No', or feel free to ask more questions!)"
 const OUTBOX_QUARANTINED_ERROR = 'Quarantined by operator'
 const OUTBOX_CANCELLED_ERROR = 'Cancelled by operator'
 const CONTINUITY_CREDENTIAL_KEYS = Object.freeze([
@@ -479,6 +482,10 @@ function redactPayload(value, key = '') {
   return Object.fromEntries(Object.entries(value).map(([childKey, childValue]) => [childKey, redactPayload(childValue, childKey)]))
 }
 
+function whatsappInactivityProviderEventId(sessionId, messageId) {
+  return `inactivity:${crypto.createHash('sha256').update(`${sessionId}\0${messageId}`).digest('hex')}`
+}
+
 class AgentdServer {
   constructor({ dataDir, secret, uiRoot = null, logger = console, pairingCode = null, credentials = null, providerFetch = fetch, emailProbe = probeEmailTransport, emailSend = sendTextEmail, emailPoll = undefined, gmailPoll: configuredGmailPoll = undefined, whatsappService = null, mcpWorker = null } = {}) {
     if (!secret || typeof secret !== 'string' || secret.length < 32) throw new Error('A per-install bearer secret of at least 32 characters is required')
@@ -493,6 +500,9 @@ class AgentdServer {
     this.emailPoll = emailPoll
     this.gmailPoll = configuredGmailPoll
     this.emailInboundWorker = null
+    this.whatsappInactivityTimer = null
+    this.whatsappInactivityAuditRunning = false
+    this.whatsappInactivityAuditPromise = null
     this.mcpWorker = mcpWorker || new McpWorker({ logger, credentials })
     this.gmailOAuth = new GmailOAuthService({ credentials, fetchImpl: providerFetch, logger })
     this.whatsappBaileys = whatsappService || new WhatsAppBaileysService({
@@ -760,6 +770,7 @@ class AgentdServer {
       this.writePairingCode()
       this.writeRuntimeDescriptor()
       this.startEmailInboundPolling()
+      this.startWhatsAppInactivityAudit()
       this.logger.log(`[agentd] listening at ${this.origin}`)
       return { origin: this.origin, pairingExpiresAt: this.pairingExpiresAt }
     } catch (error) {
@@ -865,6 +876,7 @@ class AgentdServer {
 
   async stop() {
     this.stopEmailInboundPolling()
+    await this.stopWhatsAppInactivityAudit()
     try { await this.mcpWorker?.closeAll() } catch {}
     try { await this.whatsappBaileys?.disconnect(false) } catch {}
     if (this.server) await new Promise(resolve => this.server.close(() => resolve()))
@@ -940,6 +952,99 @@ class AgentdServer {
   stopEmailInboundPolling() {
     this.emailInboundWorker?.stop()
     this.emailInboundWorker = null
+  }
+
+  startWhatsAppInactivityAudit() {
+    if (this.migrationHold || this.whatsappInactivityTimer) return
+    const run = () => {
+      const promise = this.auditWhatsAppInactivity().catch(error => {
+        this.logger.log(`[agentd] WhatsApp inactivity audit failed: ${error?.message || 'unknown error'}`)
+      })
+      this.whatsappInactivityAuditPromise = promise
+      void promise.then(() => {
+        if (this.whatsappInactivityAuditPromise === promise) this.whatsappInactivityAuditPromise = null
+      })
+    }
+    this.whatsappInactivityTimer = setInterval(run, WHATSAPP_INACTIVITY_SWEEP_MS)
+    this.whatsappInactivityTimer.unref?.()
+    run()
+  }
+
+  async stopWhatsAppInactivityAudit() {
+    if (this.whatsappInactivityTimer) clearInterval(this.whatsappInactivityTimer)
+    this.whatsappInactivityTimer = null
+    await this.whatsappInactivityAuditPromise
+    this.whatsappInactivityAuditPromise = null
+    this.whatsappInactivityAuditRunning = false
+  }
+
+  async auditWhatsAppInactivity() {
+    if (!this.db || this.migrationHold || this.whatsappInactivityAuditRunning) return
+    this.whatsappInactivityAuditRunning = true
+    try {
+      if (this.getState('paused', 'true') === 'true') return
+      let storedUi = null
+      try { storedUi = JSON.parse(this.getState('whatsapp_ui_settings', 'null')) } catch {}
+      const uiSettings = parseWhatsAppUiSettings(storedUi) || WHATSAPP_UI_DEFAULTS
+      if (!uiSettings.whatsappEnabled && !uiSettings.businessBotMode) return
+
+      const cutoff = Date.now() - WHATSAPP_INACTIVITY_TIMEOUT_MS
+      const rows = this.db.prepare(`
+        SELECT s.id AS session_id, s.contact_id, m.message_id, m.role, m.content
+        FROM chat_sessions s
+        JOIN chat_messages m ON m.session_id = s.id
+        WHERE s.status = 'active'
+          AND s.channel = 'whatsapp'
+          AND s.contact_id IS NOT NULL
+          AND s.updated_at <= ?
+          AND NOT EXISTS (
+            SELECT 1 FROM chat_messages newer
+            WHERE newer.session_id = m.session_id
+              AND (newer.created_at > m.created_at OR (newer.created_at = m.created_at AND newer.rowid > m.rowid))
+          )
+      `).all(cutoff)
+
+      for (const row of rows) {
+        if (row.role === 'user') {
+          const details = `WhatsApp session ${row.session_id} inactive after user message ${row.message_id}`
+          const seen = this.db.prepare("SELECT 1 FROM intelligence_logs WHERE type = 'accuracy' AND event = 'user_silence' AND details = ? LIMIT 1").get(details)
+          if (!seen) this.db.prepare('INSERT INTO intelligence_logs(type,event,details,timestamp) VALUES (?,?,?,?)').run('accuracy', 'user_silence', details, new Date().toISOString())
+          continue
+        }
+        if (row.role !== 'assistant' || row.content === WHATSAPP_RESOLUTION_PROMPT || typeof row.contact_id !== 'string' || !row.contact_id.trim()) continue
+
+        const providerEventId = whatsappInactivityProviderEventId(row.session_id, row.message_id)
+        const existingDraft = this.db.prepare('SELECT id FROM whatsapp_drafts WHERE provider_event_id = ?').get(providerEventId)
+        if (existingDraft) continue
+
+        const now = Date.now()
+        const inserted = this.db.transaction(() => {
+          const payload = JSON.stringify(redactPayload({ kind: 'inactivity_followup', sessionId: row.session_id, relatedMessageId: row.message_id }))
+          this.db.prepare('INSERT INTO inbound_events(channel,provider_event_id,conversation_id,payload,status,created_at) VALUES (?,?,?,?,?,?) ON CONFLICT(channel,provider_event_id) DO NOTHING').run('whatsapp', providerEventId, row.contact_id.slice(0, 500), payload, 'draft', now)
+          this.db.prepare('INSERT INTO whatsapp_drafts(channel,provider_event_id,conversation_id,response_text,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT(provider_event_id) DO NOTHING').run('whatsapp', providerEventId, row.contact_id.slice(0, 500), WHATSAPP_RESOLUTION_PROMPT, 'draft', now, now)
+          const current = this.db.prepare('SELECT id FROM whatsapp_drafts WHERE provider_event_id = ?').get(providerEventId)
+          return { draftId: current?.id }
+        })()
+        if (!inserted.draftId) continue
+
+        let admitted = true
+        if (uiSettings.businessBotMode) {
+          this.db.prepare("UPDATE whatsapp_drafts SET status = 'approved', updated_at = ? WHERE id = ? AND status = 'draft'").run(Date.now(), inserted.draftId)
+          const result = await this.performWhatsAppDraftSend(inserted.draftId)
+          admitted = result.status === 200 && result.body?.success === true
+        }
+        if (!admitted) continue
+
+        const messageId = `assistant_${providerEventId}`
+        this.db.transaction(() => {
+          const duplicate = this.db.prepare('SELECT 1 FROM chat_messages WHERE session_id = ? AND message_id = ?').get(row.session_id, messageId)
+          if (!duplicate) this.db.prepare('INSERT INTO chat_messages(session_id,message_id,role,content,created_at) VALUES (?,?,?,?,?)').run(row.session_id, messageId, 'assistant', WHATSAPP_RESOLUTION_PROMPT, Date.now())
+          this.db.prepare('UPDATE chat_sessions SET updated_at = ? WHERE id = ?').run(Date.now(), row.session_id)
+        })()
+      }
+    } finally {
+      this.whatsappInactivityAuditRunning = false
+    }
   }
 
   ingestEmailInbound(body) {

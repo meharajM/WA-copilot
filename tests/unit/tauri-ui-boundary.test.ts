@@ -135,6 +135,7 @@ describe('browser-first UI boundary', () => {
     const agent = readSource('hooks/useAgent.ts')
     const bridge = readSource('hooks/useWhatsAppBridge.ts')
     const client = readSource('lib/browser-agentd-client.ts')
+    const resolutionAudit = readSource('hooks/useResolutionAudit.ts')
 
     expect(agent).toContain('client.createWhatsAppDraft')
     expect(agent).toContain("client.updateDraftStatus(draft.draftId, 'approved')")
@@ -154,6 +155,8 @@ describe('browser-first UI boundary', () => {
     expect(bridge.indexOf('onComplete: completion')).toBeLessThan(bridge.indexOf('afterId = result.nextAfterId'))
     expect(client).toContain("'/api/v1/whatsapp/events'")
     expect(client).toContain('accepted: boolean')
+    expect(resolutionAudit).toContain('Browser/agentd owns inactivity follow-up durably')
+    expect(resolutionAudit).toContain('!isElectron() && !isTauriRuntime()')
   })
 
   it('keeps browser brain corrections on the runtime-aware agentd route', () => {

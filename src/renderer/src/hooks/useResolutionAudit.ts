@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { useChatStore } from '../stores/chatStore'
-import electron from '../lib/electron'
+import electron, { isElectron } from '../lib/electron'
+import { isTauriRuntime } from '../lib/tauri-native-bridge'
 import type { ChatSession } from '../stores/chatStore'
 
 const INACTIVITY_TIMEOUT_MS = 10 * 60 * 1000 // 10 minutes
@@ -73,6 +74,9 @@ export function useResolutionAudit() {
     const timerRef = useRef<NodeJS.Timeout | null>(null)
 
     useEffect(() => {
+        // Browser/agentd owns inactivity follow-up durably. A page timer would
+        // lose work when the tab closes and could bypass the authenticated outbox.
+        if (typeof window !== 'undefined' && !isElectron() && !isTauriRuntime()) return
         // Clear any existing global timer
         if (timerRef.current) clearInterval(timerRef.current)
 
@@ -85,9 +89,9 @@ export function useResolutionAudit() {
             actions.forEach((action) => {
                 if (action.type === 'send_followup') {
                     addSessionMessage(action.sessionId, {
-                        role: 'assistant',
-                        content: action.prompt,
-                        thought: '[Resolution Audit] 15min inactivity detected. Prompting for closure.',
+                            role: 'assistant',
+                            content: action.prompt,
+                            thought: '[Resolution Audit] 10min inactivity detected. Prompting for closure.',
                     })
 
                     electron.whatsapp

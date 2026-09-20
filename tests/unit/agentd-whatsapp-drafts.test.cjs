@@ -251,3 +251,55 @@ test('draft send acquires migration admission before claiming the outbox', async
   server.beginActiveOperation = originalBegin
   await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true })
 })
+
+test('agentd owns WhatsApp inactivity follow-up, review admission, and user-silence logging', async () => {
+  const dataDir = makeTempDir('aica-agentd-wa-inactivity-')
+  const secret = 'i'.repeat(32)
+  const server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
+  await server.start()
+  const old = Date.now() - 11 * 60 * 1000
+  server.setState('whatsapp_ui_settings', JSON.stringify({ whatsappEnabled: true, businessBotMode: false, targetPhoneNumber: null }))
+  server.db.prepare('INSERT INTO chat_sessions(id,title,status,channel,contact_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?)').run('wa-review', 'Review', 'active', 'whatsapp', '14155551212@s.whatsapp.net', old, old)
+  server.db.prepare('INSERT INTO chat_messages(session_id,message_id,role,content,created_at) VALUES (?,?,?,?,?)').run('wa-review', 'assistant-old', 'assistant', 'Previous answer', old)
+  server.db.prepare('INSERT INTO chat_sessions(id,title,status,channel,contact_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?)').run('wa-silence', 'Silence', 'active', 'whatsapp', '14155551313@s.whatsapp.net', old, old)
+  server.db.prepare('INSERT INTO chat_messages(session_id,message_id,role,content,created_at) VALUES (?,?,?,?,?)').run('wa-silence', 'user-old', 'user', 'Question', old)
+
+  await server.auditWhatsAppInactivity()
+  const reviewDraft = server.db.prepare("SELECT * FROM whatsapp_drafts WHERE conversation_id = '14155551212@s.whatsapp.net'").get()
+  assert.equal(reviewDraft.status, 'draft')
+  assert.equal(reviewDraft.response_text.startsWith("It's been a while!"), true)
+  assert.equal(server.db.prepare("SELECT COUNT(*) AS count FROM chat_messages WHERE session_id = 'wa-review'").get().count, 2)
+  assert.equal(server.db.prepare("SELECT COUNT(*) AS count FROM intelligence_logs WHERE event = 'user_silence'").get().count, 1)
+
+  await server.auditWhatsAppInactivity()
+  assert.equal(server.db.prepare('SELECT COUNT(*) AS count FROM whatsapp_drafts').get().count, 1)
+  assert.equal(server.db.prepare("SELECT COUNT(*) AS count FROM intelligence_logs WHERE event = 'user_silence'").get().count, 1)
+  await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true })
+})
+
+test('agentd inactivity autonomous mode approves and sends exactly once', async () => {
+  const dataDir = makeTempDir('aica-agentd-wa-inactivity-auto-')
+  const secret = 'j'.repeat(32)
+  let sends = 0
+  const server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
+  await server.start()
+  server.setState('whatsapp_ui_settings', JSON.stringify({ whatsappEnabled: false, businessBotMode: true, targetPhoneNumber: null }))
+  server.sendWhatsAppConfiguredMessage = async () => {
+    sends += 1
+    return { providerMessageId: 'wamid.inactivity-1' }
+  }
+  const old = Date.now() - 11 * 60 * 1000
+  server.db.prepare('INSERT INTO chat_sessions(id,title,status,channel,contact_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?)').run('wa-auto', 'Auto', 'active', 'whatsapp', '14155551414@s.whatsapp.net', old, old)
+  server.db.prepare('INSERT INTO chat_messages(session_id,message_id,role,content,created_at) VALUES (?,?,?,?,?)').run('wa-auto', 'assistant-old', 'assistant', 'Previous answer', old)
+
+  await server.auditWhatsAppInactivity()
+  await server.auditWhatsAppInactivity()
+  const draft = server.db.prepare('SELECT * FROM whatsapp_drafts').get()
+  const outbox = server.db.prepare('SELECT * FROM whatsapp_outbox WHERE draft_id = ?').get(draft.id)
+  assert.equal(draft.status, 'sent')
+  assert.equal(outbox.status, 'sent')
+  assert.equal(outbox.provider_message_id, 'wamid.inactivity-1')
+  assert.equal(sends, 1)
+  assert.equal(server.db.prepare("SELECT COUNT(*) AS count FROM chat_messages WHERE session_id = 'wa-auto'").get().count, 2)
+  await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true })
+})
