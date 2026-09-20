@@ -25,6 +25,7 @@ export function registerEmailHandlers(): void {
   })
 
   emailChannelService.on('deliveryStatus', (status) => {
+    if (status && typeof status === 'object' && (status as { status?: string }).status === 'failed' && typeof (status as { providerMessageId?: unknown }).providerMessageId === 'string') autonomousSupervisor.recordEmailBounce(status as { providerMessageId: string; at: number; inReplyTo?: string })
     broadcast('email:delivery-status', status)
   })
 

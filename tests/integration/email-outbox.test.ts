@@ -3,7 +3,7 @@ import { beforeAll, afterEach, describe, expect, it, vi } from 'vitest'
 
 const dataDir = '/tmp/aica-email-outbox-test'
 vi.mock('electron', () => ({ app: { getPath: () => dataDir } }))
-import { claimEmailSend, markEmailSent } from '../../src/main/services/EmailOutbox'
+import { claimEmailSend, getEmailProviderMessageId, markEmailSent } from '../../src/main/services/EmailOutbox'
 
 describe('email outbox', () => {
   beforeAll(() => { fs.rmSync(dataDir, { recursive: true, force: true }); fs.mkdirSync(dataDir, { recursive: true }) })
@@ -14,6 +14,7 @@ describe('email outbox', () => {
     expect(claimEmailSend('key-1', payload)).toBe('inflight')
     markEmailSent('key-1', '<provider-1>')
     expect(claimEmailSend('key-1', payload)).toBe('sent')
+    expect(getEmailProviderMessageId('key-1')).toBe('<provider-1>')
   })
 
   it('reclaims a sending lease after a restart-sized timeout', () => {

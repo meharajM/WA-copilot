@@ -40,6 +40,8 @@ describe('WhatsApp Cloud webhook server', () => {
       const accepted = await fetch('http://127.0.0.1:18787/', { method: 'POST', body, headers: { 'x-hub-signature-256': signature } })
       expect(accepted.status).toBe(200)
       expect(await accepted.text()).toBe('EVENT_RECEIVED')
+      const oversized = await fetch('http://127.0.0.1:18787/', { method: 'POST', body: 'x'.repeat(1_000_001) })
+      expect(oversized.status).toBe(413)
 
       const eventBody = JSON.stringify({ entry: [{ changes: [{ value: { metadata: { display_phone_number: '1555' }, messages: [{ id: 'duplicate-cloud-1', from: '1999', timestamp: String(Math.floor(Date.now() / 1000)), type: 'text', text: { body: 'Hello' } }] } }] }] })
       const eventSignature = `sha256=${createHmac('sha256', 'app-secret').update(eventBody).digest('hex')}`

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isMcpToolAllowed, validateMcpServerConfig, validateMcpToolCall } from '../../src/main/services/McpPolicy'
+import { isMcpToolAllowed, validateMcpRequestId, validateMcpServerConfig, validateMcpToolCall } from '../../src/main/services/McpPolicy'
 
 describe('MCP host policy', () => {
   it('rejects shell and eval launches', () => {
@@ -9,6 +9,7 @@ describe('MCP host policy', () => {
     expect(validateMcpServerConfig({ id: 'x', type: 'stdio', command: 'uvx', args: ['arbitrary-package'] })).toMatchObject({ valid: false })
     expect(validateMcpServerConfig({ id: 'markitdown', type: 'stdio', command: 'uvx', args: ['markitdown-mcp[all]'] })).toMatchObject({ valid: true })
     expect(validateMcpServerConfig({ id: 'internal', type: 'stdio', command: 'internal', args: [] })).toMatchObject({ valid: true })
+    expect(validateMcpServerConfig({ id: 'autonomy', type: 'stdio', command: 'internal-autonomy', args: [] })).toMatchObject({ valid: true })
   })
 
   it('bounds tool identity and argument size', () => {
@@ -23,5 +24,12 @@ describe('MCP host policy', () => {
     expect(isMcpToolAllowed(undefined, 'browser_navigate')).toBe(false)
     expect(isMcpToolAllowed(['convert_to_markdown'], 'convert_to_markdown')).toBe(true)
     expect(validateMcpServerConfig({ id: 'x', type: 'sse', url: 'https://example.test', allowedTools: ['tool'] })).toMatchObject({ valid: true })
+  })
+
+  it('validates cancellable request IDs before dispatch', () => {
+    expect(validateMcpRequestId(undefined)).toBeNull()
+    expect(validateMcpRequestId('request-1')).toBeNull()
+    expect(validateMcpRequestId(42)).toBe('Invalid MCP request ID')
+    expect(validateMcpRequestId('x'.repeat(101))).toBe('Invalid MCP request ID')
   })
 })

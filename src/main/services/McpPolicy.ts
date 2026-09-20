@@ -1,5 +1,5 @@
 const MCP_ARGS_MAX_BYTES = 64 * 1024
-const INTERNAL_COMMANDS = new Set(['internal', 'internal-memory', 'internal-rag', 'internal-filesystem'])
+const INTERNAL_COMMANDS = new Set(['internal', 'internal-memory', 'internal-rag', 'internal-filesystem', 'internal-autonomy'])
 const ALLOWED_UVX_PACKAGES = new Set(['markitdown-mcp[all]', 'mcp-email-server==0.6.2'])
 const DISALLOWED_BROWSER_TOOLS = new Set(['evaluate', 'browser_run_code'])
 
@@ -32,4 +32,10 @@ export function validateMcpToolCall(serverId: unknown, toolName: unknown, args: 
   if (DISALLOWED_BROWSER_TOOLS.has(toolName)) return 'Raw browser evaluation is disabled'
   try { if (Buffer.byteLength(JSON.stringify(args ?? {}), 'utf8') > MCP_ARGS_MAX_BYTES) return 'MCP arguments exceed 64KB' } catch { return 'MCP arguments are not serializable' }
   return null
+}
+
+export function validateMcpRequestId(requestId: unknown): string | null {
+  return requestId === undefined || (typeof requestId === 'string' && requestId.length > 0 && requestId.length <= 100)
+    ? null
+    : 'Invalid MCP request ID'
 }

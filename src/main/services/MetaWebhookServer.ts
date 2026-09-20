@@ -12,6 +12,9 @@ export class MetaWebhookServer {
     if (this.server) return
     if (!verifyToken || !appSecret || !Number.isInteger(port) || port < 0 || port > 65535) throw new Error('Invalid Meta webhook configuration')
     this.server = createServer((req, res) => void this.handle(req, res, channel, verifyToken, appSecret))
+    this.server.requestTimeout = 30_000
+    this.server.headersTimeout = 35_000
+    this.server.keepAliveTimeout = 5_000
     await new Promise<void>((resolve, reject) => { this.server!.once('listening', resolve); this.server!.once('error', reject); this.server!.listen(port, '127.0.0.1') })
   }
 
@@ -25,6 +28,8 @@ export class MetaWebhookServer {
       res.writeHead(403); res.end(); return
     }
     if (req.method !== 'POST') { res.writeHead(405); res.end(); return }
+    const declaredLength = Number(req.headers['content-length'] || 0)
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_BODY_BYTES) { res.writeHead(413); res.end(); return }
     const body = await this.readBody(req)
     const signature = typeof req.headers['x-hub-signature-256'] === 'string' ? req.headers['x-hub-signature-256'] : undefined
     if (body === null || !verifyMetaWebhookSignature(body, signature, appSecret)) { res.writeHead(401); res.end(); return }

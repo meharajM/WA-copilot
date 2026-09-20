@@ -2,15 +2,17 @@
 
 Date: September 9, 2026
 
-Status: Selected architectural direction; implementation proposal, not a statement of shipped capabilities.
+Cost and architecture rationale reviewed: September 13, 2026. See sections 2 and 10 for alternatives, operating assumptions and pricing sources.
 
-Decision: Keep our Electron application, integrate LangGraph JS and selected LangChain components, and use official channel APIs. Begin with WhatsApp Cloud API and the existing email integration; extend to Instagram messaging, Facebook Messenger, Meta advertising lead events, and X.
+Status: Selected target architecture. The current branch implements a bounded single-business desktop pilot; this document is not evidence that its deferred hosted, live-provider, legal, or operational gates are complete.
+
+Decision: Make `agentd`, an independently managed plain Node service, the authoritative local runtime. Serve the existing React console on loopback; Electron is an optional transition client/installer and is not required for V1. This September 14 decision supersedes the Tauri sidecar proposal. Keep LangGraph, RAG and channel workflows; extract lifecycle and a typed API before changing UI or workflow.
 
 This document is the target architecture for this work. `architecture.md`, `email-integration.md`, and `docs/autonomous-agent.md` describe earlier designs or partial implementation and must not be treated as evidence that the requirements below already work.
 
 ## 1. Product objective and boundaries
 
-Build an owner-controlled support agent that can answer customers using approved business knowledge, execute narrowly authorized business operations, and hand conversations to a human. The owner uses Electron to configure channels, inspect conversations, review drafts, monitor costs, and pause automation.
+Build an owner-controlled support agent that can answer customers using approved business knowledge, execute narrowly authorized business operations, and hand conversations to a human. The owner uses the local console to configure channels, inspect conversations, review drafts, monitor costs, and pause automation.
 
 The product is a business support system. A customer message is not permission to control the owner's computer, access another customer's data, launch advertising, or change a budget.
 
@@ -24,19 +26,53 @@ The product is a business support system. A customer message is not permission t
 
 ### Version 1 deployment decision
 
-Version 1 is a single-business, single-owner desktop deployment. The worker runs on the owner's machine in the Electron main process; webhook listeners bind to localhost only. A small authenticated HTTPS relay is a future production deployment option, not part of the current desktop pilot, and there is no automatic local/hosted failover in v1.
+V1 targets a single-business, single-owner installation. `agentd` owns SQLite, credential access, model connectors, queues, LangGraph, policy/outbox and channel adapters. Run it independently through an OS user-service manager (launchd on macOS, an equivalent supervised user service on Windows/Linux), not as an Electron or browser child whose lifetime follows the UI. A per-install runtime lock and persisted lease prevent a second sender. Explicit Stop Agent stops processing; Pause All immediately revokes dispatch permission. Closing a browser or quitting an optional client does neither. Device sleep, shutdown or loss of connectivity still prevents responses; user-service availability across logout is platform-dependent and must be tested.
 
-The hosted worker is a later deployment target, not a second active sender. Moving ownership between runtimes is an explicit operator action with a persisted ownership generation. Both runtimes must never dispatch for the same business account at once.
+Serve the built existing React UI from `http://127.0.0.1:<ephemeral-port>` on the same listener as its typed API. Discover the port through a private owner-readable runtime descriptor containing no credentials. The installer/start command opens the console. Extract service initialization/shutdown and host dependencies first; prove a single draft-only WhatsApp path through the browser before any UI redesign or workflow migration.
+
+Current code remains an Electron pilot: `src/main/index.ts` initializes autonomous services in `app.whenReady()` and stops them in `before-quit`. Window closing differs by platform; explicit app quit ends this runtime. The independent daemon, browser security boundary and public relay below are required implementation gates, not shipped features.
+
+### Runtime and browser trust boundary
+
+- `agentd` is the only database and credential authority. Generate a cryptographically random per-install bearer secret, store it in the OS keychain and fail closed if that store is unavailable. Electron and native helpers use only narrow authenticated commands; they do not open competing database writers.
+- Do not expose the long-lived bearer secret to React. Bootstrap browser access with a short-lived, single-use pairing code displayed by a local owner command/helper and submitted by POST. After local verification, issue a short-lived HttpOnly, SameSite=Strict session cookie and a session-bound CSRF token kept in memory. Never put bearer/provider credentials or pairing codes in URLs, browser storage or logs. Rate-limit pairing, expire unused codes and revoke sessions on secret rotation.
+- Bind exactly to IPv4 loopback, validate Host against the actual bound address/port, and allow only the exact console Origin (including its ephemeral port). No wildcard CORS, null-origin allowance or arbitrary localhost origins. Check Origin and CSRF on every browser mutation; reject cross-site reads and authenticate sensitive reads. Handle safe initial document navigation separately from protected API access.
+- Require JSON content types, bounded bodies, schema validation, deadlines and rate limits. Validate Origin/authentication on any streaming or WebSocket upgrade; use no GET mutations. Set CSP and frame-ancestors restrictions, avoid remote scripts, and prevent secret-bearing responses from being cached. Browser local-network permission prompts are additional browser behavior, not our authorization mechanism.
+- Retain explicit adapters for OS keychain, owner-selected file import and notifications. A picker grants only that chosen file operation; never accept arbitrary filesystem paths or unrestricted shell/browser execution from React. If a browser lacks a native capability, display it as unavailable or use the installed narrow helper.
+- Test cross-origin requests, forged Host, CSRF, expired/replayed pairing, unauthenticated API/stream access, secret redaction and client exit while draft work continues before enabling the browser pilot.
+
+Electron's Chromium process tree and lifecycle explain the coupling, but a browser also consumes resources. Removing Electron is not evidence of a model-capacity gain. [Electron process model](https://www.electronjs.org/docs/latest/tutorial/process-model), [Electron performance](https://www.electronjs.org/docs/latest/tutorial/performance), [Chrome Local Network Access](https://developer.chrome.com/blog/local-network-access).
+
+### Capacity decision and measurement gate
+
+Measure the same target hardware, model/version/quantization, context size, prompt set and power mode for all four states. Repeat warm runs and report median/p95 plus idle and peak values. Compare optional Electron and browser clients against the same daemon.
+
+| UI | Model | Required evidence |
+| --- | --- | --- |
+| Closed | Unloaded | Daemon and helper idle/peak whole-process-tree RSS, CPU and GPU/VRAM |
+| Open | Unloaded | Above plus browser/Electron process-tree cost and UI responsiveness |
+| Closed | Loaded | Above plus model time-to-first-token, total inference time and queued-message latency |
+| Open | Loaded | Same measurements at concurrency 1 and 2; check model/UI contention |
+
+Include independently running model-server processes, renderer/GPU/helper processes and relay-client overhead. Record whole-browser totals and the pre-existing browser baseline separately; summing RSS can double-count shared pages, so retain per-process figures and OS memory-pressure/swap evidence. Node `process.memoryUsage().rss` is only one component. On unified-memory hardware, do not add GPU allocations to RAM as though they were separate pools.
+
+Provisional acceptance budget: reserve at least 25% of physical RAM and 20% of dedicated VRAM, require no sustained swap growth, idle runtime CPU below 5% of one core, and no more than 10% p95 inference degradation with UI open. Start with one active model generation; enable concurrency two only if peak memory fits and p95 end-to-end draft latency remains within the existing 30-second job budget. These are proposed thresholds, not measured results. If a target cannot pass, choose a smaller supported model or cloud inference rather than asserting that shell removal solves it. Record actual hardware/results before retiring Electron on capacity grounds.
+
+Customer-owned Meta, Instagram, Messenger, WhatsApp and X accounts must use the customer connection flow in `docs/customer-connection-onboarding.md`. OAuth and guided asset selection replace developer-only environment-variable setup; provider credentials remain outside the renderer and are stored in the OS secure store for the desktop pilot or an encrypted hosted vault for multi-customer operation.
 
 ### Deferred capabilities
 
 - Autonomous ad creation, spend changes, audience changes, public posting, and bulk outreach.
 - Automatic cross-channel customer identity matching from names or model guesses.
-- A WhatsApp Web automation connector or browser extension unless an unmet requirement justifies one.
+- WhatsApp Web autonomous outbound automation; the repository includes an optional restricted browser-extension/manual-takeover inbound pilot, while live session validation and autonomous outbound control remain deferred.
 - A mandatory Chatwoot deployment, mandatory LangSmith subscription, vector database, or distributed queue.
 - Multi-tenant hosted SaaS in the first deployment. Include business/account IDs in contracts now, but do not claim tenant isolation is proven until tested.
 
 ## 2. Why this approach
+
+We are building a reusable support product for business owners, not just buying an inbox for one business. Keeping our local owner console, RAG and memory gives us control over the owner experience, approved knowledge and business tools. The economic case is lower incremental platform cost as customers grow, provided shared engineering and customer-support costs remain manageable. It is not a claim that custom software is the cheapest way to serve the first customer.
+
+LangGraph is justified by our explicit requirements for persistent review, interruption and recovery. LangChain supplies selected integrations; it does not lower model token prices. Official APIs reduce our dependence on undocumented browser/session behavior, but introduce provider approvals, policy changes and usage charges. Our advantage must come from useful business workflows and reliable owner control, not merely from generating WhatsApp answers.
 
 LangChain components provide model and tool integration. LangGraph supplies workflow checkpoints and human-review interrupts; a durable checkpointer is required for restart recovery. It does not provide the inbox, WhatsApp transport, consent ledger, or exactly-once external effects. On resume, interrupted nodes may execute again, so irreversible operations must not be placed before an interrupt without their own deduplication controls. [LangGraph persistence](https://docs.langchain.com/oss/javascript/langgraph/persistence), [interrupt semantics](https://docs.langchain.com/oss/javascript/langgraph/interrupts).
 
@@ -51,6 +87,8 @@ The JavaScript projects are MIT licensed; using their libraries does not require
 | Baileys/browser automation | Unofficial transport and extra session-maintenance burden | Explicit experimental local deployments |
 
 Chatwoot remains a valid future adapter: its AgentBot API supports external agents and handoff. Community software is free; paid self-hosted plans and operational dependencies are separate. [AgentBot](https://www.chatwoot.com/features/chatbots), [self-hosted plans](https://www.chatwoot.com/pricing/self-hosted-plans).
+
+Keep this decision conditional: use a managed platform if the goal becomes launching one conventional support inbox quickly; add Chatwoot when team assignment and shared ownership become central; simplify the graph if review/resume requirements disappear. Reassess using cost per resolved conversation and operator time, not library license price alone. Section 10 compares these choices financially.
 
 ## 3. Channel scope and access requirements
 
@@ -94,7 +132,7 @@ flowchart TD
     P --> O[Durable outbound intent]
     O --> D[Dispatch authorization and adapter]
     D --> C
-    U[Electron owner UI] --> W
+    U[React loopback owner console] --> W
     U --> H
     U --> P
 ```
@@ -103,8 +141,9 @@ flowchart TD
 
 | Component | Owns | Must not own |
 | --- | --- | --- |
-| Electron renderer | Display, operator inputs, draft editing | Authoritative permissions, autonomous execution or secrets |
-| Main-process supervisor | Local lifecycle, authenticated commands, pause controls, worker health | An additional parallel customer-response pipeline |
+| React owner console in browser | Display, operator inputs, draft editing | Authoritative permissions, autonomous execution, raw secrets or arbitrary native access |
+| Optional native helper / Electron client | Installer, owner-selected files and notifications through typed commands | Runtime lifecycle ownership, workflow decisions or returning stored secrets |
+| Local agent service (`agentd`) | LangGraph lifecycle, authenticated commands, pause controls, durable work and worker health | A second parallel customer-response pipeline or unrestricted OS access |
 | Shared Node runtime | LangGraph workflow, channel-independent decisions | Renderer globals or direct UI-store dependencies |
 | Channel adapter | Provider authentication, normalization, sending and delivery mapping | Model-chosen destinations or business policy overrides |
 | Inbox/job store | Deduplication, ordering, leases, retry scheduling | Treating a checkpoint as proof of external delivery |
@@ -113,15 +152,19 @@ flowchart TD
 
 ### Deployment A: owner-machine worker
 
-Run the workflow under the Electron main-process lifecycle, with durable local storage. Move expensive parsing/inference into an isolated worker where required to keep controls responsive. Closing the window may retain tray/background operation; explicitly quitting stops the local worker. Power-off and network outages stop local responses.
+Run the plain Node service independently of UI lifetime, with durable local storage and OS supervision. Extract Electron-specific paths, credentials, events and native operations behind injected host adapters. Explicit daemon shutdown drains/cancels work and records recovery state; client disconnect never calls shutdown.
 
-Official webhook integrations need reachable HTTPS ingress. The current desktop pilot therefore supports controlled localhost testing only; it does not ship a public listener or implicit tunnel. A future production relay may durably buffer events and connect to the desktop over an authenticated outbound channel, but that relay is not implemented and cannot be treated as part of v1 availability.
+Official webhooks require public HTTPS. Select one minimal Node HTTPS relay with SQLite on a persistent single-host deployment before the real Cloud API pilot. The current localhost listeners are test adapters only. The relay is a required dependency of phase 2, not an optional post-pilot enhancement.
 
-The relay handles customer event data. Document its retention and encryption; do not market this configuration as zero-cloud processing. Provider and selected LLM data flows remain additional boundaries. If the machine is offline, the system records the event and reports that no response was generated; the relay does not become an autonomous agent.
+Verify provider signatures against raw request bytes, map the account to its enrolled business and commit the event to durable storage before returning success. Return a retryable failure if persistence fails. Deduplicate by provider/account/event ID. `agentd` initiates authenticated outbound HTTPS long-poll requests, commits received events locally before acknowledging them to the relay, and tolerates replay if either acknowledgment is lost. The relay holds no agent workflow or send credentials and never generates or dispatches customer replies.
+
+Use per-install scoped relay credentials, TLS, encrypted payload storage and redacted logs. Default queued payload TTL to 24 hours; expire rather than process overdue payloads, retain a minimal expiry audit, and notify the owner of lost availability. Delete payloads after durable local acknowledgment; expire encrypted backup copies under a documented seven-day backup policy. Bound bytes/events per business, surface oldest-event age and storage exhaustion, and recheck response windows after recovery. A single relay host is not high availability. Test signature failure, duplicate delivery, crash before/after commit, lost acknowledgments, offline agent, expiry and backup restore before live ingress.
+
+The relay handles customer event data. Document its retention and encryption; do not market this configuration as zero-cloud processing. Provider and selected LLM data flows remain additional boundaries. If the machine is offline, the implemented relay must retain the event only until its TTL and report that no response was generated; the relay does not become an autonomous agent.
 
 ### Deployment B: hosted worker
 
-Deploy the same Node runtime with HTTPS ingress on an always-on host. Electron becomes the owner console. Cloud execution requires approved knowledge and credentials accessible to that host; local-only tools remain unavailable when the desktop is offline. Do not silently reroute those tools or upload all local files.
+Deploy the same Node runtime with HTTPS ingress on an always-on host. Remote administration requires its own authenticated control plane; never expose the loopback console directly. Cloud execution requires approved knowledge and credentials accessible to that host; local-only tools remain unavailable when the desktop is offline. Do not silently reroute those tools or upload all local files.
 
 Only one runtime may own a conversation at a time. Switching local/hosted execution requires a persisted ownership generation or lease and a controlled transfer. Never have both runtimes send for the same job. A single small server is an initial deployment, not high availability.
 
@@ -256,15 +299,58 @@ Define an escalation SLA and fallback contact path before enabling unattended op
 
 ## 10. Cost model and controls
 
-Monthly total = hosting + model usage + channel usage + storage/backups + monitoring + optional provider fees + maintenance labor. Advertising spend is a separate owner budget. Estimates below exclude tax, hardware purchase, exchange-rate changes and engineering labor.
+### Definition of a resolved conversation
+
+A resolution is an explicit owner-confirmed outcome for a scoped conversation at its current revision, with evidence that the support request was completed. Persist `resolved_agent` or `resolved_human`, revision, confirmation evidence and timestamp. Persist `escalated`, `closed_unresolved` and `open` separately; none is a resolution. A sent/read message, generated answer, silence or escalation never closes a conversation automatically. The current operator API records these outcomes; a dedicated outcome-review UI remains to be added.
+
+Count each conversation once, not each inbound message or repeated confirmation. New inbound revisions invalidate the previous current-resolution classification until confirmed again. Historical messages receive no inferred resolution backfill. The existing pilot metric is an operational period ratio: all estimated model cost in the selected period divided by conversations currently resolved at a confirmation time in that period. Zero denominator returns null and displays N/A. Escalated inbound messages remain a separate message-level count. This ratio is not lifetime attributed cost per resolution: per-case cost allocation, resolution episodes and provider-reconciled charges are required before using it for pricing or customer profitability.
+
+Monthly cash operating cost = hosting + model usage + channel usage + storage/backups + monitoring + optional provider fees. Monthly total ownership cost adds maintenance, onboarding/support and human-review labor, plus amortized remaining development. Advertising spend is a separate owner budget. USD estimates below exclude tax, hardware purchase and exchange-rate changes; labor is included only where explicitly calculated. These are planning examples, not measured production costs or a customer subscription price.
 
 LangChain/LangGraph libraries have no usage subscription. LangSmith services are optional and separately priced. Direct Cloud API integration avoids adding a mandatory support-inbox subscription; any onboarding/intermediary fees must be checked for the selected route. [LangSmith pricing](https://www.langchain.com/pricing).
 
-Meta currently lists service replies within the rolling 24-hour customer-service window as free; paid template categories and other charges are separate. [WhatsApp pricing](https://business.whatsapp.com/products/platform-pricing).
+Meta's public pricing page checked September 13 lists service messages and utility messages responding to users as free within the customer-service window; other delivered template charges depend on category and recipient market. Outside the window, use an eligible approved template; a budget never grants permission to send. [WhatsApp pricing](https://business.whatsapp.com/products/platform-pricing).
+
+Pricing verification limitation: reports of an October 2026 service-pricing change could not be confirmed against Meta's developer pricing pages, which did not load during this review. Do not treat free service replies as a permanent contract or use an unverified future rate. Before launch, obtain the effective rate card for the business/account, recipient markets and billing month. Retain a nonzero channel-cost sensitivity in the budget.
+
+### Cost comparison of the approaches
+
+Infrastructure ranges here are our planning allowances, not vendor quotes. They exclude AI/channel usage and labor unless stated. Feature coverage and billing units differ, so these rows are not equivalent product bundles.
+
+| Approach | License/platform and infrastructure | Main benefit | Main cost or limitation | Decision for us |
+| --- | --- | --- | --- | --- |
+| Our app + LangGraph/LangChain + official APIs | Libraries $0; small hosted runtime/backups roughly $10–30/month under the narrow assumptions below | Reuses our product; model choice, review/resume and local knowledge; no mandatory inbox seat charge | We fund development, provider onboarding, recovery, security and customer support | Selected for building our product |
+| Our app + custom workflow engine | Similar hosting and usage; no framework subscription | Fewer dependencies for a short deterministic flow | We own checkpoint compatibility and approval/resume machinery; removing LangGraph does not remove those requirements | Reconsider only with a smaller scope |
+| Chatwoot + our agent | Community $0; reserve roughly $30–100/month for a small server/backups, then size from the selected release; optional paid support $19/human agent/month, billed annually | Team inbox, assignment and handoff already available | Another application, PostgreSQL and Redis to operate; AI and channel bills remain | Stronger fit when team support is required |
+| respond.io | Growth $159/month equivalent ($1,908/year); Advanced $279/month equivalent ($3,348/year), billed annually | Managed inbox and AI workflows reduce infrastructure work | Contact/AI allowances, overages and provider charges; Advanced adds webhooks/custom channels; verify required channel coverage | Often better for one business needing a quick launch |
+| Native Meta Business AI | No verified account-specific total in this review; obtain eligibility and a quote | Potentially least setup for basic native support | Our required local tools, model choice and cross-channel workflow are not established | Benchmark before building a basic FAQ-only offering |
+| Baileys / WhatsApp Web + our agent | No official Cloud API bill on that transport; machine, inference and upkeep remain | Existing integration and local experimentation | Unofficial compatibility/session failures and outage/support effort are hard to forecast | Experimental, not the production cost-saving strategy |
+
+Vendor evidence: [Chatwoot self-hosted pricing](https://www.chatwoot.com/pricing/self-hosted-plans), [Chatwoot deployment requirements](https://www.chatwoot.com/deploy), [respond.io pricing](https://respond.io/pricing). Chatwoot's deployment page currently lists 8 GB minimum, so the earlier $25–60 allowance is not a universal production budget. respond.io meters active contacts and AI credits, not our model-token unit; WhatsApp fees are extra. Do not add our full model bill to a managed plan if its included AI replaces those calls, or assume included AI is unlimited.
+
+### What we actually pay for
+
+| Cost item | Who incurs it | Budget treatment |
+| --- | --- | --- |
+| Model calls | Business directly with its own billing, or us with metered customer allocation | Sum input, output/thinking, retries, summaries, validation and tool-loop calls |
+| RAG and attachments | Runtime operator | Existing local search avoids a mandatory vector-service subscription; embeddings, OCR, audio transcription, reindexing and storage may add usage |
+| WhatsApp | Business's Meta billing account, plus any selected intermediary | Delivered billable messages by category/market; do not infer fees from inbound job count |
+| Instagram / Messenger / lead events | Us and/or business according to provider arrangement | Verify access terms; budget webhook processing, media, review and token support even without a quoted message tariff |
+| X | Holder of the developer app's billing account | Meter reads/events and writes separately; customer OAuth does not establish separate customer billing |
+| Email | Mailbox owner and runtime operator | Existing mailbox subscription, any Pub/Sub/relay charges, attachments and synchronization; check account quotas |
+| Hosting, backups and diagnostics | Us for managed deployment; owner for local resources | Include retention, restore testing, egress, domain and monitoring; avoid counting backups twice |
+| Customer connection flow | Primarily our product team | OAuth apps, review submissions, secure credential handling, asset selection, reconnect support and any required external assessment |
+| Human operation | Our team and customer | Maintenance, incident response, draft review, escalation handling and onboarding time |
+
+Non-developer onboarding moves technical work from the customer to us; it does not eliminate it. The guided flow in `docs/customer-connection-onboarding.md` is a product investment. Record setup/support hours per business. No fixed assessment or approval fee is assumed without confirming the applicable provider requirements and obtaining a quote.
 
 ### Planning scenarios
 
 Use an illustrative model rate of $0.75/million input tokens and $3.75/million billed output tokens, with 4,000 input and 500 output tokens per processed customer message. This is a cost assumption, not a selected model or guaranteed quality level. Count all calls, including validation and thinking tokens, when measuring actual usage. Current provider rates must be checked at model selection. [Google model pricing](https://ai.google.dev/gemini-api/docs/pricing).
+
+The pricing page reviewed lists these Flash rates through December 31, 2026, and $1.50/$7.50 from January 1, 2027. Under unchanged token usage that doubles the model line; it does not double hosting or channel charges. Revalidate the exact model/version when purchasing. No model configuration is changed by this document.
+
+Formula: model cost = (total input tokens × input rate + total billed output tokens × output rate) / 1,000,000. Here, one generation costs $0.004875. A message, a generation, an active contact and a resolved conversation are different units: a five-turn conversation would cost $0.024375 in generation alone under these assumptions.
 
 | Monthly messages | Input tokens | Output tokens | Illustrative model cost | Small hosted runtime/backups estimate | Subtotal before channel fees and labor |
 | --- | --- | --- | --- | --- | --- |
@@ -274,11 +360,29 @@ Use an illustrative model rate of $0.75/million input tokens and $3.75/million b
 
 These are low-complexity examples. The production budget must report low, base and high scenarios including classification, retrieval, validation, summaries, retries, attachments, checkpoint storage, relay, monitoring and human review. Record actual tokens and provider charges by conversation and disposition. A generated answer that escalates still has a model cost.
 
+The $10–30 infrastructure range assumes one small instance calling a remote model, existing lightweight storage, modest retained text and basic backups. It excludes hosted GPU inference, high availability and multi-tenant production operations. As a price anchor, DigitalOcean lists a 2 GiB/1 vCPU instance at $12/month before backup and other additions; this is not evidence that our workload fits it. [Instance pricing](https://www.digitalocean.com/pricing/droplets).
+
+### Low, base and high sensitivity: 10,000 processed messages/month
+
+These are explicit workload assumptions, not observed percentiles. The multiplier represents aggregate tokens across all model calls relative to the one-pass example. Infrastructure includes the listed backup/storage/monitoring allowance; exclude it from any separate duplicate line item.
+
+| Scenario | Model tokens versus baseline | Model cost | Infrastructure allowance | Cash subtotal before channels and labor |
+| --- | --- | --- | --- | --- |
+| Lean text pilot | 1× | $48.75 | $10–30 | $58.75–78.75 |
+| Planning base: extra validation/summaries | 1.5× | $73.13 | $20–50 | $93.13–123.13 |
+| Stress case: longer context and repeated calls | 3× | $146.25 | $50–100 | $196.25–246.25 |
+
+Add actual channel charges, media/embedding usage and external business-tool fees to every row. The lean case is valid only when its limited work is sufficient for evaluated quality. At the listed January model rates, its model bill becomes $97.50 and cash subtotal $107.50–127.50.
+
+For channel sensitivity, 10,000 billable deliveries at hypothetical rates of $0.005, $0.01 or $0.03 add $50, $100 or $300. These are test inputs, not WhatsApp rate quotes. Use actual billable deliveries after any confirmed allowances, not all inbound messages.
+
 Local execution removes the hosted inference worker expense but may still require relay hosting, electricity and backups. A 20 W incremental continuous load consumes approximately 14.4 kWh over 30 days; a 100 W load consumes 72 kWh. Multiply by the owner's electricity rate. Local models add hardware, latency and concurrency considerations.
 
 ### X budget must be separate
 
 X currently lists DM event reads at $0.010/resource and DM interaction creation at $0.015/request. Under the simple assumption of one billable inbound DM event plus one create request per interaction, 10,000 interactions cost approximately $250 before LLM usage and other events. Confirm actual endpoint semantics and account rates before enabling. Set a provider spending limit and an application cap. [X pricing](https://docs.x.com/x-api/getting-started/pricing).
+
+The same page lists incoming DM webhook events at $0.010/event. Do not automatically count an inbound webhook and retrieval as two separately billed resources; reconcile the provider's deduplication rules and invoices. At the simplified $0.025 interaction rate, 1,000 X interactions add $25. If all 10,000 baseline interactions use X, the lean cash subtotal becomes $308.75–328.75 before labor and additional usage. X therefore needs an explicit allowance or usage pass-through, not an unlimited inclusion.
 
 Do not assume Instagram/Messenger API use, email infrastructure, Pub/Sub, or Meta integration support has zero total cost. Verify provider terms, hosting and account subscriptions for the chosen setup. Do not put ad spend into the support-agent subscription estimate.
 
@@ -294,21 +398,43 @@ Do not assume Instagram/Messenger API use, email infrastructure, Pub/Sub, or Met
 
 For total ownership cost, add engineering hours × the team's actual hourly cost. Even a few hours of monthly transport repair can outweigh small subscription savings. Track support incidents and human handling time as operating costs.
 
+### Labor, break-even and customer pricing
+
+For an illustrative $70/month lean cash cost and $30/hour labor rate, 4 maintenance hours add $120: total $190/month before development, onboarding and review. If 500 drafts/escalations take two minutes each, they add 16.67 hours or $500 at that same assumed rate. Human review can dominate the token bill; measure it rather than hiding it in a claim of autonomous operation.
+
+Against the $159 managed starting price, a $70 custom cash bill leaves $89, or roughly 3 hours/month at $30/hour, for **additional** custom maintenance before the apparent savings disappear. Against $279 it leaves about 7 hours. This is sensitivity arithmetic, not a like-for-like quote: match channels, contacts, AI allowances, review time and integration requirements first. Managed software also needs configuration and operators.
+
+Remaining implementation is an upfront investment. Estimate it from unfinished work and measured delivery time, not money already spent. For illustration only, 200 additional hours at $30/hour is $6,000, or $500/month spread over 12 months. Replace those inputs with our actual estimate before making a profitability claim.
+
+For future customer pricing:
+
+- Separate a base product/support fee, included AI allowance, optional hosted availability and metered channel overages. Do not promise unlimited X or template messaging.
+- Clearly show whether the customer pays Meta/model bills directly or reimburses us. If we use shared provider billing, enforce per-business metering and caps before opening it to customers.
+- Allocate shared fixed costs across paying businesses, then add each customer's variable costs and support. A $30 server divided among ten customers is only a $3 infrastructure allocation, not a $3 total service cost or proof of capacity/tenant isolation.
+- If fully loaded recurring cost per business is C and target gross margin is g, required recurring revenue is C / (1 − g). Keep development recovery and acquisition costs visible separately; no sale price is selected here.
+
+Recommendation: retain the chosen architecture for the product, begin with WhatsApp and email, and add X only with a funded cap. Before setting a customer price or committing to hosted availability, measure a representative pilot's token usage, message mix, resolution rate, operator minutes, support hours and peak resource use. Revisit build-versus-buy if ongoing custom maintenance consumes the subscription savings without delivering valued capabilities.
+
 ## 11. Repository migration
 
 The current supervisor is a prototype. Its build passing is not evidence of correct autonomous operation.
 
 | Existing area | Migration action |
 | --- | --- |
-| `src/main/services/AutonomousSupervisor.ts` | Retain lifecycle/control responsibilities; replace in-memory execution with durable jobs and LangGraph integration |
+| `src/renderer/src/lib/electron.ts` and renderer bridge callers | Extract a typed service API and browser transport; reuse React components and retain an optional Electron adapter |
+| Browser fallback in `src/renderer/src/lib/electron.ts` | Remove secret persistence in `localStorage`; implement pairing/session/CSRF before enabling browser access |
+| Electron bootstrap and preload | Extract start/stop into Node service lifecycle and inject paths, keychain and event/native adapters; client quit must not stop the daemon |
+| `src/main/services/AutonomousSupervisor.ts` | Extract lifecycle/control responsibilities into `agentd`; replace in-memory execution with durable jobs and LangGraph integration |
 | `src/main/whatsapp/WhatsAppService.ts` | Keep Baileys as an experimental adapter; introduce Cloud API independently |
 | `src/main/services/EmailChannelService.ts` | Reuse supported Gmail/mailbox transport; normalize inbound and outbound events |
 | `src/main/packages/omnichannel/index.ts` | Inspect and extend existing shared contracts before creating new ones |
 | `src/main/packages/rag-engine/index.ts` | Reuse retrieval behind tenant/business-scoped evidence contracts |
 | Memory and chat persistence services | Reuse context and sessions with explicit ownership and migration rules |
 | Renderer agent runtime and `useWhatsAppBridge` | Remove automatic duplicate customer execution when a conversation is owned by the new runtime |
-| `AutonomyPanel`, preload and IPC | Add typed contracts and authoritative host controls; remove contradictory toggles |
+| `AutonomyPanel` and local-service API | Add typed service API contracts and authoritative host controls; remove contradictory toggles |
 | Playwright and MCP services | Keep owner tools separate; expose only narrow approved business capabilities to the graph |
+
+Package a supported Node runtime and independent OS user-service registration. Verify package integrity and signed installer/update behavior. Test daemon start/stop/restart, exclusive storage ownership, credential operations, browser pairing, file selection, notifications and client closure. First exit evidence is one persisted draft-only WhatsApp job visible in the existing browser UI after the client closes/reopens. Do not enable automatic sends or claim daemon availability until this slice passes.
 
 Known repairs: reconstruct queued work after restart; make draft mode generate without sending permission; enforce pause after generation and before dispatch; handle ambiguous sends; persist opt-outs/takeover; replace hardcoded confidence; store provider IDs; prevent renderer and main-process duplicate responses. Also review persona instructions that conceal AI identity and replace them with the requested disclosure behavior.
 
@@ -320,16 +446,16 @@ Do not migrate customer data destructively. Back up existing databases, version 
 
 | Phase | Deliverable | Exit evidence |
 | --- | --- | --- |
-| 0: Baseline and containment | Document existing gaps; establish test baseline; block unsafe new auto-send path during migration; verify distribution model, Meta assets, Cloud API eligibility, OAuth scopes, data regions and retention obligations | No dual sender, verified control contracts, access decision and reproducible baseline |
-| 1: Durable agent core | Node-compatible LangGraph, selected model adapter, persistent jobs/checkpoints and draft decisions | Restart recovers jobs/approval; no message sent in draft or observe mode; graph migration fixture passes |
-| 2: WhatsApp production path | Cloud API onboarding, webhook validation, outbox, delivery events and policy checks | Duplicate webhook, pause race, opt-out, window expiry and ambiguous-send tests pass |
+| 0: Baseline and containment | Document existing gaps; establish test baseline; block unsafe new auto-send path during migration; remove renderer secret persistence; benchmark Electron; verify distribution model, Meta assets, Cloud API eligibility, OAuth scopes, data regions and retention obligations | No dual sender, no secrets in browser storage, verified control contracts, access decision and reproducible performance baseline |
+| 1: Independent runtime and draft browser slice | Extract service lifecycle, injected host adapters and typed API; secure loopback UI; run existing LangGraph with persistent storage | One draft-only WhatsApp job recovers and is visible after browser/client exit; no auto-send; auth/CSRF, daemon ownership and restart tests pass |
+| 2: WhatsApp production path | Deploy the selected durable authenticated HTTPS relay, then Cloud API onboarding, outbox, delivery events and policy checks | Relay commit-before-ack, offline/expiry/replay and signature tests; authorized live webhook-to-draft proof; duplicate, pause, opt-out, window and ambiguous-send tests |
 | 3: Email parity | Shared workflow with preserved mail threading and loop suppression | Gmail/mailbox restart, token expiry, threading and bounce/auto-reply tests pass |
 | 4: Instagram and Messenger | Independent approved adapters and human ownership | Real authorized account tests, permission failure and owner-echo handling verified |
 | 5: Advertising context | Lead-form events and supported referral attribution | Correct attribution; no unsolicited cross-channel send; no spend-changing operations |
 | 6: X | DM support with separate budget and access validation | Metering, limits, takeover and supported delivery behavior verified |
-| 7: Hosted operation | Same runtime deployed with secure desktop control and ownership transfer | Desktop-off operation, failover boundaries, backup restore and isolation tests pass |
+| 7: Hosted operation | Same runtime deployed with secure owner control and ownership transfer | Owner-device-off operation, failover boundaries, backup restore and isolation tests pass |
 
-Infrastructure/access discovery for hosted operation begins in phase 2 even though the full hosted worker ships later. Platform review proceeds in parallel and may dominate elapsed delivery time. Do not promise a delivery date until account access and the core migration spike are measured.
+Relay implementation and public HTTPS provisioning must finish before the phase 2 live pilot. Hosted execution remains a separate later phase. Platform review proceeds in parallel and may dominate elapsed delivery time. Do not promise a delivery date until account access and the core migration spike are measured.
 
 ### Mandatory failure tests
 
@@ -349,10 +475,10 @@ Build a representative evaluation set before auto-reply: common intents, missing
 
 ## 13. Decisions settled and remaining checks
 
-Settled: Electron remains our product UI; LangGraph plus selected LangChain integrations powers the shared support workflow; official APIs are the production route; RAG/memory are reused; sending remains host-authorized; X is optional and separately budgeted; ad management is deferred.
+Settled: plain Node `agentd` is the independent local authority; the existing React UI is served at an authenticated loopback origin. Electron is optional for transition/installation; Tauri is deferred. Official HTTPS ingress is required before a live Cloud API pilot. LangGraph and selected LangChain integrations, RAG/memory and host-authorized sending remain. X is separately budgeted; ad management is deferred.
 
-Before deployment, verify the owner's Meta assets and Coexistence eligibility, required reviews/scopes, first email provider, Gmail restricted-scope applicability, approved model/data region, initial traffic and spending caps, knowledge-sharing rules, retention period, and local execution choice. Also make the distribution model explicit: our own account, a desktop product where each customer connects their own accounts, or a hosted service operating customer accounts. OAuth review, support and cost estimates depend on this decision.
+Before deployment, verify the owner's Meta assets and Coexistence eligibility, required reviews/scopes, first email provider, Gmail restricted-scope applicability, approved model/data region, initial traffic and spending caps, knowledge-sharing rules, retention period, and local execution choice. Also make the distribution model explicit: our own account, a locally installed product where each customer connects their own accounts, or a hosted service operating customer accounts. OAuth review, support and cost estimates depend on this decision.
 
-Next implementation slice: a restart-safe draft-only LangGraph workflow using our existing RAG and session data, with one authoritative job store and tests for pause, duplicate input and approval recovery. Follow it with the Cloud API adapter and the single outbound gate. This gives us a reviewable foundation before adding more channels.
+Next implementation slice: extract lifecycle and typed service API, then one restart-safe, draft-only WhatsApp workflow through the existing browser UI. Implement and test the selected public relay before live Cloud API ingress. Capacity measurements and terminal conversation outcomes are explicit acceptance gates; no checkbox is closed solely by this architecture decision.
 
-The implementation order is: freeze the v1 deployment and distribution model; contain legacy senders and make host-owned persistence authoritative; build the draft-only LangGraph workflow and evaluation set; add control-event priority, stale-revision handling, approval recovery and the outbox; pilot WhatsApp Cloud API; then add email, Instagram/Messenger, ad attribution and X according to measured demand.
+The implementation order is: freeze the v1 deployment and distribution model; extract agentd lifecycle/API and contain legacy senders; prove browser draft-only execution with authoritative persistence; build the draft-only LangGraph workflow and evaluation set; add control-event priority, stale-revision handling, approval recovery and the outbox; implement durable public ingress and pilot WhatsApp Cloud API; then add email, Instagram/Messenger, ad attribution and X according to measured demand.

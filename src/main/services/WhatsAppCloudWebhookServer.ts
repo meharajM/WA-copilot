@@ -18,6 +18,9 @@ export class WhatsAppCloudWebhookServer {
     const port = Number(process.env.WHATSAPP_CLOUD_WEBHOOK_PORT || 8787)
     if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('Invalid WHATSAPP_CLOUD_WEBHOOK_PORT')
     this.server = createServer((req, res) => void this.handle(req, res, verifyToken, appSecret))
+    this.server.requestTimeout = 30_000
+    this.server.headersTimeout = 35_000
+    this.server.keepAliveTimeout = 5_000
     this.server.on('error', error => { console.error('[WhatsAppCloudWebhookServer] Listener error:', error); this.server = null })
     await new Promise<void>((resolve, reject) => {
       this.server!.once('listening', () => resolve())
@@ -41,6 +44,8 @@ export class WhatsAppCloudWebhookServer {
       return
     }
     if (req.method !== 'POST') { res.writeHead(405); res.end(); return }
+    const declaredLength = Number(req.headers['content-length'] || 0)
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_BODY_BYTES) { res.writeHead(413); res.end(); return }
     const body = await this.readBody(req)
     const signature = typeof req.headers['x-hub-signature-256'] === 'string' ? req.headers['x-hub-signature-256'] : undefined
     if (body === null || !verifyWebhookSignature(body, signature, appSecret)) { res.writeHead(401); res.end(); return }

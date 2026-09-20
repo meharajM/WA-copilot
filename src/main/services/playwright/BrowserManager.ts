@@ -167,12 +167,8 @@ export class BrowserManager {
 
                 const launchArgs = [
                     '--disable-blink-features=AutomationControlled',
-                    '--no-sandbox',
-                    '--disable-setuid-sandbox',
                     '--disable-infobars',
                     '--window-position=0,0',
-                    '--ignore-certificate-errors',
-                    '--ignore-certificate-errors-spki-list',
                     '--disable-accelerated-2d-canvas',
                     '--disable-gpu',
                     '--disable-dev-shm-usage',
@@ -344,10 +340,7 @@ export class BrowserManager {
 
                     const launchArgs = [
                         '--disable-blink-features=AutomationControlled',
-                        '--no-sandbox',
-                        '--disable-setuid-sandbox',
                         '--disable-infobars',
-                        '--ignore-certificate-errors',
                         '--disable-accelerated-2d-canvas',
                         '--disable-gpu',
                         '--disable-dev-shm-usage',

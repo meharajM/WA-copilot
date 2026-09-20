@@ -19,6 +19,7 @@ describe('Meta webhook server', () => {
     expect(messages).toHaveLength(1)
     expect(leads).toHaveLength(0)
     expect(deliveries).toEqual([{ providerMessageId: 'm', status: 'delivered', timestamp: 2, channel: 'messenger' }])
+    expect((await fetch(base, { method: 'POST', body: 'x'.repeat(1_000_001) })).status).toBe(413)
     await server.stop()
   })
 })

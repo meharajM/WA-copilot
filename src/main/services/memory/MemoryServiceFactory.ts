@@ -118,20 +118,12 @@ export class MemoryServiceFactory {
    */
   static loadConfig(): MemoryConfig {
     const config = this.store.get('memory', DEFAULT_CONFIG) as MemoryConfig
-
-    if (config.backend !== 'memento-mcp') {
-      return config
+    const fallback = recoverUnavailableMemoryBackend(config, DEFAULT_CONFIG)
+    if (fallback !== config) {
+      console.warn('[MemoryServiceFactory] Memento MCP is unavailable; falling back to SQLite memory')
+      this.store.set('memory', fallback)
     }
-
-    const fallbackConfig: MemoryConfig = {
-      ...config,
-      backend: 'sqlite',
-      sqlite: config.sqlite || { ...DEFAULT_CONFIG.sqlite! }
-    }
-
-    console.warn('[MemoryServiceFactory] Memento-MCP is not implemented; falling back to SQLite')
-    this.store.set('memory', fallbackConfig)
-    return fallbackConfig
+    return fallback
   }
   
   /**
@@ -170,4 +162,10 @@ export class MemoryServiceFactory {
   static getMigrationThresholds() {
     return this.loadConfig().autoMigration?.thresholds || DEFAULT_CONFIG.autoMigration!.thresholds
   }
+}
+
+export function recoverUnavailableMemoryBackend(config: MemoryConfig, fallback: MemoryConfig): MemoryConfig {
+  return config.backend === 'memento-mcp'
+    ? { ...config, backend: 'sqlite', sqlite: config.sqlite || fallback.sqlite }
+    : config
 }

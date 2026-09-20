@@ -3,7 +3,7 @@ import path from 'node:path'
 import Database from 'better-sqlite3'
 import { beforeAll, describe, expect, it, vi } from 'vitest'
 
-const dataDir = '/tmp/aica-autonomy-recovery-test'
+const dataDir = path.join('/tmp', `aica-autonomy-recovery-${process.pid}`)
 vi.mock('electron', () => ({
   app: { getPath: () => dataDir, getName: () => 'aica', getVersion: () => '1.0.0' },
   safeStorage: { isEncryptionAvailable: () => false },
@@ -13,13 +13,26 @@ vi.mock('electron', () => ({
 vi.mock('electron-store', () => ({
   default: class TestStore { store: Record<string, string> = {}; get(key: string) { return this.store[key] } set(key: string, value: string) { this.store[key] = value } delete(key: string) { delete this.store[key] } }
 }))
+vi.mock('../../src/main/whatsapp/WhatsAppService', async () => {
+  const actual = await vi.importActual<typeof import('../../src/main/whatsapp/WhatsAppService')>('../../src/main/whatsapp/WhatsAppService')
+  const service = actual.whatsappService
+  const original = service.getConnectionState.bind(service)
+  vi.spyOn(service, 'getConnectionState').mockImplementation(() => ({ ...original(), status: 'connected', error: null }))
+  return actual
+})
 
 describe('autonomy recovery', () => {
   let supervisor: typeof import('../../src/main/services/AutonomousSupervisor').autonomousSupervisor
+  let whatsappStateSpy: ReturnType<typeof vi.spyOn>
+  let EmailChannelService: typeof import('../../src/main/services/EmailChannelService').EmailChannelService
 
   beforeAll(async () => {
     fs.rmSync(dataDir, { recursive: true, force: true })
     fs.mkdirSync(dataDir, { recursive: true })
+    const { whatsappService } = await import('../../src/main/whatsapp/WhatsAppService')
+    const connectedState = { ...whatsappService.getConnectionState(), status: 'connected' as const, error: null, phoneNumber: '+15550001111' }
+    whatsappStateSpy = vi.spyOn(whatsappService, 'getConnectionState').mockReturnValue(connectedState)
+    ;({ EmailChannelService } = await import('../../src/main/services/EmailChannelService'))
     ;({ autonomousSupervisor: supervisor } = await import('../../src/main/services/AutonomousSupervisor'))
   })
 
@@ -49,15 +62,457 @@ describe('autonomy recovery', () => {
     db.close()
   })
 
+  it('returns derived quality, delivery, editing, and cost metrics', () => {
+    const metrics = supervisor.getMetrics(14) as Record<string, number>
+    expect(metrics).toMatchObject({ groundedDecisionRate: 0, deliveryUnknown: 0, draftApprovalRate: 0, averageDraftEditingTimeMs: 0, estimatedCostPerResolvedConversation: null, reviewedDecisions: 0, reviewAccuracy: 0, escalationPrecision: 0, recoveryDrills: 0, averageRecoveryTimeMs: 0 })
+  })
+
+  it('counts explicit current conversation outcomes, never replies or escalations, as resolutions', () => {
+    const db = new Database(path.join(dataDir, 'autonomy.db'))
+    const jid = 'outcome-test'
+    db.prepare('INSERT INTO conversations (jid,revision,updated_at) VALUES (?,1,?)').run(jid, Date.now())
+    for (const status of ['sent', 'escalated']) db.prepare('INSERT INTO inbound_events (id,jid,status,received_at) VALUES (?,?,?,?)').run(`outcome-${status}`, jid, status, Date.now())
+    db.prepare("INSERT INTO usage_events (kind,amount,estimated_cost,created_at) VALUES ('outcome-test',1,2,?)").run(Date.now())
+    expect(supervisor.getMetrics().resolvedConversations).toBe(0)
+    expect(supervisor.getMetrics().estimatedCostPerResolvedConversation).toBeNull()
+    expect(() => supervisor.recordConversationOutcome(jid, 0, 'resolved_agent', 'Confirmed')).toThrow('revision changed')
+    expect(() => supervisor.recordConversationOutcome(jid, 1, 'sent', 'Confirmed')).toThrow('Invalid')
+    expect(() => supervisor.recordConversationOutcome(jid, 1, 'resolved_agent', '')).toThrow('Invalid')
+    supervisor.recordConversationOutcome(jid, 1, 'escalated', 'Needs owner')
+    expect(supervisor.getMetrics().resolvedConversations).toBe(0)
+    supervisor.recordConversationOutcome(jid, 1, 'resolved_human', 'Owner confirmed task complete')
+    supervisor.recordConversationOutcome(jid, 1, 'resolved_human', 'Owner confirmed task complete')
+    expect(supervisor.getMetrics()).toMatchObject({ resolvedConversations: 1, estimatedCostPerResolvedConversation: 2 })
+    expect(db.prepare('SELECT outcome FROM conversation_outcomes WHERE jid = ?').get(jid)).toEqual({ outcome: 'resolved_human' })
+    db.prepare('UPDATE conversations SET revision = 2 WHERE jid = ?').run(jid)
+    expect(supervisor.getMetrics().resolvedConversations).toBe(0)
+    supervisor.recordConversationOutcome(jid, 2, 'closed_unresolved', 'Unable to solve')
+    expect(supervisor.getMetrics().resolvedConversations).toBe(0)
+    db.prepare('DELETE FROM conversation_outcomes WHERE jid = ?').run(jid)
+    db.prepare('DELETE FROM conversations WHERE jid = ?').run(jid)
+    db.prepare('DELETE FROM inbound_events WHERE jid = ?').run(jid)
+    db.prepare("DELETE FROM usage_events WHERE kind = 'outcome-test'").run()
+    db.close()
+  })
+
+  it('persists local LLM provider, model, and latency telemetry separately from estimated cost', () => {
+    const internal = supervisor as unknown as { recordUsage: (kind: string, tokens: number, channel?: string, metadata?: { provider?: string; model?: string; latencyMs?: number }) => void }
+    internal.recordUsage('llm', 24, undefined, { provider: 'google', model: 'gemini-2.0-flash', latencyMs: 321 })
+    const db = new Database(path.join(dataDir, 'autonomy.db'), { readonly: true })
+    expect(db.prepare("SELECT estimated_tokens, provider, model, latency_ms FROM usage_events WHERE kind = 'llm' ORDER BY id DESC LIMIT 1").get()).toEqual({ estimated_tokens: 24, provider: 'google', model: 'gemini-2.0-flash', latency_ms: 321 })
+    db.close()
+  })
+
+  it('derives measured LLM latency for the owner metrics view', () => {
+    const metrics = supervisor.getMetrics(14) as { llmCalls: number; averageLlmLatencyMs: number }
+    expect(metrics.llmCalls).toBeGreaterThanOrEqual(1)
+    expect(metrics.averageLlmLatencyMs).toBeGreaterThanOrEqual(321)
+  })
+
+  it('reports bounded provider configuration and per-channel queue health', () => {
+    expect(supervisor.getHealth()).toMatchObject({
+      providers: { meta: { configured: false }, x: { configured: false } },
+      queues: { whatsapp: 0, email: 0, meta: 0 },
+      llm: { provider: 'google', model: 'gemini-2.0-flash', configured: false }
+    })
+  })
+
+  it('does not reconnect Baileys when another WhatsApp transport is selected', async () => {
+    const internal = supervisor as unknown as { outboundTransport: { kind: string } }
+    const original = internal.outboundTransport
+    internal.outboundTransport = { kind: 'cloud' }
+    const { whatsappService } = await import('../../src/main/whatsapp/WhatsAppService')
+    const connect = vi.spyOn(whatsappService, 'connect')
+    await supervisor.reconnectChannel()
+    expect(connect).not.toHaveBeenCalled()
+    connect.mockRestore()
+    internal.outboundTransport = original
+  })
+
+  it('exposes bounded autonomy controls through the internal MCP service', async () => {
+    const { autonomyMcpService } = await import('../../src/main/services/AutonomyMcpService')
+    expect(autonomyMcpService.listTools().tools.map(tool => tool.name)).toEqual(expect.arrayContaining(['get_machine_health', 'get_agent_status', 'get_queue_status', 'get_channel_status', 'get_recent_failures', 'capture_diagnostics', 'surface_browser', 'pause_agent', 'resume_agent', 'retry_job', 'reconnect_channel']))
+    expect((await autonomyMcpService.callTool('get_agent_status', {})).result).toMatchObject({ mode: 'observe' })
+    expect((await autonomyMcpService.callTool('retry_job', {})).error).toBe('Invalid inboundId')
+    expect((await autonomyMcpService.callTool('retry_job', { inboundId: '   ' })).error).toBe('Invalid inboundId')
+    expect((await autonomyMcpService.callTool('pause_agent', { emergency: 'true' })).error).toBe('Invalid emergency')
+  })
+
+  it('lists bounded recent failure notifications for diagnostics', () => {
+    const db = new Database(path.join(dataDir, 'autonomy.db'))
+    db.prepare('INSERT INTO notifications (kind,details,created_at) VALUES (?,?,?)').run('failure', '{"error":"test"}', Date.now())
+    db.prepare('INSERT INTO notifications (kind,details,created_at) VALUES (?,?,?)').run('escalation_sla_overdue', '{"inboundId":"sla-1"}', Date.now() + 1)
+    db.close()
+    expect(supervisor.listRecentFailures(10)).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'failure', details: '{"error":"test"}' })]))
+    expect(supervisor.listRecentFailures(10)).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'escalation_sla_overdue', details: '{"inboundId":"sla-1"}' })]))
+    expect(supervisor.listRecentFailures(0).length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('lists sanitized bounded email attachment metadata for owner inspection', () => {
+    const db = new Database(path.join(dataDir, 'autonomy.db'))
+    db.prepare('INSERT INTO inbound_events (id,jid,content,received_at,status,channel,payload) VALUES (?,?,?,?,?,?,?)').run(
+      'attachment-inventory-1', 'email:attachment-inventory', 'See invoice', Date.now(), 'escalated', 'email',
+      JSON.stringify({ id: 'gmail-message-1', attachments: [{ id: 'gmail-attachment-1', name: 'invoice.pdf', mimeType: 'application/pdf', size: 42, path: '/private/path', data: 'raw-bytes' }] })
+    )
+    db.prepare('INSERT INTO inbound_events (id,jid,content,received_at,status,channel,payload) VALUES (?,?,?,?,?,?,?)').run(
+      'attachment-inventory-malformed', 'email:attachment-inventory', 'Malformed', Date.now() + 1, 'escalated', 'email', '{not-json'
+    )
+    db.close()
+
+    expect(supervisor.listEmailAttachments(10)).toEqual([expect.objectContaining({ inboundId: 'attachment-inventory-1', messageId: 'gmail-message-1', id: 'gmail-attachment-1', name: 'invoice.pdf', mimeType: 'application/pdf', size: 42 })])
+    expect(JSON.stringify(supervisor.listEmailAttachments(10))).not.toContain('raw-bytes')
+    expect(JSON.stringify(supervisor.listEmailAttachments(10))).not.toContain('/private/path')
+  })
+
+  it('audits attachment retrieval failures without persisting customer content', async () => {
+    const { emailChannelService } = await import('../../src/main/services/EmailChannelService')
+    emailChannelService.configure({ command: 'unused', args: [], provider: 'mcp', pollingIntervalSeconds: 60 })
+    await expect(supervisor.retrieveGmailAttachment('message-failure', 'attachment-failure', { mimeType: 'application/pdf', name: 'private.pdf' })).rejects.toThrow('requires the Gmail API provider')
+    const db = new Database(path.join(dataDir, 'autonomy.db'), { readonly: true })
+    const audit = db.prepare("SELECT details FROM operator_actions WHERE action = 'retrieve_gmail_attachment_failed' ORDER BY id DESC LIMIT 1").get() as { details: string }
+    db.close()
+    expect(audit.details).toContain('message-failure')
+    expect(audit.details).toContain('private.pdf')
+    expect(audit.details).not.toContain('customer content')
+  })
+
+  it('audits notification acknowledgment', () => {
+    const db = new Database(path.join(dataDir, 'autonomy.db'))
+    const result = db.prepare('INSERT INTO notifications (kind,details,created_at) VALUES (?,?,?)').run('failure', '{"error":"ack"}', Date.now())
+    db.close()
+    expect(supervisor.ackNotification(Number(result.lastInsertRowid))).toBe(1)
+    const readDb = new Database(path.join(dataDir, 'autonomy.db'), { readonly: true })
+    expect(readDb.prepare('SELECT status FROM notifications WHERE id = ?').get(Number(result.lastInsertRowid))).toEqual({ status: 'read' })
+    expect(readDb.prepare("SELECT details FROM operator_actions WHERE action = 'ack_notification' ORDER BY id DESC LIMIT 1").get()).toEqual({ details: JSON.stringify({ id: Number(result.lastInsertRowid) }) })
+    readDb.close()
+    expect(() => supervisor.ackNotification(0)).toThrow('Invalid notification ID')
+  })
+
+  it('blocks external dispatch at the shared outbound cap', async () => {
+    const db = new Database(path.join(dataDir, 'autonomy.db'))
+    const inboundId = 'external-cap-1'
+    const jid = 'email:external-cap'
+    db.prepare('INSERT INTO inbound_events (id,jid,content,received_at,status,channel) VALUES (?,?,?,?,?,?)').run(inboundId, jid, 'What are your hours?', Date.now(), 'queued', 'email')
+    const usage = db.prepare('INSERT INTO usage_events (kind,amount,estimated_tokens,estimated_cost,channel,created_at) VALUES (?,?,?,?,?,?)')
+    for (let index = 0; index < 1000; index++) usage.run('outbound', 1, 0, 0, 'cap-test', Date.now())
+    db.close()
+    supervisor.start()
+    const internal = supervisor as unknown as { state: { mode: string; responsePermission: boolean; paused: boolean }; hasLease: () => boolean; runDecision: ReturnType<typeof vi.fn>; processExternal: (message: unknown, jid: string, send: () => Promise<unknown>) => Promise<void> }
+    internal.state.mode = 'auto'; internal.state.responsePermission = true; internal.state.paused = false
+    internal.hasLease = () => true
+    internal.runDecision = vi.fn().mockResolvedValue({ text: 'Hours are 9–5.', confidence: 1, grounding: 'grounded', escalated: false, sensitiveTopic: false, reason: 'test' })
+    const send = vi.fn().mockResolvedValue({ success: true, providerMessageId: 'must-not-send' })
+    await internal.processExternal({ id: inboundId, channel: 'email', from: 'customer@example.com', to: 'support@example.com', content: 'What are your hours?', timestamp: Date.now(), type: 'text', isFromMe: false }, jid, send)
+    const resultDb = new Database(path.join(dataDir, 'autonomy.db'), { readonly: true })
+    expect(resultDb.prepare('SELECT status FROM inbound_events WHERE id = ?').get(inboundId)).toEqual({ status: 'failed' })
+    expect(send).not.toHaveBeenCalled()
+    resultDb.close()
+    const cleanupDb = new Database(path.join(dataDir, 'autonomy.db'))
+    cleanupDb.prepare("DELETE FROM usage_events WHERE channel = 'cap-test'").run()
+    cleanupDb.prepare('DELETE FROM inbound_events WHERE id = ?').run(inboundId)
+    cleanupDb.close()
+    supervisor.stop()
+  })
+
+  it('retries external rate limits but not ambiguous failures', async () => {
+    const db = new Database(path.join(dataDir, 'autonomy.db'))
+    const inboundId = 'external-rate-limit-1'
+    const jid = 'email:external-rate-limit'
+    db.prepare('INSERT INTO inbound_events (id,jid,content,received_at,status,channel) VALUES (?,?,?,?,?,?)').run(inboundId, jid, 'What are your hours?', Date.now(), 'queued', 'email')
+    db.close()
+    supervisor.start()
+    const internal = supervisor as unknown as { state: { mode: string; responsePermission: boolean; paused: boolean }; hasLease: () => boolean; runDecision: ReturnType<typeof vi.fn>; processExternal: (message: unknown, jid: string, send: () => Promise<unknown>) => Promise<void> }
+    internal.state.mode = 'auto'; internal.state.responsePermission = true; internal.state.paused = false
+    internal.hasLease = () => true
+    internal.runDecision = vi.fn().mockResolvedValue({ text: 'Hours are 9–5.', confidence: 1, grounding: 'grounded', escalated: false, sensitiveTopic: false, reason: 'test' })
+    const send = vi.fn()
+      .mockResolvedValueOnce({ success: false, error: 'HTTP 429 rate limit' })
+      .mockResolvedValueOnce({ success: false, error: 'HTTP 429 rate limit' })
+      .mockResolvedValueOnce({ success: true, providerMessageId: 'email-retry-1' })
+    await internal.processExternal({ id: inboundId, channel: 'email', from: 'customer@example.com', to: 'support@example.com', content: 'What are your hours?', timestamp: Date.now(), type: 'text', isFromMe: false }, jid, send)
+    expect(send).toHaveBeenCalledTimes(3)
+    const resultDb = new Database(path.join(dataDir, 'autonomy.db'), { readonly: true })
+    expect(resultDb.prepare('SELECT status FROM inbound_events WHERE id = ?').get(inboundId)).toEqual({ status: 'sent' })
+    expect(resultDb.prepare('SELECT COUNT(*) AS count FROM retries WHERE inbound_id = ?').get(inboundId)).toEqual({ count: 2 })
+    resultDb.close()
+    const cleanupDb = new Database(path.join(dataDir, 'autonomy.db'))
+    cleanupDb.prepare('DELETE FROM retries WHERE inbound_id = ?').run(inboundId)
+    cleanupDb.prepare('DELETE FROM inbound_events WHERE id = ?').run(inboundId)
+    cleanupDb.close()
+    supervisor.stop()
+  }, 6000)
+
+  it('requeues an external rate limit when paused during backoff', async () => {
+    const db = new Database(path.join(dataDir, 'autonomy.db'))
+    const inboundId = 'external-rate-limit-pause-1'
+    const jid = 'email:external-rate-limit-pause'
+    db.prepare('INSERT INTO inbound_events (id,jid,content,received_at,status,channel) VALUES (?,?,?,?,?,?)').run(inboundId, jid, 'What are your hours?', Date.now(), 'queued', 'email')
+    db.close()
+    supervisor.start()
+    const internal = supervisor as unknown as { state: { mode: string; responsePermission: boolean; paused: boolean }; hasLease: () => boolean; runDecision: ReturnType<typeof vi.fn>; processExternal: (message: unknown, jid: string, send: () => Promise<unknown>) => Promise<void>; emailQueues: Map<string, unknown[]> }
+    internal.state.mode = 'auto'; internal.state.responsePermission = true; internal.state.paused = false; internal.hasLease = () => true
+    internal.runDecision = vi.fn().mockResolvedValue({ text: 'Hours are 9–5.', confidence: 1, grounding: 'grounded', escalated: false, sensitiveTopic: false, reason: 'test' })
+    const send = vi.fn().mockImplementation(async () => { internal.state.paused = true; return { success: false, error: 'HTTP 429 rate limit' } })
+    await internal.processExternal({ id: inboundId, channel: 'email', from: 'customer@example.com', to: 'support@example.com', content: 'What are your hours?', timestamp: Date.now(), type: 'text', isFromMe: false }, jid, send)
+    expect(send).toHaveBeenCalledTimes(1)
+    const resultDb = new Database(path.join(dataDir, 'autonomy.db'), { readonly: true })
+    expect(resultDb.prepare('SELECT status FROM inbound_events WHERE id = ?').get(inboundId)).toEqual({ status: 'queued' })
+    expect(resultDb.prepare('SELECT 1 FROM outbound_sends WHERE inbound_id = ?').get(inboundId)).toBeUndefined()
+    resultDb.close()
+    expect(internal.emailQueues.get(jid)).toHaveLength(1)
+    const cleanupDb = new Database(path.join(dataDir, 'autonomy.db'))
+    cleanupDb.prepare('DELETE FROM retries WHERE inbound_id = ?').run(inboundId)
+    cleanupDb.prepare('DELETE FROM inbound_events WHERE id = ?').run(inboundId)
+    cleanupDb.close()
+    internal.emailQueues.delete(jid)
+    supervisor.stop()
+  }, 6000)
+
+  it('quarantines external 5xx outcomes as delivery-unknown', async () => {
+    const db = new Database(path.join(dataDir, 'autonomy.db'))
+    const inboundId = 'external-5xx-1'
+    const jid = 'email:external-5xx'
+    db.prepare('INSERT INTO inbound_events (id,jid,content,received_at,status,channel) VALUES (?,?,?,?,?,?)').run(inboundId, jid, 'What are your hours?', Date.now(), 'queued', 'email')
+    db.close()
+    supervisor.start()
+    const internal = supervisor as unknown as { state: { mode: string; responsePermission: boolean; paused: boolean }; hasLease: () => boolean; runDecision: ReturnType<typeof vi.fn>; processExternal: (message: unknown, jid: string, send: () => Promise<unknown>) => Promise<void> }
+    internal.state.mode = 'auto'; internal.state.responsePermission = true; internal.state.paused = false; internal.hasLease = () => true
+    internal.runDecision = vi.fn().mockResolvedValue({ text: 'Hours are 9–5.', confidence: 1, grounding: 'grounded', escalated: false, sensitiveTopic: false, reason: 'test' })
+    const send = vi.fn().mockResolvedValue({ success: false, error: 'HTTP 503 service unavailable' })
+    await internal.processExternal({ id: inboundId, channel: 'email', from: 'customer@example.com', to: 'support@example.com', content: 'What are your hours?', timestamp: Date.now(), type: 'text', isFromMe: false }, jid, send)
+    const resultDb = new Database(path.join(dataDir, 'autonomy.db'), { readonly: true })
+    expect(resultDb.prepare('SELECT status FROM inbound_events WHERE id = ?').get(inboundId)).toEqual({ status: 'delivery_unknown' })
+    expect(resultDb.prepare('SELECT status FROM outbound_sends WHERE inbound_id = ?').get(inboundId)).toEqual({ status: 'delivery-unknown' })
+    resultDb.close()
+    const cleanupDb = new Database(path.join(dataDir, 'autonomy.db'))
+    cleanupDb.prepare('DELETE FROM outbound_sends WHERE inbound_id = ?').run(inboundId)
+    cleanupDb.prepare('DELETE FROM inbound_events WHERE id = ?').run(inboundId)
+    cleanupDb.close()
+    supervisor.stop()
+  })
+
+  it('quarantines successful external sends without a provider ID', async () => {
+    const db = new Database(path.join(dataDir, 'autonomy.db'))
+    const inboundId = 'external-missing-provider-id-1'
+    const jid = 'email:external-missing-provider-id'
+    db.prepare('INSERT INTO inbound_events (id,jid,content,received_at,status,channel) VALUES (?,?,?,?,?,?)').run(inboundId, jid, 'What are your hours?', Date.now(), 'queued', 'email')
+    db.close()
+    supervisor.start()
+    const internal = supervisor as unknown as { state: { mode: string; responsePermission: boolean; paused: boolean }; hasLease: () => boolean; runDecision: ReturnType<typeof vi.fn>; processExternal: (message: unknown, jid: string, send: () => Promise<unknown>) => Promise<void> }
+    internal.state.mode = 'auto'; internal.state.responsePermission = true; internal.state.paused = false; internal.hasLease = () => true
+    internal.runDecision = vi.fn().mockResolvedValue({ text: 'Hours are 9–5.', confidence: 1, grounding: 'grounded', escalated: false, sensitiveTopic: false, reason: 'test' })
+    const send = vi.fn().mockResolvedValue({ success: true })
+    await internal.processExternal({ id: inboundId, channel: 'email', from: 'customer@example.com', to: 'support@example.com', content: 'What are your hours?', timestamp: Date.now(), type: 'text', isFromMe: false }, jid, send)
+    const resultDb = new Database(path.join(dataDir, 'autonomy.db'), { readonly: true })
+    expect(resultDb.prepare('SELECT status, error FROM outbound_sends WHERE inbound_id = ?').get(inboundId)).toMatchObject({ status: 'delivery-unknown', error: 'Provider accepted the send without returning a message ID' })
+    expect(resultDb.prepare('SELECT status FROM inbound_events WHERE id = ?').get(inboundId)).toEqual({ status: 'delivery_unknown' })
+    resultDb.close()
+    const cleanupDb = new Database(path.join(dataDir, 'autonomy.db'))
+    cleanupDb.prepare('DELETE FROM outbound_sends WHERE inbound_id = ?').run(inboundId)
+    cleanupDb.prepare('DELETE FROM inbound_events WHERE id = ?').run(inboundId)
+    cleanupDb.close()
+    supervisor.stop()
+  })
+
+  it('records drain-boundary processing failures instead of wedging work', async () => {
+    vi.resetModules()
+    const activeSupervisor = (await import('../../src/main/services/AutonomousSupervisor')).autonomousSupervisor
+    const db = (activeSupervisor as unknown as { db: Database.Database }).db
+    const inboundId = 'processing-failure-1'
+    const jid = 'email:processing-failure'
+    const message = { schemaVersion: 1, id: inboundId, channel: 'email', from: 'customer@example.com', to: 'support@example.com', content: 'What are your hours?', timestamp: Date.now(), type: 'text', isFromMe: false, conversationId: 'processing-failure' }
+    db.prepare('INSERT INTO inbound_events (id,jid,content,received_at,status,channel,payload) VALUES (?,?,?,?,?,?,?)').run(inboundId, jid, message.content, message.timestamp, 'queued', 'email', JSON.stringify(message))
+    const secondMessage = { ...message, id: 'processing-failure-2' }
+    db.prepare('INSERT INTO inbound_events (id,jid,content,received_at,status,channel,payload) VALUES (?,?,?,?,?,?,?)').run(secondMessage.id, jid, secondMessage.content, secondMessage.timestamp, 'queued', 'email', JSON.stringify(secondMessage))
+    const internal = activeSupervisor as unknown as { emailQueues: Map<string, unknown[]>; state: { paused: boolean; status: string }; processEmail: () => Promise<void>; drainEmail: (jid: string) => Promise<void> }
+    internal.emailQueues.set(jid, [message, secondMessage])
+    internal.state.paused = false; internal.state.status = 'running'
+    internal.processEmail = vi.fn().mockRejectedValue(new Error('model timeout'))
+    await internal.drainEmail(jid)
+    expect(db.prepare('SELECT status FROM inbound_events WHERE id = ?').get(inboundId)).toEqual({ status: 'failed' })
+    expect(activeSupervisor.getState()).toMatchObject({ activeJob: null, lastError: 'model timeout', status: 'degraded' })
+    expect(internal.emailQueues.get(jid)).toEqual([secondMessage])
+    internal.emailQueues.delete(jid)
+    db.prepare('DELETE FROM inbound_events WHERE id = ?').run(inboundId)
+    db.prepare('DELETE FROM inbound_events WHERE id = ?').run(secondMessage.id)
+    db.close()
+  })
+
+  it('requeues failed jobs through the owner retry control', () => {
+    const db = new Database(path.join(dataDir, 'autonomy.db'))
+    const inboundId = 'retry-job-1'
+    const jid = 'email:retry-job'
+    const message = { schemaVersion: 1, id: inboundId, channel: 'email', from: 'customer@example.com', to: 'support@example.com', content: 'What are your hours?', timestamp: Date.now(), type: 'text', isFromMe: false, conversationId: 'retry-job' }
+    db.prepare('INSERT INTO inbound_events (id,jid,content,received_at,status,channel,payload) VALUES (?,?,?,?,?,?,?)').run(inboundId, jid, message.content, message.timestamp, 'failed', 'email', JSON.stringify(message))
+    db.prepare('INSERT INTO outbound_sends (inbound_id,provider_message_id,jid,content,sent_at,status,error) VALUES (?,?,?,?,?,?,?)').run(inboundId, null, jid, 'previous response', Date.now(), 'failed', 'model timeout')
+    db.close()
+    const internal = supervisor as unknown as { emailQueues: Map<string, unknown[]>; state: { paused: boolean } }
+    internal.state.paused = true
+    supervisor.retryJob(inboundId)
+    const resultDb = new Database(path.join(dataDir, 'autonomy.db'), { readonly: true })
+    expect(resultDb.prepare('SELECT status FROM inbound_events WHERE id = ?').get(inboundId)).toEqual({ status: 'queued' })
+    expect(resultDb.prepare('SELECT 1 FROM outbound_sends WHERE inbound_id = ?').get(inboundId)).toBeUndefined()
+    expect(resultDb.prepare("SELECT 1 FROM operator_actions WHERE action = 'retry_job'").get()).toBeTruthy()
+    resultDb.close()
+    expect(internal.emailQueues.get(jid)).toHaveLength(1)
+    internal.emailQueues.delete(jid)
+    const cleanupDb = new Database(path.join(dataDir, 'autonomy.db'))
+    cleanupDb.prepare('DELETE FROM inbound_events WHERE id = ?').run(inboundId)
+    cleanupDb.close()
+  })
+
+  it('does not let stale conversations consume the active-cap budget', () => {
+    const db = new Database(path.join(dataDir, 'autonomy.db'))
+    const stale = Date.now() - 91 * 24 * 60 * 60 * 1000
+    for (let index = 0; index < 100; index++) db.prepare('INSERT OR REPLACE INTO conversations (jid,revision,updated_at) VALUES (?,?,?)').run(`stale-cap-${index}`, 1, stale)
+    db.close()
+    supervisor.onMessage({ id: 'stale-cap-new-1', from: 'new-after-stale-cap', to: 'owner', content: 'What are your hours?', timestamp: Date.now(), type: 'text', isFromMe: false })
+    const resultDb = new Database(path.join(dataDir, 'autonomy.db'), { readonly: true })
+    expect(resultDb.prepare('SELECT status FROM inbound_events WHERE id = ?').get('stale-cap-new-1')).not.toEqual({ status: 'capacity_limited' })
+    resultDb.close()
+    const cleanupDb = new Database(path.join(dataDir, 'autonomy.db'))
+    cleanupDb.prepare("DELETE FROM inbound_events WHERE id = 'stale-cap-new-1'").run()
+    cleanupDb.prepare("DELETE FROM conversations WHERE jid LIKE 'stale-cap-%'").run()
+    cleanupDb.close()
+    ;(supervisor as unknown as { queues: Map<string, unknown[]> }).queues.delete('new-after-stale-cap')
+  })
+
+  it('retains active work while pruning stale inactive conversation metadata', () => {
+    const db = new Database(path.join(dataDir, 'autonomy.db'))
+    const stale = Date.now() - 91 * 24 * 60 * 60 * 1000
+    db.prepare('INSERT OR REPLACE INTO conversations (jid,revision,updated_at) VALUES (?,?,?)').run('stale-prune-inactive', 1, stale)
+    db.prepare('INSERT OR REPLACE INTO conversations (jid,revision,updated_at) VALUES (?,?,?)').run('stale-prune-active', 1, stale)
+    db.prepare('INSERT INTO inbound_events (id,jid,content,received_at,status,channel) VALUES (?,?,?,?,?,?)').run('stale-prune-active-event', 'stale-prune-active', 'queued', stale, 'queued', 'email')
+    db.close()
+    ;(supervisor as unknown as { pruneRetention: () => void }).pruneRetention()
+    const resultDb = new Database(path.join(dataDir, 'autonomy.db'), { readonly: true })
+    expect(resultDb.prepare('SELECT 1 FROM conversations WHERE jid = ?').get('stale-prune-inactive')).toBeUndefined()
+    expect(resultDb.prepare('SELECT 1 FROM conversations WHERE jid = ?').get('stale-prune-active')).toEqual({ 1: 1 })
+    resultDb.close()
+    const cleanupDb = new Database(path.join(dataDir, 'autonomy.db'))
+    cleanupDb.prepare('DELETE FROM inbound_events WHERE id = ?').run('stale-prune-active-event')
+    cleanupDb.prepare("DELETE FROM conversations WHERE jid LIKE 'stale-prune-%'").run()
+    cleanupDb.close()
+  })
+
+  it('quarantines interrupted outbound claims before queue restoration', () => {
+    const db = new Database(path.join(dataDir, 'autonomy.db'))
+    const inboundId = 'interrupted-send-1'
+    db.prepare('INSERT INTO inbound_events (id,jid,content,received_at,status,channel) VALUES (?,?,?,?,?,?)').run(inboundId, 'email:interrupted-send', 'What are your hours?', Date.now(), 'processing', 'email')
+    db.prepare('INSERT INTO outbound_sends (inbound_id,provider_message_id,jid,content,sent_at,status,error) VALUES (?,?,?,?,?,?,?)').run(inboundId, null, 'email:interrupted-send', 'Response', Date.now(), 'sending', null)
+    db.close()
+    ;(supervisor as unknown as { quarantineInterruptedSends: () => void }).quarantineInterruptedSends()
+    const resultDb = new Database(path.join(dataDir, 'autonomy.db'), { readonly: true })
+    expect(resultDb.prepare('SELECT status, error FROM outbound_sends WHERE inbound_id = ?').get(inboundId)).toMatchObject({ status: 'delivery-unknown', error: 'Supervisor restarted before provider outcome was known' })
+    expect(resultDb.prepare('SELECT status FROM inbound_events WHERE id = ?').get(inboundId)).toEqual({ status: 'delivery_unknown' })
+    resultDb.close()
+    const cleanupDb = new Database(path.join(dataDir, 'autonomy.db'))
+    cleanupDb.prepare('DELETE FROM outbound_sends WHERE inbound_id = ?').run(inboundId)
+    cleanupDb.prepare('DELETE FROM inbound_events WHERE id = ?').run(inboundId)
+    cleanupDb.close()
+  })
+
+  it('aggregates outbound usage by channel for owner visibility', () => {
+    const db = new Database(path.join(dataDir, 'autonomy.db'))
+    db.prepare('INSERT INTO usage_events (kind,amount,estimated_tokens,estimated_cost,channel,created_at) VALUES (?,?,?,?,?,?)').run('outbound', 1, 0, 0, 'twitter', Date.now())
+    db.prepare('INSERT INTO usage_events (kind,amount,estimated_tokens,estimated_cost,channel,created_at) VALUES (?,?,?,?,?,?)').run('outbound', 1, 0, 0, 'twitter', Date.now())
+    db.close()
+    expect(supervisor.getChannelUsage(1)).toEqual(expect.arrayContaining([{ channel: 'twitter', amount: 2 }]))
+  })
+
+  it('surfaces bounded escalation contact and SLA configuration', () => {
+    expect(supervisor.getHealth()).toMatchObject({ llmDataPolicyApproved: false, browser: { status: 'disconnected', profile: 'whatsapp-web-profile' }, extension: { status: 'disabled', port: 8790, lastStatus: null, error: null }, escalation: { contactConfigured: false, contact: null, slaMinutes: 60 } })
+    supervisor.setMode('draft', false)
+    expect(() => supervisor.setMode('auto', true)).toThrow('AICA_ESCALATION_CONTACT')
+    supervisor.setMode('observe', false)
+  })
+
+  it('notifies once when an escalation exceeds the configured SLA', () => {
+    const db = new Database(path.join(dataDir, 'autonomy.db'))
+    const inboundId = 'escalation-sla-1'
+    db.prepare('INSERT INTO inbound_events (id,jid,content,received_at,status,channel) VALUES (?,?,?,?,?,?)').run(inboundId, 'customer-sla', 'Need a person', Date.now() - 61 * 60 * 1000, 'escalated', 'whatsapp')
+    db.close()
+    ;(supervisor as unknown as { checkHealth: () => void }).checkHealth()
+    expect(supervisor.getHealth().escalation).toMatchObject({ overdue: 1 })
+    const readDb = new Database(path.join(dataDir, 'autonomy.db'), { readonly: true })
+    expect(readDb.prepare("SELECT COUNT(*) AS count FROM notifications WHERE kind = 'escalation_sla_overdue' AND json_extract(details, '$.inboundId') = ?").get(inboundId)).toEqual({ count: 1 })
+    readDb.close()
+  })
+
+  it('does not restart a persisted Auto-reply state without current safety approvals', () => {
+    const internal = supervisor as unknown as { state: { mode: string; responsePermission: boolean; status: string; paused: boolean } }
+    const previous = { ...internal.state }
+    internal.state.mode = 'auto'
+    internal.state.responsePermission = true
+    const result = supervisor.start()
+    expect(result).toMatchObject({ status: 'degraded', paused: true, lastError: expect.stringContaining('AICA_ESCALATION_CONTACT') })
+    expect(supervisor.resume()).toMatchObject({ status: 'degraded', paused: true, lastError: expect.stringContaining('AICA_ESCALATION_CONTACT') })
+    expect(supervisor.resumeConversation('unsafe-conversation')).toMatchObject({ status: 'degraded', lastError: expect.stringContaining('AICA_ESCALATION_CONTACT') })
+    Object.assign(internal.state, previous)
+  })
+
+  it('pauses dispatch when WhatsApp disconnects and retains the queue', async () => {
+    const { whatsappService } = await import('../../src/main/whatsapp/WhatsAppService')
+    const internal = supervisor as unknown as { state: { status: string; paused: boolean; lastError: string | null }; checkHealth: () => void; baileysDispatchBlocked: boolean; baileysWasConnected: boolean }
+    const previous = { ...internal.state }
+    const getState = whatsappStateSpy
+    const connectedState = whatsappService.getConnectionState()
+    getState.mockReturnValue({ ...connectedState, status: 'disconnected', error: 'offline' })
+    internal.baileysWasConnected = true
+    internal.state.status = 'running'
+    internal.state.paused = false
+    internal.checkHealth()
+    expect(internal.state).toMatchObject({ status: 'degraded', paused: false, lastError: 'WhatsApp channel is disconnected' })
+    expect(internal.baileysDispatchBlocked).toBe(true)
+    getState.mockReturnValue({ ...connectedState, status: 'connected', error: null })
+    internal.checkHealth()
+    expect(internal.baileysDispatchBlocked).toBe(true)
+    internal.baileysDispatchBlocked = false
+    internal.baileysWasConnected = false
+    Object.assign(internal.state, previous)
+    ;(internal as unknown as { publish: () => void }).publish()
+  })
+
+  it('persists owner quality reviews and derives review metrics', () => {
+    const db = new Database(path.join(dataDir, 'autonomy.db'))
+    const inboundId = 'quality-review-1'
+    db.prepare('INSERT OR REPLACE INTO inbound_events (id,jid,content,received_at,status) VALUES (?,?,?,?,?)').run(inboundId, 'quality-customer', 'What are your hours?', Date.now(), 'sent')
+    db.prepare('INSERT OR REPLACE INTO decisions (inbound_id,jid,decision,created_at,conversation_revision,graph_version,prompt_version,policy_version) VALUES (?,?,?,?,?,?,?,?)').run(inboundId, 'quality-customer', JSON.stringify({ text: 'We are open.', confidence: 0.9, grounding: 'grounded', escalated: false, sensitiveTopic: false, reason: 'grounded' }), Date.now(), 1, 'test', 'test', 'test')
+    db.close()
+    supervisor.reviewDecision(inboundId, 'correct', 'Verified against support policy')
+    const readDb = new Database(path.join(dataDir, 'autonomy.db'), { readonly: true })
+    expect(readDb.prepare('SELECT label, notes FROM quality_reviews WHERE inbound_id = ?').get(inboundId)).toEqual({ label: 'correct', notes: 'Verified against support policy' })
+    readDb.close()
+    expect(supervisor.getMetrics(14) as Record<string, number>).toMatchObject({ reviewedDecisions: 1, correctDecisions: 1, reviewAccuracy: 1 })
+  })
+
+  it('derives recovery duration from audited recovery actions', () => {
+    const now = Date.now()
+    const db = new Database(path.join(dataDir, 'autonomy.db'))
+    db.prepare("INSERT INTO operator_actions (action, details, created_at) VALUES ('enter_recovery_mode', NULL, ?)").run(now - 5000)
+    db.prepare("INSERT INTO operator_actions (action, details, created_at) VALUES ('clear_recovery_mode', NULL, ?)").run(now - 3000)
+    db.close()
+    expect(supervisor.getMetrics(14) as Record<string, number>).toMatchObject({ recoveryDrills: 1, averageRecoveryTimeMs: 2000 })
+  })
+
   it('stages a valid backup and enters recovery hold', () => {
     const backup = path.join(dataDir, 'valid.db')
     const db = new Database(backup)
     db.exec('CREATE TABLE inbound_events (id TEXT); CREATE TABLE conversations (jid TEXT); CREATE TABLE decisions (id INTEGER)')
     db.close()
+    const live = new Database(path.join(dataDir, 'autonomy.db'))
+    live.prepare('INSERT OR IGNORE INTO inbound_events (id, jid, content, received_at, status, channel) VALUES (?, ?, ?, ?, ?, ?)').run('live-before-stage', 'isolation-test', 'must remain live', Date.now(), 'queued', 'whatsapp')
+    live.close()
     const state = supervisor.stageBackup(backup)
     expect(state.recoveryMode).toBe(true)
     expect(state.paused).toBe(true)
     expect(fs.existsSync(path.join(dataDir, 'autonomy.db.restore'))).toBe(true)
+    const current = new Database(path.join(dataDir, 'autonomy.db'), { readonly: true })
+    expect(current.prepare('SELECT content FROM inbound_events WHERE id = ?').get('live-before-stage')).toEqual({ content: 'must remain live' })
+    current.close()
+    const cleanup = new Database(path.join(dataDir, 'autonomy.db'))
+    cleanup.prepare('DELETE FROM inbound_events WHERE id = ?').run('live-before-stage')
+    cleanup.close()
     fs.rmSync(path.join(dataDir, 'autonomy.db.restore'), { force: true })
   })
 
@@ -76,6 +531,9 @@ describe('autonomy recovery', () => {
     const db = new Database(path.join(dataDir, 'autonomy.db'), { readonly: true })
     expect((db.prepare('SELECT COUNT(*) AS count FROM inbound_events WHERE id = ?').get(message.id) as { count: number }).count).toBe(1)
     db.close()
+    const cleanupDb = new Database(path.join(dataDir, 'autonomy.db'))
+    cleanupDb.prepare('DELETE FROM inbound_events WHERE id = ?').run(message.id)
+    cleanupDb.close()
   })
 
   it('durably rejects a new conversation after the admission cap', () => {
@@ -101,9 +559,46 @@ describe('autonomy recovery', () => {
     supervisor.stop()
   })
 
+  it('pauses an email conversation when the owner replies', () => {
+    const jid = 'email:owner-takeover-thread'
+    supervisor.onEmailMessage({ schemaVersion: 1, id: 'email-owner-takeover-1', channel: 'email', from: 'support@example.com', to: 'customer@example.com', content: 'I will handle this personally.', timestamp: Date.now(), type: 'text', isFromMe: true, conversationId: 'owner-takeover-thread', actor: 'owner' })
+    const db = new Database(path.join(dataDir, 'autonomy.db'), { readonly: true })
+    expect(db.prepare('SELECT source, active FROM takeovers WHERE jid = ?').get(jid)).toEqual({ source: 'owner_message', active: 1 })
+    db.close()
+    supervisor.resumeConversation(jid)
+    const cleanupDb = new Database(path.join(dataDir, 'autonomy.db'))
+    cleanupDb.prepare('DELETE FROM takeovers WHERE jid = ?').run(jid)
+    cleanupDb.close()
+  })
+
+  it('pauses a WhatsApp conversation on a self-echo from the owner identity', () => {
+    const ownerJid = '15550001111@s.whatsapp.net'
+    const customerJid = 'customer@s.whatsapp.net'
+    supervisor.onMessage({ id: 'whatsapp-owner-takeover-1', from: ownerJid, to: customerJid, content: 'I will take over.', timestamp: Date.now(), type: 'text', isFromMe: true })
+    const db = new Database(path.join(dataDir, 'autonomy.db'), { readonly: true })
+    expect(db.prepare('SELECT source, active FROM takeovers WHERE jid = ?').get(customerJid)).toEqual({ source: 'owner_message', active: 1 })
+    db.close()
+    supervisor.resumeConversation(customerJid)
+    const cleanupDb = new Database(path.join(dataDir, 'autonomy.db'))
+    cleanupDb.prepare('DELETE FROM takeovers WHERE jid = ?').run(customerJid)
+    cleanupDb.close()
+  })
+
+  it('escalates email attachments before autonomous generation', async () => {
+    supervisor.setMode('draft', false)
+    supervisor.start()
+    supervisor.onEmailMessage({ schemaVersion: 1, id: 'email-attachment-review-1', channel: 'email', from: 'attachment@example.com', to: 'support@example.com', content: 'Please review the invoice', timestamp: Date.now(), type: 'text', isFromMe: false, conversationId: 'attachment-thread', actor: 'customer', attachments: [{ id: 'att-1', name: 'invoice.pdf', mimeType: 'application/pdf', size: 42 }] })
+    await new Promise(resolve => setTimeout(resolve, 10))
+    const db = new Database(path.join(dataDir, 'autonomy.db'), { readonly: true })
+    expect(db.prepare('SELECT status FROM inbound_events WHERE id = ?').get('email-attachment-review-1')).toEqual({ status: 'escalated' })
+    expect((db.prepare('SELECT decision FROM decisions WHERE inbound_id = ?').get('email-attachment-review-1') as { decision: string }).decision).toContain('media_requires_human_review')
+    db.close()
+    supervisor.stop()
+    supervisor.setMode('observe', false)
+  })
+
   it('routes external email replies to the customer sender', async () => {
-    const { emailChannelService } = await import('../../src/main/services/EmailChannelService')
-    const send = vi.spyOn(emailChannelService, 'send').mockResolvedValue({ success: true, providerMessageId: 'email-outbound-1' })
+    const send = vi.spyOn(EmailChannelService.prototype, 'send').mockResolvedValue({ success: true, providerMessageId: 'email-outbound-1' })
     const message = {
       schemaVersion: 1 as const,
       id: 'email-reply-routing-1',
@@ -130,8 +625,7 @@ describe('autonomy recovery', () => {
   })
 
   it('approves an email draft through the email channel instead of WhatsApp', async () => {
-    const { emailChannelService } = await import('../../src/main/services/EmailChannelService')
-    const send = vi.spyOn(emailChannelService, 'send').mockResolvedValue({ success: true, providerMessageId: 'email-draft-outbound-1' })
+    const send = vi.spyOn(EmailChannelService.prototype, 'send').mockResolvedValue({ success: true, providerMessageId: 'email-draft-outbound-1' })
     const db = (supervisor as unknown as { db: Database.Database }).db
     const inboundId = 'email-draft-approval-1'
     const message = {
@@ -192,6 +686,10 @@ describe('autonomy recovery', () => {
     expect((new Database(path.join(dataDir, 'autonomy.db'), { readonly: true }).prepare('SELECT status FROM inbound_events WHERE id = ?').get(message.id) as { status: string }).status).toBe('queued')
     supervisor.resume()
     supervisor.stop()
+    ;(supervisor as unknown as { queues: Map<string, unknown[]> }).queues.clear()
+    const cleanupDb = new Database(path.join(dataDir, 'autonomy.db'))
+    cleanupDb.prepare('DELETE FROM inbound_events WHERE id = ?').run(message.id)
+    cleanupDb.close()
   })
 
   it('aborts in-flight generation on global and conversation pause', () => {
@@ -205,6 +703,10 @@ describe('autonomy recovery', () => {
     supervisor.pauseConversation('conversation-pause-customer')
     expect(conversationController.signal.aborted).toBe(true)
     generations.clear()
+    supervisor.resume()
+    supervisor.stop()
+    ;(supervisor as unknown as { state: { emergencyPaused: boolean; paused: boolean } }).state.emergencyPaused = false
+    ;(supervisor as unknown as { state: { paused: boolean } }).state.paused = true
   })
 
   it('records opt-out before any autonomous response path', async () => {
@@ -232,6 +734,29 @@ describe('autonomy recovery', () => {
     expect(reloaded.getState().paused).toBe(true)
     reloaded.stop()
     ;(reloaded as unknown as { db: Database.Database }).db.close()
+  })
+
+  it('honors persisted retry backoff during queue restoration', async () => {
+    const id = 'restore-retry-backoff-1'
+    const nextAt = Date.now() + 60
+    const db = new Database(path.join(dataDir, 'autonomy.db'))
+    db.prepare('INSERT INTO inbound_events (id,jid,content,received_at,status,channel,payload) VALUES (?,?,?,?,?,?,?)').run(id, 'customer-retry-backoff', 'Retry me', Date.now(), 'retrying', 'whatsapp', JSON.stringify({ id, from: 'customer-retry-backoff', to: 'owner', content: 'Retry me', timestamp: Date.now(), type: 'text', isFromMe: false }))
+    db.prepare('INSERT INTO retries (inbound_id,attempt,error,next_at) VALUES (?,?,?,?)').run(id, 1, 'HTTP 429 rate limit', nextAt)
+    db.close()
+    vi.resetModules()
+    const activeSupervisor = (await import('../../src/main/services/AutonomousSupervisor')).autonomousSupervisor
+    const internal = activeSupervisor as unknown as { restoreQueuedMessages: () => void; queues: Map<string, Array<{ id: string }>> }
+    internal.restoreQueuedMessages()
+    expect([...internal.queues.values()].flat().some(message => message.id === id)).toBe(false)
+    await new Promise(resolve => setTimeout(resolve, 100))
+    expect([...internal.queues.values()].flat().some(message => message.id === id)).toBe(true)
+    internal.queues.delete('customer-retry-backoff')
+    const cleanup = new Database(path.join(dataDir, 'autonomy.db'))
+    cleanup.prepare('DELETE FROM retries WHERE inbound_id = ?').run(id)
+    cleanup.prepare('DELETE FROM inbound_events WHERE id = ?').run(id)
+    cleanup.close()
+    activeSupervisor.stop()
+    ;(activeSupervisor as unknown as { db: Database.Database }).db.close()
   })
 
   it('restarts drains for external-channel queues too', async () => {
@@ -267,6 +792,12 @@ describe('autonomy recovery', () => {
     expect(emailDrain).toHaveBeenCalledWith(jid)
     expect((db.prepare('SELECT status FROM inbound_events WHERE id = ?').get(inboundId) as { status: string }).status).toBe('queued')
     expect(db.prepare('SELECT 1 FROM outbound_sends WHERE inbound_id = ?').get(inboundId)).toBeUndefined()
+    const missingPayloadId = 'retry-email-missing-payload-1'
+    db.prepare('INSERT INTO inbound_events (id,jid,content,received_at,status,channel,payload) VALUES (?,?,?,?,?,?,NULL)').run(missingPayloadId, jid, 'Where are your hours?', Date.now(), 'delivery_unknown', 'email')
+    db.prepare('INSERT INTO outbound_sends (inbound_id,provider_message_id,jid,content,sent_at,status,error) VALUES (?,?,?,?,?,?,?)').run(missingPayloadId, null, jid, 'previous response', Date.now(), 'delivery-unknown', 'timeout')
+    expect(() => activeSupervisor.retryDelivery(missingPayloadId)).toThrow('original message payload')
+    expect(db.prepare('SELECT status FROM outbound_sends WHERE inbound_id = ?').get(missingPayloadId)).toMatchObject({ status: 'delivery-unknown' })
+    expect(db.prepare("SELECT 1 FROM operator_actions WHERE action = 'retry_delivery_blocked_missing_payload'").get()).toBeTruthy()
     ;(activeSupervisor as unknown as { db: Database.Database }).db.close()
   })
 
@@ -281,10 +812,63 @@ describe('autonomy recovery', () => {
     expect((db.prepare('SELECT status FROM inbound_events WHERE id = ?').get(inboundId) as { status: string }).status).toBe('delivery_failed')
     expect((db.prepare('SELECT status FROM outbound_sends WHERE inbound_id = ?').get(inboundId) as { status: string }).status).toBe('failed')
     expect(db.prepare('SELECT channel, status, inbound_id FROM delivery_events WHERE provider_message_id = ?').get('wamid.failed-1')).toMatchObject({ channel: 'whatsapp', status: 'failed', inbound_id: inboundId })
+    expect((activeSupervisor.getState() as { lastError: string | null }).lastError).toBe('whatsapp delivery failed for wamid.failed-1')
+    const collisionId = 'meta-delivery-collision-1'
+    db.prepare('INSERT INTO inbound_events (id,jid,content,received_at,status,channel) VALUES (?,?,?,?,?,?)').run(collisionId, 'instagram:collision', 'Hello', Date.now(), 'sent', 'instagram')
+    db.prepare('INSERT INTO outbound_sends (inbound_id,provider_message_id,jid,content,sent_at,status,error) VALUES (?,?,?,?,?,?,?)').run(collisionId, 'shared-provider-id', 'instagram:collision', 'Response', Date.now(), 'sent', null)
+    activeSupervisor.onDeliveryUpdate({ providerMessageId: 'shared-provider-id', status: 'delivered', timestamp: Date.now(), channel: 'whatsapp' })
+    expect((db.prepare('SELECT status FROM outbound_sends WHERE inbound_id = ?').get(collisionId) as { status: string }).status).toBe('sent')
+    const readInboundId = 'cloud-delivery-read-1'
+    db.prepare('INSERT INTO inbound_events (id,jid,content,received_at,status,channel) VALUES (?,?,?,?,?,?)').run(readInboundId, 'customer-cloud-read', 'Hello', Date.now(), 'sent', 'whatsapp')
+    db.prepare('INSERT INTO outbound_sends (inbound_id,provider_message_id,jid,content,sent_at,status,error) VALUES (?,?,?,?,?,?,?)').run(readInboundId, 'wamid.read-1', 'customer-cloud-read', 'Response', Date.now(), 'sent', null)
+    const readTimestamp = Date.now()
+    activeSupervisor.onDeliveryUpdate({ providerMessageId: 'wamid.read-1', status: 'read', timestamp: readTimestamp, channel: 'whatsapp' })
+    expect(db.prepare('SELECT status FROM outbound_sends WHERE inbound_id = ?').get(readInboundId)).toMatchObject({ status: 'delivered' })
+    expect(db.prepare('SELECT status FROM delivery_events WHERE provider_message_id = ? ORDER BY id DESC LIMIT 1').get('wamid.read-1')).toMatchObject({ status: 'read' })
+    const readEvents = (db.prepare('SELECT COUNT(*) AS count FROM delivery_events WHERE provider_message_id = ?').get('wamid.read-1') as { count: number }).count
+    activeSupervisor.onDeliveryUpdate({ providerMessageId: 'wamid.read-1', status: 'read', timestamp: readTimestamp, channel: 'whatsapp' })
+    expect((db.prepare('SELECT COUNT(*) AS count FROM delivery_events WHERE provider_message_id = ?').get('wamid.read-1') as { count: number }).count).toBe(readEvents)
+    const duplicateTimestamp = readTimestamp + 1
+    activeSupervisor.onDeliveryUpdate({ providerMessageId: 'wamid.read-1', status: 'read', timestamp: duplicateTimestamp, channel: 'whatsapp' })
+    activeSupervisor.onDeliveryUpdate({ providerMessageId: 'wamid.read-1', status: 'read', timestamp: duplicateTimestamp, channel: 'whatsapp' })
+    expect((db.prepare('SELECT COUNT(*) AS count FROM delivery_events WHERE provider_message_id = ? AND event_at = ?').get('wamid.read-1', duplicateTimestamp) as { count: number }).count).toBe(1)
+    activeSupervisor.onDeliveryUpdate({ providerMessageId: 'wamid.read-1', status: 'sent', timestamp: duplicateTimestamp + 1, channel: 'whatsapp' })
+    expect(db.prepare('SELECT status FROM outbound_sends WHERE inbound_id = ?').get(readInboundId)).toMatchObject({ status: 'delivered' })
+    expect(db.prepare("SELECT 1 FROM operator_actions WHERE action = 'delivery_update_stale'").get()).toBeTruthy()
     activeSupervisor.onDeliveryUpdate({ providerMessageId: 'wamid.unknown-1', status: 'failed', timestamp: Date.now() })
     expect(db.prepare("SELECT action FROM operator_actions WHERE action = 'delivery_update_unmatched'").get()).toBeTruthy()
     expect(db.prepare('SELECT inbound_id FROM delivery_events WHERE provider_message_id = ?').get('wamid.unknown-1')).toMatchObject({ inbound_id: null })
+    const deliveryCountBeforeUnsupported = (db.prepare('SELECT COUNT(*) AS count FROM delivery_events').get() as { count: number }).count
+    activeSupervisor.onDeliveryUpdate({ providerMessageId: 'email-no-receipt-1', status: 'delivered', timestamp: Date.now(), channel: 'email' })
+    activeSupervisor.onDeliveryUpdate({ providerMessageId: 'x-no-receipt-1', status: 'delivered', timestamp: Date.now(), channel: 'twitter' })
+    expect((db.prepare('SELECT COUNT(*) AS count FROM delivery_events').get() as { count: number }).count).toBe(deliveryCountBeforeUnsupported)
     expect(activeSupervisor.listDeliveryHistory(100)).toEqual(expect.arrayContaining([expect.objectContaining({ providerMessageId: 'wamid.failed-1', channel: 'whatsapp', status: 'failed', inboundId })]))
+    activeSupervisor.onDeliveryUpdate({ providerMessageId: 'wamid.failed-1', status: 'unknown', timestamp: Date.now() })
+    expect(db.prepare('SELECT status FROM outbound_sends WHERE inbound_id = ?').get(inboundId)).toMatchObject({ status: 'failed' })
+    expect(db.prepare("SELECT 1 FROM operator_actions WHERE action = 'delivery_update_invalid'").get()).toBeTruthy()
+    const deliveryCount = (db.prepare('SELECT COUNT(*) AS count FROM delivery_events').get() as { count: number }).count
+    activeSupervisor.onDeliveryUpdate({ providerMessageId: '   ', status: 'sent', timestamp: Date.now() })
+    activeSupervisor.onDeliveryUpdate({ providerMessageId: 'wamid.invalid-time', status: 'failed', timestamp: -1, channel: 'whatsapp' })
+    activeSupervisor.onDeliveryUpdate({ providerMessageId: undefined as unknown as string, status: 'failed', timestamp: Date.now() })
+    expect((db.prepare('SELECT COUNT(*) AS count FROM delivery_events').get() as { count: number }).count).toBe(deliveryCount)
+    ;(activeSupervisor as unknown as { db: Database.Database }).db.close()
+  })
+
+  it('persists email bounces and only advances exact outbound matches', async () => {
+    vi.resetModules()
+    const activeSupervisor = (await import('../../src/main/services/AutonomousSupervisor')).autonomousSupervisor
+    const db = (activeSupervisor as unknown as { db: Database.Database }).db
+    const timestamp = Date.now()
+    activeSupervisor.recordEmailBounce({ providerMessageId: 'bounce-email-1', at: timestamp, inReplyTo: '<original-message-id>' })
+    activeSupervisor.recordEmailBounce({ providerMessageId: 'bounce-email-1', at: timestamp, inReplyTo: '<original-message-id>' })
+    expect(db.prepare('SELECT channel, status, inbound_id FROM delivery_events WHERE provider_message_id = ?').get('bounce-email-1')).toEqual({ channel: 'email', status: 'failed', inbound_id: null })
+    expect(db.prepare("SELECT 1 FROM operator_actions WHERE action = 'email_delivery_bounce'").get()).toBeTruthy()
+    expect((db.prepare('SELECT COUNT(*) AS count FROM delivery_events WHERE provider_message_id = ?').get('bounce-email-1') as { count: number }).count).toBe(1)
+    db.prepare('INSERT INTO inbound_events (id,jid,content,received_at,status,channel) VALUES (?,?,?,?,?,?)').run('email-bounce-match', 'email:customer@example.com', 'Hello', timestamp, 'sent', 'email')
+    db.prepare('INSERT INTO outbound_sends (inbound_id,provider_message_id,jid,content,sent_at,status,error) VALUES (?,?,?,?,?,?,?)').run('email-bounce-match', '<original-message-id>', 'email:customer@example.com', 'Response', timestamp, 'sent', null)
+    activeSupervisor.recordEmailBounce({ providerMessageId: 'bounce-email-2', at: timestamp + 1, inReplyTo: '<original-message-id>' })
+    expect(db.prepare('SELECT status FROM outbound_sends WHERE inbound_id = ?').get('email-bounce-match')).toEqual({ status: 'failed' })
+    expect(db.prepare('SELECT inbound_id FROM delivery_events WHERE provider_message_id = ?').get('bounce-email-2')).toEqual({ inbound_id: 'email-bounce-match' })
     ;(activeSupervisor as unknown as { db: Database.Database }).db.close()
   })
 
@@ -356,7 +940,7 @@ describe('autonomy recovery', () => {
     const ownerMessage = { id: 'owner-takeover-1', from: 'owner-1', to: 'customer-1', content: 'I will take this', timestamp: Date.now(), type: 'text' as const, isFromMe: false }
     activeSupervisor.onMessage(ownerMessage)
     const db = new Database(path.join(dataDir, 'autonomy.db'), { readonly: true })
-    expect((db.prepare('SELECT active FROM takeovers WHERE jid = ?').get(ownerMessage.from) as { active: number }).active).toBe(1)
+    expect((db.prepare('SELECT active FROM takeovers WHERE jid = ?').get(ownerMessage.to) as { active: number }).active).toBe(1)
     db.close()
     ;(whatsappService as unknown as { connectionState: { phoneNumber: string | null } }).connectionState.phoneNumber = null
     ;(activeSupervisor as unknown as { db: Database.Database }).db.close()
@@ -380,6 +964,12 @@ describe('autonomy recovery', () => {
     expect(calls).toBe(1)
     expect(db.prepare('SELECT status, provider_message_id, payload_hash FROM outbound_sends WHERE inbound_id = ?').get(inboundId)).toMatchObject({ status: 'sent', provider_message_id: 'wamid.template-host' })
     expect(db.prepare('SELECT channel, status, inbound_id FROM delivery_events WHERE provider_message_id = ?').get('wamid.template-host')).toMatchObject({ channel: 'whatsapp', status: 'sent', inbound_id: inboundId })
+    const missingId = 'template-missing-provider-id-1'
+    db.prepare('INSERT INTO inbound_events (id,jid,content,received_at,status) VALUES (?,?,?,?,?)').run(missingId, 'customer-template-missing-id', 'Follow up', Date.now() - 25 * 60 * 60 * 1000, 'escalated')
+    db.prepare('INSERT INTO conversations (jid,revision,updated_at) VALUES (?,?,?)').run('customer-template-missing-id', 1, Date.now())
+    ;(activeSupervisor as unknown as { outboundTransport: unknown }).outboundTransport = { kind: 'cloud', sendText: vi.fn(), sendTemplate: async () => ({ success: true }) }
+    await expect(activeSupervisor.sendApprovedTemplate(missingId, 'support_followup', 'en_US')).rejects.toThrow('without returning a message ID')
+    expect(db.prepare('SELECT status FROM outbound_sends WHERE inbound_id = ?').get(missingId)).toEqual({ status: 'delivery-unknown' })
     activeSupervisor.stop()
     db.close()
   })
@@ -397,6 +987,10 @@ describe('autonomy recovery', () => {
     conversation.run('customer-template-negative', 1, Date.now())
     await expect(activeSupervisor.sendApprovedTemplate('template-unapproved', 'not-approved', 'en_US')).rejects.toThrow('not active')
     db.prepare('INSERT OR IGNORE INTO approved_templates (name,language_code,category,active,updated_at) VALUES (?,?,?,?,?)').run('support_followup', 'en_US', 'utility', 1, Date.now())
+    db.prepare('INSERT OR IGNORE INTO approved_templates (name,language_code,category,active,updated_at) VALUES (?,?,?,?,?)').run('support_marketing', 'en_US', 'marketing', 1, Date.now())
+    insert.run('template-marketing', 'customer-template-marketing', 'Follow up', Date.now() - 25 * 60 * 60 * 1000, 'escalated')
+    conversation.run('customer-template-marketing', 1, Date.now())
+    await expect(activeSupervisor.sendApprovedTemplate('template-marketing', 'support_marketing', 'en_US')).rejects.toThrow('Only utility templates')
     insert.run('template-window', 'customer-template-window', 'Follow up', Date.now(), 'escalated')
     conversation.run('customer-template-window', 1, Date.now())
     await expect(activeSupervisor.sendApprovedTemplate('template-window', 'support_followup', 'en_US')).rejects.toThrow('service window')
@@ -404,9 +998,121 @@ describe('autonomy recovery', () => {
     conversation.run('customer-template-optout', 1, Date.now())
     db.prepare('INSERT INTO consents (jid,opted_out,source,updated_at) VALUES (?,?,?,?)').run('customer-template-optout', 1, 'test', Date.now())
     await expect(activeSupervisor.sendApprovedTemplate('template-optout', 'support_followup', 'en_US')).rejects.toThrow('opted out')
+    insert.run('template-email', 'email:template', 'Follow up', Date.now() - 25 * 60 * 60 * 1000, 'escalated')
+    db.prepare('UPDATE inbound_events SET channel = ? WHERE id = ?').run('email', 'template-email')
+    await expect(activeSupervisor.sendApprovedTemplate('template-email', 'support_followup', 'en_US')).rejects.toThrow('WhatsApp inbound')
+    const staleAt = Date.now() - 25 * 60 * 60 * 1000
+    insert.run('template-stale', 'customer-template-stale', 'Follow up', staleAt, 'escalated')
+    insert.run('template-stale-newer', 'customer-template-stale', 'New question', Date.now(), 'queued')
+    conversation.run('customer-template-stale', 2, Date.now())
+    await expect(activeSupervisor.sendApprovedTemplate('template-stale', 'support_followup', 'en_US')).rejects.toThrow('inbound is stale')
+    expect(db.prepare("SELECT 1 FROM operator_actions WHERE action = 'template_send_blocked_stale'").get()).toBeTruthy()
     expect((activeSupervisor as unknown as { outboundTransport: { sendTemplate: ReturnType<typeof vi.fn> } }).outboundTransport.sendTemplate).not.toHaveBeenCalled()
     activeSupervisor.stop()
     db.close()
+  })
+
+  it('allows an owner to retry a previously failed approved template', async () => {
+    vi.resetModules()
+    const activeSupervisor = (await import('../../src/main/services/AutonomousSupervisor')).autonomousSupervisor
+    const db = (activeSupervisor as unknown as { db: Database.Database }).db
+    db.prepare('DELETE FROM supervisor_lease').run()
+    activeSupervisor.start()
+    db.prepare('INSERT OR IGNORE INTO approved_templates(name,language_code,category,active,updated_at) VALUES (?,?,?,?,?)').run('support_followup', 'en_US', 'utility', 1, Date.now())
+    db.prepare('INSERT INTO inbound_events(id,jid,content,received_at,status) VALUES (?,?,?,?,?)').run('template-retry', 'customer-template-retry', 'Follow up', Date.now() - 25 * 60 * 60 * 1000, 'escalated')
+    db.prepare('INSERT INTO conversations(jid,revision,updated_at) VALUES (?,?,?)').run('customer-template-retry', 1, Date.now())
+    let calls = 0
+    ;(activeSupervisor as unknown as { outboundTransport: unknown }).outboundTransport = { kind: 'cloud', sendText: vi.fn(), sendTemplate: async () => { calls++; return calls === 1 ? { success: false, error: 'template rejected' } : { success: true, providerMessageId: 'wamid.template-retry' } } }
+    await expect(activeSupervisor.sendApprovedTemplate('template-retry', 'support_followup', 'en_US')).rejects.toThrow('template rejected')
+    expect(db.prepare('SELECT status FROM outbound_sends WHERE inbound_id = ?').get('template-retry')).toEqual({ status: 'failed' })
+    await activeSupervisor.sendApprovedTemplate('template-retry', 'support_followup', 'en_US')
+    expect(calls).toBe(2)
+    expect(db.prepare('SELECT status, provider_message_id FROM outbound_sends WHERE inbound_id = ?').get('template-retry')).toMatchObject({ status: 'sent', provider_message_id: 'wamid.template-retry' })
+    activeSupervisor.stop()
+    db.close()
+  })
+
+  it('quarantines thrown ambiguous template failures', async () => {
+    vi.resetModules()
+    const activeSupervisor = (await import('../../src/main/services/AutonomousSupervisor')).autonomousSupervisor
+    const db = (activeSupervisor as unknown as { db: Database.Database }).db
+    db.prepare('DELETE FROM supervisor_lease').run()
+    activeSupervisor.start()
+    db.prepare('INSERT OR IGNORE INTO approved_templates(name,language_code,category,active,updated_at) VALUES (?,?,?,?,?)').run('support_followup', 'en_US', 'utility', 1, Date.now())
+    db.prepare('INSERT INTO inbound_events(id,jid,content,received_at,status) VALUES (?,?,?,?,?)').run('template-throw', 'customer-template-throw', 'Follow up', Date.now() - 25 * 60 * 60 * 1000, 'escalated')
+    db.prepare('INSERT INTO conversations(jid,revision,updated_at) VALUES (?,?,?)').run('customer-template-throw', 1, Date.now())
+    ;(activeSupervisor as unknown as { outboundTransport: unknown }).outboundTransport = { kind: 'cloud', sendText: vi.fn(), sendTemplate: async () => { throw new Error('request timeout') } }
+    await expect(activeSupervisor.sendApprovedTemplate('template-throw', 'support_followup', 'en_US')).rejects.toThrow('request timeout')
+    expect(db.prepare('SELECT status FROM outbound_sends WHERE inbound_id = ?').get('template-throw')).toEqual({ status: 'delivery-unknown' })
+    expect(db.prepare('SELECT status FROM inbound_events WHERE id = ?').get('template-throw')).toEqual({ status: 'delivery_unknown' })
+    activeSupervisor.stop()
+    db.close()
+  })
+
+  it('does not strand a failed template when the outbound cap is reached', async () => {
+    vi.resetModules()
+    const activeSupervisor = (await import('../../src/main/services/AutonomousSupervisor')).autonomousSupervisor
+    const db = (activeSupervisor as unknown as { db: Database.Database }).db
+    db.prepare('DELETE FROM supervisor_lease').run()
+    activeSupervisor.start()
+    db.prepare('INSERT OR IGNORE INTO approved_templates(name,language_code,category,active,updated_at) VALUES (?,?,?,?,?)').run('support_followup', 'en_US', 'utility', 1, Date.now())
+    db.prepare('INSERT INTO inbound_events(id,jid,content,received_at,status) VALUES (?,?,?,?,?)').run('template-cap', 'customer-template-cap', 'Follow up', Date.now() - 25 * 60 * 60 * 1000, 'escalated')
+    db.prepare('INSERT INTO conversations(jid,revision,updated_at) VALUES (?,?,?)').run('customer-template-cap', 1, Date.now())
+    db.prepare('INSERT INTO outbound_sends(inbound_id,jid,content,sent_at,status,error,payload_hash) VALUES (?,?,?,?,?,?,?)').run('template-cap', 'customer-template-cap', '[template:old]', Date.now(), 'failed', 'previous failure', 'old-hash')
+    db.prepare('INSERT INTO usage_events(kind,amount,created_at) VALUES (?,?,?)').run('outbound', 1000, Date.now())
+    ;(activeSupervisor as unknown as { outboundTransport: unknown }).outboundTransport = { kind: 'cloud', sendText: vi.fn(), sendTemplate: vi.fn() }
+    await expect(activeSupervisor.sendApprovedTemplate('template-cap', 'support_followup', 'en_US')).rejects.toThrow('Daily outbound message budget cap reached')
+    expect(db.prepare('SELECT status, error FROM outbound_sends WHERE inbound_id = ?').get('template-cap')).toEqual({ status: 'failed', error: 'previous failure' })
+    expect((activeSupervisor as unknown as { outboundTransport: { sendTemplate: ReturnType<typeof vi.fn> } }).outboundTransport.sendTemplate).not.toHaveBeenCalled()
+    activeSupervisor.stop()
+    db.close()
+  })
+
+  it('does not retry a template after Pause All during backoff', async () => {
+    vi.resetModules()
+    const activeSupervisor = (await import('../../src/main/services/AutonomousSupervisor')).autonomousSupervisor
+    const db = (activeSupervisor as unknown as { db: Database.Database }).db
+    db.prepare('DELETE FROM supervisor_lease').run()
+    db.prepare("DELETE FROM usage_events WHERE kind = 'outbound'").run()
+    activeSupervisor.start()
+    db.prepare('INSERT OR IGNORE INTO approved_templates(name,language_code,category,active,updated_at) VALUES (?,?,?,?,?)').run('support_followup', 'en_US', 'utility', 1, Date.now())
+    db.prepare('INSERT INTO inbound_events(id,jid,content,received_at,status) VALUES (?,?,?,?,?)').run('template-pause', 'customer-template-pause', 'Follow up', Date.now() - 25 * 60 * 60 * 1000, 'escalated')
+    db.prepare('INSERT INTO conversations(jid,revision,updated_at) VALUES (?,?,?)').run('customer-template-pause', 1, Date.now())
+    let calls = 0
+    ;(activeSupervisor as unknown as { outboundTransport: unknown }).outboundTransport = { kind: 'cloud', sendText: vi.fn(), sendTemplate: async () => { calls++; activeSupervisor.pause(true); return { success: false, error: '429 rate limit' } } }
+    await expect(activeSupervisor.sendApprovedTemplate('template-pause', 'support_followup', 'en_US')).rejects.toThrow('Supervisor paused before template dispatch')
+    expect(calls).toBe(1)
+    expect(db.prepare('SELECT status FROM outbound_sends WHERE inbound_id = ?').get('template-pause')).toEqual({ status: 'failed' })
+    activeSupervisor.stop()
+    db.close()
+  })
+
+  it('autonomously dispatches an explicitly configured utility template outside the window', async () => {
+    vi.resetModules()
+    const previousTemplate = process.env.AICA_WHATSAPP_OUTSIDE_WINDOW_TEMPLATE
+    process.env.AICA_WHATSAPP_OUTSIDE_WINDOW_TEMPLATE = 'support_followup'
+    const activeSupervisor = (await import('../../src/main/services/AutonomousSupervisor')).autonomousSupervisor
+    const db = (activeSupervisor as unknown as { db: Database.Database }).db
+    db.prepare('DELETE FROM supervisor_lease').run()
+    activeSupervisor.start()
+    db.prepare('INSERT OR IGNORE INTO approved_templates(name,language_code,category,active,updated_at) VALUES (?,?,?,?,?)').run('support_followup', 'en_US', 'utility', 1, Date.now())
+    db.prepare('INSERT INTO inbound_events(id,jid,content,received_at,status,channel) VALUES (?,?,?,?,?,?)').run('template-auto', 'customer-template-auto', 'What are your hours?', Date.now() - 25 * 60 * 60 * 1000, 'queued', 'whatsapp')
+    db.prepare('INSERT INTO conversations(jid,revision,updated_at) VALUES (?,?,?)').run('customer-template-auto', 0, Date.now())
+    let calls = 0
+    ;(activeSupervisor as unknown as { outboundTransport: unknown }).outboundTransport = { kind: 'cloud', sendText: vi.fn(), sendTemplate: async () => { calls++; return { success: true, providerMessageId: 'wamid.template-auto' } } }
+    const state = (activeSupervisor as unknown as { state: { mode: string; responsePermission: boolean; paused: boolean; status: string } }).state
+    state.mode = 'auto'; state.responsePermission = true; state.paused = false; state.status = 'running'
+    ;(activeSupervisor as unknown as { runDecision: () => Promise<unknown> }).runDecision = async () => ({ text: 'Our hours are 9 to 5.', confidence: 0.99, grounding: 'grounded', escalated: false, sensitiveTopic: false, reason: 'rag_grounded_answer' })
+    await (activeSupervisor as unknown as { process: (message: unknown) => Promise<void> }).process({ id: 'template-auto', from: 'customer-template-auto', to: 'business', content: 'What are your hours?', timestamp: Date.now() - 25 * 60 * 60 * 1000, type: 'text', isFromMe: false })
+    expect(calls).toBe(1)
+    expect(db.prepare('SELECT status, provider_message_id FROM outbound_sends WHERE inbound_id = ?').get('template-auto')).toMatchObject({ status: 'sent', provider_message_id: 'wamid.template-auto' })
+    expect(db.prepare('SELECT status FROM inbound_events WHERE id = ?').get('template-auto')).toEqual({ status: 'sent' })
+    expect((db.prepare('SELECT decision FROM decisions WHERE inbound_id = ?').get('template-auto') as { decision: string }).decision).toContain('approved_outside_window_template')
+    state.mode = 'observe'; state.responsePermission = false
+    activeSupervisor.stop()
+    db.close()
+    if (previousTemplate === undefined) delete process.env.AICA_WHATSAPP_OUTSIDE_WINDOW_TEMPLATE
+    else process.env.AICA_WHATSAPP_OUTSIDE_WINDOW_TEMPLATE = previousTemplate
   })
 
   it('refuses to start while another supervisor lease is fresh', async () => {
@@ -430,5 +1136,24 @@ describe('autonomy recovery', () => {
     expect(db.prepare('SELECT owner, generation FROM supervisor_lease WHERE id = 1').get()).toMatchObject({ generation: 5 })
     activeSupervisor.stop()
     db.close()
+  })
+
+  it('does not let Start bypass an emergency pause', async () => {
+    vi.resetModules()
+    const activeSupervisor = (await import('../../src/main/services/AutonomousSupervisor')).autonomousSupervisor
+    const internal = activeSupervisor as unknown as { state: { mode: string; responsePermission: boolean; emergencyPaused: boolean; paused: boolean; status: string }; db: Database.Database }
+    internal.state.mode = 'observe'
+    internal.state.responsePermission = false
+    internal.state.emergencyPaused = false
+    internal.state.paused = true
+    internal.state.status = 'stopped'
+    const state = activeSupervisor.start()
+    expect(state.paused).toBe(false)
+    activeSupervisor.pause(true)
+    const started = activeSupervisor.start()
+    expect(started).toMatchObject({ paused: true, emergencyPaused: true, status: 'degraded', lastError: 'Emergency pause active; use Resume' })
+    activeSupervisor.resume()
+    activeSupervisor.stop()
+    internal.db.close()
   })
 })

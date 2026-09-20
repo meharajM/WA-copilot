@@ -2,6 +2,7 @@ import Database from 'better-sqlite3'
 import { app, BrowserWindow, ipcMain } from 'electron'
 import * as path from 'node:path'
 import * as fs from 'node:fs'
+import { promises as dns } from 'node:dns'
 import { createHash, randomUUID } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { GeminiClient } from '../packages/core/index'
@@ -11,7 +12,7 @@ import { whatsappService, WhatsAppMessage } from '../whatsapp/WhatsAppService'
 import { isSameWhatsAppIdentity } from '../utils/whatsapp'
 import { classifyProviderError, draftContentHash, isAccountSpecificRequest, isAllowlistedSupportIntent, isAmbiguousSendError, isConfirmedPreSendTransientError, isOptInMessage, isOptOutMessage, isPromptInjection, isSensitiveSupportTopic, isStaleRevision, isWithinWhatsAppServiceWindow, parseAutonomyDecision } from './AutonomyDecision'
 import { createAutonomyWorkflow, runAutonomyWorkflow, workflowThreadId, type WorkflowMessage } from './AutonomyWorkflow'
-import { canEnableAutoMode, evaluateAutonomyPolicy, isDispatchAllowed } from './AutonomyPolicy'
+import { canEnableAutoMode, canRunBaileysAutoReply, evaluateAutonomyPolicy, isDispatchAllowed } from './AutonomyPolicy'
 import { createWhatsAppOutboundTransport, type WhatsAppOutboundTransport } from './WhatsAppTransport'
 import { SqliteSaver } from '@langchain/langgraph-checkpoint-sqlite'
 import { getChannelCapabilities, isValidNormalizedChannelMessage, withChannelScope, type ChannelMessage } from '../packages/omnichannel'
@@ -19,6 +20,8 @@ import { emailChannelService } from './EmailChannelService'
 import { MetaMessagingTransport } from './MetaMessaging'
 import { XDirectMessageTransport } from './XDirectMessages'
 import { MemoryService } from './MemoryService'
+import { whatsappWebConnector } from './WhatsAppWebConnector'
+import type { BrowserExtensionBridge } from './BrowserExtensionBridge'
 
 export type AutonomyMode = 'observe' | 'draft' | 'auto'
 export interface SupervisorState {
@@ -50,10 +53,12 @@ export interface ResponseDecision {
   memoryEvidence?: Array<{ id: string; name: string; type: string }>
 }
 
+export type QualityReviewLabel = 'correct' | 'incorrect' | 'unnecessary_escalation' | 'missed_escalation'
+
 const GRAPH_VERSION = 'autonomy-decision-v1'
 const PROMPT_VERSION = 'support-grounded-json-v1'
 const POLICY_VERSION = 'host-gates-v1'
-const AUTONOMY_SCHEMA_VERSION = 2
+const AUTONOMY_SCHEMA_VERSION = 3
 
 const DEFAULT_STATE: SupervisorState = {
   mode: 'observe', responsePermission: false, paused: false, emergencyPaused: false, recoveryMode: false,
@@ -71,6 +76,10 @@ const DAILY_OUTBOUND_CAP = configuredCap('AICA_DAILY_OUTBOUND_CAP', 1000)
 const MAX_ACTIVE_CONVERSATIONS = configuredCap('AICA_MAX_ACTIVE_CONVERSATIONS', 100)
 const COST_PER_1K_TOKENS = Math.max(0, Number(process.env.AICA_LLM_COST_PER_1K_TOKENS) || 0)
 const RETENTION_DAYS = configuredCap('AICA_RETENTION_DAYS', 90)
+const ESCALATION_CONTACT = (process.env.AICA_ESCALATION_CONTACT || '').trim()
+const ESCALATION_SLA_MINUTES = configuredCap('AICA_ESCALATION_SLA_MINUTES', 60)
+const LLM_DATA_POLICY_APPROVED = /^(1|true|yes)$/i.test((process.env.AICA_LLM_DATA_POLICY_APPROVED || '').trim())
+const BAILEYS_EXPERIMENTAL_APPROVED = /^(1|true|yes)$/i.test((process.env.AICA_BAILEYS_EXPERIMENTAL_APPROVED || '').trim())
 const LEASE_TTL_MS = 60_000
 
 export class AutonomousSupervisor extends EventEmitter {
@@ -91,9 +100,15 @@ export class AutonomousSupervisor extends EventEmitter {
   private readonly metaTransport: MetaMessagingTransport | null
   private readonly xTransport: XDirectMessageTransport | null
   private healthTimer: NodeJS.Timeout | null = null
+  private readonly retryTimers = new Map<string, NodeJS.Timeout>()
+  private baileysDispatchBlocked = false
+  private baileysWasConnected = false
   private lastRetentionAt = 0
   private readonly leaseOwner = randomUUID()
   private leaseGeneration = 0
+  private networkProbeInFlight = false
+  private networkHealth: { status: 'unknown' | 'online' | 'offline'; checkedAt: number; latencyMs?: number; error?: string } = { status: 'unknown', checkedAt: 0 }
+  private extensionBridge: BrowserExtensionBridge | null = null
 
   private constructor() {
     super()
@@ -127,11 +142,13 @@ export class AutonomousSupervisor extends EventEmitter {
       CREATE TABLE IF NOT EXISTS operator_actions (id INTEGER PRIMARY KEY AUTOINCREMENT, action TEXT NOT NULL, details TEXT, created_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS notifications (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, details TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'unread', created_at INTEGER NOT NULL);
-      CREATE TABLE IF NOT EXISTS usage_events (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, amount INTEGER NOT NULL, estimated_tokens INTEGER NOT NULL DEFAULT 0, estimated_cost REAL NOT NULL DEFAULT 0, channel TEXT, created_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS usage_events (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, amount INTEGER NOT NULL, estimated_tokens INTEGER NOT NULL DEFAULT 0, estimated_cost REAL NOT NULL DEFAULT 0, channel TEXT, provider TEXT, model TEXT, latency_ms INTEGER, created_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS takeovers (jid TEXT PRIMARY KEY, source TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, started_at INTEGER NOT NULL, ended_at INTEGER);
       CREATE TABLE IF NOT EXISTS drafts (inbound_id TEXT PRIMARY KEY, jid TEXT NOT NULL, content TEXT NOT NULL, content_hash TEXT NOT NULL, conversation_revision INTEGER NOT NULL, status TEXT NOT NULL, expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS supervisor_lease (id INTEGER PRIMARY KEY CHECK (id = 1), owner TEXT NOT NULL, generation INTEGER NOT NULL DEFAULT 0, heartbeat_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS meta_leads (id TEXT PRIMARY KEY, lead_id TEXT NOT NULL, page_id TEXT NOT NULL, form_id TEXT, ad_id TEXT, campaign_id TEXT, messaging_consent INTEGER NOT NULL DEFAULT 0, raw_payload TEXT NOT NULL, received_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS quality_reviews (inbound_id TEXT PRIMARY KEY, label TEXT NOT NULL, notes TEXT, reviewed_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS conversation_outcomes (jid TEXT PRIMARY KEY, revision INTEGER NOT NULL, outcome TEXT NOT NULL CHECK(outcome IN ('resolved_agent','resolved_human','escalated','closed_unresolved','open')), evidence TEXT NOT NULL, recorded_at INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS idx_inbound_pending ON inbound_events(status, received_at);
       CREATE INDEX IF NOT EXISTS idx_jobs_pending ON jobs(status, updated_at);
       CREATE INDEX IF NOT EXISTS idx_conversation_revision ON conversations(jid, revision);
@@ -139,6 +156,7 @@ export class AutonomousSupervisor extends EventEmitter {
       CREATE INDEX IF NOT EXISTS idx_outbound_provider_id ON outbound_sends(provider_message_id);
       CREATE INDEX IF NOT EXISTS idx_delivery_provider_id ON delivery_events(provider_message_id);
       CREATE INDEX IF NOT EXISTS idx_outbound_unresolved ON outbound_sends(status) WHERE status IN ('pending', 'authorized', 'sending', 'delivery-unknown');
+      CREATE INDEX IF NOT EXISTS idx_quality_reviews_reviewed ON quality_reviews(reviewed_at);
       CREATE TRIGGER IF NOT EXISTS inbound_events_to_jobs_insert AFTER INSERT ON inbound_events BEGIN INSERT OR IGNORE INTO jobs (id,inbound_id,queue_key,status,created_at,updated_at) VALUES (NEW.id,NEW.id,NEW.jid,NEW.status,NEW.received_at,NEW.received_at); END;
       CREATE TRIGGER IF NOT EXISTS inbound_events_to_jobs_update AFTER UPDATE OF status ON inbound_events BEGIN UPDATE jobs SET status = NEW.status, attempts = attempts + CASE WHEN NEW.status = 'retrying' AND OLD.status <> 'retrying' THEN 1 ELSE 0 END, updated_at = NEW.received_at WHERE inbound_id = NEW.id; END;
       CREATE TRIGGER IF NOT EXISTS inbound_events_to_jobs_delete AFTER DELETE ON inbound_events BEGIN DELETE FROM jobs WHERE inbound_id = OLD.id; END;
@@ -157,27 +175,59 @@ export class AutonomousSupervisor extends EventEmitter {
     try { this.db.exec('ALTER TABLE usage_events ADD COLUMN estimated_tokens INTEGER NOT NULL DEFAULT 0') } catch { /* existing column */ }
     try { this.db.exec('ALTER TABLE usage_events ADD COLUMN estimated_cost REAL NOT NULL DEFAULT 0') } catch { /* existing column */ }
     try { this.db.exec('ALTER TABLE usage_events ADD COLUMN channel TEXT') } catch { /* existing column */ }
+    try { this.db.exec('ALTER TABLE usage_events ADD COLUMN provider TEXT') } catch { /* existing column */ }
+    try { this.db.exec('ALTER TABLE usage_events ADD COLUMN model TEXT') } catch { /* existing column */ }
+    try { this.db.exec('ALTER TABLE usage_events ADD COLUMN latency_ms INTEGER') } catch { /* existing column */ }
     try { this.db.exec('ALTER TABLE supervisor_lease ADD COLUMN generation INTEGER NOT NULL DEFAULT 0') } catch { /* existing column */ }
     this.db.prepare('INSERT OR IGNORE INTO jobs (id,inbound_id,queue_key,status,created_at,updated_at) SELECT id,id,jid,status,received_at,received_at FROM inbound_events').run()
-    for (const version of [1, AUTONOMY_SCHEMA_VERSION]) this.db.prepare('INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)').run(version, Date.now())
+    for (const version of [1, 2, AUTONOMY_SCHEMA_VERSION]) this.db.prepare('INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)').run(version, Date.now())
     try { this.state = { ...DEFAULT_STATE, ...JSON.parse(fs.readFileSync(this.storePath, 'utf8')) } } catch { /* first run */ }
     if (restored) { this.state.recoveryMode = true; this.state.paused = true; this.state.status = 'degraded'; this.state.lastError = 'Restored backup requires review before resume' }
+    this.quarantineInterruptedSends()
     this.restoreQueuedMessages()
     for (const row of this.db.prepare('SELECT jid FROM takeovers WHERE active = 1').all() as Array<{ jid: string }>) this.pausedConversations.add(row.jid)
     if (process.env.GOOGLE_API_KEY) this.gemini = new GeminiClient(process.env.GOOGLE_API_KEY)
     this.metaTransport = process.env.META_ACCESS_TOKEN && process.env.META_ACCOUNT_ID ? new MetaMessagingTransport({ accessToken: process.env.META_ACCESS_TOKEN, accountId: process.env.META_ACCOUNT_ID, apiVersion: process.env.META_GRAPH_API_VERSION }) : null
     this.xTransport = process.env.X_CONSUMER_KEY && process.env.X_CONSUMER_SECRET && process.env.X_ACCESS_TOKEN && process.env.X_ACCESS_TOKEN_SECRET && process.env.X_ACCOUNT_ID ? new XDirectMessageTransport({ consumerKey: process.env.X_CONSUMER_KEY, consumerSecret: process.env.X_CONSUMER_SECRET, accessToken: process.env.X_ACCESS_TOKEN, accessTokenSecret: process.env.X_ACCESS_TOKEN_SECRET, accountId: process.env.X_ACCOUNT_ID }) : null
-    this.workflow = createAutonomyWorkflow((message) => this.decide(message), new SqliteSaver(this.db))
+    this.workflow = createAutonomyWorkflow({ guard: (message) => this.guardDecision(message), decide: (message) => this.generateDecision(message) }, new SqliteSaver(this.db))
     try { this.outboundTransport = createWhatsAppOutboundTransport() }
     catch (error) { const failure = error instanceof Error ? error.message : String(error); this.outboundTransport = { kind: 'cloud', sendText: async () => ({ success: false, error: failure }), sendTemplate: async () => ({ success: false, error: failure }) }; this.state.status = 'degraded'; this.state.lastError = failure }
   }
 
   static getInstance(): AutonomousSupervisor { return this.instance ??= new AutonomousSupervisor() }
   getState(): SupervisorState { return { ...this.state, queueDepth: [...this.queues.values(), ...this.emailQueues.values(), ...this.metaQueues.values()].reduce((n, q) => n + q.length, 0), usageToday: { llmCalls: this.usageCount('llm'), outboundMessages: this.usageCount('outbound'), estimatedCost: this.usageCost() } } }
-  getHealth() { return { executionLocation: 'electron-main', transport: this.outboundTransport.kind, llmConfigured: this.gemini !== null, channel: whatsappService.getConnectionState(), email: emailChannelService.getConnectionState(), rag: RAGEngine.getInstance().health(), memory: MemoryService.getInstance().getHealth(), supervisor: this.getState(), memoryRss: process.memoryUsage().rss, uptime: process.uptime(), leaseHeld: this.hasLease(), checkedAt: Date.now() } }
+  getHealth() { return { executionLocation: 'electron-main', transport: this.outboundTransport.kind, baileysExperimentalApproval: BAILEYS_EXPERIMENTAL_APPROVED, llmConfigured: this.gemini !== null, llm: { provider: 'google', model: 'gemini-2.0-flash', configured: this.gemini !== null }, llmDataPolicyApproved: LLM_DATA_POLICY_APPROVED, channel: whatsappService.getConnectionState(), browser: whatsappWebConnector.getState(), extension: this.extensionBridge?.getState() ?? { status: 'disabled', port: 8790, lastStatus: null, error: null }, email: emailChannelService.getConnectionState(), network: this.networkHealth, providers: { meta: { configured: this.metaTransport !== null }, x: { configured: this.xTransport !== null } }, queues: { whatsapp: [...this.queues.values()].reduce((total, queue) => total + queue.length, 0), email: [...this.emailQueues.values()].reduce((total, queue) => total + queue.length, 0), meta: [...this.metaQueues.values()].reduce((total, queue) => total + queue.length, 0) }, rag: RAGEngine.getInstance().health(), memory: MemoryService.getInstance().getHealth(), supervisor: this.getState(), escalation: { contact: ESCALATION_CONTACT || null, contactConfigured: Boolean(ESCALATION_CONTACT), slaMinutes: ESCALATION_SLA_MINUTES, overdue: this.countOverdueEscalations() }, memoryRss: process.memoryUsage().rss, uptime: process.uptime(), leaseHeld: this.hasLease(), checkedAt: Date.now() } }
+  attachExtensionBridge(bridge: BrowserExtensionBridge): void { this.extensionBridge = bridge }
   getMetrics(days = 14) {
     const safeDays = Number.isInteger(days) && days > 0 && days <= 90 ? days : 14
-    return this.db.prepare(`SELECT COUNT(*) AS inbound, SUM(CASE WHEN e.status = 'sent' THEN 1 ELSE 0 END) AS sent, SUM(CASE WHEN e.status = 'escalated' THEN 1 ELSE 0 END) AS escalated, SUM(CASE WHEN e.status = 'draft' THEN 1 ELSE 0 END) AS drafts, SUM(CASE WHEN e.status = 'failed' THEN 1 ELSE 0 END) AS failed, COALESCE(AVG(d.created_at - e.received_at), 0) AS averageDecisionLatencyMs FROM inbound_events e LEFT JOIN decisions d ON d.inbound_id = e.id WHERE e.received_at >= ?`).get(Date.now() - safeDays * 24 * 60 * 60 * 1000) as { inbound: number; sent: number; escalated: number; drafts: number; failed: number; averageDecisionLatencyMs: number }
+    const since = Date.now() - safeDays * 24 * 60 * 60 * 1000
+    const base = this.db.prepare(`SELECT COUNT(*) AS inbound, SUM(CASE WHEN e.status = 'sent' THEN 1 ELSE 0 END) AS sent, SUM(CASE WHEN e.status = 'escalated' THEN 1 ELSE 0 END) AS escalated, SUM(CASE WHEN e.status = 'draft' THEN 1 ELSE 0 END) AS drafts, SUM(CASE WHEN e.status = 'failed' THEN 1 ELSE 0 END) AS failed, COALESCE(AVG(d.created_at - e.received_at), 0) AS averageDecisionLatencyMs FROM inbound_events e LEFT JOIN decisions d ON d.inbound_id = e.id WHERE e.received_at >= ?`).get(since) as { inbound: number; sent: number; escalated: number; drafts: number; failed: number; averageDecisionLatencyMs: number }
+    const decisions = this.db.prepare('SELECT decision FROM decisions WHERE created_at >= ?').all(since) as Array<{ decision: string }>
+    const grounding = { grounded: 0, notGrounded: 0, unavailable: 0 }
+    for (const row of decisions) { try { const value = JSON.parse(row.decision) as { grounding?: keyof typeof grounding }; if (value.grounding && value.grounding in grounding) grounding[value.grounding]++ } catch { /* malformed historical decisions are excluded */ } }
+    const draftRows = this.db.prepare('SELECT inbound_id AS inboundId, status, created_at AS createdAt FROM drafts WHERE created_at >= ?').all(since) as Array<{ inboundId: string; status: string; createdAt: number }>
+    const approvalTimes = new Map<string, number>()
+    for (const row of this.db.prepare("SELECT details, created_at AS createdAt FROM operator_actions WHERE action = 'approve_draft' AND created_at >= ?").all(since) as Array<{ details: string | null; createdAt: number }>) { try { const inboundId = row.details ? (JSON.parse(row.details) as { inboundId?: string }).inboundId : undefined; if (inboundId) approvalTimes.set(inboundId, row.createdAt) } catch { /* malformed historical actions are excluded */ } }
+    const editingTimes = draftRows.filter(row => row.status === 'approved' && approvalTimes.has(row.inboundId)).map(row => (approvalTimes.get(row.inboundId) as number) - row.createdAt)
+    const approvedDrafts = draftRows.filter(row => row.status === 'approved').length
+    const estimatedCost = (this.db.prepare('SELECT COALESCE(SUM(estimated_cost), 0) AS total FROM usage_events WHERE created_at >= ?').get(since) as { total: number }).total
+    const llmTelemetry = this.db.prepare("SELECT COUNT(*) AS calls, COALESCE(AVG(latency_ms), 0) AS averageLatencyMs FROM usage_events WHERE kind = 'llm' AND created_at >= ?").get(since) as { calls: number; averageLatencyMs: number }
+    const deliveryUnknown = (this.db.prepare("SELECT COUNT(*) AS count FROM outbound_sends WHERE status = 'delivery-unknown' AND sent_at >= ?").get(since) as { count: number }).count
+    const resolvedConversations = (this.db.prepare("SELECT COUNT(*) AS count FROM conversation_outcomes o JOIN conversations c ON c.jid = o.jid AND c.revision = o.revision WHERE o.outcome IN ('resolved_agent','resolved_human') AND o.recorded_at >= ?").get(since) as { count: number }).count
+    const quality = this.db.prepare('SELECT label, COUNT(*) AS count FROM quality_reviews WHERE reviewed_at >= ? GROUP BY label').all(since) as Array<{ label: QualityReviewLabel; count: number }>
+    const qualityCounts = Object.fromEntries(quality.map(row => [row.label, Number(row.count)])) as Partial<Record<QualityReviewLabel, number>>
+    const reviewedDecisions = quality.reduce((sum, row) => sum + Number(row.count), 0)
+    const correctDecisions = qualityCounts.correct || 0
+    const escalationReviews = (qualityCounts.correct || 0) + (qualityCounts.incorrect || 0) + (qualityCounts.unnecessary_escalation || 0) + (qualityCounts.missed_escalation || 0)
+    const escalationPrecision = escalationReviews ? ((qualityCounts.correct || 0) + (qualityCounts.unnecessary_escalation || 0)) / escalationReviews : 0
+    const recoveryActions = this.db.prepare("SELECT action, created_at AS createdAt FROM operator_actions WHERE action IN ('enter_recovery_mode', 'clear_recovery_mode') AND created_at >= ? ORDER BY created_at ASC").all(since) as Array<{ action: string; createdAt: number }>
+    const recoveryStarts: number[] = []
+    const recoveryDurations: number[] = []
+    for (const action of recoveryActions) {
+      if (action.action === 'enter_recovery_mode') recoveryStarts.push(action.createdAt)
+      else if (recoveryStarts.length) recoveryDurations.push(Math.max(0, action.createdAt - (recoveryStarts.shift() as number)))
+    }
+    return { ...base, llmCalls: Number(llmTelemetry.calls), averageLlmLatencyMs: Number(llmTelemetry.averageLatencyMs), groundedDecisions: grounding.grounded, notGroundedDecisions: grounding.notGrounded, unavailableDecisions: grounding.unavailable, groundedDecisionRate: decisions.length ? grounding.grounded / decisions.length : 0, deliveryUnknown, approvedDrafts, draftApprovalRate: draftRows.length ? approvedDrafts / draftRows.length : 0, averageDraftEditingTimeMs: editingTimes.length ? editingTimes.reduce((sum, value) => sum + value, 0) / editingTimes.length : 0, estimatedCost, resolvedConversations, estimatedCostPerResolvedConversation: resolvedConversations ? estimatedCost / resolvedConversations : 0, reviewedDecisions, correctDecisions, incorrectDecisions: qualityCounts.incorrect || 0, unnecessaryEscalations: qualityCounts.unnecessary_escalation || 0, missedEscalations: qualityCounts.missed_escalation || 0, reviewAccuracy: reviewedDecisions ? correctDecisions / reviewedDecisions : 0, escalationPrecision, recoveryDrills: recoveryDurations.length, averageRecoveryTimeMs: recoveryDurations.length ? recoveryDurations.reduce((sum, value) => sum + value, 0) / recoveryDurations.length : 0 }
   }
   getChannelUsage(days = 1): Array<{ channel: string; amount: number }> {
     const safeDays = Number.isInteger(days) && days > 0 && days <= 90 ? days : 1
@@ -186,13 +236,18 @@ export class AutonomousSupervisor extends EventEmitter {
 
   async reconnectChannel(): Promise<SupervisorState> {
     this.audit('reconnect_channel')
+    if (this.outboundTransport.kind !== 'baileys') { this.audit('reconnect_channel_not_baileys', { transport: this.outboundTransport.kind }); this.checkHealth(); return this.getState() }
     try { await whatsappService.connect(whatsappService.getConnectionState().phoneNumber || undefined); this.checkHealth(); return this.getState() }
     catch (error) { this.state.status = 'degraded'; this.state.lastError = error instanceof Error ? error.message : String(error); this.notifyOwner('failure', { error: this.state.lastError }); this.publish(); throw error }
   }
 
   start(): SupervisorState {
     try { this.outboundTransport = createWhatsAppOutboundTransport() } catch (error) { this.state.status = 'degraded'; this.state.paused = true; this.state.lastError = error instanceof Error ? error.message : String(error); this.audit('start_failed_transport'); this.publish(); return this.getState() }
+    if (this.outboundTransport.kind === 'baileys' && whatsappService.getConnectionState().status === 'connected') this.baileysDispatchBlocked = false
+    const block = this.autoReplyBlockReason()
+    if (block) { this.state.status = 'degraded'; this.state.paused = true; this.state.lastError = block; this.audit('start_blocked_auto_policy'); this.publish(); return this.getState() }
     if (!this.acquireLease()) { this.publish(); return this.getState() }
+    if (this.state.emergencyPaused) { this.state.status = 'degraded'; this.state.paused = true; this.state.lastError = 'Emergency pause active; use Resume'; this.startHealthMonitor(); this.audit('start_blocked_emergency_pause'); this.publish(); return this.getState() }
     this.state.status = 'running'; this.state.paused = false; this.startHealthMonitor(); this.audit('start'); this.publish(); return this.getState()
   }
   stop(): SupervisorState {
@@ -202,8 +257,20 @@ export class AutonomousSupervisor extends EventEmitter {
     this.audit('stop'); this.publish(); return this.getState()
   }
   pause(emergency = false): SupervisorState { this.state.paused = true; this.state.emergencyPaused ||= emergency; for (const { controller } of this.generationControllers.values()) controller.abort(); this.audit(emergency ? 'pause_all' : 'pause'); this.publish(); return this.getState() }
+  private autoReplyBlockReason(): string | null {
+    if (this.state.mode !== 'auto' || !this.state.responsePermission) return null
+    if (!ESCALATION_CONTACT) return 'Configure AICA_ESCALATION_CONTACT before enabling Auto-reply'
+    if (!LLM_DATA_POLICY_APPROVED) return 'Set AICA_LLM_DATA_POLICY_APPROVED=true after reviewing the approved provider and data handling'
+    if (!canRunBaileysAutoReply(this.outboundTransport.kind, BAILEYS_EXPERIMENTAL_APPROVED)) return 'Baileys Auto-reply requires explicit experimental transport approval'
+    return null
+  }
+
   resume(): SupervisorState {
     if (this.state.recoveryMode) throw new Error('Recovery mode must be cleared before resume')
+    const block = this.autoReplyBlockReason()
+    if (block) { this.state.status = 'degraded'; this.state.paused = true; this.state.lastError = block; this.audit('resume_blocked_auto_policy'); this.publish(); return this.getState() }
+    if (this.outboundTransport.kind === 'baileys' && whatsappService.getConnectionState().status !== 'connected') { this.state.status = 'degraded'; this.state.lastError = `WhatsApp channel is ${whatsappService.getConnectionState().status}`; this.audit('resume_blocked_channel'); this.publish(); return this.getState() }
+    this.baileysDispatchBlocked = false
     this.state.paused = false; this.state.emergencyPaused = false; this.audit('resume'); this.publish()
     for (const jid of this.queues.keys()) void this.drain(jid)
     for (const jid of this.emailQueues.keys()) void this.drainEmail(jid)
@@ -224,19 +291,22 @@ export class AutonomousSupervisor extends EventEmitter {
     return this.enterRecoveryMode('backup_staged_restart_required')
   }
   pauseConversation(jid: string): SupervisorState { this.pausedConversations.add(jid); for (const generation of this.generationControllers.values()) if (generation.jid === jid) generation.controller.abort(); this.audit('pause_conversation', { jid }); return this.getState() }
-  resumeConversation(jid: string): SupervisorState { this.pausedConversations.delete(jid); this.db.prepare("UPDATE takeovers SET active = 0, ended_at = ? WHERE jid = ?").run(Date.now(), jid); this.audit('resume_conversation', { jid }); if (jid.startsWith('email:')) void this.drainEmail(jid); else if (jid.startsWith('instagram:') || jid.startsWith('messenger:') || jid.startsWith('twitter:')) void this.drainMeta(jid); else void this.drain(jid); return this.getState() }
+  resumeConversation(jid: string): SupervisorState { const block = this.autoReplyBlockReason(); if (block) { this.state.status = 'degraded'; this.state.lastError = block; this.audit('resume_conversation_blocked_auto_policy', { jid }); this.publish(); return this.getState() }; this.pausedConversations.delete(jid); this.db.prepare("UPDATE takeovers SET active = 0, ended_at = ? WHERE jid = ?").run(Date.now(), jid); this.audit('resume_conversation', { jid }); if (jid.startsWith('email:')) void this.drainEmail(jid); else if (jid.startsWith('instagram:') || jid.startsWith('messenger:') || jid.startsWith('twitter:')) void this.drainMeta(jid); else void this.drain(jid); return this.getState() }
   setMode(mode: AutonomyMode, responsePermission: boolean): SupervisorState {
     if (!canEnableAutoMode(this.state.mode, mode)) throw new Error('Enable Draft mode before Auto-reply')
+    if (mode === 'auto' && responsePermission && !ESCALATION_CONTACT) throw new Error('Configure AICA_ESCALATION_CONTACT before enabling Auto-reply')
+    if (mode === 'auto' && responsePermission && !LLM_DATA_POLICY_APPROVED) throw new Error('Set AICA_LLM_DATA_POLICY_APPROVED=true after reviewing the approved provider and data handling')
+    if (mode === 'auto' && responsePermission && !canRunBaileysAutoReply(this.outboundTransport.kind, BAILEYS_EXPERIMENTAL_APPROVED)) throw new Error('Set AICA_BAILEYS_EXPERIMENTAL_APPROVED=true only after reviewing the Baileys/libsignal security and licensing risk')
     this.state.mode = mode; this.state.responsePermission = mode === 'auto' && responsePermission
     this.audit('set_mode', { mode, responsePermission: this.state.responsePermission }); this.publish(); return this.getState()
   }
 
   onMessage(message: WhatsAppMessage): void {
-    if (message.isFromMe) return
     this.ensureChannelAccount({ channel: 'whatsapp', businessId: message.businessId, channelAccountId: message.channelAccountId, to: message.to })
-    if (isSameWhatsAppIdentity(message.from, whatsappService.getConnectionState().phoneNumber)) {
-      this.db.prepare("INSERT INTO takeovers (jid,source,active,started_at,ended_at) VALUES (?, 'owner_message', 1, ?, NULL) ON CONFLICT(jid) DO UPDATE SET active = 1, source = 'owner_message', started_at = excluded.started_at, ended_at = NULL").run(message.from, Date.now())
-      this.pauseConversation(message.from)
+    if (message.isFromMe || isSameWhatsAppIdentity(message.from, whatsappService.getConnectionState().phoneNumber)) {
+      const customerJid = message.to || message.from
+      this.db.prepare("INSERT INTO takeovers (jid,source,active,started_at,ended_at) VALUES (?, 'owner_message', 1, ?, NULL) ON CONFLICT(jid) DO UPDATE SET active = 1, source = 'owner_message', started_at = excluded.started_at, ended_at = NULL").run(customerJid, Date.now())
+      this.pauseConversation(customerJid)
       this.emit('decision', { message, decision: { text: null, confidence: 1, grounding: 'unavailable', escalated: false, sensitiveTopic: false, reason: 'human_takeover_detected' } })
       return
     }
@@ -269,9 +339,14 @@ export class AutonomousSupervisor extends EventEmitter {
 
   onEmailMessage(message: ChannelMessage): void {
     message = withChannelScope(message)
-    if (!isValidNormalizedChannelMessage(message) || message.channel !== 'email' || message.isFromMe) return
+    if (!isValidNormalizedChannelMessage(message) || message.channel !== 'email') return
     this.ensureChannelAccount(message)
     const jid = `email:${message.conversationId || message.from}`
+    if (message.isFromMe) {
+      this.db.prepare("INSERT INTO takeovers (jid,source,active,started_at,ended_at) VALUES (?, 'owner_message', 1, ?, NULL) ON CONFLICT(jid) DO UPDATE SET active = 1, source = 'owner_message', started_at = excluded.started_at, ended_at = NULL").run(jid, Date.now())
+      this.pauseConversation(jid)
+      return
+    }
     if (this.db.prepare('SELECT id FROM inbound_events WHERE id = ?').get(message.id)) return
     if (!this.admitConversation(message.id, jid, message.content, message.timestamp, 'email', message)) return
     const revision = this.db.transaction(() => {
@@ -342,17 +417,50 @@ export class AutonomousSupervisor extends EventEmitter {
     this.publish()
   }
 
+  recordEmailBounce(update: { providerMessageId: string; at: number; inReplyTo?: string }): void {
+    if (typeof update?.providerMessageId !== 'string' || !update.providerMessageId.trim() || !Number.isFinite(update.at) || update.at <= 0) {
+      this.audit('email_bounce_invalid', { providerMessageId: update?.providerMessageId, at: update?.at }); return
+    }
+    const match = this.db.prepare(`SELECT o.inbound_id AS inboundId, o.provider_message_id AS providerMessageId, o.status
+      FROM outbound_sends o JOIN inbound_events e ON e.id = o.inbound_id
+      WHERE e.channel = 'email' AND (o.provider_message_id = ? OR o.provider_message_id = ?) LIMIT 1`).get(update.providerMessageId, update.inReplyTo || '') as { inboundId: string; providerMessageId: string; status: string } | undefined
+    const duplicate = this.db.prepare("SELECT 1 FROM delivery_events WHERE provider_message_id = ? AND channel = 'email' AND status = 'failed' LIMIT 1").get(update.providerMessageId)
+    if (duplicate) { this.audit('email_bounce_duplicate', { providerMessageId: update.providerMessageId }); return }
+    this.db.prepare("INSERT INTO delivery_events (provider_message_id,channel,status,event_at,inbound_id,created_at) VALUES (?,'email','failed',?,?,?)").run(update.providerMessageId, update.at, match?.inboundId ?? null, Date.now())
+    const advanced = match && ['sending', 'sent', 'delivery-unknown'].includes(match.status)
+      ? this.db.prepare("UPDATE outbound_sends SET status = 'failed', error = ?, sent_at = ? WHERE inbound_id = ? AND status IN ('sending','sent','delivery-unknown')").run('Email provider reported a delivery bounce', update.at, match.inboundId).changes > 0
+      : false
+    if (advanced) this.db.prepare("UPDATE inbound_events SET status = 'delivery_failed' WHERE id = ?").run(match!.inboundId)
+    this.audit('email_delivery_bounce', { providerMessageId: update.providerMessageId, inReplyTo: update.inReplyTo, inboundId: match?.inboundId ?? null, advanced })
+    this.state.lastDeliveryStatus = 'failed'; this.state.lastProviderMessageId = update.providerMessageId; this.state.lastDeliveryInboundId = match?.inboundId ?? null
+    this.notifyOwner('failure', { channel: 'email', providerMessageId: update.providerMessageId, inboundId: match?.inboundId, error: 'Email provider reported a delivery bounce' })
+    this.publish()
+  }
+
   onDeliveryUpdate(update: { providerMessageId: string; status: string; timestamp: number; channel?: string }): void {
+    const channels = new Set(['whatsapp', 'email', 'instagram', 'messenger', 'twitter'])
+    if (typeof update?.providerMessageId !== 'string' || !update.providerMessageId.trim() || !Number.isFinite(update.timestamp) || update.timestamp <= 0 || !['sent', 'delivered', 'read', 'failed'].includes(update.status) || (update.channel !== undefined && (!channels.has(update.channel) || !getChannelCapabilities(update.channel as ChannelMessage['channel']).supportsDeliveryReceipts))) {
+      this.audit('delivery_update_invalid', { providerMessageId: update.providerMessageId, status: update.status, channel: update.channel })
+      return
+    }
+    const eventStatus = update.status
     const status = update.status === 'failed' ? 'failed' : update.status === 'delivered' || update.status === 'read' ? 'delivered' : 'sent'
-    const record = this.db.prepare('SELECT inbound_id FROM outbound_sends WHERE provider_message_id = ?').get(update.providerMessageId) as { inbound_id: string } | undefined
-    this.db.prepare('INSERT INTO delivery_events (provider_message_id,channel,status,event_at,inbound_id,created_at) VALUES (?,?,?,?,?,?)').run(update.providerMessageId, update.channel || 'whatsapp', status, update.timestamp, record?.inbound_id ?? null, Date.now())
-    const result = this.db.prepare('UPDATE outbound_sends SET status = ?, sent_at = ? WHERE provider_message_id = ?').run(status, update.timestamp, update.providerMessageId)
-    if (!record || result.changes === 0) { this.audit('delivery_update_unmatched', { providerMessageId: update.providerMessageId, status }); return }
+    const channel = update.channel || 'whatsapp'
+    const record = this.db.prepare('SELECT o.inbound_id, o.status AS currentStatus FROM outbound_sends o JOIN inbound_events e ON e.id = o.inbound_id WHERE o.provider_message_id = ? AND e.channel = ?').get(update.providerMessageId, channel) as { inbound_id: string; currentStatus: string } | undefined
+    const duplicate = this.db.prepare('SELECT 1 FROM delivery_events WHERE provider_message_id = ? AND channel = ? AND status = ? AND event_at = ? LIMIT 1').get(update.providerMessageId, channel, eventStatus, update.timestamp)
+    if (!duplicate) this.db.prepare('INSERT INTO delivery_events (provider_message_id,channel,status,event_at,inbound_id,created_at) VALUES (?,?,?,?,?,?)').run(update.providerMessageId, channel, eventStatus, update.timestamp, record?.inbound_id ?? null, Date.now())
+    else this.audit('delivery_update_duplicate', { providerMessageId: update.providerMessageId, channel, status: eventStatus, timestamp: update.timestamp })
+    const rank: Record<string, number> = { sending: 0, 'delivery-unknown': 1, sent: 1, failed: 2, delivered: 3 }
+    const advances = !record || (rank[status] ?? -1) > (rank[record.currentStatus] ?? -1)
+    const result = advances ? this.db.prepare('UPDATE outbound_sends SET status = ?, sent_at = ? WHERE provider_message_id = ? AND inbound_id = ?').run(status, update.timestamp, update.providerMessageId, record?.inbound_id) : { changes: 0 }
+    if (record && !advances) this.audit('delivery_update_stale', { providerMessageId: update.providerMessageId, currentStatus: record.currentStatus, status })
+    if (!record) { this.audit('delivery_update_unmatched', { providerMessageId: update.providerMessageId, status }); return }
+    if (!advances || result.changes === 0) { this.publish(); return }
     this.db.prepare('UPDATE inbound_events SET status = ? WHERE id = ?').run(status === 'failed' ? 'delivery_failed' : status, record.inbound_id)
     this.state.lastDeliveryStatus = status
     this.state.lastProviderMessageId = update.providerMessageId
     this.state.lastDeliveryInboundId = record.inbound_id
-    if (status === 'failed') { this.state.lastError = `WhatsApp delivery failed for ${update.providerMessageId}`; this.notifyOwner('failure', { messageId: record.inbound_id, providerMessageId: update.providerMessageId, error: this.state.lastError }); this.emit('failure', { messageId: record.inbound_id, error: this.state.lastError }) }
+    if (status === 'failed') { this.state.lastError = `${channel} delivery failed for ${update.providerMessageId}`; this.notifyOwner('failure', { messageId: record.inbound_id, providerMessageId: update.providerMessageId, error: this.state.lastError }); this.emit('failure', { messageId: record.inbound_id, error: this.state.lastError }) }
     this.publish()
   }
 
@@ -362,6 +470,12 @@ export class AutonomousSupervisor extends EventEmitter {
     const inbound = this.db.prepare('SELECT channel, payload FROM inbound_events WHERE id = ?').get(inboundId) as { channel: string; payload: string | null } | undefined
     let message: ChannelMessage | WhatsAppMessage | null = null
     try { if (inbound?.payload) message = JSON.parse(inbound.payload) as ChannelMessage | WhatsAppMessage } catch { /* fall back to the durable outbound record */ }
+    if (!message && inbound?.channel && inbound.channel !== 'whatsapp') {
+      const error = 'Cannot retry external delivery without the original message payload'
+      this.audit('retry_delivery_blocked_missing_payload', { inboundId, channel: inbound.channel })
+      this.notifyOwner('failure', { messageId: inboundId, channel: inbound.channel, error })
+      throw new Error(error)
+    }
     if (!message) message = { id: inboundId, from: record.jid, to: whatsappService.getConnectionState().phoneNumber || '', content: record.content, timestamp: record.sent_at, type: 'text', isFromMe: false }
     this.db.prepare('DELETE FROM outbound_sends WHERE inbound_id = ?').run(inboundId)
     this.db.prepare('UPDATE inbound_events SET status = ? WHERE id = ?').run('queued', inboundId)
@@ -372,6 +486,29 @@ export class AutonomousSupervisor extends EventEmitter {
     if (inbound?.channel === 'email') void this.drainEmail(record.jid)
     else if (inbound?.channel === 'instagram' || inbound?.channel === 'messenger' || inbound?.channel === 'twitter') void this.drainMeta(record.jid)
     else void this.drain(record.jid)
+    return this.getState()
+  }
+
+  retryJob(inboundId: string): SupervisorState {
+    const inbound = this.db.prepare('SELECT jid, channel, payload, status FROM inbound_events WHERE id = ?').get(inboundId) as { jid: string; channel: string; payload: string | null; status: string } | undefined
+    if (!inbound || inbound.status !== 'failed') throw new Error('Only failed jobs can be retried')
+    if (!inbound.payload) throw new Error('Cannot retry failed job without the original message payload')
+    let message: ChannelMessage | WhatsAppMessage
+    try { message = JSON.parse(inbound.payload) as ChannelMessage | WhatsAppMessage } catch { throw new Error('Cannot retry failed job with an invalid message payload') }
+    if (message.id !== inboundId || (inbound.channel !== 'whatsapp' && (message as ChannelMessage).channel !== inbound.channel)) throw new Error('Failed job payload does not match its channel')
+    const outbound = this.db.prepare('SELECT status FROM outbound_sends WHERE inbound_id = ?').get(inboundId) as { status: string } | undefined
+    if (outbound && outbound.status !== 'failed') throw new Error('Cannot retry a job with an unresolved outbound state')
+    if (outbound) this.db.prepare('DELETE FROM outbound_sends WHERE inbound_id = ?').run(inboundId)
+    this.db.prepare('UPDATE inbound_events SET status = ? WHERE id = ?').run('queued', inboundId)
+    if (inbound.channel === 'email') { const queue = this.emailQueues.get(inbound.jid) ?? []; queue.unshift(message as ChannelMessage); this.emailQueues.set(inbound.jid, queue) }
+    else if (inbound.channel === 'instagram' || inbound.channel === 'messenger' || inbound.channel === 'twitter') { const queue = this.metaQueues.get(inbound.jid) ?? []; queue.unshift(message as ChannelMessage); this.metaQueues.set(inbound.jid, queue) }
+    else { const queue = this.queues.get(inbound.jid) ?? []; queue.unshift(message as WhatsAppMessage); this.queues.set(inbound.jid, queue) }
+    this.audit('retry_job', { inboundId, channel: inbound.channel }); this.publish()
+    if (!this.state.paused) {
+      if (inbound.channel === 'email') void this.drainEmail(inbound.jid)
+      else if (inbound.channel === 'instagram' || inbound.channel === 'messenger' || inbound.channel === 'twitter') void this.drainMeta(inbound.jid)
+      else void this.drain(inbound.jid)
+    }
     return this.getState()
   }
 
@@ -420,15 +557,78 @@ export class AutonomousSupervisor extends EventEmitter {
     return this.db.prepare("SELECT inbound_id AS inboundId, jid, content, provider_message_id AS providerMessageId, sent_at AS sentAt, status, error FROM outbound_sends WHERE status IN ('sending', 'delivery-unknown', 'failed') ORDER BY sent_at DESC LIMIT 50").all() as Array<{ inboundId: string; jid: string; content: string; providerMessageId: string | null; sentAt: number; status: string; error: string | null }>
   }
 
+  listRecentFailures(limit = 50): Array<{ id: number; kind: string; details: string; createdAt: number }> {
+    const safeLimit = Number.isInteger(limit) && limit > 0 && limit <= 100 ? limit : 50
+    return this.db.prepare("SELECT id, kind, details, created_at AS createdAt FROM notifications WHERE kind IN ('failure','budget','recovery','escalation_sla_overdue') ORDER BY created_at DESC LIMIT ?").all(safeLimit) as Array<{ id: number; kind: string; details: string; createdAt: number }>
+  }
+  ackNotification(id: number): number {
+    if (!Number.isSafeInteger(id) || id <= 0) throw new Error('Invalid notification ID')
+    const result = this.db.prepare("UPDATE notifications SET status = 'read' WHERE id = ? AND status = 'unread'").run(id)
+    if (result.changes > 0) this.audit('ack_notification', { id })
+    return result.changes
+  }
+
   listDecisionEvidence(limit = 50): Array<{ inboundId: string; jid: string; createdAt: number; decision: ResponseDecision }> {
     const safeLimit = Number.isInteger(limit) && limit > 0 && limit <= 100 ? limit : 50
     const rows = this.db.prepare('SELECT inbound_id AS inboundId, jid, created_at AS createdAt, decision FROM decisions ORDER BY created_at DESC LIMIT ?').all(safeLimit) as Array<{ inboundId: string; jid: string; createdAt: number; decision: string }>
     return rows.flatMap(row => { try { return [{ inboundId: row.inboundId, jid: row.jid, createdAt: row.createdAt, decision: JSON.parse(row.decision) as ResponseDecision }] } catch { return [] } })
   }
 
+  recordConversationOutcome(jid: string, revision: number, outcome: string, evidence: string): SupervisorState {
+    if (typeof jid !== 'string' || !jid || jid.length > 1000 || !Number.isSafeInteger(revision) || revision < 0 || !['resolved_agent', 'resolved_human', 'escalated', 'closed_unresolved', 'open'].includes(outcome) || typeof evidence !== 'string' || !evidence.trim() || evidence.length > 2000) throw new Error('Invalid conversation outcome')
+    this.db.transaction(() => {
+      const conversation = this.db.prepare('SELECT revision FROM conversations WHERE jid = ?').get(jid) as { revision: number } | undefined
+      if (!conversation || conversation.revision !== revision) throw new Error('Conversation missing or revision changed')
+      this.db.prepare('INSERT INTO conversation_outcomes (jid,revision,outcome,evidence,recorded_at) VALUES (?,?,?,?,?) ON CONFLICT(jid) DO UPDATE SET revision=excluded.revision,outcome=excluded.outcome,evidence=excluded.evidence,recorded_at=excluded.recorded_at').run(jid, revision, outcome, evidence.trim(), Date.now())
+      this.audit('conversation_outcome', { jid, revision, outcome })
+    })()
+    return this.getState()
+  }
+
+  reviewDecision(inboundId: string, label: QualityReviewLabel, notes = ''): SupervisorState {
+    if (!['correct', 'incorrect', 'unnecessary_escalation', 'missed_escalation'].includes(label)) throw new Error('Invalid quality review label')
+    if (!this.db.prepare('SELECT 1 FROM decisions WHERE inbound_id = ?').get(inboundId)) throw new Error('Decision not found')
+    const boundedNotes = notes.slice(0, 2000)
+    this.db.prepare('INSERT INTO quality_reviews (inbound_id,label,notes,reviewed_at) VALUES (?,?,?,?) ON CONFLICT(inbound_id) DO UPDATE SET label = excluded.label, notes = excluded.notes, reviewed_at = excluded.reviewed_at').run(inboundId, label, boundedNotes || null, Date.now())
+    this.audit('review_decision', { inboundId, label })
+    return this.getState()
+  }
+
   listDeliveryHistory(limit = 50): Array<{ providerMessageId: string; channel: string; status: string; eventAt: number; inboundId: string | null }> {
     const safeLimit = Number.isInteger(limit) && limit > 0 && limit <= 100 ? limit : 50
     return this.db.prepare('SELECT provider_message_id AS providerMessageId, channel, status, event_at AS eventAt, inbound_id AS inboundId FROM delivery_events ORDER BY event_at DESC LIMIT ?').all(safeLimit) as Array<{ providerMessageId: string; channel: string; status: string; eventAt: number; inboundId: string | null }>
+  }
+
+  listEmailAttachments(limit = 20): Array<{ inboundId: string; messageId: string; id: string; name?: string; mimeType?: string; size?: number; receivedAt: number }> {
+    const safeLimit = Math.max(1, Math.min(100, Number.isFinite(limit) ? Math.floor(limit) : 20))
+    const rows = this.db.prepare("SELECT id, payload, received_at AS receivedAt FROM inbound_events WHERE channel = 'email' AND payload IS NOT NULL ORDER BY received_at DESC LIMIT 100").all() as Array<{ id: string; payload: string; receivedAt: number }>
+    const attachments: Array<{ inboundId: string; messageId: string; id: string; name?: string; mimeType?: string; size?: number; receivedAt: number }> = []
+    for (const row of rows) {
+      if (attachments.length >= safeLimit) break
+      try {
+        const payload = JSON.parse(row.payload) as { attachments?: unknown[]; id?: unknown }
+        if (!Array.isArray(payload.attachments)) continue
+        for (const value of payload.attachments) {
+          if (attachments.length >= safeLimit || !value || typeof value !== 'object') break
+          const attachment = value as { id?: unknown; name?: unknown; mimeType?: unknown; size?: unknown }
+          if (typeof attachment.id !== 'string' || !attachment.id.trim()) continue
+          attachments.push({ inboundId: row.id, messageId: typeof payload.id === 'string' ? payload.id : row.id, id: attachment.id, name: typeof attachment.name === 'string' ? attachment.name : undefined, mimeType: typeof attachment.mimeType === 'string' ? attachment.mimeType : undefined, size: typeof attachment.size === 'number' && Number.isFinite(attachment.size) ? attachment.size : undefined, receivedAt: row.receivedAt })
+        }
+      } catch { /* Ignore malformed historical payloads. */ }
+    }
+    return attachments
+  }
+
+  async retrieveGmailAttachment(messageId: string, attachmentId: string, metadata: { mimeType?: string; name?: string } = {}) {
+    try {
+      const result = await emailChannelService.retrieveGmailAttachment(messageId, attachmentId, metadata)
+      this.audit('retrieve_gmail_attachment', { messageId, attachmentId, name: metadata.name, mimeType: metadata.mimeType, scan: result.scan })
+      return result
+    } catch (error) {
+      const reason = error instanceof Error ? error.message.slice(0, 240) : String(error).slice(0, 240)
+      this.audit('retrieve_gmail_attachment_failed', { messageId, attachmentId, name: metadata.name, mimeType: metadata.mimeType, reason })
+      throw error
+    }
   }
 
   private recordInitialDelivery(providerMessageId: string | undefined, channel: string, inboundId: string): void {
@@ -438,7 +638,7 @@ export class AutonomousSupervisor extends EventEmitter {
 
   private admitConversation(id: string, jid: string, content: string, timestamp: number, channel: string, payload: unknown): boolean {
     if (this.db.prepare('SELECT 1 FROM conversations WHERE jid = ?').get(jid)) return true
-    const count = (this.db.prepare('SELECT COUNT(*) AS count FROM conversations').get() as { count: number }).count
+    const count = (this.db.prepare('SELECT COUNT(*) AS count FROM conversations WHERE updated_at >= ?').get(Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000) as { count: number }).count
     if (count < MAX_ACTIVE_CONVERSATIONS) return true
     this.db.prepare('INSERT INTO inbound_events (id,jid,content,received_at,status,channel,payload) VALUES (?,?,?,?,?,?,?)').run(id, jid, content, timestamp, 'capacity_limited', channel, JSON.stringify(payload))
     this.audit('conversation_capacity_reached', { id, jid, cap: MAX_ACTIVE_CONVERSATIONS })
@@ -492,32 +692,87 @@ export class AutonomousSupervisor extends EventEmitter {
   }
 
   async sendApprovedTemplate(inboundId: string, name: string, languageCode: string, parameters: string[] = []): Promise<SupervisorState> {
-    if (!this.db.prepare('SELECT 1 FROM approved_templates WHERE name = ? AND language_code = ? AND active = 1').get(name, languageCode)) throw new Error('Template is not active in the approved registry')
+    const template = this.db.prepare('SELECT category FROM approved_templates WHERE name = ? AND language_code = ? AND active = 1').get(name, languageCode) as { category: string } | undefined
+    if (!template) throw new Error('Template is not active in the approved registry')
+    if (template.category !== 'utility') throw new Error('Only utility templates are allowed for customer support')
     if (this.outboundTransport.kind !== 'cloud') throw new Error('Approved templates require WhatsApp Cloud transport')
     if (parameters.length > 10 || parameters.some(value => value.length > 500)) throw new Error('Invalid template parameters')
-    const inbound = this.db.prepare('SELECT e.jid, e.received_at AS receivedAt FROM inbound_events e WHERE e.id = ?').get(inboundId) as { jid: string; receivedAt: number } | undefined
+    const inbound = this.db.prepare('SELECT e.jid, e.channel, e.received_at AS receivedAt FROM inbound_events e WHERE e.id = ?').get(inboundId) as { jid: string; channel: string; receivedAt: number } | undefined
     if (!inbound) throw new Error('Inbound message not found')
+    if (inbound.channel !== 'whatsapp') throw new Error('Approved templates require a WhatsApp inbound conversation')
     if (!this.hasLease()) throw new Error('Supervisor lease is not held')
     if (isWithinWhatsAppServiceWindow(inbound.receivedAt)) throw new Error('Use free-form response inside the WhatsApp service window')
+    if (this.db.prepare('SELECT 1 FROM inbound_events WHERE jid = ? AND received_at > ? AND id <> ? LIMIT 1').get(inbound.jid, inbound.receivedAt, inboundId)) {
+      this.audit('template_send_blocked_stale', { inboundId, jid: inbound.jid })
+      throw new Error('Template inbound is stale; review the latest customer message')
+    }
     if (this.state.paused || this.state.status === 'stopped' || this.pausedConversations.has(inbound.jid)) throw new Error('Supervisor is paused')
     if (this.db.prepare('SELECT 1 FROM consents WHERE jid = ? AND opted_out = 1').get(inbound.jid)) throw new Error('Customer has opted out')
-    if (this.db.prepare('SELECT status FROM outbound_sends WHERE inbound_id = ?').get(inboundId)) return this.getState()
+    const existing = this.db.prepare('SELECT status FROM outbound_sends WHERE inbound_id = ?').get(inboundId) as { status: string } | undefined
+    if (existing && existing.status !== 'failed') return this.getState()
     if (this.usageCount('outbound') >= DAILY_OUTBOUND_CAP) throw new Error('Daily outbound message budget cap reached')
+    if (existing) this.db.prepare("UPDATE outbound_sends SET provider_message_id = NULL, status = 'sending', error = NULL, sent_at = ? WHERE inbound_id = ?").run(Date.now(), inboundId)
     const content = `[template:${name}:${languageCode}]`
     const payloadHash = createHash('sha256').update(JSON.stringify({ name, languageCode, parameters })).digest('hex')
-    this.db.prepare('INSERT INTO outbound_sends (inbound_id,provider_message_id,jid,content,sent_at,status,error,payload_hash) VALUES (?,?,?,?,?,?,?,?)').run(inboundId, null, inbound.jid, content, Date.now(), 'sending', null, payloadHash)
+    if (!existing) this.db.prepare('INSERT INTO outbound_sends (inbound_id,provider_message_id,jid,content,sent_at,status,error,payload_hash) VALUES (?,?,?,?,?,?,?,?)').run(inboundId, null, inbound.jid, content, Date.now(), 'sending', null, payloadHash)
+    else this.db.prepare("UPDATE outbound_sends SET jid = ?, content = ?, sent_at = ?, status = 'sending', error = NULL, payload_hash = ? WHERE inbound_id = ?").run(inbound.jid, content, Date.now(), payloadHash, inboundId)
     this.audit('send_approved_template', { inboundId, name, languageCode })
-    const result = await this.outboundTransport.sendTemplate(inbound.jid, name, languageCode, parameters)
+    let result: { success: boolean; providerMessageId?: string; error?: string } = { success: false, error: 'template send failed' }
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (this.state.paused || this.pausedConversations.has(inbound.jid) || !this.hasLease()) {
+        result = { success: false, error: 'Supervisor paused before template dispatch' }
+        break
+      }
+      try {
+        result = await this.outboundTransport.sendTemplate(inbound.jid, name, languageCode, parameters)
+      } catch (error) {
+        result = { success: false, error: error instanceof Error ? error.message : String(error) }
+      }
+      if (result.success || !isConfirmedPreSendTransientError(result.error || '') || attempt === 2) break
+      this.db.prepare('INSERT INTO retries (inbound_id,attempt,error,next_at) VALUES (?,?,?,?)').run(inboundId, attempt + 1, result.error, Date.now() + (2 ** attempt) * 1000)
+      await new Promise(resolve => setTimeout(resolve, (2 ** attempt) * 1000))
+    }
     if (!result.success) {
-      this.db.prepare('UPDATE outbound_sends SET status = ?, error = ?, sent_at = ? WHERE inbound_id = ?').run('failed', result.error || 'template send failed', Date.now(), inboundId)
-      this.notifyOwner('failure', { messageId: inboundId, error: result.error || 'template send failed' })
-      throw new Error(result.error || 'Template send failed')
+      const error = result.error || 'template send failed'
+      const deliveryUnknown = isAmbiguousSendError(error) || classifyProviderError(error) === 'transient'
+      this.db.prepare('UPDATE outbound_sends SET status = ?, error = ?, sent_at = ? WHERE inbound_id = ?').run(deliveryUnknown ? 'delivery-unknown' : 'failed', error, Date.now(), inboundId)
+      if (deliveryUnknown) this.db.prepare('UPDATE inbound_events SET status = ? WHERE id = ?').run('delivery_unknown', inboundId)
+      this.notifyOwner('failure', { messageId: inboundId, channel: 'whatsapp', error })
+      throw new Error(error)
     }
     this.recordUsage('outbound', 0, 'whatsapp')
+    if (!result.providerMessageId) {
+      const error = 'Provider accepted the template without returning a message ID'
+      this.db.prepare('UPDATE outbound_sends SET status = ?, error = ?, sent_at = ? WHERE inbound_id = ?').run('delivery-unknown', error, Date.now(), inboundId)
+      this.db.prepare('UPDATE inbound_events SET status = ? WHERE id = ?').run('delivery_unknown', inboundId)
+      this.notifyOwner('failure', { messageId: inboundId, channel: 'whatsapp', error })
+      throw new Error(error)
+    }
     this.db.prepare('UPDATE outbound_sends SET provider_message_id = ?, status = ?, sent_at = ? WHERE inbound_id = ?').run(result.providerMessageId ?? null, 'sent', Date.now(), inboundId)
     this.recordInitialDelivery(result.providerMessageId, 'whatsapp', inboundId)
     this.db.prepare('UPDATE inbound_events SET status = ? WHERE id = ?').run('sent', inboundId)
     return this.getState()
+  }
+
+  private outsideWindowTemplateConfig(): { name: string; languageCode: string } | null {
+    const name = (process.env.AICA_WHATSAPP_OUTSIDE_WINDOW_TEMPLATE || '').trim()
+    const languageCode = (process.env.AICA_WHATSAPP_OUTSIDE_WINDOW_TEMPLATE_LANGUAGE || 'en_US').trim()
+    if (!/^[a-zA-Z0-9_.-]{1,100}$/.test(name) || !/^[a-zA-Z0-9_-]{2,20}$/.test(languageCode)) return null
+    return { name, languageCode }
+  }
+
+  private async tryAutoOutsideWindowTemplate(inboundId: string, jid: string): Promise<'sent' | 'failed' | 'not_configured'> {
+    const template = this.outsideWindowTemplateConfig()
+    if (!template || this.outboundTransport.kind !== 'cloud' || this.state.mode !== 'auto' || !this.state.responsePermission) return 'not_configured'
+    try {
+      await this.sendApprovedTemplate(inboundId, template.name, template.languageCode)
+      return 'sent'
+    } catch (error) {
+      const outbound = this.db.prepare('SELECT status FROM outbound_sends WHERE inbound_id = ?').get(inboundId) as { status: string } | undefined
+      if (outbound && (outbound.status === 'failed' || outbound.status === 'delivery-unknown')) return 'failed'
+      this.audit('auto_template_blocked', { inboundId, jid, error: error instanceof Error ? error.message : String(error) })
+      return 'not_configured'
+    }
   }
 
   private startHealthMonitor(): void {
@@ -529,32 +784,72 @@ export class AutonomousSupervisor extends EventEmitter {
   private checkHealth(): void {
     const channel = whatsappService.getConnectionState()
     this.state.lastHealthCheck = Date.now()
+    void this.probeNetworkHealth()
     this.expireDrafts()
+    this.checkEscalationSla()
+    if (this.outboundTransport.kind === 'baileys' && channel.status === 'connected') this.baileysWasConnected = true
+    if (this.outboundTransport.kind === 'baileys' && this.baileysWasConnected && this.state.status === 'running' && channel.status !== 'connected') {
+      this.baileysDispatchBlocked = true
+      this.state.status = 'degraded'
+      // WhatsApp degradation must not pause unrelated email/Meta work.
+      this.state.lastError = `WhatsApp channel is ${channel.status}`
+      this.audit('channel_degraded', { status: channel.status })
+    }
     if (this.state.status === 'running' && !this.renewLease()) { this.state.status = 'degraded'; this.state.paused = true; this.state.lastError = 'Supervisor lease lost' }
     if (Date.now() - this.lastRetentionAt >= 24 * 60 * 60 * 1000) { this.pruneRetention(); this.lastRetentionAt = Date.now() }
-    if (this.state.status === 'running' && channel.status !== 'connected') {
-      this.state.status = 'degraded'
-      this.state.lastError = `WhatsApp channel is ${channel.status}`
-    } else if (this.state.status === 'degraded' && channel.status === 'connected' && this.state.lastError?.startsWith('WhatsApp channel is')) {
+    if (this.outboundTransport.kind === 'baileys' && this.state.status === 'degraded' && channel.status === 'connected' && this.state.lastError?.startsWith('WhatsApp channel is')) {
       this.state.status = 'running'
       this.state.lastError = null
     }
     this.publish()
   }
 
+  private async probeNetworkHealth(): Promise<void> {
+    if (this.networkProbeInFlight) return
+    this.networkProbeInFlight = true
+    const startedAt = Date.now()
+    let timer: NodeJS.Timeout | undefined
+    try {
+      await Promise.race([
+        dns.lookup('api.whatsapp.com'),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error('network probe timed out')), 2_000)
+          timer.unref?.()
+        })
+      ])
+      this.networkHealth = { status: 'online', checkedAt: Date.now(), latencyMs: Date.now() - startedAt }
+    } catch (error) {
+      this.networkHealth = { status: 'offline', checkedAt: Date.now(), latencyMs: Date.now() - startedAt, error: error instanceof Error ? error.message : String(error) }
+    } finally {
+      if (timer) clearTimeout(timer)
+      this.networkProbeInFlight = false
+      if (this.db.open) this.publish()
+    }
+  }
+
   private expireDrafts(): void {
     const result = this.db.prepare("UPDATE drafts SET status = 'expired' WHERE status = 'pending' AND expires_at <= ?").run(Date.now())
     if (result.changes > 0) this.audit('expire_drafts', { count: result.changes })
   }
+  private countOverdueEscalations(now = Date.now()): number {
+    const cutoff = now - ESCALATION_SLA_MINUTES * 60 * 1000
+    return (this.db.prepare("SELECT COUNT(*) AS count FROM inbound_events WHERE status = 'escalated' AND received_at <= ?").get(cutoff) as { count: number }).count
+  }
+  private checkEscalationSla(): void {
+    const cutoff = Date.now() - ESCALATION_SLA_MINUTES * 60 * 1000
+    const rows = this.db.prepare(`SELECT e.id AS inboundId, e.jid FROM inbound_events e WHERE e.status = 'escalated' AND e.received_at <= ? AND NOT EXISTS (SELECT 1 FROM operator_actions a WHERE a.action = 'escalation_sla_overdue' AND json_extract(a.details, '$.inboundId') = e.id) ORDER BY e.received_at ASC LIMIT 20`).all(cutoff) as Array<{ inboundId: string; jid: string }>
+    for (const row of rows) { this.audit('escalation_sla_overdue', { inboundId: row.inboundId, jid: row.jid, slaMinutes: ESCALATION_SLA_MINUTES }); this.notifyOwner('escalation_sla_overdue', row) }
+  }
 
   private async drain(jid: string): Promise<void> {
-    if (this.active.has(jid) || this.pausedConversations.has(jid)) return
+    if (this.active.has(jid) || this.pausedConversations.has(jid) || this.baileysDispatchBlocked) return
     this.active.add(jid)
     try {
       while (!this.state.paused && this.queues.get(jid)?.length) {
         const message = this.queues.get(jid)!.shift()!
         this.state.activeJob = message.id; this.publish()
-        await this.process(message)
+        try { await this.process(message) }
+        catch (error) { this.recordProcessingFailure(message.id, jid, error); this.state.activeJob = null; break }
         this.state.lastProcessedMessage = message.id; this.state.activeJob = null; this.publish()
       }
     } finally { this.active.delete(jid); this.publish() }
@@ -567,7 +862,8 @@ export class AutonomousSupervisor extends EventEmitter {
       while (!this.state.paused && this.emailQueues.get(jid)?.length) {
         const message = this.emailQueues.get(jid)!.shift()!
         this.state.activeJob = message.id; this.publish()
-        await this.processEmail(message, jid)
+        try { await this.processEmail(message, jid) }
+        catch (error) { this.recordProcessingFailure(message.id, jid, error); this.state.activeJob = null; break }
         this.state.lastProcessedMessage = message.id; this.state.activeJob = null; this.publish()
       }
     } finally { this.active.delete(jid); this.publish() }
@@ -580,7 +876,8 @@ export class AutonomousSupervisor extends EventEmitter {
       while (!this.state.paused && this.metaQueues.get(jid)?.length) {
         const message = this.metaQueues.get(jid)!.shift()!
         this.state.activeJob = message.id; this.publish()
-        await this.processExternal(message, jid, async body => message.channel === 'twitter' ? (this.xTransport ? this.xTransport.sendText(message.from, body) : { success: false, error: 'X transport is not configured' }) : (this.metaTransport ? this.metaTransport.sendText(message.from, body) : { success: false, error: 'Meta transport is not configured' }))
+        try { await this.processExternal(message, jid, async body => message.channel === 'twitter' ? (this.xTransport ? this.xTransport.sendText(message.from, body) : { success: false, error: 'X transport is not configured' }) : (this.metaTransport ? this.metaTransport.sendText(message.from, body) : { success: false, error: 'Meta transport is not configured' })) }
+        catch (error) { this.recordProcessingFailure(message.id, jid, error); this.state.activeJob = null; break }
         this.state.lastProcessedMessage = message.id; this.state.activeJob = null; this.publish()
       }
     } finally { this.active.delete(jid); this.publish() }
@@ -598,6 +895,12 @@ export class AutonomousSupervisor extends EventEmitter {
       return body => this.xTransport ? this.xTransport.sendText(message.from, body) : Promise.resolve({ success: false, error: 'X transport is not configured' })
     }
     return body => this.metaTransport ? this.metaTransport.sendText(message.from, body) : Promise.resolve({ success: false, error: 'Meta transport is not configured' })
+  }
+
+  private recordProcessingFailure(messageId: string, jid: string, error: unknown): void {
+    const failure = error instanceof Error ? error.message : String(error)
+    this.db.prepare('UPDATE inbound_events SET status = ? WHERE id = ?').run('failed', messageId)
+    this.state.status = 'degraded'; this.state.lastError = failure; this.audit('processing_failure', { messageId, jid, error: failure }); this.notifyOwner('failure', { messageId, jid, error: failure }); this.emit('failure', { messageId, jid, error: failure })
   }
 
   private async runDecision(message: WorkflowMessage): Promise<ResponseDecision> {
@@ -621,7 +924,10 @@ export class AutonomousSupervisor extends EventEmitter {
       this.db.prepare('UPDATE inbound_events SET status = ? WHERE id = ?').run('observed', message.id); return
     }
     const capabilities = getChannelCapabilities(message.channel)
-    let decision = await this.runDecision(message)
+    const requiresHumanReview = message.type !== 'text' || Boolean(message.mediaUrl || message.mediaId || message.attachments?.length)
+    let decision: ResponseDecision = requiresHumanReview
+      ? { text: null, confidence: 0, grounding: 'unavailable', escalated: true, sensitiveTopic: false, reason: 'media_requires_human_review' }
+      : await this.runDecision(message)
     if (decision.text && decision.text.length > capabilities.maxTextLength) decision = { ...decision, text: null, escalated: true, reason: 'channel_text_limit' }
     const revision = this.messageRevisions.get(message.id) ?? 0
     const currentRevision = (this.db.prepare('SELECT revision FROM conversations WHERE jid = ?').get(jid) as { revision: number } | undefined)?.revision ?? revision
@@ -636,6 +942,10 @@ export class AutonomousSupervisor extends EventEmitter {
       this.emit('decision', { message, decision }); this.publish(); return
     }
     if (!this.hasLease() || this.state.paused) { this.db.prepare('UPDATE inbound_events SET status = ? WHERE id = ?').run('queued', message.id); return }
+    if (this.usageCount('outbound') >= DAILY_OUTBOUND_CAP) {
+      this.db.prepare('UPDATE inbound_events SET status = ? WHERE id = ?').run('failed', message.id)
+      this.state.lastError = 'Daily outbound message budget cap reached'; this.state.status = 'degraded'; this.audit('outbound_budget_blocked', { messageId: message.id, channel: message.channel, cap: DAILY_OUTBOUND_CAP }); this.notifyOwner('budget', { messageId: message.id, channel: message.channel, cap: DAILY_OUTBOUND_CAP }); this.publish(); return
+    }
     const body = `Hi — I’m the AI support assistant for ${BusinessPersona.getInstance().getProfile().name}.\n\n${decision.text!}`
     await this.deliverExternal(message, jid, body, send)
   }
@@ -653,14 +963,36 @@ export class AutonomousSupervisor extends EventEmitter {
     const payloadHash = createHash('sha256').update(JSON.stringify({ to: message.from, subject: message.subject, body, inReplyTo: message.messageId, references: message.references })).digest('hex')
     if (this.db.prepare('SELECT status FROM outbound_sends WHERE inbound_id = ?').get(message.id)) return
     this.db.prepare('INSERT INTO outbound_sends (inbound_id,provider_message_id,jid,content,sent_at,status,error,payload_hash) VALUES (?,?,?,?,?,?,?,?)').run(message.id, null, jid, body, Date.now(), 'sending', null, payloadHash)
-    const result = await send(body)
+    let result: { success: boolean; providerMessageId?: string; error?: string } = { success: false, error: 'external send failed' }
+    const requeue = (): void => {
+      this.db.prepare('DELETE FROM outbound_sends WHERE inbound_id = ?').run(message.id)
+      this.db.prepare('UPDATE inbound_events SET status = ? WHERE id = ?').run('queued', message.id)
+      const queue = message.channel === 'email' ? this.emailQueues : this.metaQueues
+      const pending = queue.get(jid) ?? []
+      pending.unshift(message); queue.set(jid, pending)
+    }
+    for (let attempt = 0; attempt < 3; attempt++) {
+      result = await send(body)
+      if (result.success || !isConfirmedPreSendTransientError(result.error || '') || attempt === 2) break
+      this.db.prepare('INSERT INTO retries (inbound_id,attempt,error,next_at) VALUES (?,?,?,?)').run(message.id, attempt + 1, result.error, Date.now() + (2 ** attempt) * 1000)
+      this.db.prepare('UPDATE inbound_events SET status = ? WHERE id = ?').run('retrying', message.id)
+      await new Promise(resolve => setTimeout(resolve, (2 ** attempt) * 1000))
+      if (this.state.paused || this.pausedConversations.has(jid) || !this.hasLease()) { requeue(); return }
+    }
     if (!result.success) {
       const error = result.error || 'external message send failed'
-      this.db.prepare('UPDATE outbound_sends SET status = ?, error = ?, sent_at = ? WHERE inbound_id = ?').run(isAmbiguousSendError(error) ? 'delivery-unknown' : 'failed', error, Date.now(), message.id)
-      this.db.prepare('UPDATE inbound_events SET status = ? WHERE id = ?').run(isAmbiguousSendError(error) ? 'delivery_unknown' : 'failed', message.id)
+      const deliveryUnknown = isAmbiguousSendError(error) || classifyProviderError(error) === 'transient'
+      this.db.prepare('UPDATE outbound_sends SET status = ?, error = ?, sent_at = ? WHERE inbound_id = ?').run(deliveryUnknown ? 'delivery-unknown' : 'failed', error, Date.now(), message.id)
+      this.db.prepare('UPDATE inbound_events SET status = ? WHERE id = ?').run(deliveryUnknown ? 'delivery_unknown' : 'failed', message.id)
       this.notifyOwner('failure', { messageId: message.id, error }); return
     }
     this.recordUsage('outbound', 0, message.channel)
+    if (!result.providerMessageId) {
+      const error = 'Provider accepted the send without returning a message ID'
+      this.db.prepare('UPDATE outbound_sends SET status = ?, error = ?, sent_at = ? WHERE inbound_id = ?').run('delivery-unknown', error, Date.now(), message.id)
+      this.db.prepare('UPDATE inbound_events SET status = ? WHERE id = ?').run('delivery_unknown', message.id)
+      this.state.lastDeliveryStatus = 'delivery-unknown'; this.state.lastDeliveryInboundId = message.id; this.state.lastError = error; this.state.status = 'degraded'; this.notifyOwner('failure', { messageId: message.id, channel: message.channel, error }); this.publish(); return
+    }
     this.db.prepare('UPDATE outbound_sends SET provider_message_id = ?, status = ?, sent_at = ? WHERE inbound_id = ?').run(result.providerMessageId ?? null, 'sent', Date.now(), message.id)
     this.recordInitialDelivery(result.providerMessageId, message.channel, message.id)
     this.db.prepare('UPDATE inbound_events SET status = ? WHERE id = ?').run('sent', message.id)
@@ -693,6 +1025,14 @@ export class AutonomousSupervisor extends EventEmitter {
         (inbound_id,jid,decision,created_at,conversation_revision,graph_version,prompt_version,policy_version)
       VALUES (?,?,?,?,?,?,?,?)
     `).run(message.id, message.from, JSON.stringify(decision), Date.now(), revision, GRAPH_VERSION, PROMPT_VERSION, POLICY_VERSION)
+    if (policy.disposition === 'escalate' && policy.reason === 'response_window_expired') {
+      const templateResult = await this.tryAutoOutsideWindowTemplate(message.id, message.from)
+      if (templateResult !== 'not_configured') {
+        const templateDecision: ResponseDecision = { ...decision, escalated: templateResult === 'failed', reason: templateResult === 'sent' ? 'approved_outside_window_template' : 'outside_window_template_failed' }
+        this.db.prepare('UPDATE decisions SET decision = ? WHERE inbound_id = ?').run(JSON.stringify(templateDecision), message.id)
+        this.emit('decision', { message, decision: templateDecision }); this.publish(); return
+      }
+    }
     if (policy.disposition !== 'send') {
       this.db.prepare('UPDATE inbound_events SET status = ? WHERE id = ?').run(decision.escalated ? 'escalated' : 'draft', message.id)
       if (policy.disposition === 'draft' && decision.text) {
@@ -705,7 +1045,7 @@ export class AutonomousSupervisor extends EventEmitter {
     await this.sendWithRetry(message, decision.text!, revision)
   }
 
-  private async decide(message: WhatsAppMessage): Promise<ResponseDecision> {
+  private async guardDecision(message: WhatsAppMessage): Promise<ResponseDecision | null> {
     const content = message.content.trim()
     if (message.type !== 'text') return { text: null, confidence: 0, grounding: 'unavailable', escalated: true, sensitiveTopic: false, reason: 'media_requires_human_review' }
     if (isOptInMessage(content)) return { text: 'You are subscribed to customer support messages again.', confidence: 1, grounding: 'grounded', escalated: false, sensitiveTopic: false, reason: 'opt_in' }
@@ -717,6 +1057,17 @@ export class AutonomousSupervisor extends EventEmitter {
     if (!isAllowlistedSupportIntent(content)) return { text: null, confidence: 0, grounding: 'unavailable', escalated: true, sensitiveTopic: false, reason: 'intent_not_allowlisted' }
     if (!this.gemini) return { text: null, confidence: 0, grounding: 'unavailable', escalated: true, sensitiveTopic: false, reason: 'no_approved_llm_configured' }
     if (this.usageCount('llm') >= DAILY_LLM_CAP) return { text: null, confidence: 0, grounding: 'unavailable', escalated: true, sensitiveTopic: false, reason: 'daily_llm_budget_cap' }
+    return null
+  }
+
+  async decide(message: WhatsAppMessage): Promise<ResponseDecision> {
+    return (await this.guardDecision(message)) ?? this.generateDecision(message)
+  }
+
+  private async generateDecision(message: WhatsAppMessage): Promise<ResponseDecision> {
+    const content = message.content.trim()
+    const gemini = this.gemini
+    if (!gemini) return { text: null, confidence: 0, grounding: 'unavailable', escalated: true, sensitiveTopic: false, reason: 'no_approved_llm_configured' }
     const chunks = await RAGEngine.getInstance().search(content, 4)
     if (!chunks.length) return { text: null, confidence: 0, grounding: 'not_grounded', escalated: true, sensitiveTopic: false, reason: 'no_knowledge_match' }
     const persona = BusinessPersona.getInstance()
@@ -733,9 +1084,10 @@ export class AutonomousSupervisor extends EventEmitter {
     const controller = new AbortController()
     this.generationControllers.set(message.id, { jid: message.from, controller })
     const timer = setTimeout(() => controller.abort(), 25_000)
+    const generationStartedAt = Date.now()
     let raw: string
     try {
-      raw = await this.gemini.generateText(
+      raw = await gemini.generateText(
         `${persona.getSystemPrompt()}\nAnswer only from the supplied business context. Return JSON only with keys text, confidence (0..1), and grounding (grounded|not_grounded). If the context does not answer the question, set text to an empty string and grounding to not_grounded.`,
         `Customer: ${content}\nBusiness context:\n${context}`,
         { maxOutputTokens: 512, signal: controller.signal }
@@ -744,7 +1096,7 @@ export class AutonomousSupervisor extends EventEmitter {
       clearTimeout(timer)
       this.generationControllers.delete(message.id)
     }
-    this.recordUsage('llm', Math.ceil((content.length + raw.length) / 4))
+    this.recordUsage('llm', Math.ceil((content.length + raw.length) / 4), undefined, { provider: 'google', model: 'gemini-2.0-flash', latencyMs: Date.now() - generationStartedAt })
     const parsed = parseAutonomyDecision(raw)
     const evidence = chunks.map(chunk => ({ fileName: chunk.file_name, filePath: chunk.file_path, rank: chunk.rank }))
     if (!parsed || parsed.grounding !== 'grounded' || parsed.confidence < 0.8) {
@@ -755,23 +1107,59 @@ export class AutonomousSupervisor extends EventEmitter {
 
   private restoreQueuedMessages(): void {
     const rows = this.db.prepare(`
-      SELECT e.id, e.jid, e.content, e.received_at AS timestamp, e.channel, e.payload, c.revision
+      SELECT e.id, e.jid, e.content, e.received_at AS timestamp, e.channel, e.payload, e.status, c.revision,
+        COALESCE((SELECT r.next_at FROM retries r WHERE r.inbound_id = e.id ORDER BY r.attempt DESC, r.id DESC LIMIT 1), 0) AS retry_next_at
       FROM inbound_events e LEFT JOIN conversations c ON c.jid = e.jid
       WHERE status IN ('queued', 'processing', 'retrying')
       ORDER BY received_at ASC
-    `).all() as Array<{ id: string; jid: string; content: string; timestamp: number; channel: string; payload: string | null; revision: number | null }>
+    `).all() as Array<{ id: string; jid: string; content: string; timestamp: number; channel: string; payload: string | null; status: string; revision: number | null; retry_next_at: number }>
     for (const row of rows) {
       let message: ChannelMessage | WhatsAppMessage
       try { message = row.payload ? JSON.parse(row.payload) as ChannelMessage : { id: row.id, from: row.jid, to: whatsappService.getConnectionState().phoneNumber || '', content: row.content || '', timestamp: row.timestamp, type: 'text', isFromMe: false } } catch { message = { id: row.id, from: row.jid, to: whatsappService.getConnectionState().phoneNumber || '', content: row.content || '', timestamp: row.timestamp, type: 'text', isFromMe: false } }
-      if (row.channel === 'email') { const queue = this.emailQueues.get(row.jid) ?? []; queue.push(message as ChannelMessage); this.emailQueues.set(row.jid, queue) }
-      else if (row.channel === 'instagram' || row.channel === 'messenger' || row.channel === 'twitter') { const queue = this.metaQueues.get(row.jid) ?? []; queue.push(message as ChannelMessage); this.metaQueues.set(row.jid, queue) }
-      else { const queue = this.queues.get(row.jid) ?? []; queue.push(message as WhatsAppMessage); this.queues.set(row.jid, queue) }
+      const enqueue = (): void => {
+        if (!this.db.open || (row.status === 'retrying' && (this.db.prepare('SELECT status FROM inbound_events WHERE id = ?').get(row.id) as { status: string } | undefined)?.status !== 'retrying')) return
+        if (row.channel === 'email') { const queue = this.emailQueues.get(row.jid) ?? []; queue.push(message as ChannelMessage); this.emailQueues.set(row.jid, queue) }
+        else if (row.channel === 'instagram' || row.channel === 'messenger' || row.channel === 'twitter') { const queue = this.metaQueues.get(row.jid) ?? []; queue.push(message as ChannelMessage); this.metaQueues.set(row.jid, queue) }
+        else { const queue = this.queues.get(row.jid) ?? []; queue.push(message as WhatsAppMessage); this.queues.set(row.jid, queue) }
+        if (this.state.status === 'running' && !this.state.paused) {
+          if (row.channel === 'email') void this.drainEmail(row.jid)
+          else if (row.channel === 'instagram' || row.channel === 'messenger' || row.channel === 'twitter') void this.drainMeta(row.jid)
+          else void this.drain(row.jid)
+        }
+      }
+      const delay = row.status === 'retrying' ? row.retry_next_at - Date.now() : 0
+      if (delay > 0) {
+        const timer = setTimeout(() => { this.retryTimers.delete(row.id); enqueue() }, delay)
+        timer.unref?.()
+        this.retryTimers.set(row.id, timer)
+      } else enqueue()
       this.messageRevisions.set(row.id, row.revision ?? 0)
     }
   }
 
+  private quarantineInterruptedSends(): void {
+    const rows = this.db.prepare("SELECT inbound_id FROM outbound_sends WHERE status IN ('pending','authorized','sending')").all() as Array<{ inbound_id: string }>
+    if (!rows.length) return
+    const now = Date.now()
+    this.db.transaction(() => {
+      for (const row of rows) {
+        this.db.prepare("UPDATE outbound_sends SET status = 'delivery-unknown', error = COALESCE(error, ?), sent_at = ? WHERE inbound_id = ?").run('Supervisor restarted before provider outcome was known', now, row.inbound_id)
+        this.db.prepare("UPDATE inbound_events SET status = 'delivery_unknown' WHERE id = ? AND status IN ('queued','processing','retrying')").run(row.inbound_id)
+      }
+    })()
+    this.audit('quarantine_interrupted_sends', { count: rows.length })
+  }
+
   private async sendWithRetry(message: WhatsAppMessage, text: string, expectedRevision: number): Promise<void> {
     if (!this.hasLease()) { this.db.prepare('UPDATE inbound_events SET status = ? WHERE id = ?').run('queued', message.id); return }
+    const channelStatus = whatsappService.getConnectionState().status
+    if (this.outboundTransport.kind === 'baileys' && channelStatus !== 'connected') {
+      this.db.prepare('UPDATE inbound_events SET status = ? WHERE id = ?').run('queued', message.id)
+      const queue = this.queues.get(message.from) ?? []
+      queue.unshift(message); this.queues.set(message.from, queue)
+      this.state.status = 'degraded'; this.state.lastError = `WhatsApp channel is ${channelStatus}`; this.audit('whatsapp_send_blocked_channel', { inboundId: message.id }); this.publish()
+      return
+    }
     const already = this.db.prepare('SELECT status FROM outbound_sends WHERE inbound_id = ?').get(message.id) as { status: string } | undefined
     if (already) return
     if (this.usageCount('outbound') >= DAILY_OUTBOUND_CAP) {
@@ -819,6 +1207,12 @@ export class AutonomousSupervisor extends EventEmitter {
       const result = await this.outboundTransport.sendText(message.from, body)
       if (result.success) {
         this.recordUsage('outbound', 0, 'whatsapp')
+        if (!result.providerMessageId) {
+          const missingId = 'Provider accepted the send without returning a message ID'
+          this.db.prepare('UPDATE outbound_sends SET sent_at = ?, status = ?, error = ? WHERE inbound_id = ?').run(Date.now(), 'delivery-unknown', missingId, message.id)
+          this.db.prepare('UPDATE inbound_events SET status = ? WHERE id = ?').run('delivery_unknown', message.id)
+          this.state.lastDeliveryStatus = 'delivery-unknown'; this.state.lastDeliveryInboundId = message.id; this.state.lastError = missingId; this.state.status = 'degraded'; this.notifyOwner('failure', { messageId: message.id, channel: 'whatsapp', error: missingId }); this.publish(); return
+        }
         this.db.prepare('UPDATE outbound_sends SET provider_message_id = ?, sent_at = ?, status = ?, error = ? WHERE inbound_id = ?').run(result.providerMessageId ?? null, Date.now(), 'sent', null, message.id)
         this.recordInitialDelivery(result.providerMessageId, 'whatsapp', message.id)
         this.db.prepare('INSERT OR IGNORE INTO conversation_messages (id,jid,role,content,timestamp) VALUES (?,?,?,?,?)').run(`out:${message.id}`, message.from, 'assistant', body, Date.now())
@@ -868,6 +1262,7 @@ export class AutonomousSupervisor extends EventEmitter {
     ipcMain.handle('autonomy:get-state', () => this.getState())
     ipcMain.handle('autonomy:get-health', () => this.getHealth())
     ipcMain.handle('autonomy:get-metrics', (_e: unknown, days: unknown) => this.getMetrics(Number(days)))
+    ipcMain.handle('autonomy:record-conversation-outcome', (_e: unknown, jid: string, revision: number, outcome: string, evidence: string) => this.recordConversationOutcome(jid, revision, outcome, evidence))
     ipcMain.handle('autonomy:reconnect-channel', () => this.reconnectChannel())
     ipcMain.handle('autonomy:start', () => this.start())
     ipcMain.handle('autonomy:stop', () => this.stop())
@@ -880,6 +1275,7 @@ export class AutonomousSupervisor extends EventEmitter {
     ipcMain.handle('autonomy:pause-conversation', (_e: unknown, jid: unknown) => this.pauseConversation(String(jid)))
     ipcMain.handle('autonomy:resume-conversation', (_e: unknown, jid: unknown) => this.resumeConversation(String(jid)))
     ipcMain.handle('autonomy:retry-delivery', (_e: unknown, inboundId: unknown) => this.retryDelivery(String(inboundId)))
+    ipcMain.handle('autonomy:retry-job', (_e: unknown, inboundId: unknown) => this.retryJob(String(inboundId)))
     ipcMain.handle('autonomy:quarantine-delivery', (_e: unknown, inboundId: unknown) => this.quarantineDelivery(String(inboundId)))
     ipcMain.handle('autonomy:cancel-outbound', (_e: unknown, inboundId: unknown) => this.cancelOutbound(String(inboundId)))
     ipcMain.handle('autonomy:list-approved-templates', () => this.listApprovedTemplates())
@@ -887,8 +1283,12 @@ export class AutonomousSupervisor extends EventEmitter {
     ipcMain.handle('autonomy:list-drafts', () => this.listDrafts())
     ipcMain.handle('autonomy:list-unresolved-outbound', () => this.listUnresolvedOutbound())
     ipcMain.handle('autonomy:list-delivery-history', (_e: unknown, limit: unknown) => this.listDeliveryHistory(Number(limit)))
+    ipcMain.handle('autonomy:list-email-attachments', (_e: unknown, limit: unknown) => this.listEmailAttachments(Number(limit)))
+    ipcMain.handle('autonomy:retrieve-gmail-attachment', (_e: unknown, messageId: unknown, attachmentId: unknown, metadata: unknown) => this.retrieveGmailAttachment(String(messageId), String(attachmentId), metadata && typeof metadata === 'object' ? metadata as { mimeType?: string; name?: string } : undefined))
     ipcMain.handle('autonomy:list-decision-evidence', (_e: unknown, limit: unknown) => this.listDecisionEvidence(Number(limit)))
+    ipcMain.handle('autonomy:review-decision', (_e: unknown, inboundId: unknown, label: unknown, notes: unknown) => this.reviewDecision(String(inboundId), String(label) as QualityReviewLabel, typeof notes === 'string' ? notes : ''))
     ipcMain.handle('autonomy:usage-history', (_e: unknown, days: unknown) => this.usageHistory(Number(days)))
+    ipcMain.handle('autonomy:channel-usage', (_e: unknown, days: unknown) => this.getChannelUsage(Number(days)))
     ipcMain.handle('autonomy:approve-draft', (_e: unknown, inboundId: unknown) => this.approveDraft(String(inboundId)))
     ipcMain.handle('autonomy:send-approved-template', (_e: unknown, inboundId: unknown, name: unknown, languageCode: unknown, parameters: unknown) => this.sendApprovedTemplate(String(inboundId), String(name), String(languageCode), Array.isArray(parameters) ? parameters.map(String) : []))
     ipcMain.handle('autonomy:register-approved-template', (_e: unknown, name: unknown, languageCode: unknown, category: unknown) => this.registerApprovedTemplate(String(name), String(languageCode), String(category)))
@@ -900,7 +1300,7 @@ export class AutonomousSupervisor extends EventEmitter {
     this.on('decision', data => this.broadcast('autonomy:decision', data))
     this.on('failure', data => this.broadcast('autonomy:failure', data))
     ipcMain.handle('autonomy:list-notifications', () => this.db.prepare("SELECT id, kind, details, status, created_at AS createdAt FROM notifications WHERE status = 'unread' ORDER BY created_at DESC LIMIT 50").all())
-    ipcMain.handle('autonomy:ack-notification', (_e: unknown, id: unknown) => this.db.prepare("UPDATE notifications SET status = 'read' WHERE id = ?").run(Number(id)))
+    ipcMain.handle('autonomy:ack-notification', (_e: unknown, id: unknown) => this.ackNotification(Number(id)))
   }
 
   private audit(action: string, details?: unknown): void {
@@ -937,13 +1337,21 @@ export class AutonomousSupervisor extends EventEmitter {
         this.db.prepare("DELETE FROM notifications WHERE created_at < ? AND status = 'read'").run(cutoff).changes,
         this.db.prepare('DELETE FROM usage_events WHERE created_at < ?').run(cutoff).changes,
         this.db.prepare('DELETE FROM operator_actions WHERE created_at < ?').run(cutoff).changes,
-        this.db.prepare('DELETE FROM takeovers WHERE active = 0 AND ended_at IS NOT NULL AND ended_at < ?').run(cutoff).changes
+        this.db.prepare('DELETE FROM quality_reviews WHERE reviewed_at < ?').run(cutoff).changes,
+        this.db.prepare('DELETE FROM conversation_outcomes WHERE recorded_at < ?').run(cutoff).changes,
+        this.db.prepare('DELETE FROM takeovers WHERE active = 0 AND ended_at IS NOT NULL AND ended_at < ?').run(cutoff).changes,
+        this.db.prepare(`DELETE FROM conversations
+          WHERE updated_at < ?
+            AND jid NOT IN (SELECT jid FROM inbound_events WHERE status IN ('queued','processing','retrying'))
+            AND jid NOT IN (SELECT jid FROM outbound_sends WHERE status IN ('pending','authorized','sending','delivery-unknown'))
+            AND jid NOT IN (SELECT jid FROM drafts WHERE status = 'pending')
+            AND jid NOT IN (SELECT jid FROM takeovers WHERE active = 1)`).run(cutoff).changes
       ]
       return counts.reduce((total, count) => total + count, 0)
     })()
     if (removed > 0) this.audit('retention_prune', { removed, retentionDays: RETENTION_DAYS })
   }
-  private recordUsage(kind: string, estimatedTokens = 0, channel?: string): void { this.db.prepare('INSERT INTO usage_events (kind,amount,estimated_tokens,estimated_cost,channel,created_at) VALUES (?,1,?,?,?,?)').run(kind, estimatedTokens, kind === 'llm' ? estimatedTokens / 1000 * COST_PER_1K_TOKENS : 0, channel ?? null, Date.now()) }
+  private recordUsage(kind: string, estimatedTokens = 0, channel?: string, metadata: { provider?: string; model?: string; latencyMs?: number } = {}): void { this.db.prepare('INSERT INTO usage_events (kind,amount,estimated_tokens,estimated_cost,channel,provider,model,latency_ms,created_at) VALUES (?,1,?,?,?,?,?,?,?)').run(kind, estimatedTokens, kind === 'llm' ? estimatedTokens / 1000 * COST_PER_1K_TOKENS : 0, channel ?? null, metadata.provider ?? null, metadata.model ?? null, Number.isFinite(metadata.latencyMs) ? Math.max(0, Math.floor(metadata.latencyMs as number)) : null, Date.now()) }
   private usageCost(): number { const start = new Date(); start.setHours(0, 0, 0, 0); return (this.db.prepare('SELECT COALESCE(SUM(estimated_cost), 0) AS total FROM usage_events WHERE created_at >= ?').get(start.getTime()) as { total: number }).total }
   private publish(): void { this.emit('state', this.getState()); this.broadcast('autonomy:state', this.getState()); fs.writeFileSync(this.storePath, JSON.stringify(this.state)) }
   private broadcast(channel: string, data: unknown): void { for (const win of BrowserWindow.getAllWindows()) if (!win.isDestroyed()) win.webContents.send(channel, data) }

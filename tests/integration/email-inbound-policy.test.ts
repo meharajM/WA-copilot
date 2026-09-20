@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { isGmailAuthFailure, shouldProcessEmailInbound } from '../../src/main/services/EmailInboundPolicy'
+import { isGmailAuthFailure, normalizeEmailAttachmentMetadata, shouldProcessEmailInbound } from '../../src/main/services/EmailInboundPolicy'
+import { MAX_SCANNED_EMAIL_ATTACHMENT_BYTES, scanEmailAttachment } from '../../src/main/services/EmailAttachmentSafety'
 
 describe('email inbound policy', () => {
   const now = 2_000_000_000
@@ -28,5 +29,18 @@ describe('email inbound policy', () => {
     expect(isGmailAuthFailure(401)).toBe(true)
     expect(isGmailAuthFailure(403)).toBe(true)
     expect(isGmailAuthFailure(500)).toBe(false)
+  })
+
+  it('normalizes MCP attachment metadata without retaining bytes or paths', () => {
+    expect(normalizeEmailAttachmentMetadata({ attachments: [{ attachment_id: 'att-1', filename: 'invoice.pdf', mime_type: 'application/pdf', size: '42', path: '/secret/path', data: 'base64-bytes' }] })).toEqual([{ id: 'att-1', name: 'invoice.pdf', mimeType: 'application/pdf', size: 42 }])
+  })
+
+  it('scans bounded email bytes without allowing type confusion', () => {
+    const pdf = new TextEncoder().encode('%PDF-1.7\n')
+    expect(scanEmailAttachment({ bytes: pdf, mimeType: 'application/pdf', name: 'invoice.pdf' })).toMatchObject({ safe: true, detectedType: 'pdf', size: pdf.length })
+    expect(scanEmailAttachment({ bytes: pdf, mimeType: 'image/png', name: 'invoice.png' })).toMatchObject({ safe: false, reason: 'mime_magic_mismatch_or_unsupported_type' })
+    expect(scanEmailAttachment({ bytes: new Uint8Array(MAX_SCANNED_EMAIL_ATTACHMENT_BYTES + 1), mimeType: 'text/plain' })).toMatchObject({ safe: false, reason: 'attachment_exceeds_scan_limit' })
+    expect(scanEmailAttachment({ bytes: new Uint8Array([0x4d, 0x5a]), mimeType: 'application/x-dosexec' })).toMatchObject({ safe: false, reason: 'executable_attachment_type' })
+    expect(scanEmailAttachment({ bytes: new Uint8Array([0x00, 0x01, 0x02]) })).toMatchObject({ safe: false, reason: 'mime_magic_mismatch_or_unsupported_type' })
   })
 })

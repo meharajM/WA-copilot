@@ -27,5 +27,10 @@ export function claimEmailSend(dedupeKey: string, payload: EmailOutboxPayload): 
   return 'claimed'
 }
 
+export function getEmailProviderMessageId(dedupeKey: string): string | undefined {
+  const row = getDb().prepare('SELECT provider_message_id FROM email_outbox WHERE dedupe_key = ? AND status = ?').get(dedupeKey, 'sent') as { provider_message_id?: string | null } | undefined
+  return row?.provider_message_id || undefined
+}
+
 export function markEmailSent(dedupeKey: string, providerMessageId?: string): void { getDb().prepare('UPDATE email_outbox SET status = ?, provider_message_id = ?, updated_at = ? WHERE dedupe_key = ?').run('sent', providerMessageId || null, Date.now(), dedupeKey) }
 export function markEmailFailed(dedupeKey: string, error: string): void { getDb().prepare('UPDATE email_outbox SET status = ?, error = ?, updated_at = ? WHERE dedupe_key = ?').run('failed', error, Date.now(), dedupeKey) }

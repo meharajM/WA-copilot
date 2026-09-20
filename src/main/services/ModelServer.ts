@@ -80,13 +80,25 @@ export class ModelServer {
         const resolvedFilePath = path.resolve(filePath)
 
         // Security check
-        if (!resolvedFilePath.startsWith(resolvedModelsDir)) {
+        if (resolvedFilePath !== resolvedModelsDir && !resolvedFilePath.startsWith(`${resolvedModelsDir}${path.sep}`)) {
             res.statusCode = 403
             res.end('Forbidden')
             return
         }
 
-        fs.stat(resolvedFilePath, (err, stats) => {
+        fs.realpath(resolvedFilePath, (realpathErr, realPath) => {
+            if (realpathErr) {
+                res.statusCode = 404
+                res.end('Not Found')
+                return
+            }
+            if (realPath !== resolvedModelsDir && !realPath.startsWith(`${resolvedModelsDir}${path.sep}`)) {
+                res.statusCode = 403
+                res.end('Forbidden')
+                return
+            }
+
+            fs.stat(realPath, (err, stats) => {
             if (err) {
                 res.statusCode = 404
                 res.end('Not Found')
@@ -105,7 +117,7 @@ export class ModelServer {
                 return
             }
 
-            const ext = path.extname(resolvedFilePath).toLowerCase()
+            const ext = path.extname(realPath).toLowerCase()
             let contentType = 'application/octet-stream'
             if (ext === '.json') contentType = 'application/json'
             else if (ext === '.txt' || ext === '.conf') contentType = 'text/plain; charset=utf-8'
@@ -115,12 +127,13 @@ export class ModelServer {
             else if (ext === '.zip') contentType = 'application/zip'
 
             res.setHeader('Content-Type', contentType)
-            const stream = fs.createReadStream(resolvedFilePath)
+            const stream = fs.createReadStream(realPath)
             stream.on('error', () => {
                 res.statusCode = 500
                 res.end('Internal Server Error')
             })
             stream.pipe(res)
+            })
         })
     }
 }

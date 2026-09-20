@@ -9,10 +9,8 @@ import { ipcMain, BrowserWindow } from 'electron'
 import Store from 'electron-store'
 import { whatsappService } from '../whatsapp/WhatsAppService'
 import { autonomousSupervisor } from '../services/AutonomousSupervisor'
-import { WhatsAppWebConnector } from '../services/WhatsAppWebConnector'
-import { allowsBaileysDirectSend } from '../services/WhatsAppTransportPolicy'
-
-const whatsappWebConnector = new WhatsAppWebConnector()
+import { whatsappWebConnector } from '../services/WhatsAppWebConnector'
+import { allowsBaileysDirectSend, allowsBaileysInbound } from '../services/WhatsAppTransportPolicy'
 
 export function registerWhatsAppHandlers(): void {
     // Attempt auto-restore of saved session credentials
@@ -35,7 +33,8 @@ export function registerWhatsAppHandlers(): void {
 
     // When a new WhatsApp message arrives, push it to all renderer windows.
     whatsappService.on('message', (message) => {
-        autonomousSupervisor.onMessage(message)
+        const selected = process.env.WHATSAPP_TRANSPORT || settings.get('whatsapp_transport')
+        if (allowsBaileysInbound(selected)) autonomousSupervisor.onMessage(message)
         for (const win of BrowserWindow.getAllWindows()) {
             if (!win.isDestroyed()) {
                 win.webContents.send('whatsapp:message', message)

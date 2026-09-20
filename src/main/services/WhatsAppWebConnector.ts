@@ -20,6 +20,7 @@ export function classifyWhatsAppWebPage(hasQr: boolean, url: string): WhatsAppWe
 export class WhatsAppWebConnector {
   private readonly browser = new BrowserManager('whatsapp-web-profile')
   private monitorTimer: NodeJS.Timeout | null = null
+  private healthTimer: NodeJS.Timeout | null = null
   private readonly seenDomMessageIds = new Set<string>()
   private state: WhatsAppWebState = { status: 'disconnected', error: null, lastHealthCheck: 0, profile: 'whatsapp-web-profile' }
 
@@ -28,26 +29,29 @@ export class WhatsAppWebConnector {
       this.state = { ...this.state, status: 'connecting', error: null }
       const page = await this.browser.getPage(undefined)
       await page.goto('https://web.whatsapp.com', { waitUntil: 'domcontentloaded', timeout: 30_000 })
-      this.refresh(page)
+      await this.refresh(page)
+      this.startHealthMonitor()
     } catch (error) { this.state = { ...this.state, status: 'error', error: error instanceof Error ? error.message : String(error) } }
     return this.getState()
   }
 
-  async healthCheck(): Promise<WhatsAppWebState> { const page = this.browser.getCurrentPage(); if (page && !page.isClosed()) this.refresh(page); else this.state = { ...this.state, status: 'disconnected', lastHealthCheck: Date.now() }; return this.getState() }
+  async healthCheck(): Promise<WhatsAppWebState> { const page = this.browser.getCurrentPage(); if (page && !page.isClosed()) await this.refresh(page); else this.state = { ...this.state, status: 'disconnected', lastHealthCheck: Date.now() }; return this.getState() }
   async startMonitoring(chatId: string, onMessage: (message: WhatsAppMessage) => void): Promise<void> {
     if (!chatId.trim()) throw new Error('WhatsApp Web monitoring requires a conversation ID')
     const page = this.browser.getCurrentPage() || await this.browser.getPage(undefined)
     if (this.monitorTimer) clearInterval(this.monitorTimer)
     this.monitorTimer = setInterval(() => void this.pollIncoming(page, chatId, onMessage), 2_000)
+    this.startHealthMonitor()
     await this.pollIncoming(page, chatId, onMessage)
   }
   stopMonitoring(): void { if (this.monitorTimer) clearInterval(this.monitorTimer); this.monitorTimer = null }
   async humanTakeover(): Promise<WhatsAppWebState> { await this.browser.surfaceBrowser(); this.state = { ...this.state, status: 'human_takeover', error: null, lastHealthCheck: Date.now() }; return this.getState() }
   async captureFailure(name = 'whatsapp-web-failure'): Promise<string | null> { const page = this.browser.getCurrentPage(); if (!page || page.isClosed()) return null; const target = `${app.getPath('userData')}/${name}-${Date.now()}.png`; await page.screenshot({ path: target }).catch(() => {}); return target }
-  async stop(): Promise<void> { this.stopMonitoring(); await this.browser.close(); this.state = { ...this.state, status: 'disconnected', lastHealthCheck: Date.now() } }
+  async stop(): Promise<void> { this.stopMonitoring(); if (this.healthTimer) clearInterval(this.healthTimer); this.healthTimer = null; await this.browser.close(); this.state = { ...this.state, status: 'disconnected', lastHealthCheck: Date.now() } }
   getState(): WhatsAppWebState { return { ...this.state } }
 
-  private refresh(page: Page): void { void page.locator('canvas').count().then(count => { this.state = { ...this.state, status: classifyWhatsAppWebPage(count > 0, page.url()), lastHealthCheck: Date.now() } }).catch(error => { this.state = { ...this.state, status: 'error', error: error instanceof Error ? error.message : String(error), lastHealthCheck: Date.now() } }) }
+  private startHealthMonitor(): void { if (this.healthTimer) return; this.healthTimer = setInterval(() => void this.healthCheck(), 30_000); this.healthTimer.unref?.() }
+  private async refresh(page: Page): Promise<void> { try { const count = await page.locator('canvas').count(); this.state = { ...this.state, status: classifyWhatsAppWebPage(count > 0, page.url()), lastHealthCheck: Date.now() } } catch (error) { this.state = { ...this.state, status: 'error', error: error instanceof Error ? error.message : String(error), lastHealthCheck: Date.now() } } }
   private async pollIncoming(page: Page, chatId: string, onMessage: (message: WhatsAppMessage) => void): Promise<void> {
     try {
       const messages = page.locator('[data-id^="false_"]')
@@ -62,3 +66,5 @@ export class WhatsAppWebConnector {
     } catch (error) { this.state = { ...this.state, status: 'error', error: error instanceof Error ? error.message : String(error), lastHealthCheck: Date.now() } }
   }
 }
+
+export const whatsappWebConnector = new WhatsAppWebConnector()

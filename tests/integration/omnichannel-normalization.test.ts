@@ -16,7 +16,9 @@ describe('shared channel normalization', () => {
 
   it('exposes conservative channel capability policy', () => {
     expect(getChannelCapabilities('email')).toMatchObject({ responseWindowMs: null, supportsTemplates: false, supportsIdempotency: true })
-    expect(getChannelCapabilities('messenger')).toMatchObject({ responseWindowMs: 24 * 60 * 60 * 1000, maxTextLength: 2000 })
+    expect(getChannelCapabilities('instagram')).toMatchObject({ responseWindowMs: 24 * 60 * 60 * 1000, maxTextLength: 2000, supportsDeliveryReceipts: true })
+    expect(getChannelCapabilities('messenger')).toMatchObject({ responseWindowMs: 24 * 60 * 60 * 1000, maxTextLength: 2000, supportsDeliveryReceipts: true })
+    expect(getChannelCapabilities('twitter').supportsDeliveryReceipts).toBe(false)
     expect(getChannelCapabilities('web').supportsIdempotency).toBe(false)
   })
 

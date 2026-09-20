@@ -173,6 +173,7 @@ interface ElectronAPI {
         pauseConversation: (jid: string) => Promise<any>
         resumeConversation: (jid: string) => Promise<any>
         retryDelivery: (inboundId: string) => Promise<any>
+        retryJob: (inboundId: string) => Promise<any>
         quarantineDelivery: (inboundId: string) => Promise<any>
         cancelOutbound: (inboundId: string) => Promise<any>
         listApprovedTemplates: () => Promise<any>
@@ -180,8 +181,13 @@ interface ElectronAPI {
         listDrafts: () => Promise<any>
         listUnresolvedOutbound: () => Promise<any>
         listDeliveryHistory: (limit?: number) => Promise<any>
+        listEmailAttachments: (limit?: number) => Promise<any>
+        retrieveGmailAttachment: (messageId: string, attachmentId: string, metadata?: { mimeType?: string; name?: string }) => Promise<any>
         listDecisionEvidence: (limit?: number) => Promise<any>
+        reviewDecision: (inboundId: string, label: string, notes?: string) => Promise<any>
+        recordConversationOutcome: (jid: string, revision: number, outcome: string, evidence: string) => Promise<any>
         usageHistory: (days?: number) => Promise<any>
+        channelUsage: (days?: number) => Promise<any>
         approveDraft: (inboundId: string) => Promise<any>
         listNotifications: () => Promise<any>
         ackNotification: (id: number) => Promise<any>
