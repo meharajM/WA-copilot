@@ -419,7 +419,12 @@ export function useAgent(): UseAgentReturn {
                 const browserRuntime = typeof window !== 'undefined' && !window.electron && !isTauriRuntime();
                 const localBrowserProvider = browserRuntime && settings.preferredProvider === 'browser';
                 const useBrowserWhatsAppFlow = browserRuntime && browserWhatsAppFlow;
-                const admitBrowserWhatsAppDraft = async (responseText: string): Promise<void> => {
+                const isWhatsAppEscalation = (responseText: string): boolean => (
+                    responseText.includes('flagged this for our human team')
+                    || responseText.includes('escalating this to a human')
+                    || responseText.includes('whatsapp_notify_admin')
+                );
+                const admitBrowserWhatsAppDraft = async (responseText: string): Promise<{ duplicate: boolean; sent: boolean }> => {
                     if (!options?.whatsappEvent) throw new Error('Browser WhatsApp event metadata is unavailable');
                     const client = getBrowserAgentdClient();
                     const draft = await client.createWhatsAppDraft({
@@ -434,7 +439,7 @@ export function useAgent(): UseAgentReturn {
                             role: 'assistant',
                             content: 'WhatsApp response was already queued for this inbound event.',
                         });
-                        return;
+                        return { duplicate: true, sent: false };
                     }
                     const { businessBotMode } = useWhatsAppStore.getState();
                     if (businessBotMode && draft.draftId) {
@@ -451,12 +456,32 @@ export function useAgent(): UseAgentReturn {
                                 ? 'WhatsApp response was already delivered.'
                                 : 'WhatsApp response sent automatically.',
                         });
-                        return;
+                        return { duplicate: false, sent: true };
                     }
                     useChatStore.getState().addSessionMessage(originSessionId, {
                         role: 'assistant',
                         content: 'WhatsApp response drafted for review. Open Autonomy to approve or discard it.',
                     });
+                    return { duplicate: false, sent: false };
+                };
+                const sendBrowserWhatsAppAuxiliary = async (input: {
+                    providerEventId: string;
+                    conversationId: string;
+                    payload: Record<string, unknown>;
+                    text: string;
+                }): Promise<boolean> => {
+                    if (!useBrowserWhatsAppFlow || !useWhatsAppStore.getState().businessBotMode) return false;
+                    const client = getBrowserAgentdClient();
+                    const draft = await client.createWhatsAppDraft({
+                        providerEventId: input.providerEventId.slice(0, 300),
+                        conversationId: input.conversationId,
+                        payload: input.payload,
+                        draftText: input.text,
+                    });
+                    if (!draft.accepted || draft.paused || draft.duplicate || !draft.draftId) return false;
+                    await client.updateDraftStatus(draft.draftId, 'approved');
+                    await client.sendWhatsAppDraft(draft.draftId);
+                    return true;
                 };
                 const applyBrowserEmailPolicy = async (responseText: string): Promise<void> => {
                     if (!browserRuntime || !isEmailFlow || !inboundEmailMessage) return;
@@ -555,6 +580,24 @@ export function useAgent(): UseAgentReturn {
                     let assistantAdded = false;
                     let assistantCompleted = false;
                     let assistantMessageId: string | null = null;
+                    let browserCourtesyTimer: ReturnType<typeof setTimeout> | null = null;
+                    if (useBrowserWhatsAppFlow && multimodalWhatsAppMessage && options?.whatsappEvent && targetJid && !isAdmin && useWhatsAppStore.getState().businessBotMode) {
+                        browserCourtesyTimer = setTimeout(() => {
+                            const event = options.whatsappEvent;
+                            if (!event) return;
+                            void sendBrowserWhatsAppAuxiliary({
+                                providerEventId: `${event.providerEventId.slice(0, 280)}:courtesy`,
+                                conversationId: targetJid,
+                                payload: { kind: 'courtesy', relatedProviderEventId: event.providerEventId },
+                                text: "I'm still working on your request and will notify you once done. 🤖",
+                            }).then((sent) => {
+                                if (sent) useChatStore.getState().addSessionMessage(originSessionId, {
+                                    role: 'assistant',
+                                    content: '(System: Sent 60s courtesy notification through the durable WhatsApp outbox)',
+                                });
+                            }).catch((error) => console.warn('[useAgent] Browser WhatsApp courtesy delivery failed', error));
+                        }, 60_000);
+                    }
                     const appendAssistantDelta = (delta: string) => {
                         if (!delta) return;
                         assistantContent += delta;
@@ -613,12 +656,36 @@ export function useAgent(): UseAgentReturn {
                             useChatStore.getState().removeSessionMessage(originSessionId, assistantMessageId);
                         }
                         throw error;
+                    } finally {
+                        if (browserCourtesyTimer) clearTimeout(browserCourtesyTimer);
                     }
                     if (!assistantAdded) throw new Error('Agentd returned no assistant response');
                     if (useBrowserWhatsAppFlow && multimodalWhatsAppMessage && options?.whatsappEvent) {
                         const responseText = assistantContent.trim();
                         if (!responseText) throw new Error('Agentd returned an empty WhatsApp draft');
-                        await admitBrowserWhatsAppDraft(responseText);
+                        const admission = await admitBrowserWhatsAppDraft(responseText);
+                        const { businessBotMode } = useWhatsAppStore.getState();
+                        if (businessBotMode && !admission.duplicate && !isAdmin) {
+                            const client = getBrowserAgentdClient();
+                            if (isWhatsAppEscalation(responseText)) {
+                                if (adminJid) {
+                                    const adminNotification = `⚠️ *Action Required: Unknown Inquiry*\n\nA customer (${cleanFrom}) asked a question not found in the training data:\n\n> "${content}"\n\nPlease answer them directly. I will learn from your response for next time.`;
+                                    try {
+                                        await sendBrowserWhatsAppAuxiliary({
+                                            providerEventId: `${options.whatsappEvent.providerEventId.slice(0, 280)}:admin`,
+                                            conversationId: adminJid,
+                                            payload: { kind: 'admin_escalation', relatedProviderEventId: options.whatsappEvent.providerEventId, customer: cleanFrom },
+                                            text: adminNotification,
+                                        });
+                                    } catch (error) {
+                                        console.warn('[useAgent] Browser WhatsApp admin escalation delivery failed', error);
+                                    }
+                                }
+                                await client.logAccuracy({ event: 'forwarded', details: `Unanswered query from ${targetJid} forwarded to Admin` }).catch(() => undefined);
+                            } else {
+                                await client.logAccuracy({ event: 'resolved', details: `Successfully answered customer query: "${content.substring(0, 30)}..."` }).catch(() => undefined);
+                            }
+                        }
                     }
                     if (isEmailFlow && inboundEmailMessage) await applyBrowserEmailPolicy(assistantContent.trim());
                     return;
@@ -836,10 +903,31 @@ export function useAgent(): UseAgentReturn {
                     }, 60000); // 1 minute
                 }
 
-                const llmResponse = await runtime.chat(agentContent, agentAttachments);
-                
-                // Clear timer as response received
-                if (courtesyTimer) clearTimeout(courtesyTimer);
+                let browserWebGpuCourtesyTimer: ReturnType<typeof setTimeout> | null = null;
+                if (useBrowserWhatsAppFlow && multimodalWhatsAppMessage && options?.whatsappEvent && targetJid && !isAdmin && useWhatsAppStore.getState().businessBotMode) {
+                    browserWebGpuCourtesyTimer = setTimeout(() => {
+                        const event = options.whatsappEvent;
+                        if (!event) return;
+                        void sendBrowserWhatsAppAuxiliary({
+                            providerEventId: `${event.providerEventId.slice(0, 280)}:courtesy`,
+                            conversationId: targetJid,
+                            payload: { kind: 'courtesy', relatedProviderEventId: event.providerEventId },
+                            text: "I'm still working on your request and will notify you once done. 🤖",
+                        }).then((sent) => {
+                            if (sent) useChatStore.getState().addSessionMessage(originSessionId, {
+                                role: 'assistant',
+                                content: '(System: Sent 60s courtesy notification through the durable WhatsApp outbox)',
+                            });
+                        }).catch((error) => console.warn('[useAgent] Browser WebGPU courtesy delivery failed', error));
+                    }, 60_000);
+                }
+                let llmResponse: Awaited<ReturnType<typeof runtime.chat>>;
+                try {
+                    llmResponse = await runtime.chat(agentContent, agentAttachments);
+                } finally {
+                    if (courtesyTimer) clearTimeout(courtesyTimer);
+                    if (browserWebGpuCourtesyTimer) clearTimeout(browserWebGpuCourtesyTimer);
+                }
 
                 // Browser WhatsApp always stays on the agentd path, even when
                 // the selected provider is the renderer's WebGPU model. The
@@ -848,7 +936,24 @@ export function useAgent(): UseAgentReturn {
                 if (browserWhatsAppFlow) {
                     const responseText = typeof llmResponse.content === 'string' ? llmResponse.content.trim() : '';
                     if (!responseText) throw new Error('Browser WhatsApp returned an empty draft');
-                    await admitBrowserWhatsAppDraft(responseText);
+                    const admission = await admitBrowserWhatsAppDraft(responseText);
+                    const { businessBotMode } = useWhatsAppStore.getState();
+                    if (businessBotMode && !admission.duplicate && !isAdmin && isWhatsAppEscalation(responseText) && adminJid && options?.whatsappEvent) {
+                        const adminNotification = `⚠️ *Action Required: Unknown Inquiry*\n\nA customer (${cleanFrom}) asked a question not found in the training data:\n\n> "${content}"\n\nPlease answer them directly. I will learn from your response for next time.`;
+                        try {
+                            await sendBrowserWhatsAppAuxiliary({
+                                providerEventId: `${options.whatsappEvent.providerEventId.slice(0, 280)}:admin`,
+                                conversationId: adminJid,
+                                payload: { kind: 'admin_escalation', relatedProviderEventId: options.whatsappEvent.providerEventId, customer: cleanFrom },
+                                text: adminNotification,
+                            });
+                        } catch (error) {
+                            console.warn('[useAgent] Browser WebGPU admin escalation delivery failed', error);
+                        }
+                        await getBrowserAgentdClient().logAccuracy({ event: 'forwarded', details: `Unanswered query from ${targetJid} forwarded to Admin` }).catch(() => undefined);
+                    } else if (businessBotMode && !admission.duplicate && !isAdmin) {
+                        await getBrowserAgentdClient().logAccuracy({ event: 'resolved', details: `Successfully answered customer query: "${content.substring(0, 30)}..."` }).catch(() => undefined);
+                    }
                     return;
                 }
 
