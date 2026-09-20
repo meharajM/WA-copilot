@@ -21,11 +21,12 @@ async function run() {
     uiRoot,
     logger: { log() {}, warn() {} },
   })
-  const browser = await chromium.launch({ headless: true })
+  let browser = null
   try {
     const started = await server.start()
     const origin = started.origin
     assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/)
+    browser = await chromium.launch({ headless: true })
     const page = await browser.newPage()
     const pageErrors = []
     page.on('pageerror', error => pageErrors.push(error.message))
@@ -42,7 +43,7 @@ async function run() {
     assert.deepEqual(pageErrors, [], `Browser renderer errors: ${pageErrors.join(' | ')}`)
     console.log('[browser-e2e] PASS pairing, browser workspace mount, and reload session continuity')
   } finally {
-    await browser.close().catch(() => {})
+    await browser?.close().catch(() => {})
     await server.stop().catch(() => {})
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }
