@@ -298,8 +298,8 @@ export async function executeToolCall(
           if (!targetJid) return { result: null, error: "Missing 'to' parameter: Target WhatsApp number could not be resolved automatically." };
           if (!content?.trim()) return { result: null, error: "Missing 'content' parameter." };
           try {
-            const result = await getBrowserAgentdClient().sendWhatsAppText(targetJid, content)
-            return { result: 'Message sent successfully.', ...(result.duplicate ? { duplicate: true } : {}) }
+            await getBrowserAgentdClient().sendWhatsAppText(targetJid, content)
+            return { result: 'Message sent successfully.' }
           } catch (error) {
             return { result: null, error: `Browser WhatsApp send failed: ${error instanceof Error ? error.message : String(error)}` }
           }

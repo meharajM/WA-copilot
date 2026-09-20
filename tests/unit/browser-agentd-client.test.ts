@@ -652,12 +652,12 @@ describe('browser agentd client', () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
       if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
-      if (url.includes('/api/v1/autonomy/metrics')) return response({ inbound: 2, sent: 1, escalated: 0, drafts: 1, failed: 0, averageDecisionLatencyMs: 0, llmCalls: 3, averageLlmLatencyMs: 0, groundedDecisionRate: 0, deliveryUnknown: 0, draftApprovalRate: 0.5, averageDraftEditingTimeMs: 0, estimatedCostPerResolvedConversation: 0, reviewedDecisions: 0, reviewAccuracy: 0, escalationPrecision: 0, unnecessaryEscalations: 0, missedEscalations: 0, recoveryDrills: 0, averageRecoveryTimeMs: 0 })
+      if (url.includes('/api/v1/autonomy/metrics')) return response({ inbound: 2, sent: 1, escalated: 0, drafts: 1, failed: 0, averageDecisionLatencyMs: 0, llmCalls: 3, averageLlmLatencyMs: 0, groundedDecisionRate: 0, deliveryUnknown: 0, draftApprovalRate: 0.5, averageDraftEditingTimeMs: 0, estimatedCostPerResolvedConversation: null, reviewedDecisions: 0, reviewAccuracy: 0, escalationPrecision: 0, unnecessaryEscalations: 0, missedEscalations: 0, recoveryDrills: 0, averageRecoveryTimeMs: 0 })
       return response({ success: true })
     })
     const client = createBrowserAgentdClient({ origin: 'http://127.0.0.1:4141', fetch: fetcher })
     await client.pair('123456')
-    await expect(client.getAutonomyMetrics(14)).resolves.toMatchObject({ inbound: 2, sent: 1, drafts: 1, llmCalls: 3 })
+    await expect(client.getAutonomyMetrics(14)).resolves.toMatchObject({ inbound: 2, sent: 1, drafts: 1, llmCalls: 3, estimatedCostPerResolvedConversation: null })
   })
 
   it('reads durable browser autonomy usage history and channel counts from agentd', async () => {

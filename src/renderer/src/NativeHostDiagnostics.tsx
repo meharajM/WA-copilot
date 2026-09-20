@@ -27,6 +27,7 @@ export default function NativeHostDiagnostics() {
   const [service, setService] = useState<NativeServiceStatus | null>(null)
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
   const [credential, setCredential] = useState<CredentialKey>('openai_api_key')
+  const [credentialValue, setCredentialValue] = useState('')
   const [credentialState, setCredentialState] = useState<'unknown' | 'present' | 'missing'>('unknown')
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -122,6 +123,19 @@ export default function NativeHostDiagnostics() {
       setCredentialState(result.exists ? 'present' : 'missing')
       setNotice(`${CREDENTIALS.find((item) => item.key === credential)?.label} presence checked without reading its value`)
     } catch (reason) { setCredentialState('unknown'); setError(messageFrom(reason, 'Credential store unavailable')) }
+    finally { setBusy(null) }
+  }
+
+  const reauthenticateCredential = async () => {
+    if (!credentialValue) { setError('Enter the credential value to store securely'); return }
+    setBusy('credential-save'); setError(null); setNotice(null)
+    try {
+      const result = await tauriNativeBridge.setCredential(credential, credentialValue)
+      if (!result.success) throw new Error(result.error || 'Credential store unavailable')
+      setCredentialValue('')
+      setCredentialState('present')
+      setNotice(`${CREDENTIALS.find((item) => item.key === credential)?.label} stored in agentd's OS credential store; value cleared from the form`)
+    } catch (reason) { setError(messageFrom(reason, 'Credential reauthentication failed')) }
     finally { setBusy(null) }
   }
 
@@ -268,9 +282,10 @@ export default function NativeHostDiagnostics() {
         </article>
         <article className="pilot-panel">
           <div className="pilot-panel-heading"><div><p className="pilot-label">04 / credential store</p><h2>Presence only</h2></div><span className="pilot-index">OS STORE</span></div>
-          <p className="pilot-copy">Check whether a provider credential exists. Values never enter this window.</p>
-          <div className="pilot-form-row"><label htmlFor="native-credential">Credential</label><select id="native-credential" value={credential} onChange={(event) => { setCredential(event.target.value as CredentialKey); setCredentialState('unknown') }} disabled={busy !== null}>{CREDENTIALS.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}</select></div>
-          <div className="pilot-actions"><button type="button" className="pilot-button pilot-button-primary" onClick={() => void checkCredential()} disabled={busy !== null}>{busy === 'credential' ? 'Checking…' : 'Check presence'}</button><span className="pilot-key-state" role="status">{credentialState === 'present' ? 'Stored' : credentialState === 'missing' ? 'Not stored' : 'Not checked'}</span></div>
+          <p className="pilot-copy">Check presence or re-enter a credential after Electron migration. Values go directly to agentd's OS store and are cleared from this form after success.</p>
+          <div className="pilot-form-row"><label htmlFor="native-credential">Credential</label><select id="native-credential" value={credential} onChange={(event) => { setCredential(event.target.value as CredentialKey); setCredentialState('unknown'); setCredentialValue('') }} disabled={busy !== null}>{CREDENTIALS.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}</select></div>
+          <div className="pilot-form-row"><label htmlFor="native-credential-value">Value</label><input id="native-credential-value" type="password" autoComplete="new-password" value={credentialValue} onChange={(event) => setCredentialValue(event.target.value)} disabled={busy !== null} placeholder="Enter to reauthenticate" /></div>
+          <div className="pilot-actions"><button type="button" className="pilot-button pilot-button-primary" onClick={() => void checkCredential()} disabled={busy !== null}>{busy === 'credential' ? 'Checking…' : 'Check presence'}</button><button type="button" className="pilot-button" onClick={() => void reauthenticateCredential()} disabled={busy !== null || !credentialValue}>{busy === 'credential-save' ? 'Saving…' : 'Store securely'}</button><span className="pilot-key-state" role="status">{credentialState === 'present' ? 'Stored' : credentialState === 'missing' ? 'Not stored' : 'Not checked'}</span></div>
         </article>
         <article className="pilot-panel">
           <div className="pilot-panel-heading"><div><p className="pilot-label">05 / continuity</p><h2>Stage Electron data</h2></div><span className="pilot-index">OWNER ACTION</span></div>

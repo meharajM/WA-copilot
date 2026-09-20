@@ -633,7 +633,7 @@ export interface BrowserAutonomyMetrics {
   deliveryUnknown: number
   draftApprovalRate: number
   averageDraftEditingTimeMs: number
-  estimatedCostPerResolvedConversation: number
+  estimatedCostPerResolvedConversation: number | null
   reviewedDecisions: number
   reviewAccuracy: number
   escalationPrecision: number
@@ -1491,8 +1491,9 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
   const cancelWhatsAppDraft = async (id: number): Promise<BrowserDraft> => disposeWhatsAppDraft(id, 'cancel')
   const getAutonomyMetrics = async (days = 14): Promise<BrowserAutonomyMetrics> => {
     const value = await request<unknown>(`/api/v1/autonomy/metrics?days=${encodeURIComponent(String(Math.max(1, Math.min(90, Math.trunc(days)))))}`)
-    const fields = ['inbound', 'sent', 'escalated', 'drafts', 'failed', 'averageDecisionLatencyMs', 'llmCalls', 'averageLlmLatencyMs', 'groundedDecisionRate', 'deliveryUnknown', 'draftApprovalRate', 'averageDraftEditingTimeMs', 'estimatedCostPerResolvedConversation', 'reviewedDecisions', 'reviewAccuracy', 'escalationPrecision', 'unnecessaryEscalations', 'missedEscalations', 'recoveryDrills', 'averageRecoveryTimeMs']
-    if (!isRecord(value) || fields.some((field) => typeof value[field] !== 'number' || !Number.isFinite(value[field] as number))) throw new Error('Invalid agentd autonomy metrics response')
+    const fields = ['inbound', 'sent', 'escalated', 'drafts', 'failed', 'averageDecisionLatencyMs', 'llmCalls', 'averageLlmLatencyMs', 'groundedDecisionRate', 'deliveryUnknown', 'draftApprovalRate', 'averageDraftEditingTimeMs', 'reviewedDecisions', 'reviewAccuracy', 'escalationPrecision', 'unnecessaryEscalations', 'missedEscalations', 'recoveryDrills', 'averageRecoveryTimeMs']
+    if (!isRecord(value) || fields.some((field) => typeof value[field] !== 'number' || !Number.isFinite(value[field] as number))
+      || (value.estimatedCostPerResolvedConversation !== null && (typeof value.estimatedCostPerResolvedConversation !== 'number' || !Number.isFinite(value.estimatedCostPerResolvedConversation)))) throw new Error('Invalid agentd autonomy metrics response')
     return value as unknown as BrowserAutonomyMetrics
   }
   const getAutonomyUsageHistory = async (days = 30): Promise<BrowserAutonomyUsageDay[]> => {
@@ -1501,8 +1502,8 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     if (!isRecord(value) || !Array.isArray(value.days)) throw new Error('Invalid agentd autonomy usage response')
     return value.days.map((item) => {
       if (!isRecord(item) || typeof item.day !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(item.day)
-        || !Number.isSafeInteger(item.llmCalls) || item.llmCalls < 0
-        || !Number.isSafeInteger(item.outboundMessages) || item.outboundMessages < 0
+        || typeof item.llmCalls !== 'number' || !Number.isSafeInteger(item.llmCalls) || item.llmCalls < 0
+        || typeof item.outboundMessages !== 'number' || !Number.isSafeInteger(item.outboundMessages) || item.outboundMessages < 0
         || typeof item.estimatedCost !== 'number' || !Number.isFinite(item.estimatedCost) || item.estimatedCost < 0) throw new Error('Invalid agentd autonomy usage day')
       return item as unknown as BrowserAutonomyUsageDay
     })
@@ -1513,13 +1514,13 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     if (!isRecord(value) || !Array.isArray(value.channels)) throw new Error('Invalid agentd autonomy channel usage response')
     return value.channels.map((item) => {
       if (!isRecord(item) || typeof item.channel !== 'string' || !item.channel || item.channel.length > 32
-        || !Number.isSafeInteger(item.amount) || item.amount < 0) throw new Error('Invalid agentd autonomy channel usage item')
+        || typeof item.amount !== 'number' || !Number.isSafeInteger(item.amount) || item.amount < 0) throw new Error('Invalid agentd autonomy channel usage item')
       return item as unknown as BrowserAutonomyChannelUsage
     })
   }
   const readDecisionEvidence = (value: unknown): BrowserDecisionEvidence => {
     if (!isRecord(value) || typeof value.inboundId !== 'string' || !/^(?:draft_[A-Za-z0-9_-]{1,120}|whatsapp_draft_[1-9]\d{0,18})$/.test(value.inboundId)
-      || typeof value.jid !== 'string' || value.jid.length > 320 || !Number.isSafeInteger(value.createdAt) || value.createdAt < 0
+      || typeof value.jid !== 'string' || value.jid.length > 320 || typeof value.createdAt !== 'number' || !Number.isSafeInteger(value.createdAt) || value.createdAt < 0
       || !isRecord(value.decision) || !['grounded', 'not_grounded', 'unavailable'].includes(value.decision.grounding as string)
       || typeof value.decision.reason !== 'string' || value.decision.reason.length > 4096
       || (value.decision.confidence !== undefined && (typeof value.decision.confidence !== 'number' || !Number.isFinite(value.decision.confidence) || value.decision.confidence < 0 || value.decision.confidence > 1))
