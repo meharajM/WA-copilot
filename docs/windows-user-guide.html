@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AICA Windows user guide</title>
+  <style>
+    :root { color-scheme: dark; --bg: #0b0d0c; --panel: #161a17; --ink: #f4f1e8; --muted: #b1b5aa; --accent: #c6f36b; --line: #2b322c; }
+    * { box-sizing: border-box; } body { margin: 0; background: radial-gradient(circle at 80% 0%, #1c2a1b, transparent 38rem), var(--bg); color: var(--ink); font: 16px/1.6 system-ui, -apple-system, Segoe UI, sans-serif; }
+    main { max-width: 1040px; margin: 0 auto; padding: 56px 24px 96px; } h1, h2 { line-height: 1.1; letter-spacing: -.03em; } h1 { font: 700 clamp(2.6rem, 8vw, 5.7rem)/.95 Georgia, serif; max-width: 850px; } h2 { margin-top: 48px; font-size: 1.7rem; } h3 { margin-top: 28px; } p, li { color: var(--muted); } a { color: var(--accent); } .lede { font-size: 1.2rem; max-width: 780px; } .notice, .step { background: color-mix(in srgb, var(--panel) 92%, transparent); border: 1px solid var(--line); border-radius: 16px; padding: 20px 22px; margin: 20px 0; } .notice { border-color: #657f38; } figure { margin: 28px 0; } figure img { display: block; width: 100%; border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 20px 60px #0008; } figcaption { color: var(--muted); font-size: .9rem; margin-top: 8px; } code { color: var(--accent); } .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; } footer { border-top: 1px solid var(--line); margin-top: 64px; padding-top: 24px; color: var(--muted); }
+  </style>
+</head>
+<body>
+<main>
+  <p style="color:var(--accent);letter-spacing:.18em;text-transform:uppercase;font-size:.75rem">AICA / Windows-first browser workspace</p>
+  <h1>Install once. Work in your browser.</h1>
+  <p class="lede">AICA uses a lightweight Tauri companion for Windows-native capabilities and a local agentd service for durable, authenticated operations. The product workspace stays in Edge or Chrome.</p>
+  <div class="notice"><strong>Build note:</strong> The repository currently publishes a verified browser bundle, not a Windows installer. Windows packaging requires a Windows runner for Credential Manager/migration sidecars and signing.</div>
+  <p><a href="downloads/aica-browser-web.zip">Download verified browser bundle</a> · <a href="https://github.com/meharajM/WA-copilot/pull/15">View migration PR</a></p>
+
+  <h2>1. Download and install</h2>
+  <ol><li>Download the signed Windows installer from a project release.</li><li>Install per user and launch <strong>AICA Native Host</strong>.</li><li>The companion starts agentd on a loopback-only, per-run port.</li></ol>
+
+  <h2>2. Open and pair the browser</h2>
+  <p>Use <strong>Open browser workspace</strong> in the companion. Enter the one-time six-digit code shown by the companion, then select <strong>Pair browser</strong>.</p>
+  <figure><img src="assets/windows-guide-pairing.png" alt="AICA browser pairing screen"><figcaption>Pairing creates an HttpOnly local session. Credentials stay in the native OS store.</figcaption></figure>
+
+  <h2>3. Use the browser workspace</h2>
+  <p>After pairing, use the browser for dashboard, chat, conversations, knowledge, lead directory, Email drafts, MCP, settings, and autonomy.</p>
+  <figure><img src="assets/windows-guide-dashboard.png" alt="AICA browser Command Center dashboard"><figcaption>Browser Command Center is the primary product UI.</figcaption></figure>
+
+  <h2>4. Configure channels</h2>
+  <div class="grid"><div class="step"><h3>WhatsApp</h3><p>Open Settings → WhatsApp Business. Connect Baileys or Cloud transport. Verify the account before enabling response permission or autonomous mode.</p></div><div class="step"><h3>Email</h3><p>Open Settings → Email Channel. Save secure transport settings, keep Draft Mode on, test the connection, then enable polling.</p></div></div>
+  <figure><img src="assets/windows-guide-whatsapp-settings.png" alt="AICA WhatsApp Business settings"><figcaption>WhatsApp connection and autonomy gates.</figcaption></figure>
+  <figure><img src="assets/windows-guide-email-settings.png" alt="AICA Email Channel settings"><figcaption>Email setup keeps credentials write-only through agentd.</figcaption></figure>
+
+  <h2>5. Post-setup behavior</h2>
+  <ul><li>Browser actions call authenticated local agentd APIs.</li><li>Agentd persists sessions, drafts, queues, recovery state, notifications, and delivery history.</li><li>Draft approval gates outbound sends.</li><li>Tauri handles only native seams: lifecycle, tray, OS credentials, folder reveal, diagnostics, and future native speech.</li><li>Gmail IDs and SMTP RFC Message-IDs provide correlation, not final-delivery proof.</li></ul>
+
+  <h2>6. Restart and troubleshoot</h2>
+  <ol><li>Restart the native companion and open the new workspace URL it reports.</li><li>Pair again only when the session expired.</li><li>For “Local service unavailable,” start the companion and refresh.</li><li>For revoked credentials, use native reauthentication or provider sign-in.</li></ol>
+  <figure><img src="assets/windows-guide-system-info.png" alt="AICA system information screen"><figcaption>System Info confirms runtime, platform, and engine ownership.</figcaption></figure>
+
+  <footer>Generated from the browser-first migration branch. See <a href="windows-user-guide.md">the Markdown version</a> and <a href="app-behavior.md">the behavior contract</a> for implementation details.</footer>
+</main>
+</body>
+</html>
