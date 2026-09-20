@@ -68,6 +68,7 @@ Repository validation note:
 
 - The repository-wide `npm run typecheck` covers both transition Electron code and browser/Tauri code. The Electron-only Antigravity service is source-controlled without embedded OAuth credentials; runtime client credentials are environment-provided, and missing configuration fails closed at sign-in. Browser/Tauri product paths continue to use authenticated `agentd` providers and never call this service.
 - The browser/Tauri migration checks remain independently runnable: `npm run typecheck:renderer`, `npm run test:unit`, `npm run test:integration`, `npm run test:agentd`, `npm run test:agentd:credentials`, `cargo test --locked --manifest-path src-tauri/Cargo.toml`, and `npm run build:tauri:web`. Report each command separately and include the native Windows CI result when evaluating a Windows release candidate.
+- After a Windows Tauri bundle, run `node scripts/verify-tauri-windows-bundle.mjs --bundle-root src-tauri/target/x86_64-pc-windows-msvc/release/bundle`; this confirms non-empty NSIS/MSI outputs and records hashes, but does not replace signed install/upgrade/uninstall smoke.
 
 ## Global Contract
 
