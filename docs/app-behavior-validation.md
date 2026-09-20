@@ -1,6 +1,6 @@
 # App Behavior Validation
 
-Last updated: 2026-09-18
+Last updated: 2026-09-20
 
 ## Purpose
 
@@ -21,6 +21,8 @@ It should be treated as a shared contract for both testers and developers.
 The 2026-09-18 audit found and corrected browser Email drift: the contract now distinguishes daemon mailbox ingestion from browser review-session hydration, explicitly excludes automatic browser replies, and documents the transport-specific credential slots plus the legacy fallback.
 
 The follow-up runtime-boundary audit also corrected the launch contract: Edge/Chrome has an explicit agentd readiness/pairing state machine, while the Electron dependency modal is no longer described as a browser startup requirement. Gemini is covered by the browser agentd provider slice, and explicit on-device/WebGPU execution is now available in the browser without changing the Tauri native-only boundary. WhatsApp browser UI state now lives in authenticated agentd settings with a one-time legacy renderer migration; the autonomous flag is never persisted or restored, and browser ingress remains gated only by Response Permission. Windows native diagnostics now includes an owner-triggered, least-privilege per-user sign-in service registration with bounded failure restart settings; installer enrollment and packaged Windows evidence remain release gates.
+
+The 2026-09-20 WhatsApp follow-up audit moved inactivity resolution into agentd. Durable active sessions are swept every minute after ten minutes of silence; review mode creates one deterministic draft, Autonomous Bot Mode uses the existing approved outbox, and customer-last silence is logged once. Browser-side timers are disabled, so tab closure/reload cannot drop or duplicate follow-ups.
 
 The older support-doc drift identified by the first audit is now corrected in the checked-in HTML manuals, email progress note, and architecture overview. The code-first follow-up also corrected `docs/tester_flow.html`, which had incorrectly presented the legacy Electron flow, PDF ingestion, and Browser MCP/Playwright as browser capabilities. The browser MCP boundary is now a supervised agentd worker for approved external servers; internal/native command definitions remain fail-closed. Browser PDF/Office/document ingestion now uses the same supervised agentd boundary with bounded conversion output and explicit failure states. The native companion now supervises and restarts a child daemon that it started, while still preserving the independent daemon lifetime. Explicit Windows per-user service registration is implemented; installer enrollment, recovery after intentional user quit, and Windows release evidence remain implementation gates, not competing product-contract descriptions.
 
