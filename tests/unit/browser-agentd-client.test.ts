@@ -646,6 +646,24 @@ describe('browser agentd client', () => {
     await expect(client.getAutonomyMetrics(14)).resolves.toMatchObject({ inbound: 2, sent: 1, drafts: 1, llmCalls: 3 })
   })
 
+  it('maps durable browser autonomy notifications and acknowledgement through agentd', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = []
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      calls.push({ url, init })
+      if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
+      if (url.includes('/api/v1/autonomy/notifications?')) return response({ notifications: [{ id: 9, kind: 'failure', details: '{"channel":"email"}', createdAt: 10 }] })
+      if (url.endsWith('/api/v1/autonomy/notifications/9/ack')) return response({ acknowledged: true })
+      return response({ success: true })
+    })
+    const client = createBrowserAgentdClient({ origin: 'http://127.0.0.1:4141', fetch: fetcher })
+    await client.pair('123456')
+    await expect(client.listAutonomyNotifications(5)).resolves.toEqual([{ id: 9, kind: 'failure', details: '{"channel":"email"}', createdAt: 10 }])
+    await expect(client.ackAutonomyNotification(9)).resolves.toEqual({ acknowledged: true })
+    const ack = calls.find(call => call.url.endsWith('/api/v1/autonomy/notifications/9/ack'))!
+    expect(new Headers(ack.init?.headers).get('x-csrf-token')).toBe('csrf-token')
+  })
+
   it('maps browser knowledge and intelligence routes without Electron fallbacks', async () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)

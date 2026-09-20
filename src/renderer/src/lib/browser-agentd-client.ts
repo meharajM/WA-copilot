@@ -629,6 +629,13 @@ export interface BrowserAutonomyMetrics {
   averageRecoveryTimeMs: number
 }
 
+export interface BrowserAutonomyNotification {
+  id: number
+  kind: 'failure' | 'budget' | 'recovery' | 'escalation_sla_overdue'
+  details: string
+  createdAt: number
+}
+
 export interface BrowserContinuityStatus {
   version: 1
   runtime: 'agentd'
@@ -775,6 +782,8 @@ export interface BrowserAgentdClient extends ChatClient {
   quarantineWhatsAppDraft(id: number): Promise<BrowserDraft>
   cancelWhatsAppDraft(id: number): Promise<BrowserDraft>
   getAutonomyMetrics(days?: number): Promise<BrowserAutonomyMetrics>
+  listAutonomyNotifications(limit?: number): Promise<BrowserAutonomyNotification[]>
+  ackAutonomyNotification(id: number): Promise<{ acknowledged: boolean }>
   listKnowledge(limit?: number): Promise<BrowserKnowledgeDocument[]>
   ingestKnowledge(input: { fileName: string; filePath: string; fileType: string; content: string; size: number }): Promise<BrowserKnowledgeDocument>
   convertKnowledge(input: { fileName: string; fileType: string; dataBase64: string; size: number }): Promise<BrowserKnowledgeDocument>
@@ -1403,6 +1412,26 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     if (!isRecord(value) || fields.some((field) => typeof value[field] !== 'number' || !Number.isFinite(value[field] as number))) throw new Error('Invalid agentd autonomy metrics response')
     return value as unknown as BrowserAutonomyMetrics
   }
+  const readAutonomyNotification = (value: unknown): BrowserAutonomyNotification => {
+    if (!isRecord(value)
+      || !Number.isSafeInteger(value.id) || (value.id as number) < 1
+      || !['failure', 'budget', 'recovery', 'escalation_sla_overdue'].includes(value.kind as string)
+      || typeof value.details !== 'string' || value.details.length > 4096
+      || !Number.isSafeInteger(value.createdAt) || (value.createdAt as number) < 0) throw new Error('Invalid agentd autonomy notification response')
+    return value as unknown as BrowserAutonomyNotification
+  }
+  const listAutonomyNotifications = async (limit = 50): Promise<BrowserAutonomyNotification[]> => {
+    const boundedLimit = Number.isSafeInteger(limit) ? Math.min(Math.max(limit, 1), 50) : 50
+    const value = await request<unknown>(`/api/v1/autonomy/notifications?limit=${boundedLimit}`)
+    if (!isRecord(value) || !Array.isArray(value.notifications)) throw new Error('Invalid agentd autonomy notification list response')
+    return value.notifications.map(readAutonomyNotification)
+  }
+  const ackAutonomyNotification = async (id: number): Promise<{ acknowledged: boolean }> => {
+    if (!Number.isSafeInteger(id) || id < 1) throw new Error('Invalid notification ID')
+    const value = await request<unknown>(`/api/v1/autonomy/notifications/${id}/ack`, { method: 'POST', body: '{}' }, true)
+    if (!isRecord(value) || typeof value.acknowledged !== 'boolean') throw new Error('Invalid agentd autonomy notification acknowledgement response')
+    return { acknowledged: value.acknowledged }
+  }
   const readKnowledgeDocument = (value: unknown): BrowserKnowledgeDocument => {
     if (!isRecord(value) || !Number.isSafeInteger(value.id) || typeof value.file_path !== 'string' || typeof value.file_name !== 'string' || typeof value.created_at !== 'string') throw new Error('Invalid agentd knowledge document')
     return {
@@ -1557,6 +1586,8 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     quarantineWhatsAppDraft,
     cancelWhatsAppDraft,
     getAutonomyMetrics,
+    listAutonomyNotifications,
+    ackAutonomyNotification,
     listKnowledge,
     ingestKnowledge,
     convertKnowledge,

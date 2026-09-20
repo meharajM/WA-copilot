@@ -627,8 +627,16 @@ export const electron = {
             return draft ? getBrowserAgentdClient().sendWhatsAppDraft(draft.id).then(() => browserAutonomyState()) : null
         },
         sendApprovedTemplate: async (inboundId: string, name: string, languageCode: string, parameters: string[] = []) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.sendApprovedTemplate(inboundId, name, languageCode, parameters) : null,
-        listNotifications: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listNotifications() : [],
-        ackNotification: async (id: number) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.ackNotification(id) : null,
+        listNotifications: async () => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.listNotifications()
+            if (isBrowserProduct()) return getBrowserAgentdClient().listAutonomyNotifications()
+            return []
+        },
+        ackNotification: async (id: number) => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.ackNotification(id)
+            if (isBrowserProduct()) return getBrowserAgentdClient().ackAutonomyNotification(id)
+            return null
+        },
         onNotification: (callback: (data: unknown) => void) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.onNotification(callback) : () => {},
         registerApprovedTemplate: async (name: string, languageCode: string, category: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.registerApprovedTemplate(name, languageCode, category) : null,
         revokeApprovedTemplate: async (name: string, languageCode: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.revokeApprovedTemplate(name, languageCode) : null,

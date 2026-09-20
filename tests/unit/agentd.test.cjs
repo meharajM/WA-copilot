@@ -720,3 +720,27 @@ test('agentd persists authenticated email drafts without renderer storage', asyn
   await server.stop()
   fs.rmSync(dataDir, { recursive: true, force: true })
 })
+
+test('agentd exposes bounded durable autonomy notifications with acknowledgement', async () => {
+  const dataDir = makeTempDir('aica-agentd-notifications-')
+  const secret = 's'.repeat(32)
+  const server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
+  const { origin } = await server.start()
+  const bearer = { authorization: `Bearer ${secret}` }
+  assert.equal((await request(origin, 'GET', '/api/v1/autonomy/notifications', undefined, {})).status, 401)
+  assert.equal(server.createAutonomyNotification('unsupported', { message: 'ignored' }), false)
+  assert.equal(server.createAutonomyNotification('failure', { channel: 'email', message: 'delivery failed', apiKey: 'never-return-this' }), true)
+  const listed = await request(origin, 'GET', '/api/v1/autonomy/notifications?limit=50', undefined, bearer)
+  assert.equal(listed.status, 200)
+  assert.equal(listed.body.notifications.length, 1)
+  assert.equal(listed.body.notifications[0].kind, 'failure')
+  assert.equal(listed.body.notifications[0].details.includes('[REDACTED]'), true)
+  assert.equal(JSON.stringify(listed.body).includes('never-return-this'), false)
+  const id = listed.body.notifications[0].id
+  assert.deepEqual((await request(origin, 'POST', `/api/v1/autonomy/notifications/${id}/ack`, {}, bearer)).body, { acknowledged: true })
+  assert.deepEqual((await request(origin, 'POST', `/api/v1/autonomy/notifications/${id}/ack`, {}, bearer)).body, { acknowledged: false })
+  assert.deepEqual((await request(origin, 'GET', '/api/v1/autonomy/notifications', undefined, bearer)).body.notifications, [])
+  assert.equal((await request(origin, 'POST', '/api/v1/autonomy/notifications/0/ack', {}, bearer)).status, 400)
+  await server.stop()
+  fs.rmSync(dataDir, { recursive: true, force: true })
+})

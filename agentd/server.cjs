@@ -48,6 +48,7 @@ const WHATSAPP_INACTIVITY_SWEEP_MS = 60 * 1000
 const WHATSAPP_RESOLUTION_PROMPT = "It's been a while! Just checking in—did that resolve your inquiry? (Reply 'Yes' or 'No', or feel free to ask more questions!)"
 const OUTBOX_QUARANTINED_ERROR = 'Quarantined by operator'
 const OUTBOX_CANCELLED_ERROR = 'Cancelled by operator'
+const AUTONOMY_NOTIFICATION_KINDS = Object.freeze(['failure', 'budget', 'recovery', 'escalation_sla_overdue'])
 const CONTINUITY_CREDENTIAL_KEYS = Object.freeze([
   'openai_api_key',
   'gemini_api_key',
@@ -99,6 +100,7 @@ const MAX_CHAT_REQUEST_BYTES = MAX_PROVIDER_REQUEST_BYTES + 64 * 1024
 const MAX_GENERATION_REQUEST_ID_LENGTH = 128
 const MAX_PROVIDER_CONTEXT_MESSAGES = 50
 const MAX_LOG_BYTES = 32 * 1024
+const MAX_AUTONOMY_NOTIFICATION_DETAILS = 4096
 const REQUEST_TIMEOUT_MS = 30 * 1000
 const HEADERS_TIMEOUT_MS = 10 * 1000
 const KEEP_ALIVE_TIMEOUT_MS = 5 * 1000
@@ -686,6 +688,14 @@ class AgentdServer {
           timestamp TEXT NOT NULL,
           payload TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS autonomy_notifications (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          kind TEXT NOT NULL CHECK(kind IN ('failure','budget','recovery','escalation_sla_overdue')),
+          details TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'unread' CHECK(status IN ('unread','read')),
+          created_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS autonomy_notifications_unread_idx ON autonomy_notifications(status, created_at DESC);
         CREATE TABLE IF NOT EXISTS settings_persona_cutovers (
           preview_id TEXT PRIMARY KEY,
           manifest TEXT NOT NULL,
@@ -1031,6 +1041,7 @@ class AgentdServer {
     const run = () => {
       const promise = this.auditWhatsAppInactivity().catch(error => {
         this.logger.log(`[agentd] WhatsApp inactivity audit failed: ${error?.message || 'unknown error'}`)
+        this.createAutonomyNotification('failure', { channel: 'whatsapp', operation: 'inactivity-audit', message: 'Inactivity audit failed' })
       })
       this.whatsappInactivityAuditPromise = promise
       void promise.then(() => {
@@ -1308,6 +1319,9 @@ class AgentdServer {
     if (url.pathname === '/api/v1/continuity/chat-history/rollback' && req.method === 'POST') return this.chatHistoryRollback(req, res)
     if (url.pathname === '/api/v1/continuity/chat-history/status' && req.method === 'GET') return this.chatHistoryStatus(req, res)
     if (url.pathname === '/api/v1/autonomy/metrics' && req.method === 'GET') return this.autonomyMetrics(req, res, url)
+    if (url.pathname === '/api/v1/autonomy/notifications' && req.method === 'GET') return this.autonomyNotifications(req, res, url)
+    const autonomyNotificationAckMatch = /^\/api\/v1\/autonomy\/notifications\/(\d+)\/ack$/.exec(url.pathname)
+    if (autonomyNotificationAckMatch && req.method === 'POST') return this.ackAutonomyNotification(req, res, Number(autonomyNotificationAckMatch[1]))
     if (url.pathname === '/api/v1/logs' && ['GET', 'POST'].includes(req.method)) return this.auditLogs(req, res, url)
     if (url.pathname === '/api/v1/knowledge/convert' && req.method === 'POST') return this.convertKnowledge(req, res)
     if (url.pathname === '/api/v1/knowledge' && ['GET', 'POST'].includes(req.method)) return this.knowledge(req, res, url)
@@ -2791,6 +2805,7 @@ class AgentdServer {
       const failed = { ...draft, status: 'failed' }
       this.db.prepare('UPDATE email_drafts SET status = ?, payload = ?, updated_at = ? WHERE id = ? AND status = ?').run('failed', JSON.stringify(failed), Date.now(), id, 'approved')
       this.db.prepare('DELETE FROM email_delivery_locks WHERE draft_id = ?').run(id)
+      this.createAutonomyNotification('failure', { channel: 'email', operation: 'send', draftId: id, message: 'Email delivery failed' })
       return json(res, 502, { success: false, error: 'Email delivery failed over the configured secure SMTP transport' })
     } finally {
       releaseOperation()
@@ -4271,6 +4286,7 @@ class AgentdServer {
     } catch (error) {
       const message = Number.isInteger(error?.statusCode) && error.statusCode !== 502 ? error.message : 'WhatsApp message failed'
       this.db.prepare("UPDATE whatsapp_outbox SET status = 'failed', error = ?, updated_at = ? WHERE draft_id = ?").run(message, Date.now(), id)
+      this.createAutonomyNotification('failure', { channel: 'whatsapp', operation: 'send', draftId: id, message })
       const statusCode = Number.isInteger(error?.statusCode) ? error.statusCode : 502
       return { status: statusCode, body: { success: false, error: message } }
     } finally {
@@ -4347,6 +4363,37 @@ class AgentdServer {
       this.db.prepare('INSERT INTO operator_actions(action,created_at) VALUES (?,?)').run(paused ? 'pause_all' : 'resume_all', now)
     })()
     return json(res, 200, { paused, actor: actor.kind })
+  }
+
+  createAutonomyNotification(kind, details) {
+    if (!this.db || !AUTONOMY_NOTIFICATION_KINDS.includes(kind)) return false
+    let serialized
+    try {
+      serialized = JSON.stringify(redactPayload(details && typeof details === 'object' ? details : { message: String(details || '') }))
+    } catch {
+      serialized = JSON.stringify({ message: 'Notification details unavailable' })
+    }
+    if (typeof serialized !== 'string') serialized = JSON.stringify({ message: 'Notification details unavailable' })
+    if (Buffer.byteLength(serialized, 'utf8') > MAX_AUTONOMY_NOTIFICATION_DETAILS) {
+      serialized = JSON.stringify({ message: 'Notification details truncated' })
+    }
+    this.db.prepare('INSERT INTO autonomy_notifications(kind,details,status,created_at) VALUES (?,?,?,?)').run(kind, serialized, 'unread', Date.now())
+    return true
+  }
+
+  autonomyNotifications(req, res, url) {
+    this.authorize(req)
+    const requestedLimit = Number.parseInt(url.searchParams.get('limit') || '50', 10)
+    const limit = Number.isSafeInteger(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 50) : 50
+    const notifications = this.db.prepare("SELECT id,kind,details,created_at AS createdAt FROM autonomy_notifications WHERE status = 'unread' ORDER BY created_at DESC, id DESC LIMIT ?").all(limit)
+    return json(res, 200, { notifications })
+  }
+
+  ackAutonomyNotification(req, res, id) {
+    this.authorize(req, { mutation: true })
+    if (!Number.isSafeInteger(id) || id < 1) return json(res, 400, { error: 'Invalid notification ID' })
+    const result = this.db.prepare("UPDATE autonomy_notifications SET status = 'read' WHERE id = ? AND status = 'unread'").run(id)
+    return json(res, 200, { acknowledged: result.changes === 1 })
   }
 
   autonomyMetrics(req, res, url) {

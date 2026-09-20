@@ -241,6 +241,12 @@ describe('browser-first UI boundary', () => {
     expect(electron.slice(onState, onDecision)).toContain('window.electron?.autonomy')
   })
 
+  it('routes browser owner notifications through authenticated agentd', () => {
+    const electron = readSource('lib/electron.ts')
+    expect(electron).toContain('getBrowserAgentdClient().listAutonomyNotifications()')
+    expect(electron).toContain('getBrowserAgentdClient().ackAutonomyNotification(id)')
+  })
+
   it('routes browser persona reads and writes through agentd', () => {
     const electron = readSource('lib/electron.ts')
     expect(electron).toContain('getBrowserAgentdClient().getPersonaSettings()')
