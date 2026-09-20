@@ -16,7 +16,7 @@ This build ran on macOS arm64. The repository intentionally rejects cross-target
 Cross-target keyring-helper preparation is unsupported: target x86_64-pc-windows-msvc does not match host aarch64-apple-darwin
 ```
 
-The Windows packaging workflow completed successfully on GitHub Actions run [35541953470](https://github.com/meharajM/WA-copilot/actions/runs/35541953470) for source commit `8efad6c2`. It prepared the target migration/keyring sidecars, passed the migration-reader reparse and Windows Credential Manager runtime round-trip smokes, verified staged resources and the NSIS/MSI bundle, and passed the install/health/uninstall smoke with the new resource guard. The companion plus `agentd` measured 75 MB peak resident memory and 0% average idle CPU against the 512 MB / 50% limits. The install smoke now also performs a scoped same-build NSIS repair/reinstall and verifies that a sentinel under the per-user data root survives; this is data-preservation evidence, not a signed version-to-version upgrade claim. The full Windows PR gate also passed on [35541953499](https://github.com/meharajM/WA-copilot/actions/runs/35541953499), including 11 native Rust tests, browser/agentd checks, and the same resource-guarded install smoke. These are unsigned artifacts for the current migration implementation:
+The latest Windows packaging workflow completed successfully on GitHub Actions run [35544173834](https://github.com/meharajM/WA-copilot/actions/runs/35544173834) for source commit `74b0b605`. It prepared the target migration/keyring sidecars, passed the migration-reader reparse and Windows Credential Manager runtime round-trip smokes, verified staged resources and the NSIS/MSI bundle, and passed the install/health/uninstall smoke. The companion plus `agentd` measured 75 MB peak resident memory and 0% average idle CPU against the 512 MB / 50% limits. The same smoke also performed a scoped same-build NSIS repair/reinstall and emitted `reinstallDataPreserved: true` after verifying that a sentinel under the per-user data root survived; this is data-preservation evidence, not a signed version-to-version upgrade claim. The full Windows PR gate also passed on [35544173841](https://github.com/meharajM/WA-copilot/actions/runs/35544173841), including 11 native Rust tests, browser/agentd checks, and the same resource-guarded installer smoke. These are unsigned artifacts for the current migration implementation:
 
 - [`AICA Native Host_1.0.0_x64-setup.exe`](downloads/AICA%20Native%20Host_1.0.0_x64-setup.exe)
 - [`AICA Native Host_1.0.0_x64_en-US.msi`](downloads/AICA%20Native%20Host_1.0.0_x64_en-US.msi)
@@ -41,7 +41,8 @@ generated NSIS installer. The smoke installs into an isolated runner directory,
 launches the native companion in background mode, checks the descriptor-advertised
 loopback `agentd` `/healthz` endpoint, samples the complete idle companion + agentd
 resident set and CPU footprint for five seconds, enforces conservative 512 MB / 50%
-guards, stops the disposable processes, and silently uninstalls the package. This
-closes unsigned install/health/uninstall behavior and adds a regression guard for
-the lightweight-host claim; certificate signing, upgrade/downgrade and real-user
+guards, stops the disposable processes, performs a same-build repair/reinstall and
+checks that a scoped per-user data sentinel survives, then silently uninstalls the
+package. This closes unsigned install/health/uninstall and reinstall-preservation
+behavior; certificate signing, version-to-version upgrade/downgrade and real-user
 profile rollback remain release gates.
