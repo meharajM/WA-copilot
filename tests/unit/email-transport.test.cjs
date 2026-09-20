@@ -48,6 +48,20 @@ test('buildTextEmail rejects header injection and oversized body', () => {
   assert.throws(() => buildTextEmail({ from: 'a@example.com', to: 'b@example.com', subject: 'x', body: 'x'.repeat(96 * 1024 + 1) }), /Invalid email body/)
 })
 
+test('buildTextEmail encodes bounded operator attachments as multipart MIME', () => {
+  const message = buildTextEmail({
+    from: 'sender@example.com',
+    to: 'user@example.com',
+    subject: 'Invoice',
+    body: 'Attached.',
+    attachments: [{ name: 'notes.txt', mimeType: 'text/plain', size: 5, dataBase64: 'aGVsbG8=' }],
+  })
+  assert.match(message.data, /Content-Type: multipart\/mixed; boundary=/)
+  assert.match(message.data, /Content-Disposition: attachment; filename\*=UTF-8''notes.txt/)
+  assert.match(message.data, /aGVsbG8=/)
+  assert.match(message.data, /\r\n\.\r\n$/)
+})
+
 test('sendTextEmail authenticates and delivers only text over SMTP', async () => {
   const socket = new FakeSmtpSocket()
   const result = await sendTextEmail({

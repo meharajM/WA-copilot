@@ -25,15 +25,44 @@ import {
   AlertTriangle,
   Clock,
   Mail,
+  Paperclip,
   Shield,
   Eye,
 } from 'lucide-react';
 
+const MAX_BROWSER_EMAIL_ATTACHMENTS = 5;
+const MAX_BROWSER_EMAIL_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+const MIME_BY_EXTENSION: Record<string, string> = {
+  '.csv': 'text/csv',
+  '.json': 'application/json',
+  '.jpeg': 'image/jpeg',
+  '.jpg': 'image/jpeg',
+  '.pdf': 'application/pdf',
+  '.png': 'image/png',
+  '.txt': 'text/plain',
+};
+
+const fileToDraftAttachment = async (file: File) => {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let binary = '';
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+  }
+  const extension = file.name.slice(file.name.lastIndexOf('.')).toLowerCase();
+  return {
+    name: file.name,
+    mimeType: file.type || MIME_BY_EXTENSION[extension] || 'application/octet-stream',
+    size: bytes.byteLength,
+    dataBase64: btoa(binary),
+  };
+};
+
 export function DraftApprovalPanel() {
-  const { drafts, approveDraft, rejectDraft, markDraftSent, markDraftFailed, updateDraftText, removeDraft, cleanupOldDrafts } = useDraftStore();
+  const { drafts, approveDraft, rejectDraft, markDraftSent, markDraftFailed, updateDraftText, updateDraftAttachments, removeDraft, cleanupOldDrafts } = useDraftStore();
   const browserRuntime = !isElectron();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editText, setEditText] = useState('');
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
 
   // Cleanup old drafts on mount
   React.useEffect(() => {
@@ -57,7 +86,7 @@ export function DraftApprovalPanel() {
   };
 
   const handleApproveAndSend = async (draftId: string) => {
-    const draft = drafts.find((d) => d.id === draftId);
+    const draft = useDraftStore.getState().drafts.find((d) => d.id === draftId);
     if (!draft) return;
 
     if (!isElectron()) {
@@ -90,6 +119,41 @@ export function DraftApprovalPanel() {
     updateDraftText(draftId, `${draft.responseText}\n\n[Send failure: ${sendResult.error || 'unknown'}]`);
   };
 
+  const handleAddAttachments = async (draftId: string, files: FileList | null) => {
+    if (!files?.length) return;
+    setAttachmentError(null);
+    const draft = drafts.find((candidate) => candidate.id === draftId);
+    if (!draft) return;
+    const current = draft.attachments || [];
+    if (current.length + files.length > MAX_BROWSER_EMAIL_ATTACHMENTS) {
+      setAttachmentError(`Choose at most ${MAX_BROWSER_EMAIL_ATTACHMENTS} attachments per email draft.`);
+      return;
+    }
+    try {
+      const added = [];
+      let total = current.reduce((sum, attachment) => sum + attachment.size, 0);
+      for (const file of Array.from(files)) {
+        if (!file.size || total + file.size > MAX_BROWSER_EMAIL_ATTACHMENT_BYTES) throw new Error('Attachments exceed the 10 MiB total limit.')
+        total += file.size;
+        added.push(await fileToDraftAttachment(file));
+      }
+      await updateDraftAttachments(draftId, [...current, ...added]);
+    } catch (error) {
+      setAttachmentError(error instanceof Error ? error.message : 'Attachment selection failed');
+    }
+  };
+
+  const handleRemoveAttachment = async (draftId: string, index: number) => {
+    const draft = drafts.find((candidate) => candidate.id === draftId);
+    if (!draft?.attachments) return;
+    try {
+      await updateDraftAttachments(draftId, draft.attachments.filter((_, attachmentIndex) => attachmentIndex !== index));
+      setAttachmentError(null);
+    } catch (error) {
+      setAttachmentError(error instanceof Error ? error.message : 'Attachment update failed');
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -103,7 +167,7 @@ export function DraftApprovalPanel() {
       </div>
       {browserRuntime && drafts.length > 0 && (
         <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2 text-xs text-amber-200">
-          Browser mode uses local agentd for gated text-only IMAP/Gmail polling and explicitly approved SMTP/Gmail delivery. Attachments, custom MCP, and insecure transport remain unavailable.
+          Browser mode uses local agentd for gated IMAP/Gmail polling and explicitly approved SMTP/Gmail delivery. Safe operator-selected PDF, image, and text attachments are bounded and scanned before delivery.
         </div>
       )}
 
@@ -127,6 +191,10 @@ export function DraftApprovalPanel() {
               onApprove={() => approveDraft(draft.id)}
               onSend={() => handleApproveAndSend(draft.id)}
               onReject={() => rejectDraft(draft.id)}
+              browserRuntime={browserRuntime}
+              attachmentError={attachmentError}
+              onAddAttachments={(files) => void handleAddAttachments(draft.id, files)}
+              onRemoveAttachment={(index) => void handleRemoveAttachment(draft.id, index)}
               canSend={true}
             />
           ))}
@@ -153,6 +221,10 @@ export function DraftApprovalPanel() {
               onApprove={() => approveDraft(draft.id)}
               onSend={() => handleApproveAndSend(draft.id)}
               onReject={() => rejectDraft(draft.id)}
+              browserRuntime={browserRuntime}
+              attachmentError={attachmentError}
+              onAddAttachments={(files) => void handleAddAttachments(draft.id, files)}
+              onRemoveAttachment={(index) => void handleRemoveAttachment(draft.id, index)}
               canSend={true}
               isEscalated
             />
@@ -223,6 +295,10 @@ function DraftCard({
   onSend,
   onReject,
   canSend,
+  browserRuntime,
+  attachmentError,
+  onAddAttachments,
+  onRemoveAttachment,
   isEscalated = false,
 }: {
   draft: import('../../lib/email-policy').EmailDraft;
@@ -236,6 +312,10 @@ function DraftCard({
   onSend: () => void;
   onReject: () => void;
   canSend: boolean;
+  browserRuntime: boolean;
+  attachmentError: string | null;
+  onAddAttachments: (files: FileList | null) => void;
+  onRemoveAttachment: (index: number) => void;
   isEscalated?: boolean;
 }) {
   return (
@@ -301,7 +381,7 @@ function DraftCard({
 
       {/* Action buttons */}
       <div className="flex items-center gap-2 pt-2 border-t border-[var(--color-border)]">
-        {!isEditing && (
+      {!isEditing && (
           <button
             onClick={onStartEdit}
             className="flex items-center gap-1 text-xs text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] px-2 py-1 rounded hover:bg-[var(--color-surface)]"
@@ -309,7 +389,29 @@ function DraftCard({
             <Edit2 size={12} />
             Edit
           </button>
-        )}
+      )}
+
+      {draft.attachments?.length ? (
+        <div className="flex flex-wrap gap-2 text-xs text-[var(--color-text-muted)]">
+          {draft.attachments.map((attachment, index) => (
+            <span key={`${attachment.name}-${attachment.size}-${index}`} className="inline-flex items-center gap-1 rounded bg-[var(--color-surface)] px-2 py-1">
+              <Paperclip size={11} />{attachment.name}
+              {browserRuntime && <button type="button" aria-label={`Remove attachment ${attachment.name}`} onClick={() => onRemoveAttachment(index)} className="text-[var(--color-text-dim)] hover:text-red-400"><XCircle size={11} /></button>}
+            </span>
+          ))}
+        </div>
+      ) : null}
+
+      {browserRuntime && canSend && (
+        <div className="space-y-1">
+          <label className="inline-flex cursor-pointer items-center gap-1 text-xs text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]">
+            <Paperclip size={12} />
+            Add safe attachments
+            <input type="file" multiple accept=".pdf,.png,.jpg,.jpeg,.txt,.csv,.json,application/pdf,image/png,image/jpeg,text/plain,text/csv,application/json" className="sr-only" onChange={(event) => { onAddAttachments(event.target.files); event.currentTarget.value = '' }} />
+          </label>
+          {attachmentError && <p className="text-xs text-amber-300">{attachmentError}</p>}
+        </div>
+      )}
 
         <div className="flex-1" />
 

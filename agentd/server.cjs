@@ -28,8 +28,11 @@ const MAX_WHATSAPP_PAYLOAD_BYTES = 32 * 1024
 const MAX_EMAIL_INBOUND_BODY_BYTES = 128 * 1024
 const MAX_EMAIL_INBOUND_BATCH = 50
 const MAX_EMAIL_DRAFT_BATCH = 100
-const MAX_EMAIL_DRAFT_BODY_BYTES = 96 * 1024
+const MAX_EMAIL_DRAFT_BODY_BYTES = 15 * 1024 * 1024
 const MAX_EMAIL_DRAFT_TEXT_LENGTH = 32 * 1024
+const MAX_EMAIL_DRAFT_ATTACHMENT_COUNT = 5
+const MAX_EMAIL_DRAFT_ATTACHMENT_TOTAL_BYTES = 10 * 1024 * 1024
+const MAX_EMAIL_DRAFT_ATTACHMENT_BASE64_LENGTH = Math.ceil(MAX_EMAIL_DRAFT_ATTACHMENT_TOTAL_BYTES * 4 / 3) + 64
 const MAX_EMAIL_ATTACHMENT_COUNT = 20
 const MAX_EMAIL_ATTACHMENT_NAME_LENGTH = 256
 const MAX_EMAIL_ATTACHMENT_MIME_LENGTH = 128
@@ -2394,10 +2397,10 @@ class AgentdServer {
     if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
     let body
     try { body = await readBody(req, MAX_EMAIL_DRAFT_BODY_BYTES) } catch (error) { return json(res, error.statusCode || 400, { error: error.message }) }
-    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some((key) => !['responseText', 'status'].includes(key))) return json(res, 400, { error: 'Invalid email draft update' })
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some((key) => !['responseText', 'status', 'attachments'].includes(key))) return json(res, 400, { error: 'Invalid email draft update' })
     const current = parseEmailDraft(JSON.parse(row.payload))
     if (!current) return json(res, 500, { error: 'Stored email draft is invalid' })
-    const candidate = { ...current, ...(Object.prototype.hasOwnProperty.call(body, 'responseText') ? { responseText: body.responseText } : {}), ...(Object.prototype.hasOwnProperty.call(body, 'status') ? { status: body.status } : {}) }
+    const candidate = { ...current, ...(Object.prototype.hasOwnProperty.call(body, 'responseText') ? { responseText: body.responseText } : {}), ...(Object.prototype.hasOwnProperty.call(body, 'attachments') ? { attachments: body.attachments } : {}), ...(Object.prototype.hasOwnProperty.call(body, 'status') ? { status: body.status } : {}) }
     const draft = parseEmailDraft(candidate)
     if (!draft) return json(res, 400, { error: 'Invalid email draft update' })
     if (body.status !== undefined) {
@@ -2472,6 +2475,7 @@ class AgentdServer {
           body: draft.responseText,
           inReplyTo: draft.inReplyTo,
           references: draft.references,
+          attachments: draft.attachments,
         })
       } else {
         await this.emailSend({
@@ -2486,6 +2490,7 @@ class AgentdServer {
           body: draft.responseText,
           inReplyTo: draft.inReplyTo,
           references: draft.references,
+          attachments: draft.attachments,
         })
       }
       const sent = { ...draft, status: 'sent' }
@@ -4142,7 +4147,7 @@ function parseEmailAttachmentMetadata(value) {
 
 function parseEmailDraft(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
-  const allowedKeys = ['accountName', 'createdAt', 'id', 'inReplyTo', 'originalFrom', 'originalSubject', 'policyDecision', 'references', 'replyTo', 'responseText', 'status']
+  const allowedKeys = ['accountName', 'attachments', 'createdAt', 'id', 'inReplyTo', 'originalFrom', 'originalSubject', 'policyDecision', 'references', 'replyTo', 'responseText', 'status']
   if (Object.keys(value).some((key) => !allowedKeys.includes(key))) return null
   const policy = value.policyDecision
   if (!/^draft_[A-Za-z0-9_-]{1,120}$/.test(value.id || '')
@@ -4161,7 +4166,10 @@ function parseEmailDraft(value) {
     || !validBoundedText(policy.rationale, 4096, true)
     || typeof policy.hasSensitiveTopic !== 'boolean'
     || !Array.isArray(policy.sensitiveTopics) || policy.sensitiveTopics.length > 32
-    || policy.sensitiveTopics.some((topic) => !validBoundedText(topic, 128))) return null
+    || policy.sensitiveTopics.some((topic) => !validBoundedText(topic, 128))
+    || (value.attachments !== undefined && (!Array.isArray(value.attachments) || value.attachments.length > MAX_EMAIL_DRAFT_ATTACHMENT_COUNT || value.attachments.some((attachment) => !parseEmailDraftAttachment(attachment))))) return null
+  const attachments = Array.isArray(value.attachments) ? value.attachments.map(parseEmailDraftAttachment) : []
+  if (attachments.some((attachment) => !attachment) || attachments.reduce((total, attachment) => total + (attachment?.size || 0), 0) > MAX_EMAIL_DRAFT_ATTACHMENT_TOTAL_BYTES) return null
   return {
     id: value.id,
     responseText: value.responseText,
@@ -4171,6 +4179,7 @@ function parseEmailDraft(value) {
     ...(value.inReplyTo !== undefined && value.inReplyTo ? { inReplyTo: value.inReplyTo } : {}),
     ...(value.references !== undefined && value.references ? { references: value.references } : {}),
     ...(value.accountName !== undefined && value.accountName ? { accountName: value.accountName } : {}),
+    ...(attachments.length ? { attachments } : {}),
     policyDecision: {
       action: policy.action,
       confidence: policy.confidence,
@@ -4181,6 +4190,22 @@ function parseEmailDraft(value) {
     createdAt: value.createdAt,
     status: value.status,
   }
+}
+
+function parseEmailDraftAttachment(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const keys = Object.keys(value)
+  if (keys.some((key) => !['dataBase64', 'mimeType', 'name', 'size'].includes(key))) return null
+  if (!validBoundedText(value.name, MAX_EMAIL_ATTACHMENT_NAME_LENGTH) || /[\u0000\r\n\\/]/.test(value.name)) return null
+  if (!validBoundedText(value.mimeType, MAX_EMAIL_ATTACHMENT_MIME_LENGTH) || /[\u0000\r\n]/.test(value.mimeType)) return null
+  const mimeType = value.mimeType.trim().toLowerCase()
+  if (!/^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/.test(mimeType)) return null
+  if (typeof value.dataBase64 !== 'string' || value.dataBase64.length > MAX_EMAIL_DRAFT_ATTACHMENT_BASE64_LENGTH || !/^[A-Za-z0-9+/]*={0,2}$/.test(value.dataBase64) || value.dataBase64.length % 4 === 1) return null
+  const bytes = Buffer.from(value.dataBase64, 'base64')
+  if (!bytes.length || bytes.toString('base64') !== value.dataBase64 || !Number.isSafeInteger(value.size) || value.size !== bytes.length || value.size > MAX_EMAIL_DRAFT_ATTACHMENT_TOTAL_BYTES) return null
+  const scan = scanEmailAttachment({ bytes: new Uint8Array(bytes), mimeType })
+  if (!scan.safe) return null
+  return { name: value.name.trim(), mimeType, size: value.size, dataBase64: value.dataBase64 }
 }
 
 async function readProviderResponse(response) {

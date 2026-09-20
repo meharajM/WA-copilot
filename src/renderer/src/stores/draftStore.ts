@@ -39,6 +39,9 @@ interface DraftState {
   /** Update the response text of a draft (human editing) */
   updateDraftText: (draftId: string, newText: string) => void
 
+  /** Replace operator-selected browser-send attachments */
+  updateDraftAttachments: (draftId: string, attachments: NonNullable<EmailDraft['attachments']>) => Promise<void>
+
   /** Remove a draft entirely */
   removeDraft: (draftId: string) => void
 
@@ -87,6 +90,19 @@ export const useDraftStore = create<DraftState>()(
       updateDraftText: (draftId, newText) => {
         set((state) => ({ drafts: state.drafts.map((d) => d.id === draftId ? { ...d, responseText: newText } : d) }))
         if (isBrowserProduct()) void getBrowserAgentdClient().updateEmailDraft(draftId, { responseText: newText }).catch(() => undefined)
+      },
+
+      updateDraftAttachments: async (draftId, attachments) => {
+        const previous = get().drafts.find((draft) => draft.id === draftId)?.attachments
+        set((state) => ({ drafts: state.drafts.map((d) => d.id === draftId ? { ...d, attachments } : d) }))
+        if (isBrowserProduct()) {
+          try {
+            await getBrowserAgentdClient().updateEmailDraft(draftId, { attachments })
+          } catch (error) {
+            set((state) => ({ drafts: state.drafts.map((d) => d.id === draftId ? { ...d, ...(previous ? { attachments: previous } : { attachments: undefined }) } : d) }))
+            throw error
+          }
+        }
       },
 
       removeDraft: (draftId) => {

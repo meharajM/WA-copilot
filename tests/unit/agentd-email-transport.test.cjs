@@ -34,6 +34,14 @@ function draft(status = 'approved') {
   }
 }
 
+function draftWithAttachment(status = 'approved') {
+  return {
+    ...draft(status),
+    id: 'draft_transport_attachment_1',
+    attachments: [{ name: 'notes.txt', mimeType: 'text/plain', size: 5, dataBase64: 'aGVsbG8=' }],
+  }
+}
+
 test('agentd sends an approved browser email draft through daemon transport', async () => {
   const dataDir = makeTempDir('aica-email-transport-')
   const sent = []
@@ -53,6 +61,38 @@ test('agentd sends an approved browser email draft through daemon transport', as
   assert.equal(sent[0].to, 'customer@example.com')
   assert.equal(sent[0].secure, true)
   assert.equal(sent[0].password, 'app-password')
+  await server.stop()
+  fs.rmSync(dataDir, { recursive: true, force: true })
+})
+
+test('agentd preserves approved browser attachments for daemon delivery', async () => {
+  const dataDir = makeTempDir('aica-email-transport-attachment-')
+  const sent = []
+  const server = new AgentdServer({
+    dataDir, secret: 's'.repeat(32), pairingCode: '123456',
+    credentials: { async get() { return 'app-password' } },
+    emailSend: async options => { sent.push(options); return { delivered: true } },
+  })
+  const { origin } = await server.start()
+  const pair = await request(origin, 'POST', '/api/v1/pair', { code: '123456' }, { origin })
+  const auth = { origin, cookie: pair.headers['set-cookie'][0].split(';')[0], 'x-csrf-token': pair.body.csrfToken }
+  assert.equal((await request(origin, 'PUT', '/api/v1/settings/email', settings, auth)).status, 200)
+  assert.equal((await request(origin, 'POST', '/api/v1/email/drafts', draftWithAttachment(), auth)).status, 200)
+  const result = await request(origin, 'POST', '/api/v1/email/drafts/draft_transport_attachment_1/send', {}, auth)
+  assert.equal(result.status, 200)
+  assert.deepEqual(sent[0].attachments, draftWithAttachment().attachments)
+  await server.stop()
+  fs.rmSync(dataDir, { recursive: true, force: true })
+})
+
+test('agentd rejects browser draft attachments whose MIME does not match content', async () => {
+  const dataDir = makeTempDir('aica-email-transport-attachment-gate-')
+  const server = new AgentdServer({ dataDir, secret: 's'.repeat(32), pairingCode: '123456', credentials: { async get() { return 'app-password' } } })
+  const { origin } = await server.start()
+  const pair = await request(origin, 'POST', '/api/v1/pair', { code: '123456' }, { origin })
+  const auth = { origin, cookie: pair.headers['set-cookie'][0].split(';')[0], 'x-csrf-token': pair.body.csrfToken }
+  const invalid = { ...draft(), attachments: [{ name: 'notes.pdf', mimeType: 'application/pdf', size: 5, dataBase64: 'aGVsbG8=' }] }
+  assert.equal((await request(origin, 'POST', '/api/v1/email/drafts', invalid, auth)).status, 400)
   await server.stop()
   fs.rmSync(dataDir, { recursive: true, force: true })
 })

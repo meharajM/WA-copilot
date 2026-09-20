@@ -1,42 +1,13 @@
 const net = require('node:net')
 const tls = require('node:tls')
+const { buildMimeMessage, buildSmtpData } = require('./email-mime.cjs')
 
 const MAX_LINE = 4096
 const MAX_RESPONSE_LINES = 100
 
-function assertHeader(value, name, max = 998) {
-  if (typeof value !== 'string' || !value.trim() || value.length > max || /[\r\n]/.test(value)) {
-    throw new Error(`Invalid email ${name}`)
-  }
-  return value.trim()
-}
-
-function assertAddress(value, name) {
-  const address = assertHeader(value, name, 320)
-  if (!/^[^\s<>@]+@[^\s<>@]+$/.test(address)) throw new Error(`Invalid email ${name}`)
-  return address
-}
-
-function buildTextEmail({ from, to, subject, body, messageId, inReplyTo, references }) {
-  const sender = assertAddress(from, 'sender')
-  const recipient = assertAddress(to, 'recipient')
-  const title = assertHeader(subject || '(no subject)', 'subject')
-  if (typeof body !== 'string' || !body.trim() || Buffer.byteLength(body, 'utf8') > 96 * 1024 || /\u0000/.test(body)) throw new Error('Invalid email body')
-  const headers = [
-    `From: ${sender}`,
-    `To: ${recipient}`,
-    `Subject: ${title}`,
-    'MIME-Version: 1.0',
-    'Content-Type: text/plain; charset=utf-8',
-    'Content-Transfer-Encoding: 8bit',
-  ]
-  for (const [name, value] of [['Message-ID', messageId], ['In-Reply-To', inReplyTo], ['References', references]]) {
-    if (value) headers.push(`${name}: ${assertHeader(value, name, 8192)}`)
-  }
-  // SMTP DATA terminates on a line containing only a dot; dot-stuff every line.
-  const normalized = body.replace(/\r?\n/g, '\r\n').replace(/\r(?!\n)/g, '\r\n')
-  const stuffed = normalized.split('\r\n').map(line => line.startsWith('.') ? `.${line}` : line).join('\r\n')
-  return { from: sender, to: recipient, data: `${headers.join('\r\n')}\r\n\r\n${stuffed}\r\n.\r\n` }
+function buildTextEmail({ from, to, subject, body, messageId, inReplyTo, references, attachments }) {
+  const message = buildMimeMessage({ from, to, subject, body, messageId, inReplyTo, references, attachments })
+  return { ...message, data: buildSmtpData(message) }
 }
 
 function socketReader(socket) {
@@ -105,10 +76,10 @@ function connectSocket(host, port, secure) {
   return secure ? tls.connect({ host, port, servername: host, rejectUnauthorized: true }) : net.connect({ host, port })
 }
 
-async function sendTextEmail({ host, port, secure, username, password, from, to, subject, body, messageId, inReplyTo, references, connect = connectSocket, tlsConnect = (socket, servername) => tls.connect({ socket, servername, rejectUnauthorized: true }) }) {
+async function sendTextEmail({ host, port, secure, username, password, from, to, subject, body, messageId, inReplyTo, references, attachments, connect = connectSocket, tlsConnect = (socket, servername) => tls.connect({ socket, servername, rejectUnauthorized: true }) }) {
   if (typeof host !== 'string' || !host || !Number.isSafeInteger(port) || port < 1 || port > 65535 || typeof username !== 'string' || !username || typeof password !== 'string' || !password) throw new Error('SMTP configuration is incomplete')
   if (typeof secure !== 'boolean') throw new Error('SMTP TLS setting is invalid')
-  const message = buildTextEmail({ from, to, subject, body, messageId, inReplyTo, references })
+  const message = buildTextEmail({ from, to, subject, body, messageId, inReplyTo, references, attachments })
   const directTls = secure && port === 465
   let socket = connect(host, port, directTls)
   let reader = socketReader(socket)

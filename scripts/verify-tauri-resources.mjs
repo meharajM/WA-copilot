@@ -69,6 +69,7 @@ export async function verifyTauriResources({
     join(sidecar, 'agentd-http', 'index.cjs'),
     join(sidecar, 'agentd-http', 'server.cjs'),
     join(sidecar, 'agentd-http', 'continuity-migration.cjs'),
+    join(sidecar, 'agentd-http', 'email-mime.cjs'),
     join(sidecar, 'agentd-http', 'email-transport.cjs'),
     join(sidecar, 'agentd-http', 'email-inbound-worker.cjs'),
     join(sidecar, 'agentd-http', 'mcp-worker.cjs'),

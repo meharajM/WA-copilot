@@ -18,6 +18,7 @@ async function fixture() {
     'agentd-http/index.cjs',
     'agentd-http/server.cjs',
     'agentd-http/continuity-migration.cjs',
+    'agentd-http/email-mime.cjs',
     'agentd-http/email-transport.cjs',
     'agentd-http/email-inbound-worker.cjs',
     'agentd-http/mcp-worker.cjs',

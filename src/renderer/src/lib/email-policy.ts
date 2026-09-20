@@ -374,6 +374,13 @@ export interface EmailDraft {
   references?: string
   /** Optional account label used by MCP server */
   accountName?: string
+  /** Operator-selected, bounded safe attachments for an approved browser send */
+  attachments?: Array<{
+    name: string
+    mimeType: string
+    size: number
+    dataBase64: string
+  }>
   /** Policy decision that created this draft */
   policyDecision: EmailPolicyDecision
   /** Timestamp when the draft was created */

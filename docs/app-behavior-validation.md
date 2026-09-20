@@ -392,7 +392,7 @@ agentd draft/send-policy operation.
 The browser policy handler is now shared by agentd-backed and WebGPU
 generation. WebGPU responses remain local only until the result is passed to the
 same authenticated confidence gate, deterministic event-scoped draft record,
-approval state, and text-only delivery route. Electron keeps its existing
+approval state, and bounded delivery route. Electron keeps its existing
 `electron.email.send` path, and the browser boundary test asserts that the
 WebGPU path uses the agentd handler.
 
@@ -401,6 +401,24 @@ Evidence:
 - [src/renderer/src/hooks/useAgent.ts](/Users/meharaj/WA-copilot/src/renderer/src/hooks/useAgent.ts):434
 - [src/renderer/src/hooks/useAgent.ts](/Users/meharaj/WA-copilot/src/renderer/src/hooks/useAgent.ts):901
 - [tests/unit/tauri-ui-boundary.test.ts](/Users/meharaj/WA-copilot/tests/unit/tauri-ui-boundary.test.ts):115
+
+### Finding 9: browser Email outbound attachments were text-only — resolved
+
+Severity: medium
+
+The browser Drafts panel could review and send only text. It now accepts
+explicit operator-selected PDF/image/text files, capped at five files and
+10 MiB total. Agentd validates filename, MIME and base64 integrity, scans
+supported magic bytes, and emits multipart MIME through secure SMTP or Gmail
+API. Electron behavior remains unchanged; inbound attachment bytes never feed
+autonomous generation.
+
+Evidence:
+
+- [agentd/email-mime.cjs](/Users/meharaj/WA-copilot/agentd/email-mime.cjs)
+- [agentd/server.cjs](/Users/meharaj/WA-copilot/agentd/server.cjs):2398
+- [src/renderer/src/components/email/DraftApprovalPanel.tsx](/Users/meharaj/WA-copilot/src/renderer/src/components/email/DraftApprovalPanel.tsx):106
+- [tests/unit/agentd-email-transport.test.cjs](/Users/meharaj/WA-copilot/tests/unit/agentd-email-transport.test.cjs):64
 
 ### Finding 7: browser Gmail attachment inspection used an empty Electron fallback — resolved
 

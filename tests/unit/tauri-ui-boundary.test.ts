@@ -199,7 +199,8 @@ describe('browser-first UI boundary', () => {
     expect(readSource('stores/emailStore.ts')).toContain('flushEmailSettingsPersistence')
     expect(readSource('hooks/useEmailBridge.ts')).toContain('await flushEmailSettingsPersistence()')
     expect(emailSettings).toContain('does not generate or send automatic replies')
-    expect(drafts).toContain('gated text-only IMAP/Gmail polling')
+    expect(drafts).toContain('gated IMAP/Gmail polling')
+    expect(drafts).toContain('Safe operator-selected PDF, image, and text attachments')
     expect(drafts).not.toContain('IMAP polling, OAuth, attachments, and insecure SMTP remain unavailable.')
   })
 

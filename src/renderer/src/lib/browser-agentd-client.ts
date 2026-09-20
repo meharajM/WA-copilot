@@ -173,6 +173,13 @@ export interface BrowserWhatsAppUiSettings {
 
 export type BrowserEmailDraftStatus = 'pending_review' | 'approved' | 'rejected' | 'escalated' | 'sent' | 'failed'
 
+export interface BrowserEmailDraftAttachment {
+  name: string
+  mimeType: string
+  size: number
+  dataBase64: string
+}
+
 export interface BrowserEmailDraft {
   id: string
   responseText: string
@@ -182,6 +189,7 @@ export interface BrowserEmailDraft {
   inReplyTo?: string
   references?: string
   accountName?: string
+  attachments?: BrowserEmailDraftAttachment[]
   policyDecision: {
     action: 'send' | 'draft' | 'escalate'
     confidence: number
@@ -211,6 +219,26 @@ const isRecord = (value: unknown): value is Record<string, unknown> => (
 const errorText = (value: unknown, fallback: string): string => (
   typeof value === 'string' && value.trim() ? value : fallback
 )
+
+const readEmailDraftAttachments = (value: unknown): BrowserEmailDraftAttachment[] | undefined => {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || value.length > 5) throw new Error('Invalid agentd email draft response')
+  let total = 0
+  return value.map((item) => {
+    if (!isRecord(item)
+      || typeof item.name !== 'string' || !item.name.trim() || item.name.length > 256 || item.name.includes('\0') || /[\r\n\\/]/.test(item.name)
+      || typeof item.mimeType !== 'string' || !item.mimeType.trim() || item.mimeType.length > 128 || item.mimeType.includes('\0') || /[\r\n]/.test(item.mimeType)
+      || typeof item.size !== 'number' || !Number.isSafeInteger(item.size) || item.size < 1 || item.size > 10 * 1024 * 1024
+      || typeof item.dataBase64 !== 'string' || item.dataBase64.length > Math.ceil(10 * 1024 * 1024 * 4 / 3) + 64
+      || !/^[A-Za-z0-9+/]*={0,2}$/.test(item.dataBase64) || item.dataBase64.length % 4 === 1) {
+      throw new Error('Invalid agentd email draft response')
+    }
+    const size = item.size as number
+    total += size
+    if (total > 10 * 1024 * 1024) throw new Error('Invalid agentd email draft response')
+    return { name: item.name, mimeType: item.mimeType, size, dataBase64: item.dataBase64 }
+  })
+}
 
 const readJson = async (response: Response): Promise<unknown> => {
   const text = await response.text()
@@ -402,8 +430,9 @@ const readEmailSettings = (value: unknown): EmailSettings => {
 }
 
 const readEmailDraft = (value: unknown): BrowserEmailDraft => {
-  if (!isRecord(value)
-    || typeof value.id !== 'string' || !/^draft_[A-Za-z0-9_-]{1,120}$/.test(value.id)
+  if (!isRecord(value)) throw new Error('Invalid agentd email draft response')
+  const attachments = readEmailDraftAttachments(value.attachments)
+  if (typeof value.id !== 'string' || !/^draft_[A-Za-z0-9_-]{1,120}$/.test(value.id)
     || typeof value.responseText !== 'string'
     || typeof value.originalFrom !== 'string'
     || typeof value.originalSubject !== 'string'
@@ -420,7 +449,7 @@ const readEmailDraft = (value: unknown): BrowserEmailDraft => {
     || typeof value.policyDecision.hasSensitiveTopic !== 'boolean'
     || !Array.isArray(value.policyDecision.sensitiveTopics)
     || value.policyDecision.sensitiveTopics.some((item) => typeof item !== 'string')) throw new Error('Invalid agentd email draft response')
-  return value as unknown as BrowserEmailDraft
+  return { ...value, ...(attachments ? { attachments } : {}) } as unknown as BrowserEmailDraft
 }
 
 const readEmailAttachmentMetadata = (value: unknown): BrowserEmailAttachment => {
@@ -691,7 +720,7 @@ export interface BrowserAgentdClient extends ChatClient {
   acknowledgeEmailInbound(eventIds: number[]): Promise<number[]>
   listEmailDrafts(limit?: number, status?: BrowserEmailDraftStatus): Promise<BrowserEmailDraft[]>
   saveEmailDraft(draft: BrowserEmailDraft): Promise<BrowserEmailDraft>
-  updateEmailDraft(id: string, update: { responseText?: string; status?: BrowserEmailDraftStatus }): Promise<BrowserEmailDraft>
+  updateEmailDraft(id: string, update: { responseText?: string; status?: BrowserEmailDraftStatus; attachments?: BrowserEmailDraftAttachment[] }): Promise<BrowserEmailDraft>
   sendEmailDraft(id: string): Promise<BrowserEmailDraft>
   deleteEmailDraft(id: string): Promise<void>
   listWhatsAppInbound(afterId?: number, limit?: number): Promise<{ events: BrowserWhatsAppInboundEvent[]; nextAfterId: number }>
@@ -1167,7 +1196,7 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     const value = await request<unknown>('/api/v1/email/drafts', { method: 'POST', body: JSON.stringify(draft) }, true)
     return readEmailDraft(value)
   }
-  const updateEmailDraft = async (id: string, update: { responseText?: string; status?: BrowserEmailDraftStatus }): Promise<BrowserEmailDraft> => {
+  const updateEmailDraft = async (id: string, update: { responseText?: string; status?: BrowserEmailDraftStatus; attachments?: BrowserEmailDraftAttachment[] }): Promise<BrowserEmailDraft> => {
     if (!/^draft_[A-Za-z0-9_-]{1,120}$/.test(id)) throw new Error('Invalid email draft id')
     const value = await request<unknown>(`/api/v1/email/drafts/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(update) }, true)
     return readEmailDraft(value)

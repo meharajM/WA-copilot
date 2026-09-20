@@ -1,4 +1,5 @@
 const crypto = require('node:crypto')
+const { buildMimeMessage } = require('./email-mime.cjs')
 
 const AUTHORIZATION_URL = 'https://accounts.google.com/o/oauth2/v2/auth'
 const TOKEN_URL = 'https://oauth2.googleapis.com/token'
@@ -224,15 +225,14 @@ class GmailOAuthService {
     return payload
   }
 
-  async sendText({ to, subject, body, inReplyTo = '', references = '' } = {}) {
-    const recipient = safeHeaderValue(to, 320)
-    const title = safeHeaderValue(subject, 998)
-    if (!recipient || !title || typeof body !== 'string' || !body.trim() || body.length > 32 * 1024 || /[\u0000]/.test(body)) throw new Error('Invalid Gmail message')
-    const reply = inReplyTo ? safeHeaderValue(inReplyTo, 998) : ''
-    const refs = references ? safeHeaderValue(references, 8192) : ''
-    if ((inReplyTo && !reply) || (references && !refs)) throw new Error('Invalid Gmail message headers')
-    const lines = [`To: ${recipient}`, `Subject: ${title}`, 'Content-Type: text/plain; charset=UTF-8', ...(reply ? [`In-Reply-To: ${reply}`] : []), ...(refs ? [`References: ${refs}`] : []), '', body]
-    const raw = Buffer.from(lines.join('\r\n'), 'utf8').toString('base64url')
+  async sendText({ to, subject, body, inReplyTo = '', references = '', attachments } = {}) {
+    let message
+    try {
+      message = buildMimeMessage({ to, subject, body, inReplyTo, references, attachments })
+    } catch {
+      throw new Error('Invalid Gmail message')
+    }
+    const raw = Buffer.from(message.data, 'utf8').toString('base64url')
     const result = await this.request('/messages/send', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ raw }) })
     return typeof result?.id === 'string' ? result.id : null
   }

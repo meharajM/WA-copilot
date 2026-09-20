@@ -101,6 +101,28 @@ test('agentd Gmail OAuth sends bounded text-only messages through fixed Gmail AP
   assert.equal(JSON.stringify(calls.at(-1)).includes('refresh-token'), false)
 })
 
+test('agentd Gmail OAuth sends bounded operator attachments as multipart MIME', async () => {
+  const records = new Map([['gmail_oauth_refresh_token', 'refresh-token'], ['gmail_oauth_client_id', 'client-id']])
+  const calls = []
+  const service = new GmailOAuthService({
+    credentials: fakeCredentials(records),
+    fetchImpl: async (url, init) => {
+      calls.push({ url, init })
+      if (url === 'https://oauth2.googleapis.com/token') return jsonResponse({ access_token: 'access-token', expires_in: 3600 })
+      if (url === 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send') return jsonResponse({ id: 'gmail-message-attachment-1' })
+      throw new Error(`unexpected URL ${url}`)
+    },
+  })
+  assert.equal(await service.sendText({
+    to: 'customer@example.test', subject: 'Invoice', body: 'Attached.',
+    attachments: [{ name: 'notes.txt', mimeType: 'text/plain', size: 5, dataBase64: 'aGVsbG8=' }],
+  }), 'gmail-message-attachment-1')
+  const decoded = Buffer.from(JSON.parse(calls.at(-1).init.body).raw, 'base64url').toString('utf8')
+  assert.match(decoded, /Content-Type: multipart\/mixed; boundary=/)
+  assert.match(decoded, /Content-Disposition: attachment; filename\*=UTF-8''notes.txt/)
+  assert.match(decoded, /aGVsbG8=/)
+})
+
 test('agentd browser routes own Gmail OAuth callback and never return token material', async () => {
   const previousClientId = process.env.GMAIL_OAUTH_CLIENT_ID
   process.env.GMAIL_OAUTH_CLIENT_ID = 'desktop-client-id'
