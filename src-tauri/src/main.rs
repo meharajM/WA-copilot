@@ -767,14 +767,23 @@ fn spawn_agentd<R: Runtime>(app: &AppHandle<R>, data_dir: &PathBuf) -> Result<Ch
     let helper = resource_file(app, AGENTD_HELPER_RESOURCE)
         .or_else(|_| resource_file(app, "sidecar/aica-keyring-helper.exe"))?;
     let migration_reader = resource_file(app, AGENTD_MIGRATION_READER_RESOURCE)?;
+    let entry_directory = entry
+        .parent()
+        .ok_or_else(|| "Packaged agentd entrypoint directory unavailable".to_string())?;
+    let entry_name = entry
+        .file_name()
+        .ok_or_else(|| "Packaged agentd entrypoint name unavailable".to_string())?;
     let mut command = Command::new(runtime);
     command
-        .arg(entry)
+        // Keep the script argument relative to its resource directory. On
+        // Windows, passing a drive-qualified script path to a copied Node
+        // runtime can be parsed as the bare drive (`D:`) before Node starts.
+        .arg(entry_name)
         .env_clear()
         .env("AICA_AGENTD_DATA_DIR", data_dir)
         .env("AICA_AGENTD_KEYRING_HELPER", helper)
         .env("AICA_AGENTD_MIGRATION_READER", migration_reader)
-        .current_dir(data_dir)
+        .current_dir(entry_directory)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
