@@ -78,6 +78,13 @@ async function run() {
   const pageErrors = []
   page.on('pageerror', (error) => pageErrors.push(error.message))
 
+  // firstWindow resolves when BrowserWindow creates its WebContents, which can
+  // still be navigating to the packaged renderer. Wait for the initial document
+  // before touching storage so a slow Windows/macOS startup cannot destroy the
+  // evaluation context mid-call.
+  await page.waitForURL((url) => url.protocol === 'file:', { timeout: 30_000 })
+  await page.waitForLoadState('domcontentloaded')
+
   await page.evaluate(() => {
     localStorage.clear()
     sessionStorage.clear()
