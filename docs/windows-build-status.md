@@ -6,6 +6,7 @@ Date: 2026-09-20
 
 - `npm run build:tauri:web` passed.
 - `npm run build:tauri:win` reached the frontend build, then stopped before packaging.
+- The Windows package workflow passed both the Credential Manager round-trip smoke and migration-reader final-file/parent-junction reparse smoke.
 
 ## Windows runner result
 

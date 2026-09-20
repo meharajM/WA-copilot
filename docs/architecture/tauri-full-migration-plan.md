@@ -6,7 +6,7 @@ Updated: 2026-09-18
 
 Primary release platform: Windows. Every new native boundary must have a Windows implementation and CI/package evidence before it can be called production-ready; macOS smoke evidence is supplemental.
 
-Current release gate: the Windows package must stage `aica-keyring-helper.exe` and run the packaged Credential Manager write/read/exists/delete smoke before native credential continuity can be called verified. The smoke uses a scoped throwaway secret and never prints its bytes; a skipped non-Windows run is not evidence for the Windows gate.
+Windows package run [35521315367](https://github.com/meharajM/WA-copilot/actions/runs/35521315367) now stages `aica-keyring-helper.exe`, passes the packaged Credential Manager write/read/exists/delete smoke with a scoped throwaway secret, passes migration-reader final-file/parent-junction reparse smoke, and verifies NSIS/MSI output. Credential re-entry, chat-history continuity, signing, install/upgrade, and Electron retirement remain separate release gates.
 
 Current browser parity slice: Gmail Google Sign-In now runs through agentd's loopback PKCE callback. Agentd stores only the refresh token through the OS credential adapter, exposes status/start/sign-out routes to the browser, and owns bounded Gmail API inbox polling plus approved sends with optional bounded operator-selected MIME attachments. Electron Gmail behavior remains unchanged; custom MCP and Windows runtime evidence remain open gates.
 
@@ -54,12 +54,16 @@ Canonical product protocol decision: use the existing `agentd/server.cjs` loopba
 5. Renderer access is through a typed, allowlisted bridge. No generic shell/process/SQL/filesystem RPC and no renderer-selected executable or arbitrary command.
 6. Product credentials are stored and used only by `agentd` through its OS credential adapter; the Tauri companion's isolated slots are not the product secret store. The browser may submit a secret for storage and request presence/deletion through authenticated API routes, but never retrieves it. Secrets never move through general settings, logs, URLs, localStorage or persisted renderer state. Migration is a tested protected handoff or explicit reauthentication; no plaintext fallback.
 7. Data import is opt-in, backed up, versioned, validated, idempotent, and rollback-capable. Electron and Tauri never write the same live data files concurrently.
-   The settings/persona cutover additionally persists its state machine in agentd SQLite, drains in-flight generation/send work before external calls or commits, verifies backup hashes before rollback, and fails closed on platforms without no-follow/reparse-safe native file access. Windows continuity remains a release blocker until that native guarantee is shipped.
+   The settings/persona cutover additionally persists its state machine in agentd SQLite, drains in-flight generation/send work before external calls or commits, verifies backup hashes before rollback, and fails closed on platforms without no-follow/reparse-safe native file access. Windows package evidence now covers the migration-reader reparse smoke and Credential Manager round-trip; owner reauthentication and full continuity import remain separate gates.
 8. External integrations remain disabled by default in tests. Channel/network tests use fake providers or fixtures; real account pairing and sends require separate approval.
 9. Measure whole-process resource use, including Node and local-model children. Do not claim savings from WebView measurements alone.
 10. Do not remove Electron until all parity and release gates are evidenced on supported platforms.
 
 ## Current execution tasks
+
+### Execution record — Windows packaged security gates (2026-09-20)
+
+Windows Actions run [35521315367](https://github.com/meharajM/WA-copilot/actions/runs/35521315367) completed on the current migration branch. It built the x86_64 MSVC browser/native bundle, staged the migration reader and keyring helper, passed final-file/parent-junction reparse rejection, passed scoped Windows Credential Manager write/read/exists/delete round-trip, verified NSIS/MSI artifacts, and uploaded the unsigned installers. This closes packaged credential/reparse/resource evidence; owner reauthentication, chat-history cutover, signing, install/upgrade, resource budgets, and Electron retirement remain open.
 
 ### Execution record — companion crash recovery
 

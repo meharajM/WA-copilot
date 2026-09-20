@@ -20,7 +20,7 @@ It should be treated as a shared contract for both testers and developers.
 
 The 2026-09-18 audit found and corrected browser Email drift: the contract now distinguishes daemon mailbox ingestion from browser review-session hydration, explicitly excludes automatic browser replies, and documents the transport-specific credential slots plus the legacy fallback.
 
-The follow-up runtime-boundary audit also corrected the launch contract: Edge/Chrome has an explicit agentd readiness/pairing state machine, while the Electron dependency modal is no longer described as a browser startup requirement. Gemini is covered by the browser agentd provider slice, and explicit on-device/WebGPU execution is now available in the browser without changing the Tauri native-only boundary. WhatsApp browser UI state now lives in authenticated agentd settings with a one-time legacy renderer migration; the autonomous flag is never persisted or restored, and browser ingress remains gated only by Response Permission. Windows native diagnostics now includes an owner-triggered, least-privilege per-user sign-in service registration with bounded failure restart settings; installer enrollment and packaged Windows evidence remain release gates.
+The follow-up runtime-boundary audit also corrected the launch contract: Edge/Chrome has an explicit agentd readiness/pairing state machine, while the Electron dependency modal is no longer described as a browser startup requirement. Gemini is covered by the browser agentd provider slice, and explicit on-device/WebGPU execution is now available in the browser without changing the Tauri native-only boundary. WhatsApp browser UI state now lives in authenticated agentd settings with a one-time legacy renderer migration; the autonomous flag is never persisted or restored, and browser ingress remains gated only by Response Permission. Windows native diagnostics now includes an owner-triggered, least-privilege per-user sign-in service registration with bounded failure restart settings. Windows package run [35521315367](https://github.com/meharajM/WA-copilot/actions/runs/35521315367) passed staged resource verification, packaged Credential Manager round-trip smoke, and installer verification; signing, install/upgrade, and full parity evidence remain release gates.
 
 The 2026-09-20 WhatsApp follow-up audit moved inactivity resolution into agentd. Durable active sessions are swept every minute after ten minutes of silence; review mode creates one deterministic draft, Autonomous Bot Mode uses the existing approved outbox, and customer-last silence is logged once. Browser-side timers are disabled, so tab closure/reload cannot drop or duplicate follow-ups.
 
@@ -69,6 +69,7 @@ The older support-doc drift identified by the first audit is now corrected in th
 - `npm run build`
 - `npm run lint` (0 errors; existing warnings only)
 - `node --test tests/unit/*.test.cjs` (103 passed, 2 Windows-only skips)
+- `node --test tests/unit/windows-keyring-runtime.test.cjs tests/unit/windows-migration-reader-runtime.test.cjs` on the Windows package runner (Credential Manager and reparse smokes passed)
 - `npm run typecheck:renderer`
 - `npm run build:tauri:web -- --emptyOutDir`
 - `cargo test --manifest-path src-tauri/Cargo.toml --locked` (19 passed)

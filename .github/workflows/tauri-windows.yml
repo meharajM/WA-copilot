@@ -66,6 +66,9 @@ jobs:
       - name: Prepare Windows migration reader
         run: npm run prepare:agentd:migration-reader
 
+      - name: Run Windows migration reader reparse smoke
+        run: node --test tests/unit/windows-migration-reader-runtime.test.cjs
+
       - name: Prepare Windows keyring helper
         run: npm run prepare:agentd:keyring-helper
 
