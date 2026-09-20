@@ -603,16 +603,19 @@ export function SettingsPanel({ onClose, initialSection = 'whatsapp' }: Settings
                                         <FileText className="text-blue-400" size={24} />
                                     </div>
                                     <div>
-                                        <h4 className="font-medium mb-1 text-[var(--color-text-primary)]">Corporate Logging Enabled</h4>
+                                        <h4 className="font-medium mb-1 text-[var(--color-text-primary)]">
+                                            {browserRuntime ? 'Agentd audit logging' : 'Corporate Logging Enabled'}
+                                        </h4>
                                         <p className="text-sm text-[var(--color-text-secondary)]">
-                                            All chat sessions, prompts, and tool executions are logged to the local file system for auditing purposes.
-                                            Logs are strictly append-only.
+                                            {browserRuntime
+                                                ? 'Audit events are redacted before they are stored in agentd local SQLite state. Download a redacted NDJSON export; the browser never receives the database path.'
+                                                : 'All chat sessions, prompts, and tool executions are logged to the local file system for auditing purposes. Logs are strictly append-only.'}
                                         </p>
                                     </div>
                                 </div>
 
                                 <div className="bg-[var(--color-surface)] rounded-lg p-4 mb-4">
-                                    <label className="text-[10px] uppercase font-bold text-[var(--color-text-dim)] mb-2 block">Local Log Path</label>
+                                    <label className="text-[10px] uppercase font-bold text-[var(--color-text-dim)] mb-2 block">{browserRuntime ? 'Audit storage' : 'Local Log Path'}</label>
                                     <code className="text-xs text-[var(--color-text-primary)] font-mono break-all block select-all">
                                         {logPath || 'Loading...'}
                                     </code>

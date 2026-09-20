@@ -134,6 +134,15 @@ describe('browser-first UI boundary', () => {
     expect(bridge.indexOf('onComplete: completion')).toBeLessThan(bridge.indexOf('acknowledgeEmailInbound'))
   })
 
+  it('describes browser audit storage without claiming a native file path', () => {
+    const settings = readSource('components/SettingsPanel.tsx')
+
+    expect(settings).toContain("browserRuntime ? 'Agentd audit logging' : 'Corporate Logging Enabled'")
+    expect(settings).toContain('Audit events are redacted before they are stored in agentd local SQLite state')
+    expect(settings).toContain('the browser never receives the database path')
+    expect(settings).toContain("browserRuntime ? 'Audit storage' : 'Local Log Path'")
+  })
+
   it('keeps browser WhatsApp inbound generation replay-safe and routes autonomous sends through the outbox', () => {
     const agent = readSource('hooks/useAgent.ts')
     const bridge = readSource('hooks/useWhatsAppBridge.ts')
