@@ -49,7 +49,23 @@ try {
     if ($null -ne $descriptor) { break }
     Start-Sleep -Milliseconds 250
   }
-  Assert-Condition ($null -ne $descriptor) 'Native companion did not publish a valid private agentd descriptor'
+  if ($null -eq $descriptor) {
+    $processState = if ($null -eq $companion) {
+      'not-started'
+    } elseif ($companion.HasExited) {
+      "exited($($companion.ExitCode))"
+    } else {
+      'still-running'
+    }
+    $descriptorCandidates = @()
+    foreach ($root in $dataRoots) {
+      if (Test-Path -LiteralPath $root -PathType Container) {
+        $descriptorCandidates += @(Get-ChildItem -LiteralPath $root -Filter 'agentd.runtime.json' -File -Recurse -ErrorAction SilentlyContinue | ForEach-Object FullName)
+      }
+    }
+    $candidateText = if ($descriptorCandidates.Count) { $descriptorCandidates -join ', ' } else { 'none' }
+    throw "Native companion did not publish a valid private agentd descriptor (process=$processState; candidates=$candidateText)"
+  }
 
   $health = Invoke-WebRequest -Uri "$($descriptor.origin)/healthz" -UseBasicParsing -TimeoutSec 5
   Assert-Condition ($health.StatusCode -eq 200) "agentd health check returned HTTP $($health.StatusCode)"
