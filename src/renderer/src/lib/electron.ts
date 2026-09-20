@@ -80,6 +80,7 @@ const browserAutonomyHealth = async () => {
         executionLocation: 'agentd',
         transport: 'authenticated loopback HTTP',
         channel: { status: 'agentd-outbox', error: null },
+        extension: status.extension,
         queues: { whatsapp: status.queueDepth || 0, email: 0, meta: 0 },
         leaseHeld: true,
         memory: { status: memoryBackend ? 'bounded' : 'unavailable', backend: memoryBackend },

@@ -283,6 +283,13 @@ const readNativeHealth = (value: unknown): NativeHealth => {
   }
   if (value.recoveryMode !== undefined && typeof value.recoveryMode !== 'boolean') throw new Error('Invalid agentd recovery status response')
   if (value.recoveryReason !== undefined && value.recoveryReason !== null && typeof value.recoveryReason !== 'string') throw new Error('Invalid agentd recovery status response')
+  if (value.extension !== undefined) {
+    if (!isRecord(value.extension)
+      || !['disabled', 'connecting', 'connected', 'error'].includes(value.extension.status as string)
+      || !Number.isSafeInteger(value.extension.port) || value.extension.port < 1024 || value.extension.port > 65_535
+      || (value.extension.lastStatus !== null && typeof value.extension.lastStatus !== 'string')
+      || (value.extension.error !== null && typeof value.extension.error !== 'string')) throw new Error('Invalid agentd extension status response')
+  }
   return {
     status: 'ready',
     ...(typeof value.paused === 'boolean' ? { paused: value.paused } : {}),
@@ -290,6 +297,14 @@ const readNativeHealth = (value: unknown): NativeHealth => {
     ...(value.recoveryReason === null || typeof value.recoveryReason === 'string' ? { recoveryReason: value.recoveryReason as string | null } : {}),
     ...(typeof value.queueDepth === 'number' ? { queueDepth: value.queueDepth } : {}),
     ...(typeof value.events === 'number' ? { events: value.events } : {}),
+    ...(isRecord(value.extension) ? {
+      extension: {
+        status: value.extension.status as NonNullable<NativeHealth['extension']>['status'],
+        port: value.extension.port as number,
+        lastStatus: value.extension.lastStatus as string | null,
+        error: value.extension.error as string | null,
+      },
+    } : {}),
   }
 }
 

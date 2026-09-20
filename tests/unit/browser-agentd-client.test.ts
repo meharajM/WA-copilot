@@ -664,7 +664,7 @@ describe('browser agentd client', () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
       if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
-      if (url.endsWith('/api/v1/status')) return response({ runtime: 'agentd', paused: true, recoveryMode: true, recoveryReason: 'owner review', queueDepth: 2, events: 1 })
+      if (url.endsWith('/api/v1/status')) return response({ runtime: 'agentd', paused: true, recoveryMode: true, recoveryReason: 'owner review', queueDepth: 2, events: 1, extension: { status: 'connected', port: 8790, lastStatus: 'connected', error: null } })
       if (url.endsWith('/api/v1/pause-all')) return response({ paused: true, actor: 'browser' })
       if (url.endsWith('/api/v1/resume-all')) return response({ paused: false, actor: 'browser' })
       if (url.includes('/api/v1/drafts?')) return response({ drafts: [{ id: 7, channel: 'whatsapp', providerEventId: 'evt-7', conversationId: 'customer-7', responseText: 'draft reply', status: 'draft', createdAt: 10, updatedAt: 20 }] })
@@ -673,7 +673,7 @@ describe('browser agentd client', () => {
     })
     const client = createBrowserAgentdClient({ origin: 'http://127.0.0.1:4141', fetch: fetcher })
     await client.pair('123456')
-    await expect(client.status()).resolves.toMatchObject({ paused: true, recoveryMode: true, recoveryReason: 'owner review', queueDepth: 2 })
+    await expect(client.status()).resolves.toMatchObject({ paused: true, recoveryMode: true, recoveryReason: 'owner review', queueDepth: 2, extension: { status: 'connected', port: 8790 } })
     await expect(client.resumeAll()).resolves.toEqual({ paused: false })
     await expect(client.listDrafts()).resolves.toMatchObject([{ providerEventId: 'evt-7', status: 'draft' }])
     await expect(client.updateDraftStatus(7, 'approved')).resolves.toMatchObject({ id: 7, status: 'approved' })

@@ -40,6 +40,7 @@ await cp(join(projectRoot, 'agentd', 'keyring-credential-store.cjs'), join(stage
 await cp(join(projectRoot, 'agentd', 'gmail-oauth.cjs'), join(stageRoot, 'gmail-oauth.cjs'))
 await cp(join(projectRoot, 'agentd', 'gmail-api.cjs'), join(stageRoot, 'gmail-api.cjs'))
 await cp(join(projectRoot, 'agentd', 'whatsapp-baileys.cjs'), join(stageRoot, 'whatsapp-baileys.cjs'))
+await cp(join(projectRoot, 'agentd', 'whatsapp-extension-bridge.cjs'), join(stageRoot, 'whatsapp-extension-bridge.cjs'))
 await cp(join(projectRoot, 'agentd', 'continuity-migration.cjs'), join(stageRoot, 'continuity-migration.cjs'))
 await cp(join(projectRoot, 'agentd', 'email-mime.cjs'), join(stageRoot, 'email-mime.cjs'))
 await cp(join(projectRoot, 'agentd', 'email-attachment-safety.cjs'), join(stageRoot, 'email-attachment-safety.cjs'))

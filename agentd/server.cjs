@@ -11,6 +11,7 @@ const { isPublicCredentialKey } = require('./keyring-credential-store.cjs')
 const { GmailOAuthService } = require('./gmail-oauth.cjs')
 const { GmailInboundWorker, pollGmail } = require('./gmail-api.cjs')
 const { WhatsAppBaileysService, isSupportedMediaMime } = require('./whatsapp-baileys.cjs')
+const { WhatsAppExtensionBridge } = require('./whatsapp-extension-bridge.cjs')
 const continuityMigration = require('./continuity-migration.cjs')
 const { sendTextEmail } = require('./email-transport.cjs')
 const { EmailInboundWorker, pollMailbox } = require('./email-inbound-worker.cjs')
@@ -520,7 +521,7 @@ function whatsappInactivityProviderEventId(sessionId, messageId) {
 }
 
 class AgentdServer {
-  constructor({ dataDir, secret, uiRoot = null, logger = console, pairingCode = null, credentials = null, providerFetch = fetch, emailProbe = probeEmailTransport, emailSend = sendTextEmail, emailPoll = undefined, gmailPoll: configuredGmailPoll = undefined, whatsappService = null, mcpWorker = null } = {}) {
+  constructor({ dataDir, secret, uiRoot = null, logger = console, pairingCode = null, credentials = null, providerFetch = fetch, emailProbe = probeEmailTransport, emailSend = sendTextEmail, emailPoll = undefined, gmailPoll: configuredGmailPoll = undefined, whatsappService = null, whatsappExtensionBridge = null, mcpWorker = null } = {}) {
     if (!secret || typeof secret !== 'string' || secret.length < 32) throw new Error('A per-install bearer secret of at least 32 characters is required')
     this.dataDir = resolveDataDir(dataDir)
     this.whatsappMediaDir = path.join(this.dataDir, 'whatsapp-media')
@@ -547,6 +548,11 @@ class AgentdServer {
         if (this.db) this.setState('whatsapp_connection_state', JSON.stringify(state))
       },
       onMessage: message => this.ingestWhatsAppServiceMessage(message),
+    })
+    this.whatsappExtensionBridge = whatsappExtensionBridge || new WhatsAppExtensionBridge({
+      logger,
+      allowMessage: message => this.allowsWhatsAppExtensionMessage(message),
+      onMessage: message => this.ingestWhatsAppExtensionMessage(message),
     })
     this.server = null
     this.db = null
@@ -853,6 +859,11 @@ class AgentdServer {
       this.startedAt = Date.now()
       this.writePairingCode()
       this.writeRuntimeDescriptor()
+      try {
+        await this.whatsappExtensionBridge.start()
+      } catch (error) {
+        this.logger.warn?.('[agentd] WhatsApp Web extension bridge failed to start', { error: error instanceof Error ? error.message : 'unknown error' })
+      }
       this.startEmailInboundPolling()
       this.startWhatsAppInactivityAudit()
       this.logger.log(`[agentd] listening at ${this.origin}`)
@@ -962,6 +973,7 @@ class AgentdServer {
     this.stopEmailInboundPolling()
     await this.stopWhatsAppInactivityAudit()
     try { await this.mcpWorker?.closeAll() } catch {}
+    try { await this.whatsappExtensionBridge?.stop() } catch {}
     try { await this.whatsappBaileys?.disconnect(false) } catch {}
     if (this.server) await new Promise(resolve => this.server.close(() => resolve()))
     this.server = null
@@ -1313,6 +1325,7 @@ class AgentdServer {
         paused: this.getState('paused', 'true') === 'true',
         recoveryMode,
         recoveryReason: recoveryMode ? this.getState('recovery_reason', '') || null : null,
+        extension: this.whatsappExtensionBridge?.getState?.() || { status: 'disabled', port: 8790, lastStatus: null, error: null },
         queueDepth: this.db.prepare("SELECT COUNT(*) AS count FROM inbound_events WHERE status IN ('queued','processing')").get().count,
         events: this.db.prepare('SELECT COUNT(*) AS count FROM inbound_events').get().count,
       })
@@ -4183,6 +4196,34 @@ class AgentdServer {
     } catch {
       if (wroteMedia) try { fs.unlinkSync(path.join(this.whatsappMediaDir, storedMedia.storageName)) } catch {}
     }
+  }
+
+  allowsWhatsAppExtensionMessage(message) {
+    if (this.migrationHold || !message || typeof message.from !== 'string' || !message.from.trim()) return false
+    let transport = null
+    let ui = null
+    try { transport = parseWhatsAppSettings(JSON.parse(this.getState('whatsapp_settings', 'null'))) } catch {}
+    try { ui = parseWhatsAppUiSettings(JSON.parse(this.getState('whatsapp_ui_settings', 'null'))) } catch {}
+    // Web ingress is opt-in and never piggybacks on the default Baileys path.
+    if (transport?.whatsapp_transport !== 'web' || ui?.whatsappEnabled !== true) return false
+    if (message.from.length > 256 || /[\0\r\n]/.test(message.from)) return false
+    if (typeof message.to === 'string' && message.to.length > 256) return false
+    return true
+  }
+
+  ingestWhatsAppExtensionMessage(message) {
+    if (!this.allowsWhatsAppExtensionMessage(message)) return false
+    this.ingestWhatsAppServiceMessage({
+      providerEventId: `web:${message.id}`,
+      conversationId: message.from,
+      from: message.from,
+      to: message.to || '',
+      content: message.content,
+      timestamp: message.timestamp,
+      type: 'text',
+      isFromMe: false,
+    })
+    return true
   }
 
   whatsappInboundMedia(req, res, providerEventId) {

@@ -74,6 +74,7 @@ export async function verifyTauriResources({
     join(sidecar, 'agentd-http', 'email-transport.cjs'),
     join(sidecar, 'agentd-http', 'email-inbound-worker.cjs'),
     join(sidecar, 'agentd-http', 'mcp-worker.cjs'),
+    join(sidecar, 'agentd-http', 'whatsapp-extension-bridge.cjs'),
     join(sidecar, 'agentd-http', 'keyring-credential-store.cjs'),
     join(betterSqliteRoot, 'package.json'),
     join(sidecar, 'agentd-http', 'node_modules', 'bindings', 'package.json'),
