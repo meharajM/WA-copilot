@@ -60,13 +60,11 @@ const defaultInvoke: Invoke = async <T>(command: string, args?: Record<string, u
 
 const defaultDependencies: TauriBridgeDependencies = { invoke: defaultInvoke }
 
-const SUPPORTED_CREDENTIAL_KEYS = [
-  'openai_api_key',
-  'openrouter_api_key',
-  'whatsapp_cloud_access_token',
-  'whatsapp_cloud_app_secret',
-  'whatsapp_cloud_verify_token',
-] as const
+// Keep native presence/write-only operations aligned with agentd's public
+// credential allowlist. Internal OAuth refresh material is deliberately not
+// part of shared `credentialKeys` and can only be managed by the Gmail OAuth
+// flow.
+const SUPPORTED_CREDENTIAL_KEYS = credentialKeys
 
 const CREDENTIAL_CONTINUITY_KEYS = new Set([
   'openai_api_key',

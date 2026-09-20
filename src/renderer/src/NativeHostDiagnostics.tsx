@@ -4,7 +4,15 @@ import { tauriNativeBridge, type NativeChatHistoryCutover, type NativeContinuity
 
 const CREDENTIALS: Array<{ key: CredentialKey; label: string }> = [
   { key: 'openai_api_key', label: 'OpenAI key' },
+  { key: 'gemini_api_key', label: 'Gemini key' },
   { key: 'openrouter_api_key', label: 'OpenRouter key' },
+  { key: 'email_mcp_password', label: 'Email legacy password' },
+  { key: 'email_imap_password', label: 'Email IMAP password' },
+  { key: 'email_smtp_password', label: 'Email SMTP password' },
+  { key: 'gmail_oauth_client_id', label: 'Gmail OAuth client ID' },
+  { key: 'whatsapp_cloud_access_token', label: 'WhatsApp Cloud access token' },
+  { key: 'whatsapp_cloud_app_secret', label: 'WhatsApp Cloud app secret' },
+  { key: 'whatsapp_cloud_verify_token', label: 'WhatsApp Cloud verify token' },
 ]
 
 const messageFrom = (error: unknown, fallback: string): string => (

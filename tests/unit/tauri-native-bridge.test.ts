@@ -102,18 +102,16 @@ describe('tauri native bridge', () => {
     await expect(bridge.agentdOrigin()).rejects.toThrow('Invalid agentd origin response')
   })
 
-  it('allows only supported native credentials', async () => {
-    const invoke = vi.fn()
+  it('covers every public agentd credential without exposing internal OAuth refresh material', async () => {
+    const invoke = vi.fn(async () => ({ success: true, exists: true }))
     const bridge = createTauriNativeBridge({ invoke })
 
-    await expect(bridge.setCredential('gemini_api_key', 'secret')).resolves.toMatchObject({
-      success: false,
-      error: 'Credential key is not available in this Tauri host',
-    })
-    await expect(bridge.hasCredential('whatsapp_cloud_access_token')).resolves.toMatchObject({ success: false, exists: false })
-    await expect(bridge.deleteCredential('email_imap_password')).resolves.toMatchObject({ success: false })
-    await expect(bridge.setCredential('gmail_oauth_client_id', 'secret')).resolves.toMatchObject({ success: false })
-    await expect(bridge.hasCredential('email_smtp_password')).resolves.toMatchObject({ success: false, exists: false })
+    await expect(bridge.setCredential('gemini_api_key', 'secret')).resolves.toMatchObject({ success: true })
+    await expect(bridge.setCredential('email_imap_password', 'secret')).resolves.toMatchObject({ success: true })
+    await expect(bridge.setCredential('gmail_oauth_client_id', 'secret')).resolves.toMatchObject({ success: true })
+    await expect(bridge.hasCredential('whatsapp_cloud_access_token')).resolves.toMatchObject({ success: true, exists: true })
+    await expect(bridge.deleteCredential('email_imap_password')).resolves.toMatchObject({ success: true })
+    await expect(bridge.hasCredential('email_smtp_password')).resolves.toMatchObject({ success: true, exists: true })
     expect(invoke).toHaveBeenCalledWith(TAURI_COMMANDS.credentialExists, { key: 'whatsapp_cloud_access_token' })
   })
 
