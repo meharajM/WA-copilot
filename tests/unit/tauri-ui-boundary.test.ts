@@ -221,6 +221,14 @@ describe('browser-first UI boundary', () => {
     expect(drafts).not.toContain('IMAP polling, OAuth, attachments, and insecure SMTP remain unavailable.')
   })
 
+  it('keeps generic browser WhatsApp tools on authenticated agentd or explicit fail-closed paths', () => {
+    const mcp = readSource('lib/mcp.ts')
+    expect(mcp).toContain("if (isBrowserProduct()) {")
+    expect(mcp).toContain("getBrowserAgentdClient().sendWhatsAppText(targetJid, content)")
+    expect(mcp).toContain('Browser WhatsApp media tools require the authenticated attachment route')
+    expect(mcp).toContain('Browser WhatsApp admin escalation is daemon-owned')
+  })
+
   it('routes legacy WhatsApp wrapper calls through authenticated agentd in browsers', () => {
     const electron = readSource('lib/electron.ts')
     expect(electron).toContain('getBrowserAgentdClient().connectWhatsApp(phoneNumber)')
