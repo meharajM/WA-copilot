@@ -48,6 +48,7 @@ const WHATSAPP_INACTIVITY_SWEEP_MS = 60 * 1000
 const WHATSAPP_RESOLUTION_PROMPT = "It's been a while! Just checking in—did that resolve your inquiry? (Reply 'Yes' or 'No', or feel free to ask more questions!)"
 const OUTBOX_QUARANTINED_ERROR = 'Quarantined by operator'
 const OUTBOX_CANCELLED_ERROR = 'Cancelled by operator'
+const OUTBOX_CANCEL_REQUESTED_ERROR = 'Cancellation requested by operator'
 const AUTONOMY_NOTIFICATION_KINDS = Object.freeze(['failure', 'budget', 'recovery', 'escalation_sla_overdue'])
 const CONTINUITY_CREDENTIAL_KEYS = Object.freeze([
   'openai_api_key',
@@ -633,6 +634,7 @@ class AgentdServer {
           status TEXT NOT NULL CHECK(status IN ('pending','sent','failed')) DEFAULT 'pending',
           provider_message_id TEXT,
           error TEXT,
+          cancel_requested INTEGER NOT NULL DEFAULT 0,
           attempts INTEGER NOT NULL DEFAULT 0,
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL
@@ -811,6 +813,8 @@ class AgentdServer {
       if (!sessionColumns.some((column) => column.name === 'metadata')) this.db.exec('ALTER TABLE chat_sessions ADD COLUMN metadata TEXT')
       const chatCutoverColumns = this.db.prepare('PRAGMA table_info(chat_history_cutovers)').all()
       if (!chatCutoverColumns.some((column) => column.name === 'source_hash')) this.db.exec('ALTER TABLE chat_history_cutovers ADD COLUMN source_hash TEXT')
+      const outboxColumns = this.db.prepare('PRAGMA table_info(whatsapp_outbox)').all()
+      if (!outboxColumns.some((column) => column.name === 'cancel_requested')) this.db.exec('ALTER TABLE whatsapp_outbox ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0')
       this.db.prepare('INSERT INTO agent_state(key,value,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO NOTHING').run('paused', 'false', Date.now())
       this.db.prepare('INSERT INTO agent_state(key,value,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO NOTHING').run('recovery_mode', 'false', Date.now())
       this.db.prepare('INSERT INTO agent_state(key,value,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO NOTHING').run('recovery_reason', '', Date.now())
@@ -4225,7 +4229,7 @@ class AgentdServer {
 
   draftView(row) {
     if (!row) return null
-    const outbox = this.db.prepare('SELECT status,provider_message_id,error,attempts FROM whatsapp_outbox WHERE draft_id = ?').get(row.id)
+    const outbox = this.db.prepare('SELECT status,provider_message_id,error,cancel_requested,attempts FROM whatsapp_outbox WHERE draft_id = ?').get(row.id)
     return {
       id: row.id,
       channel: row.channel,
@@ -4238,7 +4242,7 @@ class AgentdServer {
       ...(outbox ? {
         sendStatus: outbox.status,
         ...(typeof outbox.provider_message_id === 'string' ? { providerMessageId: outbox.provider_message_id } : {}),
-        ...(typeof outbox.error === 'string' ? { sendError: outbox.error } : {}),
+        ...(outbox.cancel_requested ? { sendError: OUTBOX_CANCEL_REQUESTED_ERROR, sendCancellationRequested: true } : (typeof outbox.error === 'string' ? { sendError: outbox.error } : {})),
         sendAttempts: outbox.attempts,
       } : {}),
     }
@@ -4299,7 +4303,7 @@ class AgentdServer {
       if (existing?.status === 'sent' && existing.provider_message_id) {
         return { status: 200, body: { success: true, duplicate: true, providerMessageId: existing.provider_message_id, draft: this.draftView(draft) } }
       }
-      if (existing?.status === 'pending') return { status: 409, body: { error: 'WhatsApp send is already pending' } }
+      if (existing?.status === 'pending') return { status: 409, body: { error: existing.cancel_requested ? OUTBOX_CANCEL_REQUESTED_ERROR : 'WhatsApp send is already pending' } }
 
       const now = Date.now()
       const claimed = this.db.transaction(() => {
@@ -4319,22 +4323,30 @@ class AgentdServer {
       if (claimed.sent) return { status: 200, body: { success: true, duplicate: true, providerMessageId: claimed.sent.provider_message_id, draft: this.draftView(draft) } }
       if (claimed.pending) return { status: 409, body: { error: 'WhatsApp send is already pending' } }
 
+      const cancellation = this.db.prepare('SELECT cancel_requested FROM whatsapp_outbox WHERE draft_id = ?').get(id)
+      if (cancellation?.cancel_requested) {
+        this.db.prepare("UPDATE whatsapp_outbox SET status = 'failed', error = ?, cancel_requested = 0, updated_at = ? WHERE draft_id = ? AND status = 'pending'").run(OUTBOX_CANCELLED_ERROR, Date.now(), id)
+        return { status: 409, body: { success: false, error: OUTBOX_CANCELLED_ERROR, draft: this.draftView(this.db.prepare('SELECT * FROM whatsapp_drafts WHERE id = ?').get(id)) } }
+      }
+
       // Inbound conversation IDs may be stored as `+15551234567` or as a
       // WhatsApp JID. Strip only the known JID suffix; never guess a recipient.
       const recipient = draft.conversation_id.replace(/@s\.whatsapp\.net$/i, '')
       this.assertMigrationOpen()
       const { providerMessageId } = await this.sendWhatsAppConfiguredMessage(recipient, draft.response_text)
       this.db.transaction(() => {
-        this.db.prepare("UPDATE whatsapp_outbox SET status = 'sent', provider_message_id = ?, error = NULL, updated_at = ? WHERE draft_id = ?").run(providerMessageId, Date.now(), id)
+        this.db.prepare("UPDATE whatsapp_outbox SET status = 'sent', provider_message_id = ?, error = NULL, cancel_requested = 0, updated_at = ? WHERE draft_id = ?").run(providerMessageId, Date.now(), id)
         this.db.prepare("UPDATE whatsapp_drafts SET status = 'sent', updated_at = ? WHERE id = ? AND status = 'approved'").run(Date.now(), id)
       })()
       return { status: 200, body: { success: true, duplicate: false, providerMessageId, draft: this.draftView(this.db.prepare('SELECT * FROM whatsapp_drafts WHERE id = ?').get(id)) } }
     } catch (error) {
       const message = Number.isInteger(error?.statusCode) && error.statusCode !== 502 ? error.message : 'WhatsApp message failed'
-      this.db.prepare("UPDATE whatsapp_outbox SET status = 'failed', error = ?, updated_at = ? WHERE draft_id = ?").run(message, Date.now(), id)
-      this.createAutonomyNotification('failure', { channel: 'whatsapp', operation: 'send', draftId: id, message })
+      const cancellation = this.db.prepare('SELECT cancel_requested FROM whatsapp_outbox WHERE draft_id = ?').get(id)
+      const finalMessage = cancellation?.cancel_requested ? OUTBOX_CANCELLED_ERROR : message
+      this.db.prepare("UPDATE whatsapp_outbox SET status = 'failed', error = ?, cancel_requested = 0, updated_at = ? WHERE draft_id = ?").run(finalMessage, Date.now(), id)
+      this.createAutonomyNotification('failure', { channel: 'whatsapp', operation: 'send', draftId: id, message: finalMessage })
       const statusCode = Number.isInteger(error?.statusCode) ? error.statusCode : 502
-      return { status: statusCode, body: { success: false, error: message } }
+      return { status: statusCode, body: { success: false, error: finalMessage } }
     } finally {
       releaseOperation()
     }
@@ -4387,7 +4399,14 @@ class AgentdServer {
     const outbox = this.db.prepare('SELECT status,error FROM whatsapp_outbox WHERE draft_id = ?').get(id)
     if (!outbox) return json(res, 409, { error: 'Draft has no outbound attempt to dispose' })
     if (outbox.status === 'sent') return json(res, 409, { error: 'Sent drafts cannot be disposed' })
-    if (outbox.status === 'pending') return json(res, 409, { error: 'Pending sends cannot be disposed while provider work is active' })
+    if (outbox.status === 'pending') {
+      if (disposition !== OUTBOX_CANCELLED_ERROR) return json(res, 409, { error: 'Pending sends cannot be quarantined while provider work is active' })
+      const updated = this.db.prepare(`UPDATE whatsapp_outbox
+        SET cancel_requested = 1, error = ?, updated_at = ?
+        WHERE draft_id = ? AND status = 'pending' AND cancel_requested = 0`).run(OUTBOX_CANCEL_REQUESTED_ERROR, Date.now(), id)
+      if (updated.changes === 0) return json(res, 409, { error: 'Draft outbox cancellation was already requested' })
+      return json(res, 202, this.draftView(this.db.prepare('SELECT * FROM whatsapp_drafts WHERE id = ?').get(id)))
+    }
     if (outbox.status !== 'failed') return json(res, 409, { error: 'Draft outbox is not disposable' })
     if (outbox.error === OUTBOX_QUARANTINED_ERROR || outbox.error === OUTBOX_CANCELLED_ERROR) {
       if (outbox.error !== disposition) return json(res, 409, { error: 'Draft outbox already has an operator disposition' })

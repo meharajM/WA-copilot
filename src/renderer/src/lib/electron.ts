@@ -563,12 +563,12 @@ export const electron = {
         resume: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.resume() : (isBrowserProduct() ? getBrowserAgentdClient().resumeAll().then(browserAutonomyState) : null),
         enterRecoveryMode: async (reason?: string) => {
             if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.enterRecoveryMode(reason)
-            if (isBrowserProduct()) return getBrowserAgentdClient().enterRecoveryMode(reason)
+            if (isBrowserProduct()) return getBrowserAgentdClient().enterRecoveryMode(reason).then(browserAutonomyState)
             return null
         },
         clearRecoveryMode: async () => {
             if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.clearRecoveryMode()
-            if (isBrowserProduct()) return getBrowserAgentdClient().clearRecoveryMode()
+            if (isBrowserProduct()) return getBrowserAgentdClient().clearRecoveryMode().then(browserAutonomyState)
             return null
         },
         stageBackup: async (backupPath: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.stageBackup(backupPath) : null,

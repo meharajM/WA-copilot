@@ -594,6 +594,7 @@ export interface BrowserDraft {
   sendStatus?: 'pending' | 'sent' | 'failed'
   providerMessageId?: string
   sendError?: string
+  sendCancellationRequested?: boolean
   sendAttempts?: number
 }
 
@@ -1444,6 +1445,7 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
       || (value.sendStatus !== undefined && !['pending', 'sent', 'failed'].includes(value.sendStatus as string))
       || (value.providerMessageId !== undefined && typeof value.providerMessageId !== 'string')
       || (value.sendError !== undefined && typeof value.sendError !== 'string')
+      || (value.sendCancellationRequested !== undefined && typeof value.sendCancellationRequested !== 'boolean')
       || (value.sendAttempts !== undefined && (!Number.isSafeInteger(value.sendAttempts) || (value.sendAttempts as number) < 0))) throw new Error('Invalid agentd draft response')
     return value as unknown as BrowserDraft
   }

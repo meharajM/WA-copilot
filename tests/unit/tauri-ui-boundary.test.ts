@@ -292,6 +292,8 @@ describe('browser-first UI boundary', () => {
     const client = readSource('lib/browser-agentd-client.ts')
     expect(electron).toContain('getBrowserAgentdClient().enterRecoveryMode(reason)')
     expect(electron).toContain('getBrowserAgentdClient().clearRecoveryMode()')
+    expect(electron).toContain('enterRecoveryMode(reason).then(browserAutonomyState)')
+    expect(electron).toContain('clearRecoveryMode().then(browserAutonomyState)')
     expect(client).toContain('/api/v1/autonomy/recovery/enter')
     expect(client).toContain('/api/v1/autonomy/recovery/clear')
   })

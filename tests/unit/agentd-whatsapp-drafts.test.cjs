@@ -232,6 +232,46 @@ test('failed browser outbox attempts support retry and explicit operator disposi
   await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true })
 })
 
+test('pending browser outbox cancellation is durable and provider-authoritative', async () => {
+  const dataDir = makeTempDir('aica-agentd-wa-pending-cancel-')
+  const secret = 'p'.repeat(32)
+  let releaseProvider
+  let providerStarted
+  const providerReady = new Promise(resolve => { providerStarted = resolve })
+  const server = new AgentdServer({
+    dataDir,
+    secret,
+    credentials: { async get() { return 'cloud-secret-token' }, async exists() { return true } },
+    providerFetch: async () => {
+      providerStarted()
+      return new Promise(resolve => { releaseProvider = resolve })
+    },
+    logger: { log() {} },
+  })
+  const { origin } = await server.start()
+  const auth = { authorization: `Bearer ${secret}` }
+  await request(origin, 'PUT', '/api/v1/settings/whatsapp', { whatsapp_transport: 'cloud', whatsapp_cloud_phone_number_id: '1234567890', whatsapp_cloud_api_version: 'v23.0' }, auth)
+  const created = await request(origin, 'POST', '/api/v1/whatsapp/events', { channel: 'whatsapp', providerEventId: 'pending-cancel', conversationId: '14155551212@s.whatsapp.net', payload: {}, draftText: 'pending reply' }, auth)
+  assert.equal(created.status, 202)
+  const draft = (await request(origin, 'GET', '/api/v1/whatsapp/drafts?status=draft', undefined, auth)).body.drafts[0]
+  assert.equal((await request(origin, 'PATCH', `/api/v1/whatsapp/drafts/${draft.id}`, { status: 'approved' }, auth)).status, 200)
+  const sending = request(origin, 'POST', `/api/v1/whatsapp/drafts/${draft.id}/send`, {}, auth)
+  await providerReady
+  const cancel = await request(origin, 'POST', `/api/v1/whatsapp/drafts/${draft.id}/cancel`, {}, auth)
+  assert.equal(cancel.status, 202)
+  assert.equal(cancel.body.sendStatus, 'pending')
+  assert.equal(cancel.body.sendCancellationRequested, true)
+  assert.equal(cancel.body.sendError, 'Cancellation requested by operator')
+  releaseProvider(new Response(JSON.stringify({ messages: [{ id: 'wamid.cancel-race' }] }), { status: 200, headers: { 'content-type': 'application/json' } }))
+  const sent = await sending
+  assert.equal(sent.status, 200)
+  assert.equal(sent.body.providerMessageId, 'wamid.cancel-race')
+  const finalDraft = (await request(origin, 'GET', `/api/v1/whatsapp/drafts/${draft.id}`, undefined, auth)).body
+  assert.equal(finalDraft.sendStatus, 'sent')
+  assert.equal(finalDraft.sendCancellationRequested, undefined)
+  await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true })
+})
+
 test('draft send acquires migration admission before claiming the outbox', async () => {
   const dataDir = makeTempDir('aica-agentd-wa-claim-fence-')
   const secret = 'q'.repeat(32)
