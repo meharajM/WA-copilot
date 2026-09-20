@@ -23,6 +23,7 @@ import { readGeneration, readMessage, readSession } from './tauri-chat-client'
 /** Keep browser knowledge imports below agentd's JSON/content limit before reading them into memory. */
 export const MAX_BROWSER_KNOWLEDGE_CONTENT_BYTES = 512 * 1024
 export const MAX_BROWSER_KNOWLEDGE_FILE_BYTES = 16 * 1024 * 1024
+export const MAX_BROWSER_WHATSAPP_MEDIA_BYTES = 8 * 1024 * 1024
 
 export async function readBrowserKnowledgeFile(file: File): Promise<{ content: string; size: number; fileType: string }> {
   if (file.size > MAX_BROWSER_KNOWLEDGE_FILE_BYTES) {
@@ -40,6 +41,17 @@ export async function readBrowserKnowledgeBinaryFile(file: File): Promise<{ data
   if (file.size > MAX_BROWSER_KNOWLEDGE_FILE_BYTES) {
     throw new Error('Browser knowledge files must be 16 MB or smaller')
   }
+  const bytes = new Uint8Array(await file.arrayBuffer())
+  let binary = ''
+  const chunkSize = 0x8000
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, Math.min(offset + chunkSize, bytes.length)))
+  }
+  return { dataBase64: btoa(binary), size: file.size, fileType: file.type || 'application/octet-stream' }
+}
+
+export async function readBrowserWhatsAppMediaFile(file: File): Promise<{ dataBase64: string; size: number; fileType: string }> {
+  if (file.size > MAX_BROWSER_WHATSAPP_MEDIA_BYTES) throw new Error('WhatsApp media files must be 8 MB or smaller')
   const bytes = new Uint8Array(await file.arrayBuffer())
   let binary = ''
   const chunkSize = 0x8000
@@ -706,6 +718,7 @@ export interface BrowserAgentdClient extends ChatClient {
   disconnectWhatsApp(clearAuth?: boolean): Promise<BrowserWhatsAppConnectionState>
   setWhatsAppTarget(phoneNumber: string): Promise<{ success: boolean; error?: string; handshakeCode?: string }>
   sendWhatsAppText(to: string, text: string): Promise<BrowserWhatsAppSendResult>
+  sendWhatsAppMedia(to: string, media: { fileName: string; mimeType: string; size: number; dataBase64: string; type: 'image' | 'video' | 'audio' | 'document'; caption?: string }): Promise<BrowserWhatsAppSendResult>
   getOllamaSettings(): Promise<BrowserOllamaSettings>
   saveOllamaSettings(settings: BrowserOllamaSettings): Promise<BrowserOllamaSettings>
   testOllama(): Promise<BrowserOllamaTestResult>
@@ -1071,6 +1084,12 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     if (!isRecord(value) || value.success !== true || typeof value.providerMessageId !== 'string' || !value.providerMessageId) throw new Error('Invalid WhatsApp send response')
     return { providerMessageId: value.providerMessageId }
   }
+  const sendWhatsAppMedia = async (to: string, media: { fileName: string; mimeType: string; size: number; dataBase64: string; type: 'image' | 'video' | 'audio' | 'document'; caption?: string }): Promise<BrowserWhatsAppSendResult> => {
+    if (!to.trim() || !media.fileName.trim() || !media.mimeType.trim() || !media.dataBase64 || media.size < 1) throw new Error('WhatsApp recipient and media are required')
+    const value = await request<unknown>('/api/v1/whatsapp/media', { method: 'POST', body: JSON.stringify({ to, ...media, caption: media.caption || '' }) }, true)
+    if (!isRecord(value) || value.success !== true || typeof value.providerMessageId !== 'string' || !value.providerMessageId) throw new Error('Invalid WhatsApp media send response')
+    return { providerMessageId: value.providerMessageId }
+  }
   const createWhatsAppDraft = async (event: { providerEventId: string; conversationId: string; payload: Record<string, unknown>; draftText: string }): Promise<BrowserWhatsAppDraftResult> => {
     const value = await request<unknown>('/api/v1/whatsapp/events', {
       method: 'POST',
@@ -1423,6 +1442,7 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     disconnectWhatsApp,
     setWhatsAppTarget,
     sendWhatsAppText,
+    sendWhatsAppMedia,
     createWhatsAppDraft,
     getOllamaSettings,
     saveOllamaSettings,

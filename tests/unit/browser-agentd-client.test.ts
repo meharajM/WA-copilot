@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createBrowserAgentdClient, readBrowserKnowledgeBinaryFile, readBrowserKnowledgeFile } from '../../src/renderer/src/lib/browser-agentd-client'
+import { createBrowserAgentdClient, readBrowserKnowledgeBinaryFile, readBrowserKnowledgeFile, readBrowserWhatsAppMediaFile } from '../../src/renderer/src/lib/browser-agentd-client'
 
 const response = (body: unknown, status = 200, headers?: HeadersInit) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...headers } })
 
@@ -20,6 +20,15 @@ describe('browser agentd client', () => {
       arrayBuffer: async () => Uint8Array.from([1, 2, 3]).buffer,
     } as unknown as File
     await expect(readBrowserKnowledgeBinaryFile(file)).resolves.toEqual({ dataBase64: 'AQID', size: 3, fileType: 'application/pdf' })
+  })
+
+  it('bounds WhatsApp media and encodes browser bytes', async () => {
+    const file = {
+      name: 'receipt.png', type: 'image/png', size: 3,
+      arrayBuffer: async () => Uint8Array.from([1, 2, 3]).buffer,
+    } as unknown as File
+    await expect(readBrowserWhatsAppMediaFile(file)).resolves.toEqual({ dataBase64: 'AQID', size: 3, fileType: 'image/png' })
+    await expect(readBrowserWhatsAppMediaFile({ ...file, size: 8 * 1024 * 1024 + 1 } as unknown as File)).rejects.toThrow('8 MB or smaller')
   })
 
   it('pairs with HttpOnly session cookies and sends CSRF only for mutations', async () => {
@@ -477,6 +486,27 @@ describe('browser agentd client', () => {
     await expect(client.sendWhatsAppText('+1 (415) 555-1212', 'hello')).resolves.toEqual({ providerMessageId: 'wamid.123' })
     const send = calls.find(call => call.url.endsWith('/api/v1/whatsapp/messages'))!
     expect(JSON.parse(String(send.init?.body))).toEqual({ to: '+1 (415) 555-1212', text: 'hello' })
+    expect(new Headers(send.init?.headers).get('x-csrf-token')).toBe('csrf-token')
+  })
+
+  it('sends bounded browser WhatsApp media through the authenticated agentd route', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = []
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      calls.push({ url, init })
+      if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
+      if (url.endsWith('/api/v1/whatsapp/media')) return response({ success: true, providerMessageId: 'baileys.media-1' })
+      return response({ success: true })
+    })
+    const client = createBrowserAgentdClient({ origin: 'http://127.0.0.1:4141', fetch: fetcher })
+    await client.pair('123456')
+    await expect(client.sendWhatsAppMedia('+1 (415) 555-1212', {
+      fileName: 'receipt.png', mimeType: 'image/png', size: 3, dataBase64: 'AQID', type: 'image', caption: 'Receipt',
+    })).resolves.toEqual({ providerMessageId: 'baileys.media-1' })
+    const send = calls.find(call => call.url.endsWith('/api/v1/whatsapp/media'))!
+    expect(JSON.parse(String(send.init?.body))).toEqual({
+      to: '+1 (415) 555-1212', fileName: 'receipt.png', mimeType: 'image/png', size: 3, dataBase64: 'AQID', type: 'image', caption: 'Receipt',
+    })
     expect(new Headers(send.init?.headers).get('x-csrf-token')).toBe('csrf-token')
   })
 

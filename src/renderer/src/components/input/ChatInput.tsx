@@ -20,7 +20,7 @@ import { useChatStore } from '../../stores/chatStore'
 import { useWhatsAppStore } from '../../stores/whatsappStore'
 import electron from '../../lib/electron'
 import { isTauriRuntime } from '../../lib/tauri-native-bridge'
-import { getBrowserAgentdClient } from '../../lib/browser-agentd-client'
+import { getBrowserAgentdClient, readBrowserWhatsAppMediaFile } from '../../lib/browser-agentd-client'
 
 import { VoiceButton } from './VoiceButton'
 import { TextArea } from './TextArea'
@@ -216,13 +216,33 @@ export function ChatInput({ onSubmit, disabled = false, onAbort }: ChatInputProp
     if ((message || hasAttachments) && !disabled) {
       // If WhatsApp mode is active, send through the selected transport.
       const browserRuntime = typeof window !== 'undefined' && !window.electron && !isTauriRuntime()
-      if (whatsappEnabled && (browserRuntime || connectionState.status === 'connected') && message) {
+      if (whatsappEnabled && (browserRuntime || connectionState.status === 'connected') && (message || hasAttachments)) {
         const targetNumber = useWhatsAppStore.getState().targetPhoneNumber
         if (targetNumber) {
-          const send = browserRuntime
-            ? getBrowserAgentdClient().sendWhatsAppText(targetNumber, message)
-            : electron.whatsapp.sendMessage(targetNumber, message)
-          send.catch((error) => {
+          void (async () => {
+            if (message) {
+              if (browserRuntime) await getBrowserAgentdClient().sendWhatsAppText(targetNumber, message)
+              else await electron.whatsapp.sendMessage(targetNumber, message)
+            }
+            for (const [index, file] of attachments.entries()) {
+              const type = file.type.startsWith('image/') ? 'image' : file.type.startsWith('video/') ? 'video' : file.type.startsWith('audio/') ? 'audio' : 'document'
+              if (browserRuntime) {
+                const media = await readBrowserWhatsAppMediaFile(file)
+                await getBrowserAgentdClient().sendWhatsAppMedia(targetNumber, {
+                  fileName: file.name,
+                  mimeType: media.fileType,
+                  size: media.size,
+                  dataBase64: media.dataBase64,
+                  type,
+                  caption: index === 0 ? message : '',
+                })
+              } else {
+                const nativePath = (window as any).electron?.utils?.getPathForFile(file) || (file as any).path
+                if (!nativePath) throw new Error(`No native path available for WhatsApp media '${file.name}'`)
+                await electron.whatsapp.sendMediaMessage(targetNumber, nativePath, index === 0 ? message : undefined, type)
+              }
+            }
+          })().catch((error) => {
             console.error('Failed to send WhatsApp message:', error)
             addLog({
               eventType: 'ERROR',

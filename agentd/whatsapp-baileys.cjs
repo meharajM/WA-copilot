@@ -4,6 +4,19 @@ const path = require('node:path')
 
 const MAX_PHONE_LENGTH = 32
 const MAX_TEXT_LENGTH = 4096
+const MAX_MEDIA_BYTES = 8 * 1024 * 1024
+const MAX_MEDIA_FILENAME_LENGTH = 256
+const MAX_MEDIA_MIME_LENGTH = 128
+
+function isSupportedMediaMime(type, mimeType) {
+  if (typeof type !== 'string' || typeof mimeType !== 'string') return false
+  const mime = mimeType.trim().toLowerCase()
+  if (type === 'image') return /^(?:image\/(?:jpeg|jpg|png|webp|gif))$/.test(mime)
+  if (type === 'video') return /^(?:video\/(?:mp4|3gpp|quicktime|webm))$/.test(mime)
+  if (type === 'audio') return /^(?:audio\/(?:aac|mp4|mpeg|amr|ogg|wav|webm))$/.test(mime)
+  if (type === 'document') return /^(?:application\/(?:pdf|json|zip|octet-stream|msword|rtf|vnd\.ms-(?:excel|powerpoint)|vnd\.openxmlformats-officedocument\.[a-z0-9.+-]+)|text\/(?:plain|csv|markdown))$/.test(mime)
+  return false
+}
 const RECONNECT_BASE_MS = 2000
 const RECONNECT_MAX_MS = 60 * 1000
 const MAX_RECONNECT_ATTEMPTS = 8
@@ -253,6 +266,35 @@ class WhatsAppBaileysService {
     return { providerMessageId }
   }
 
+  async sendMedia(to, bytes, { type, fileName, mimeType, caption = '' } = {}) {
+    if (this.state.status !== 'connected' || !this.socket) throw Object.assign(new Error('WhatsApp is not connected'), { statusCode: 409 })
+    const jid = normalizeJid(to)
+    if (!jid) throw Object.assign(new Error('Invalid WhatsApp recipient'), { statusCode: 400 })
+    if (!Buffer.isBuffer(bytes) || bytes.length < 1 || bytes.length > MAX_MEDIA_BYTES) throw Object.assign(new Error('WhatsApp media is too large or empty'), { statusCode: 413 })
+    if (!['image', 'video', 'audio', 'document'].includes(type)) throw Object.assign(new Error('Unsupported WhatsApp media type'), { statusCode: 400 })
+    if (typeof fileName !== 'string' || !fileName.trim() || fileName.length > MAX_MEDIA_FILENAME_LENGTH || /[\0\r\n\\/]/.test(fileName)) throw Object.assign(new Error('Invalid WhatsApp media filename'), { statusCode: 400 })
+    if (typeof mimeType !== 'string' || !mimeType.trim() || mimeType.length > MAX_MEDIA_MIME_LENGTH || /[\0\r\n]/.test(mimeType)) throw Object.assign(new Error('Invalid WhatsApp media MIME type'), { statusCode: 400 })
+    if (!isSupportedMediaMime(type, mimeType)) throw Object.assign(new Error('Unsupported WhatsApp media MIME type'), { statusCode: 415 })
+    if (typeof caption !== 'string' || caption.length > MAX_TEXT_LENGTH) throw Object.assign(new Error('Invalid WhatsApp media caption'), { statusCode: 400 })
+
+    const message = type === 'image'
+      ? { image: bytes, mimetype: mimeType, ...(caption.trim() ? { caption: caption.trim() } : {}) }
+      : type === 'video'
+        ? { video: bytes, mimetype: mimeType, ...(caption.trim() ? { caption: caption.trim() } : {}) }
+        : type === 'audio'
+          ? { audio: bytes, mimetype: mimeType, ptt: false }
+          : { document: bytes, fileName: fileName.trim(), mimetype: mimeType, ...(caption.trim() ? { caption: caption.trim() } : {}) }
+    try {
+      const result = await this.socket.sendMessage(jid, message)
+      const providerMessageId = result?.key?.id
+      if (typeof providerMessageId !== 'string' || !providerMessageId) throw new Error('WhatsApp provider did not return a message ID')
+      return { providerMessageId }
+    } catch (error) {
+      if (error?.statusCode) throw error
+      throw Object.assign(new Error('WhatsApp media message failed'), { statusCode: 502, cause: error })
+    }
+  }
+
   async setTargetPhoneNumber(phoneNumber) {
     const normalized = normalizePhone(phoneNumber)
     if (!normalized) return { success: false, error: 'Invalid phone number' }
@@ -308,4 +350,4 @@ class WhatsAppBaileysService {
   }
 }
 
-module.exports = { WhatsAppBaileysService, normalizePhone, normalizeJid, textFromMessage, DEFAULT_STATE }
+module.exports = { WhatsAppBaileysService, normalizePhone, normalizeJid, textFromMessage, DEFAULT_STATE, MAX_MEDIA_BYTES, isSupportedMediaMime }

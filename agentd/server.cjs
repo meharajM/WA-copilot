@@ -10,7 +10,7 @@ const Database = require('better-sqlite3')
 const { isPublicCredentialKey } = require('./keyring-credential-store.cjs')
 const { GmailOAuthService } = require('./gmail-oauth.cjs')
 const { GmailInboundWorker, pollGmail } = require('./gmail-api.cjs')
-const { WhatsAppBaileysService } = require('./whatsapp-baileys.cjs')
+const { WhatsAppBaileysService, isSupportedMediaMime } = require('./whatsapp-baileys.cjs')
 const continuityMigration = require('./continuity-migration.cjs')
 const { sendTextEmail } = require('./email-transport.cjs')
 const { EmailInboundWorker, pollMailbox } = require('./email-inbound-worker.cjs')
@@ -25,6 +25,8 @@ const MAX_PAIRING_ATTEMPTS = 5
 const MAX_BODY_BYTES = 256 * 1024
 const MAX_WHATSAPP_BODY_BYTES = 64 * 1024
 const MAX_WHATSAPP_PAYLOAD_BYTES = 32 * 1024
+const MAX_WHATSAPP_MEDIA_BYTES = 8 * 1024 * 1024
+const MAX_WHATSAPP_MEDIA_BODY_BYTES = Math.ceil(MAX_WHATSAPP_MEDIA_BYTES * 4 / 3) + 64 * 1024
 const MAX_EMAIL_INBOUND_BODY_BYTES = 128 * 1024
 const MAX_EMAIL_INBOUND_BATCH = 50
 const MAX_EMAIL_DRAFT_BATCH = 100
@@ -1134,6 +1136,7 @@ class AgentdServer {
     if (emailDraftSendMatch && req.method === 'POST') return this.sendEmailDraft(req, res, decodeURIComponent(emailDraftSendMatch[1]))
     if (emailDraftMatch && ['PATCH', 'DELETE'].includes(req.method)) return this.emailDraft(req, res, decodeURIComponent(emailDraftMatch[1]))
     if (url.pathname === '/api/v1/whatsapp/messages' && req.method === 'POST') return this.sendWhatsAppMessage(req, res)
+    if (url.pathname === '/api/v1/whatsapp/media' && req.method === 'POST') return this.sendWhatsAppMedia(req, res)
     const providerTestMatch = /^\/api\/v1\/providers\/(openai|openrouter|ollama|gemini)\/test$/.exec(url.pathname)
     if (providerTestMatch && req.method === 'POST') return this.testProvider(req, res, providerTestMatch[1])
     if (url.pathname === '/api/v1/status' && req.method === 'GET') {
@@ -3094,12 +3097,74 @@ class AgentdServer {
     }
   }
 
+  async sendWhatsAppCloudMedia(to, media) {
+    let storedSettings = null
+    try { storedSettings = JSON.parse(this.getState('whatsapp_settings', 'null')) } catch {}
+    const settings = parseWhatsAppSettings(storedSettings) || WHATSAPP_SETTINGS_DEFAULTS
+    if (settings.whatsapp_transport !== 'cloud') throw Object.assign(new Error('WhatsApp Cloud transport is not enabled'), { statusCode: 409 })
+    if (!/^\d{5,32}$/.test(settings.whatsapp_cloud_phone_number_id)
+      || !/^v\d+(?:\.\d+)?$/.test(settings.whatsapp_cloud_api_version)) {
+      throw Object.assign(new Error('WhatsApp Cloud transport is not configured'), { statusCode: 409 })
+    }
+    if (!/^\+?[0-9\s().-]{8,32}$/.test(to.trim())) throw Object.assign(new Error('Invalid WhatsApp recipient'), { statusCode: 400 })
+    const recipient = to.replace(/\D/g, '')
+    if (!/^\d{8,15}$/.test(recipient)) throw Object.assign(new Error('Invalid WhatsApp recipient'), { statusCode: 400 })
+    if (!isSupportedMediaMime(media.type, media.mimeType)) throw Object.assign(new Error('Unsupported WhatsApp media MIME type'), { statusCode: 415 })
+
+    let accessToken
+    try { accessToken = await this.credentials?.get('whatsapp_cloud_access_token') } catch {}
+    if (typeof accessToken !== 'string' || !accessToken) throw Object.assign(new Error('WhatsApp Cloud credentials are not configured'), { statusCode: 409 })
+    if (typeof FormData !== 'function' || typeof Blob !== 'function') throw Object.assign(new Error('WhatsApp Cloud media upload is unavailable'), { statusCode: 503 })
+
+    const endpoint = `https://graph.facebook.com/${settings.whatsapp_cloud_api_version}/${settings.whatsapp_cloud_phone_number_id}`
+    let uploadResponse
+    try {
+      const form = new FormData()
+      form.append('messaging_product', 'whatsapp')
+      form.append('file', new Blob([media.bytes], { type: media.mimeType }), media.fileName)
+      uploadResponse = await this.providerFetch(`${endpoint}/media`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}` },
+        body: form,
+        redirect: 'manual',
+        signal: AbortSignal.timeout(20_000),
+      })
+      const upload = await readProviderResponse(uploadResponse)
+      if (!uploadResponse.ok || typeof upload?.id !== 'string' || !upload.id) throw new Error('WhatsApp Cloud media upload failed')
+      const mediaObject = { id: upload.id, ...(media.type !== 'audio' && media.caption.trim() ? { caption: media.caption.trim() } : {}) }
+      const sentResponse = await this.providerFetch(`${endpoint}/messages`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messaging_product: 'whatsapp', to: recipient, type: media.type, [media.type]: mediaObject }),
+        redirect: 'manual',
+        signal: AbortSignal.timeout(10_000),
+      })
+      const sent = await readProviderResponse(sentResponse)
+      const providerMessageId = sent?.messages?.[0]?.id
+      if (!sentResponse.ok || typeof providerMessageId !== 'string' || !providerMessageId) throw new Error('WhatsApp Cloud media message failed')
+      return { providerMessageId }
+    } catch (error) {
+      try { await uploadResponse?.body?.cancel() } catch {}
+      if (error?.statusCode) throw error
+      throw Object.assign(new Error('WhatsApp Cloud media message failed'), { statusCode: 502 })
+    }
+  }
+
   async sendWhatsAppConfiguredMessage(to, text) {
     let storedSettings = null
     try { storedSettings = JSON.parse(this.getState('whatsapp_settings', 'null')) } catch {}
     const settings = parseWhatsAppSettings(storedSettings) || WHATSAPP_SETTINGS_DEFAULTS
     if (settings.whatsapp_transport === 'baileys') return this.whatsappBaileys.sendText(to, text)
     if (settings.whatsapp_transport === 'cloud') return this.sendWhatsAppCloudMessage(to, text)
+    throw Object.assign(new Error('WhatsApp Web transport is not available in browser mode'), { statusCode: 409 })
+  }
+
+  async sendWhatsAppConfiguredMedia(to, media) {
+    let storedSettings = null
+    try { storedSettings = JSON.parse(this.getState('whatsapp_settings', 'null')) } catch {}
+    const settings = parseWhatsAppSettings(storedSettings) || WHATSAPP_SETTINGS_DEFAULTS
+    if (settings.whatsapp_transport === 'baileys') return this.whatsappBaileys.sendMedia(to, media.bytes, media)
+    if (settings.whatsapp_transport === 'cloud') return this.sendWhatsAppCloudMedia(to, media)
     throw Object.assign(new Error('WhatsApp Web transport is not available in browser mode'), { statusCode: 409 })
   }
 
@@ -3129,6 +3194,49 @@ class AgentdServer {
       releaseOperation?.()
       const statusCode = Number.isInteger(error?.statusCode) ? error.statusCode : 502
       return json(res, statusCode, { success: false, error: statusCode === 502 ? 'WhatsApp Cloud message failed' : error.message })
+    }
+  }
+
+  async sendWhatsAppMedia(req, res) {
+    this.authorize(req, { mutation: true })
+    if (this.migrationFence(req, res)) return
+    if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
+    let body
+    try { body = await readBody(req, MAX_WHATSAPP_MEDIA_BODY_BYTES) } catch (error) { return json(res, error.statusCode || 400, { error: error.message }) }
+    const keys = Object.keys(body || {}).sort()
+    if (!body || typeof body !== 'object' || Array.isArray(body)
+      || keys.some(key => !['caption', 'dataBase64', 'fileName', 'mimeType', 'size', 'to', 'type'].includes(key))
+      || !['caption', 'dataBase64', 'fileName', 'mimeType', 'size', 'to', 'type'].every(key => Object.prototype.hasOwnProperty.call(body, key))
+      || typeof body.to !== 'string' || !body.to.trim() || [...body.to].length > 32
+      || !['image', 'video', 'audio', 'document'].includes(body.type)
+      || typeof body.fileName !== 'string' || !body.fileName.trim() || body.fileName.length > 256 || /[\0\r\n\\/]/.test(body.fileName)
+      || typeof body.mimeType !== 'string' || !body.mimeType.trim() || body.mimeType.length > 128 || /[\0\r\n]/.test(body.mimeType)
+      || !isSupportedMediaMime(body.type, body.mimeType)
+      || typeof body.caption !== 'string' || body.caption.length > MAX_DRAFT_TEXT_LENGTH
+      || typeof body.dataBase64 !== 'string' || body.dataBase64.length === 0 || body.dataBase64.length > Math.ceil(MAX_WHATSAPP_MEDIA_BYTES * 4 / 3) + 64
+      || body.dataBase64.length % 4 === 1 || !/^[A-Za-z0-9+/]*={0,2}$/.test(body.dataBase64)
+      || !Number.isSafeInteger(body.size) || body.size < 1 || body.size > MAX_WHATSAPP_MEDIA_BYTES) {
+      return json(res, 400, { error: 'Invalid WhatsApp media' })
+    }
+    const bytes = Buffer.from(body.dataBase64, 'base64')
+    if (bytes.length !== body.size) return json(res, 400, { error: 'Invalid WhatsApp media' })
+    const releaseOperation = this.beginActiveOperation()
+    if (!releaseOperation) return json(res, 409, { error: 'Settings migration is committing' })
+    try {
+      this.assertMigrationOpen()
+      const { providerMessageId } = await this.sendWhatsAppConfiguredMedia(body.to, {
+        bytes,
+        type: body.type,
+        fileName: body.fileName,
+        mimeType: body.mimeType,
+        caption: body.caption,
+      })
+      return json(res, 200, { success: true, providerMessageId })
+    } catch (error) {
+      const statusCode = Number.isInteger(error?.statusCode) ? error.statusCode : 502
+      return json(res, statusCode, { success: false, error: statusCode === 502 ? 'WhatsApp media message failed' : error.message })
+    } finally {
+      releaseOperation()
     }
   }
 
