@@ -7,7 +7,7 @@ Date: 2026-09-20
 - `npm run build:tauri:web` passed.
 - `npm run build:tauri:win` reached the frontend build, then stopped before packaging.
 
-## Why no Windows installer is attached
+## Windows runner result
 
 This build ran on macOS arm64. The repository intentionally rejects cross-target preparation for the Windows Credential Manager helper and migration-reader sidecars:
 
@@ -15,7 +15,12 @@ This build ran on macOS arm64. The repository intentionally rejects cross-target
 Cross-target keyring-helper preparation is unsupported: target x86_64-pc-windows-msvc does not match host aarch64-apple-darwin
 ```
 
-The repository does not claim an `.exe`, `.msi`, or signed Windows artifact until a Windows runner builds and signs those native sidecars. Publishing a macOS binary renamed as Windows would be invalid.
+The Windows packaging workflow completed successfully on GitHub Actions run [35520424032](https://github.com/meharajM/WA-copilot/actions/runs/35520424032). It produced and verified these unsigned artifacts for the current PR commit:
+
+- [`AICA Native Host_1.0.0_x64-setup.exe`](downloads/AICA%20Native%20Host_1.0.0_x64-setup.exe)
+- [`AICA Native Host_1.0.0_x64_en-US.msi`](downloads/AICA%20Native%20Host_1.0.0_x64_en-US.msi)
+
+The files are attached in this public branch and their SHA-256 values are recorded in [`SHA256SUMS.txt`](downloads/SHA256SUMS.txt). They are unsigned build outputs; release signing and publication policy still need to run before general distribution.
 
 ## Windows runner command
 

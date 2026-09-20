@@ -14,7 +14,7 @@ This guide describes the Windows-first product flow. The browser is the product 
 2. Run the installer, choose the install directory, and finish setup.
 3. Launch **AICA Native Host** from the Start menu. The companion stays small because it does not render the product workspace.
 
-The current public branch includes a verified browser bundle at [`docs/downloads/aica-browser-web.zip`](downloads/aica-browser-web.zip). It is not a Windows installer; the Windows installer must be produced and signed on a Windows runner because this macOS development host cannot compile the Windows Credential Manager and migration sidecars.
+The current public branch includes a verified browser bundle at [`docs/downloads/aica-browser-web.zip`](downloads/aica-browser-web.zip), plus unsigned Windows installers: [`NSIS setup`](downloads/AICA%20Native%20Host_1.0.0_x64-setup.exe) and [`MSI package`](downloads/AICA%20Native%20Host_1.0.0_x64_en-US.msi). General distribution still requires release signing. The installers were produced on a Windows runner because this macOS development host cannot compile the Windows Credential Manager and migration sidecars.
 
 The repository's **Tauri Windows package** workflow can be dispatched from GitHub Actions to produce and verify the Windows NSIS/MSI bundle for a selected commit. Its artifact is unsigned until release signing completes.
 
@@ -94,4 +94,4 @@ Use **Settings → System Info** to confirm runtime, platform, engine, and depen
 
 The browser bundle was built locally with `npm run build:tauri:web`. Local verification passed: typecheck, lint with existing warnings, 339 unit tests, 196 integration tests with 8 skips, Tauri web build, 20 Rust tests, and diff checks.
 
-`npm run build:tauri:win` was attempted on macOS arm64. Frontend compilation passed, then the repository's cross-target guard stopped before packaging because Windows keyring/migration sidecars require a Windows toolchain. No Windows installer is claimed until a Windows runner produces and signs it.
+`npm run build:tauri:win` was attempted on macOS arm64. Frontend compilation passed, then the repository's cross-target guard stopped before packaging because Windows keyring/migration sidecars require a Windows toolchain. The public Windows packaging workflow then produced and verified unsigned NSIS/MSI artifacts; release signing is still required for distribution.
