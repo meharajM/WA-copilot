@@ -488,3 +488,32 @@ The following docs were updated after this validation:
 - [docs/tester_install.html](/Users/meharaj/WA-copilot/docs/tester_install.html)
 - [docs/email-channel-progress.md](/Users/meharaj/WA-copilot/docs/email-channel-progress.md)
 - [architecture.md](/Users/meharaj/WA-copilot/architecture.md)
+
+## Browser workspace QA — 2026-09-21
+
+Runtime: local `agentd` against the built `dist/tauri.html`, opened in the
+browser workspace at a loopback URL. The first attempt used a reused daemon
+whose six-digit pairing code had expired; restarting an isolated daemon with a
+fresh code passed the same flow.
+
+Steps and observed results:
+
+1. Opened the unpaired workspace. The page showed **Pair this browser**, a
+   six-digit input, and a disabled **Pair browser** action until input was
+   valid.
+2. Entered the fresh owner code and paired. The browser mounted the product
+   dashboard, showed the local agentd status, and did not emit console errors.
+3. Opened the command palette with `Ctrl/Command+K`, selected **Settings**,
+   and verified the WhatsApp, Email, MCP, model, Knowledge Base, Web
+   Automation, Appearance, Audit Logs, and System Info sections.
+4. Confirmed browser-safe copy for Email, MCP, audit storage, memory, and
+   native dependency boundaries; no credential value or native path appeared.
+5. Navigated to Conversations, toggled the sidebar shortcut, and confirmed the
+   chat input, workspace/file picker, voice control, and send gate were visible.
+6. Checked the browser console after navigation; no warnings or errors were
+   reported.
+
+Result: startup, pairing, authenticated workspace mount, settings navigation,
+browser-only capability boundaries, and console cleanliness passed. Live
+provider sends, real Windows Credential Manager interaction, native speech,
+and real-user profile continuity remain separate release gates.
