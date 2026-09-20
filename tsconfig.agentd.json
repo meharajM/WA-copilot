@@ -1,0 +1,14 @@
+{
+  "extends": "@electron-toolkit/tsconfig/tsconfig.node.json",
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "rootDir": "src",
+    "outDir": "out/agentd",
+    "types": ["node"],
+    "declaration": true,
+    "noEmit": false,
+    "tsBuildInfoFile": "out/agentd/tsconfig.tsbuildinfo"
+  },
+  "include": ["src/agentd/**/*.ts", "src/shared/agentd-protocol.ts"]
+}

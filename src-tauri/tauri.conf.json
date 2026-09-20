@@ -1,0 +1,39 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "AICA Native Pilot",
+  "version": "1.0.0",
+  "identifier": "com.aica.tauri-pilot",
+  "build": {
+    "beforeDevCommand": "npm run prepare:tauri:sidecar && npm run dev:tauri:web",
+    "beforeBuildCommand": "npm run build:tauri:web && npm run prepare:tauri:sidecar",
+    "devUrl": "http://127.0.0.1:5173/tauri.html",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "AICA Native Pilot",
+        "url": "tauri.html",
+        "width": 1000,
+        "height": 760,
+        "minWidth": 800,
+        "minHeight": 600
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'self'",
+      "devCsp": "default-src 'self'; connect-src ipc: http://ipc.localhost ws://127.0.0.1:5173; img-src 'self' asset: http://asset.localhost data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "icon": ["icons/icon.png"],
+    "resources": {
+      "sidecar/": "sidecar/"
+    },
+    "externalBin": [
+      "binaries/agentd-runtime"
+    ]
+  }
+}

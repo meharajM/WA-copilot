@@ -153,34 +153,28 @@ export const electron = {
             if (isElectron() && window.electron?.secure) {
                 return await window.electron.secure.set(key, value, userId)
             }
-            // Browser fallback: warn and use localStorage (insecure)
-            console.warn('[Secure] Browser fallback: storing secret in localStorage (not encrypted)')
-            localStorage.setItem(`secure_${userId ? `${userId}_` : ''}${key}`, value)
-            return { success: true, encrypted: false }
+            return { success: false, error: 'Not supported in browser mode' }
         },
 
         get: async (key: string, userId?: string): Promise<{ success: boolean; value?: string | null; encrypted?: boolean; error?: string }> => {
             if (isElectron() && window.electron?.secure) {
                 return await window.electron.secure.get(key, userId)
             }
-            // Browser fallback
-            const value = localStorage.getItem(`secure_${userId ? `${userId}_` : ''}${key}`)
-            return { success: true, value, encrypted: false }
+            return { success: false, error: 'Not supported in browser mode' }
         },
 
         delete: async (key: string, userId?: string): Promise<{ success: boolean; error?: string }> => {
             if (isElectron() && window.electron?.secure) {
                 return await window.electron.secure.delete(key, userId)
             }
-            localStorage.removeItem(`secure_${userId ? `${userId}_` : ''}${key}`)
-            return { success: true }
+            return { success: false, error: 'Not supported in browser mode' }
         },
 
         listKeys: async (userId?: string): Promise<{ success: boolean; keys?: string[]; error?: string }> => {
             if (isElectron() && window.electron?.secure?.listKeys) {
                 return await window.electron.secure.listKeys(userId)
             }
-            return { success: true, keys: [] }
+            return { success: false, error: 'Not supported in browser mode' }
         },
 
     },
