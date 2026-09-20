@@ -17,7 +17,7 @@ Assert-Condition (Test-Path -LiteralPath $installer -PathType Leaf) "NSIS instal
 
 $smokeId = [Guid]::NewGuid().ToString('N')
 $installRoot = Join-Path $env:RUNNER_TEMP "aica-install-smoke-$smokeId"
-$startupLog = Join-Path $installRoot 'agentd-startup.log'
+$startupLog = Join-Path $env:RUNNER_TEMP "aica-agentd-startup-$smokeId.log"
 $dataRoots = @(
   (Join-Path $env:APPDATA 'com.aica.tauri-pilot'),
   (Join-Path $env:LOCALAPPDATA 'com.aica.tauri-pilot')
@@ -85,8 +85,15 @@ try {
   if ($null -ne $companion -and -not $companion.HasExited) {
     Stop-Process -Id $companion.Id -Force -ErrorAction SilentlyContinue
   }
+  Start-Sleep -Milliseconds 500
+  $runtimeBinary = Get-ChildItem -LiteralPath $installRoot -Filter 'agentd-runtime.exe' -File -Recurse | Select-Object -First 1
+  $runtimePath = if ($null -ne $runtimeBinary) { $runtimeBinary.FullName } else { '' }
   $agentdPids = @(Get-CimInstance Win32_Process -Filter "Name = 'agentd-runtime.exe'" |
-    Where-Object { $_.CommandLine -and $_.CommandLine.Contains('agentd-http') } |
+    Where-Object {
+      ($runtimePath -and $_.ExecutablePath -and $_.ExecutablePath -ieq $runtimePath) -or
+      ($_.CommandLine -and $_.CommandLine.Contains($installRoot)) -or
+      ($null -ne $companion -and $_.ParentProcessId -eq $companion.Id)
+    } |
     Select-Object -ExpandProperty ProcessId)
   foreach ($agentdPid in $agentdPids) { Stop-Process -Id $agentdPid -Force -ErrorAction SilentlyContinue }
 
@@ -103,4 +110,5 @@ finally {
   if ($null -ne $companion -and -not $companion.HasExited) { Stop-Process -Id $companion.Id -Force -ErrorAction SilentlyContinue }
   foreach ($agentdPid in $agentdPids) { Stop-Process -Id $agentdPid -Force -ErrorAction SilentlyContinue }
   if (Test-Path -LiteralPath $installRoot) { Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue }
+  if (Test-Path -LiteralPath $startupLog) { Remove-Item -LiteralPath $startupLog -Force -ErrorAction SilentlyContinue }
 }
