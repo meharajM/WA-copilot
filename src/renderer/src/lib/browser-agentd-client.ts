@@ -641,6 +641,25 @@ export interface BrowserAutonomyChannelUsage {
   amount: number
 }
 
+export type BrowserDecisionReviewLabel = 'correct' | 'incorrect' | 'unnecessary_escalation' | 'missed_escalation'
+
+export interface BrowserDecisionEvidence {
+  inboundId: string
+  jid: string
+  createdAt: number
+  decision: {
+    grounding: 'grounded' | 'not_grounded' | 'unavailable'
+    reason: string
+    confidence?: number
+    escalated?: boolean
+    sensitiveTopic?: boolean
+    evidence?: Array<{ fileName: string; filePath?: string; rank?: number }>
+  }
+  label?: BrowserDecisionReviewLabel
+  notes?: string
+  reviewedAt?: number
+}
+
 export interface BrowserAutonomyNotification {
   id: number
   kind: 'failure' | 'budget' | 'recovery' | 'escalation_sla_overdue'
@@ -796,6 +815,8 @@ export interface BrowserAgentdClient extends ChatClient {
   getAutonomyMetrics(days?: number): Promise<BrowserAutonomyMetrics>
   getAutonomyUsageHistory(days?: number): Promise<BrowserAutonomyUsageDay[]>
   getAutonomyChannelUsage(days?: number): Promise<BrowserAutonomyChannelUsage[]>
+  listDecisionEvidence(limit?: number): Promise<BrowserDecisionEvidence[]>
+  reviewDecision(inboundId: string, label: BrowserDecisionReviewLabel, notes?: string): Promise<{ reviewed: boolean; inboundId: string; label: BrowserDecisionReviewLabel }>
   listAutonomyNotifications(limit?: number): Promise<BrowserAutonomyNotification[]>
   ackAutonomyNotification(id: number): Promise<{ acknowledged: boolean }>
   listKnowledge(limit?: number): Promise<BrowserKnowledgeDocument[]>
@@ -1448,6 +1469,31 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
       return item as unknown as BrowserAutonomyChannelUsage
     })
   }
+  const readDecisionEvidence = (value: unknown): BrowserDecisionEvidence => {
+    if (!isRecord(value) || typeof value.inboundId !== 'string' || !/^draft_[A-Za-z0-9_-]{1,120}$/.test(value.inboundId)
+      || typeof value.jid !== 'string' || value.jid.length > 320 || !Number.isSafeInteger(value.createdAt) || value.createdAt < 0
+      || !isRecord(value.decision) || !['grounded', 'not_grounded', 'unavailable'].includes(value.decision.grounding as string)
+      || typeof value.decision.reason !== 'string' || value.decision.reason.length > 4096
+      || (value.decision.confidence !== undefined && (typeof value.decision.confidence !== 'number' || !Number.isFinite(value.decision.confidence) || value.decision.confidence < 0 || value.decision.confidence > 1))
+      || (value.decision.evidence !== undefined && (!Array.isArray(value.decision.evidence) || value.decision.evidence.some(item => !isRecord(item) || typeof item.fileName !== 'string' || (item.filePath !== undefined && typeof item.filePath !== 'string') || (item.rank !== undefined && typeof item.rank !== 'number'))))
+      || (value.label !== undefined && !['correct', 'incorrect', 'unnecessary_escalation', 'missed_escalation'].includes(value.label as string))
+      || (value.notes !== undefined && typeof value.notes !== 'string')
+      || (value.reviewedAt !== undefined && (!Number.isSafeInteger(value.reviewedAt) || (value.reviewedAt as number) < 0))) throw new Error('Invalid agentd decision evidence response')
+    return value as unknown as BrowserDecisionEvidence
+  }
+  const listDecisionEvidence = async (limit = 20): Promise<BrowserDecisionEvidence[]> => {
+    const boundedLimit = Number.isSafeInteger(limit) ? Math.min(Math.max(limit, 1), 50) : 20
+    const value = await request<unknown>(`/api/v1/autonomy/decision-evidence?limit=${boundedLimit}`)
+    if (!isRecord(value) || !Array.isArray(value.evidence)) throw new Error('Invalid agentd decision evidence list response')
+    return value.evidence.map(readDecisionEvidence)
+  }
+  const reviewDecision = async (inboundId: string, label: BrowserDecisionReviewLabel, notes = ''): Promise<{ reviewed: boolean; inboundId: string; label: BrowserDecisionReviewLabel }> => {
+    if (!/^draft_[A-Za-z0-9_-]{1,120}$/.test(inboundId) || !['correct', 'incorrect', 'unnecessary_escalation', 'missed_escalation'].includes(label)) throw new Error('Invalid decision review')
+    if (typeof notes !== 'string' || notes.length > 2000) throw new Error('Invalid decision review notes')
+    const value = await request<unknown>(`/api/v1/autonomy/decision-evidence/${encodeURIComponent(inboundId)}/review`, { method: 'POST', body: JSON.stringify({ label, ...(notes ? { notes } : {}) }) }, true)
+    if (!isRecord(value) || value.reviewed !== true || value.inboundId !== inboundId || value.label !== label) throw new Error('Invalid agentd decision review response')
+    return { reviewed: true, inboundId, label }
+  }
   const readAutonomyNotification = (value: unknown): BrowserAutonomyNotification => {
     if (!isRecord(value)
       || !Number.isSafeInteger(value.id) || (value.id as number) < 1
@@ -1624,6 +1670,8 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     getAutonomyMetrics,
     getAutonomyUsageHistory,
     getAutonomyChannelUsage,
+    listDecisionEvidence,
+    reviewDecision,
     listAutonomyNotifications,
     ackAutonomyNotification,
     listKnowledge,

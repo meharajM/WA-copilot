@@ -660,6 +660,25 @@ describe('browser agentd client', () => {
     await expect(client.getAutonomyChannelUsage(1)).resolves.toEqual([{ channel: 'whatsapp', amount: 1 }])
   })
 
+  it('maps browser decision evidence and quality reviews through agentd', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = []
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      calls.push({ url, init })
+      if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
+      if (url.includes('/api/v1/autonomy/decision-evidence?')) return response({ evidence: [{ inboundId: 'draft_evidence_1', jid: 'customer@example.com', createdAt: 10, decision: { grounding: 'unavailable', reason: 'Sensitive request', confidence: 0.4, escalated: true, sensitiveTopic: true, evidence: [] } }] })
+      if (url.endsWith('/review')) return response({ reviewed: true, inboundId: 'draft_evidence_1', label: 'correct' })
+      return response({ success: true })
+    })
+    const client = createBrowserAgentdClient({ origin: 'http://127.0.0.1:4141', fetch: fetcher })
+    await client.pair('123456')
+    await expect(client.listDecisionEvidence(10)).resolves.toMatchObject([{ inboundId: 'draft_evidence_1', decision: { reason: 'Sensitive request', grounding: 'unavailable' } }])
+    await expect(client.reviewDecision('draft_evidence_1', 'correct', 'verified')).resolves.toEqual({ reviewed: true, inboundId: 'draft_evidence_1', label: 'correct' })
+    const review = calls.find(call => call.url.endsWith('/review'))!
+    expect(new Headers(review.init?.headers).get('x-csrf-token')).toBe('csrf-token')
+    expect(JSON.parse(String(review.init?.body))).toEqual({ label: 'correct', notes: 'verified' })
+  })
+
   it('maps durable browser autonomy notifications and acknowledgement through agentd', async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = []
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

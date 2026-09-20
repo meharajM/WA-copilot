@@ -627,8 +627,16 @@ export const electron = {
             }
             return null
         },
-        listDecisionEvidence: async (limit = 50) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listDecisionEvidence(limit) : [],
-        reviewDecision: async (inboundId: string, label: string, notes = '') => isElectron() && window.electron?.autonomy ? window.electron.autonomy.reviewDecision(inboundId, label, notes) : null,
+        listDecisionEvidence: async (limit = 50) => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.listDecisionEvidence(limit)
+            if (isBrowserProduct()) return getBrowserAgentdClient().listDecisionEvidence(limit)
+            return []
+        },
+        reviewDecision: async (inboundId: string, label: string, notes = '') => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.reviewDecision(inboundId, label, notes)
+            if (isBrowserProduct()) return getBrowserAgentdClient().reviewDecision(inboundId, label as 'correct' | 'incorrect' | 'unnecessary_escalation' | 'missed_escalation', notes)
+            return null
+        },
         recordConversationOutcome: async (jid: string, revision: number, outcome: string, evidence: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.recordConversationOutcome(jid, revision, outcome, evidence) : null,
         listDrafts: async () => {
             if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.listDrafts()

@@ -770,3 +770,50 @@ test('agentd derives browser autonomy usage history and channel counts from dura
   await server.stop()
   fs.rmSync(dataDir, { recursive: true, force: true })
 })
+
+test('agentd exposes browser email policy evidence and durable quality reviews', async () => {
+  const dataDir = makeTempDir('aica-agentd-decision-evidence-')
+  const secret = 's'.repeat(32)
+  const server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
+  const { origin } = await server.start()
+  const bearer = { authorization: `Bearer ${secret}` }
+  assert.equal((await request(origin, 'GET', '/api/v1/autonomy/decision-evidence', undefined, {})).status, 401)
+  const now = Date.now()
+  const draft = {
+    id: 'draft_evidence_1',
+    responseText: 'Please review this request.',
+    originalFrom: 'customer@example.com',
+    originalSubject: 'Support request',
+    replyTo: 'customer@example.com',
+    policyDecision: { action: 'escalate', confidence: 0.4, rationale: 'Sensitive request', hasSensitiveTopic: true, sensitiveTopics: ['billing'] },
+    createdAt: now,
+    status: 'escalated',
+  }
+  server.db.prepare('INSERT INTO email_drafts(id,status,payload,created_at,updated_at) VALUES (?,?,?,?,?)').run(draft.id, draft.status, JSON.stringify(draft), now, now)
+  const listed = await request(origin, 'GET', '/api/v1/autonomy/decision-evidence?limit=20', undefined, bearer)
+  assert.equal(listed.status, 200)
+  assert.deepEqual(listed.body.evidence[0], {
+    inboundId: draft.id,
+    jid: draft.originalFrom,
+    createdAt: now,
+    decision: {
+      grounding: 'unavailable',
+      reason: 'Sensitive request',
+      confidence: 0.4,
+      escalated: true,
+      sensitiveTopic: true,
+      evidence: [],
+    },
+  })
+  const review = await request(origin, 'POST', `/api/v1/autonomy/decision-evidence/${draft.id}/review`, { label: 'correct', notes: 'Owner verified policy result' }, bearer)
+  assert.deepEqual(review.body, { reviewed: true, inboundId: draft.id, label: 'correct' })
+  const reviewed = await request(origin, 'GET', '/api/v1/autonomy/decision-evidence', undefined, bearer)
+  assert.equal(reviewed.body.evidence[0].label, 'correct')
+  assert.equal(reviewed.body.evidence[0].notes, 'Owner verified policy result')
+  const metrics = await request(origin, 'GET', '/api/v1/autonomy/metrics?days=7', undefined, bearer)
+  assert.equal(metrics.body.reviewedDecisions, 1)
+  assert.equal(metrics.body.reviewAccuracy, 1)
+  assert.equal((await request(origin, 'POST', `/api/v1/autonomy/decision-evidence/${draft.id}/review`, { label: 'bad' }, bearer)).status, 400)
+  await server.stop()
+  fs.rmSync(dataDir, { recursive: true, force: true })
+})

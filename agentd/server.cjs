@@ -696,6 +696,12 @@ class AgentdServer {
           created_at INTEGER NOT NULL
         );
         CREATE INDEX IF NOT EXISTS autonomy_notifications_unread_idx ON autonomy_notifications(status, created_at DESC);
+        CREATE TABLE IF NOT EXISTS autonomy_decision_reviews (
+          inbound_id TEXT PRIMARY KEY,
+          label TEXT NOT NULL CHECK(label IN ('correct','incorrect','unnecessary_escalation','missed_escalation')),
+          notes TEXT,
+          reviewed_at INTEGER NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS settings_persona_cutovers (
           preview_id TEXT PRIMARY KEY,
           manifest TEXT NOT NULL,
@@ -1321,6 +1327,9 @@ class AgentdServer {
     if (url.pathname === '/api/v1/autonomy/metrics' && req.method === 'GET') return this.autonomyMetrics(req, res, url)
     if (url.pathname === '/api/v1/autonomy/usage-history' && req.method === 'GET') return this.autonomyUsageHistory(req, res, url)
     if (url.pathname === '/api/v1/autonomy/channel-usage' && req.method === 'GET') return this.autonomyChannelUsage(req, res, url)
+    if (url.pathname === '/api/v1/autonomy/decision-evidence' && req.method === 'GET') return this.autonomyDecisionEvidence(req, res, url)
+    const autonomyDecisionReviewMatch = /^\/api\/v1\/autonomy\/decision-evidence\/([^/]+)\/review$/.exec(url.pathname)
+    if (autonomyDecisionReviewMatch && req.method === 'POST') return this.reviewAutonomyDecision(req, res, decodeURIComponent(autonomyDecisionReviewMatch[1]))
     if (url.pathname === '/api/v1/autonomy/notifications' && req.method === 'GET') return this.autonomyNotifications(req, res, url)
     const autonomyNotificationAckMatch = /^\/api\/v1\/autonomy\/notifications\/(\d+)\/ack$/.exec(url.pathname)
     if (autonomyNotificationAckMatch && req.method === 'POST') return this.ackAutonomyNotification(req, res, Number(autonomyNotificationAckMatch[1]))
@@ -4411,6 +4420,9 @@ class AgentdServer {
     const outboxByStatus = Object.fromEntries(outboxCounts.map((row) => [row.status, row.count]))
     const totalDrafts = Object.values(draftByStatus).reduce((sum, count) => sum + count, 0)
     const approvedDrafts = (draftByStatus.approved || 0) + (draftByStatus.sent || 0)
+    const reviewCounts = this.db.prepare('SELECT label,COUNT(*) AS count FROM autonomy_decision_reviews WHERE reviewed_at >= ? GROUP BY label').all(since)
+    const reviewByLabel = Object.fromEntries(reviewCounts.map((row) => [row.label, Number(row.count) || 0]))
+    const reviewedDecisions = Object.values(reviewByLabel).reduce((sum, count) => sum + count, 0)
     return json(res, 200, {
       inbound,
       sent: outboxByStatus.sent || 0,
@@ -4425,11 +4437,11 @@ class AgentdServer {
       draftApprovalRate: totalDrafts ? approvedDrafts / totalDrafts : 0,
       averageDraftEditingTimeMs: 0,
       estimatedCostPerResolvedConversation: 0,
-      reviewedDecisions: 0,
-      reviewAccuracy: 0,
+      reviewedDecisions,
+      reviewAccuracy: reviewedDecisions ? (reviewByLabel.correct || 0) / reviewedDecisions : 0,
       escalationPrecision: 0,
-      unnecessaryEscalations: 0,
-      missedEscalations: 0,
+      unnecessaryEscalations: reviewByLabel.unnecessary_escalation || 0,
+      missedEscalations: reviewByLabel.missed_escalation || 0,
       recoveryDrills: 0,
       averageRecoveryTimeMs: 0,
       days,
@@ -4463,6 +4475,51 @@ class AgentdServer {
     const whatsapp = this.db.prepare("SELECT COUNT(*) AS amount FROM whatsapp_outbox WHERE status = 'sent' AND updated_at >= ?").get(since).amount
     const email = this.db.prepare("SELECT COUNT(*) AS amount FROM email_drafts WHERE status = 'sent' AND updated_at >= ?").get(since).amount
     return json(res, 200, { channels: [{ channel: 'whatsapp', amount: Number(whatsapp) || 0 }, { channel: 'email', amount: Number(email) || 0 }].filter(item => item.amount > 0) })
+  }
+
+  autonomyDecisionEvidence(req, res, url) {
+    this.authorize(req)
+    const requestedLimit = Number.parseInt(url.searchParams.get('limit') || '20', 10)
+    const limit = Number.isSafeInteger(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 50) : 20
+    const rows = this.db.prepare('SELECT id,payload FROM email_drafts ORDER BY updated_at DESC LIMIT ?').all(limit)
+    const evidence = rows.flatMap(row => {
+      try {
+        const draft = JSON.parse(row.payload)
+        const policy = draft?.policyDecision
+        if (!draft || typeof draft.id !== 'string' || !policy || typeof policy !== 'object') return []
+        return [{
+          inboundId: draft.id,
+          jid: typeof draft.originalFrom === 'string' ? draft.originalFrom : 'unknown email sender',
+          createdAt: Number.isSafeInteger(draft.createdAt) ? draft.createdAt : 0,
+          decision: {
+            grounding: 'unavailable',
+            reason: typeof policy.rationale === 'string' ? policy.rationale : 'Email policy decision recorded',
+            confidence: typeof policy.confidence === 'number' ? policy.confidence : 0,
+            escalated: policy.action === 'escalate',
+            sensitiveTopic: policy.hasSensitiveTopic === true,
+            evidence: [],
+          },
+          ...(this.db.prepare('SELECT label,notes,reviewed_at AS reviewedAt FROM autonomy_decision_reviews WHERE inbound_id = ?').get(draft.id) || {}),
+        }]
+      } catch { return [] }
+    })
+    return json(res, 200, { evidence })
+  }
+
+  async reviewAutonomyDecision(req, res, inboundId) {
+    this.authorize(req, { mutation: true })
+    if (!/^draft_[A-Za-z0-9_-]{1,120}$/.test(inboundId)) return json(res, 400, { error: 'Invalid decision ID' })
+    if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
+    let body
+    try { body = await readBody(req, 16 * 1024) } catch (error) { return json(res, error.statusCode || 400, { error: error.message }) }
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => !['label', 'notes'].includes(key))
+      || !['correct', 'incorrect', 'unnecessary_escalation', 'missed_escalation'].includes(body.label)
+      || (body.notes !== undefined && (typeof body.notes !== 'string' || body.notes.length > 2000))) return json(res, 400, { error: 'Invalid decision review' })
+    if (!this.db.prepare('SELECT 1 FROM email_drafts WHERE id = ?').get(inboundId)) return json(res, 404, { error: 'Decision not found' })
+    this.db.prepare(`INSERT INTO autonomy_decision_reviews(inbound_id,label,notes,reviewed_at) VALUES (?,?,?,?)
+      ON CONFLICT(inbound_id) DO UPDATE SET label = excluded.label, notes = excluded.notes, reviewed_at = excluded.reviewed_at`)
+      .run(inboundId, body.label, body.notes || null, Date.now())
+    return json(res, 200, { reviewed: true, inboundId, label: body.label })
   }
 
   serveUi(requestPath, res) {

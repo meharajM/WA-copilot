@@ -270,6 +270,15 @@ describe('browser-first UI boundary', () => {
     expect(client).toContain('/api/v1/autonomy/channel-usage?days=')
   })
 
+  it('routes browser decision evidence and reviews through authenticated agentd', () => {
+    const electron = readSource('lib/electron.ts')
+    const client = readSource('lib/browser-agentd-client.ts')
+    expect(electron).toContain('getBrowserAgentdClient().listDecisionEvidence(limit)')
+    expect(electron).toContain('getBrowserAgentdClient().reviewDecision')
+    expect(client).toContain('/api/v1/autonomy/decision-evidence?limit=')
+    expect(client).toContain('/review')
+  })
+
   it('routes browser persona reads and writes through agentd', () => {
     const electron = readSource('lib/electron.ts')
     expect(electron).toContain('getBrowserAgentdClient().getPersonaSettings()')
