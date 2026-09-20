@@ -143,6 +143,15 @@ describe('browser-first UI boundary', () => {
     expect(settings).toContain("browserRuntime ? 'Audit storage' : 'Local Log Path'")
   })
 
+  it('does not present configured default models as discovered browser models', () => {
+    const providers = readSource('components/settings/llm/LLMProviderSettings.tsx')
+
+    expect(providers).toContain('models: ollama.success ? (ollama.models || [ollamaSettings.model]) : []')
+    expect(providers).toContain('models: openai.success && openai.exists ? [settings.openaiModel] : []')
+    expect(providers).toContain('models: gemini.success ? (gemini.models || [settings.geminiModel]) : []')
+    expect(providers).toContain('models: openrouter.success && openrouter.exists ? [settings.openrouterModel] : []')
+  })
+
   it('keeps browser WhatsApp inbound generation replay-safe and routes autonomous sends through the outbox', () => {
     const agent = readSource('hooks/useAgent.ts')
     const bridge = readSource('hooks/useWhatsAppBridge.ts')
