@@ -115,6 +115,7 @@ export interface BrowserEmailInboundAttachmentResult {
   mimeType: string
   size: number
   bytes: Uint8Array
+  scan: BrowserEmailAttachmentScan
 }
 
 export interface BrowserGmailOAuthStatus {
@@ -1202,7 +1203,12 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     const disposition = response.headers.get('content-disposition') || ''
     const filenameMatch = /filename="([^"]{1,256})"/i.exec(disposition)
     const fileName = (filenameMatch?.[1] || attachmentId).replace(/[\0\r\n\\/]/g, '_')
-    return { fileName, mimeType, size, bytes }
+    const sha256 = response.headers.get('x-aica-sha256') || ''
+    const detectedType = response.headers.get('x-aica-detected-type') || ''
+    const reason = response.headers.get('x-aica-scan-reason') || ''
+    if (response.headers.get('x-aica-scan-safe') !== 'true' || !/^[a-f0-9]{64}$/.test(sha256) || !['pdf', 'png', 'jpeg', 'text', 'unknown'].includes(detectedType) || !reason) throw new Error('Invalid email attachment scan headers')
+    const scan: BrowserEmailAttachmentScan = { safe: true, reason, size, sha256, detectedType: detectedType as BrowserEmailAttachmentScan['detectedType'] }
+    return { fileName, mimeType, size, bytes, scan }
   }
   const ingestEmailInbound = async (event: { providerEventId: string; conversationId: string; payload: BrowserEmailInboundEvent['payload'] }) => {
     const value = await request<unknown>('/api/v1/email/inbound', { method: 'POST', body: JSON.stringify(event) }, true)

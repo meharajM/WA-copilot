@@ -597,7 +597,10 @@ export const electron = {
         },
         retrieveGmailAttachment: async (messageId: string, attachmentId: string, metadata?: { mimeType?: string; name?: string }) => {
             if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.retrieveGmailAttachment(messageId, attachmentId, metadata)
-            if (isBrowserProduct()) return getBrowserAgentdClient().retrieveGmailAttachment(messageId, attachmentId, metadata)
+            if (isBrowserProduct()) {
+                if (messageId.startsWith('imap:')) return getBrowserAgentdClient().getEmailInboundAttachment(messageId, attachmentId)
+                return getBrowserAgentdClient().retrieveGmailAttachment(messageId, attachmentId, metadata)
+            }
             return null
         },
         listDecisionEvidence: async (limit = 50) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listDecisionEvidence(limit) : [],

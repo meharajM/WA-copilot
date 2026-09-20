@@ -2508,7 +2508,11 @@ class AgentdServer {
         if (!parsed) continue
         attachments.push({
           inboundId: String(row.id),
-          messageId: typeof payload.id === 'string' ? payload.id : (typeof payload.messageId === 'string' ? payload.messageId : row.provider_event_id),
+          // Gmail needs its provider message ID for the OAuth attachment API;
+          // IMAP media is keyed by the daemon's safe provider-event ID.
+          messageId: (typeof payload.sourceId === 'string' || row.provider_event_id.startsWith('gmail:'))
+            ? (typeof payload.id === 'string' ? payload.id : (typeof payload.messageId === 'string' ? payload.messageId : row.provider_event_id))
+            : row.provider_event_id,
           ...parsed,
           receivedAt: row.created_at,
         })
@@ -2534,12 +2538,18 @@ class AgentdServer {
       const bytes = fs.readFileSync(handle)
       const digest = crypto.createHash('sha256').update(bytes).digest('hex')
       if (digest !== row.sha256) return json(res, 409, { error: 'Email media integrity check failed' })
+      const scan = scanEmailAttachment({ bytes, mimeType: row.mime_type })
+      if (!scan.safe) return json(res, 409, { error: 'Email media safety check failed' })
       res.writeHead(200, {
         'content-type': row.mime_type || 'application/octet-stream',
         'content-length': String(bytes.length),
         'content-disposition': `inline; filename="${String(row.file_name || attachmentId).replace(/[\\"\r\n]/g, '_').slice(0, 256)}"`,
         'cache-control': 'no-store',
         'x-content-type-options': 'nosniff',
+        'x-aica-scan-safe': 'true',
+        'x-aica-scan-reason': scan.reason,
+        'x-aica-detected-type': scan.detectedType,
+        'x-aica-sha256': scan.sha256,
       })
       return res.end(bytes)
     } catch (error) {

@@ -364,7 +364,7 @@ describe('browser agentd client', () => {
       calls.push({ url, init })
       if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
       if (url.endsWith('/api/v1/email/inbound/media/imap%3Asupport%3A1/imap-1')) {
-        return new Response(Uint8Array.from([0x89, 0x50, 0x4e, 0x47]), { status: 200, headers: { 'content-type': 'image/png', 'content-length': '4', 'content-disposition': 'inline; filename="photo.png"' } })
+        return new Response(Uint8Array.from([0x89, 0x50, 0x4e, 0x47]), { status: 200, headers: { 'content-type': 'image/png', 'content-length': '4', 'content-disposition': 'inline; filename="photo.png"', 'x-aica-scan-safe': 'true', 'x-aica-scan-reason': 'bounded_type_check_passed', 'x-aica-detected-type': 'png', 'x-aica-sha256': 'a'.repeat(64) } })
       }
       return response({ success: true })
     })
