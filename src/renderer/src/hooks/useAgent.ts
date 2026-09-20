@@ -424,6 +424,11 @@ export function useAgent(): UseAgentReturn {
                     || responseText.includes('escalating this to a human')
                     || responseText.includes('whatsapp_notify_admin')
                 );
+                const auxiliaryWhatsAppEventId = (providerEventId: string, kind: string): string => {
+                    let hash = 2166136261;
+                    for (const character of providerEventId) hash = Math.imul(hash ^ character.charCodeAt(0), 16777619);
+                    return `${providerEventId.slice(0, 240)}:${(hash >>> 0).toString(16)}:${kind}`;
+                };
                 const admitBrowserWhatsAppDraft = async (responseText: string): Promise<{ duplicate: boolean; sent: boolean }> => {
                     if (!options?.whatsappEvent) throw new Error('Browser WhatsApp event metadata is unavailable');
                     const client = getBrowserAgentdClient();
@@ -473,7 +478,7 @@ export function useAgent(): UseAgentReturn {
                     if (!useBrowserWhatsAppFlow || !useWhatsAppStore.getState().businessBotMode) return false;
                     const client = getBrowserAgentdClient();
                     const draft = await client.createWhatsAppDraft({
-                        providerEventId: input.providerEventId.slice(0, 300),
+                        providerEventId: input.providerEventId,
                         conversationId: input.conversationId,
                         payload: input.payload,
                         draftText: input.text,
@@ -586,7 +591,7 @@ export function useAgent(): UseAgentReturn {
                             const event = options.whatsappEvent;
                             if (!event) return;
                             void sendBrowserWhatsAppAuxiliary({
-                                providerEventId: `${event.providerEventId.slice(0, 280)}:courtesy`,
+                                providerEventId: auxiliaryWhatsAppEventId(event.providerEventId, 'courtesy'),
                                 conversationId: targetJid,
                                 payload: { kind: 'courtesy', relatedProviderEventId: event.providerEventId },
                                 text: "I'm still working on your request and will notify you once done. 🤖",
@@ -672,7 +677,7 @@ export function useAgent(): UseAgentReturn {
                                     const adminNotification = `⚠️ *Action Required: Unknown Inquiry*\n\nA customer (${cleanFrom}) asked a question not found in the training data:\n\n> "${content}"\n\nPlease answer them directly. I will learn from your response for next time.`;
                                     try {
                                         await sendBrowserWhatsAppAuxiliary({
-                                            providerEventId: `${options.whatsappEvent.providerEventId.slice(0, 280)}:admin`,
+                                            providerEventId: auxiliaryWhatsAppEventId(options.whatsappEvent.providerEventId, 'admin'),
                                             conversationId: adminJid,
                                             payload: { kind: 'admin_escalation', relatedProviderEventId: options.whatsappEvent.providerEventId, customer: cleanFrom },
                                             text: adminNotification,
@@ -909,7 +914,7 @@ export function useAgent(): UseAgentReturn {
                         const event = options.whatsappEvent;
                         if (!event) return;
                         void sendBrowserWhatsAppAuxiliary({
-                            providerEventId: `${event.providerEventId.slice(0, 280)}:courtesy`,
+                            providerEventId: auxiliaryWhatsAppEventId(event.providerEventId, 'courtesy'),
                             conversationId: targetJid,
                             payload: { kind: 'courtesy', relatedProviderEventId: event.providerEventId },
                             text: "I'm still working on your request and will notify you once done. 🤖",
@@ -942,7 +947,7 @@ export function useAgent(): UseAgentReturn {
                         const adminNotification = `⚠️ *Action Required: Unknown Inquiry*\n\nA customer (${cleanFrom}) asked a question not found in the training data:\n\n> "${content}"\n\nPlease answer them directly. I will learn from your response for next time.`;
                         try {
                             await sendBrowserWhatsAppAuxiliary({
-                                providerEventId: `${options.whatsappEvent.providerEventId.slice(0, 280)}:admin`,
+                                providerEventId: auxiliaryWhatsAppEventId(options.whatsappEvent.providerEventId, 'admin'),
                                 conversationId: adminJid,
                                 payload: { kind: 'admin_escalation', relatedProviderEventId: options.whatsappEvent.providerEventId, customer: cleanFrom },
                                 text: adminNotification,
