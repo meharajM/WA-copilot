@@ -16,7 +16,7 @@ This build ran on macOS arm64. The repository intentionally rejects cross-target
 Cross-target keyring-helper preparation is unsupported: target x86_64-pc-windows-msvc does not match host aarch64-apple-darwin
 ```
 
-The Windows packaging workflow completed successfully on GitHub Actions run [35522472950](https://github.com/meharajM/WA-copilot/actions/runs/35522472950). It prepared the target migration/keyring sidecars, passed the migration-reader reparse and Windows Credential Manager runtime round-trip smokes, and produced and verified these unsigned artifacts for the current PR commit:
+The Windows packaging workflow completed successfully on GitHub Actions run [35528078107](https://github.com/meharajM/WA-copilot/actions/runs/35528078107) for commit `086ca87e`. The full Windows PR gate also passed on run [35528078104](https://github.com/meharajM/WA-copilot/actions/runs/35528078104), including native Rust host tests and the Task Scheduler round-trip. It prepared the target migration/keyring sidecars, passed the migration-reader reparse and Windows Credential Manager runtime round-trip smokes, and produced and verified these unsigned artifacts for the current PR commit:
 
 - [`AICA Native Host_1.0.0_x64-setup.exe`](downloads/AICA%20Native%20Host_1.0.0_x64-setup.exe)
 - [`AICA Native Host_1.0.0_x64_en-US.msi`](downloads/AICA%20Native%20Host_1.0.0_x64_en-US.msi)

@@ -1,3 +1,3 @@
 843a86bd3ea32b1d7307b1214464fb07ae813b45c9eead4b5bbfa80c736d8616  docs/downloads/aica-browser-web.zip
-fbe252ed136484ec0d1d10a86dea553aedddbf67829c8028a6975917cb612c53  docs/downloads/AICA Native Host_1.0.0_x64-setup.exe
-6c64142b1e377287a8e02c3c275bf763f4e876634d7313682ad4932ce67b93ac  docs/downloads/AICA Native Host_1.0.0_x64_en-US.msi
+86a40e71b2453fecb062da4c21b0428436165b6806cab2f52a4c8331bb0442da  docs/downloads/AICA Native Host_1.0.0_x64-setup.exe
+f0ef4a9f75f19015338e6a74452b9fae48f3442eb75f8b2eb5774ab68e6e19a5  docs/downloads/AICA Native Host_1.0.0_x64_en-US.msi
