@@ -812,6 +812,8 @@ class AgentdServer {
       const chatCutoverColumns = this.db.prepare('PRAGMA table_info(chat_history_cutovers)').all()
       if (!chatCutoverColumns.some((column) => column.name === 'source_hash')) this.db.exec('ALTER TABLE chat_history_cutovers ADD COLUMN source_hash TEXT')
       this.db.prepare('INSERT INTO agent_state(key,value,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO NOTHING').run('paused', 'false', Date.now())
+      this.db.prepare('INSERT INTO agent_state(key,value,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO NOTHING').run('recovery_mode', 'false', Date.now())
+      this.db.prepare('INSERT INTO agent_state(key,value,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO NOTHING').run('recovery_reason', '', Date.now())
       this.gmailOAuth.configureStateAccessors({
         get: key => this.getState(key, null),
         set: (key, value) => {
@@ -1297,7 +1299,15 @@ class AgentdServer {
     if (providerTestMatch && req.method === 'POST') return this.testProvider(req, res, providerTestMatch[1])
     if (url.pathname === '/api/v1/status' && req.method === 'GET') {
       this.authorize(req)
-      return json(res, 200, { runtime: 'agentd', paused: this.getState('paused', 'true') === 'true', queueDepth: this.db.prepare("SELECT COUNT(*) AS count FROM inbound_events WHERE status IN ('queued','processing')").get().count, events: this.db.prepare('SELECT COUNT(*) AS count FROM inbound_events').get().count })
+      const recoveryMode = this.getState('recovery_mode', 'false') === 'true'
+      return json(res, 200, {
+        runtime: 'agentd',
+        paused: this.getState('paused', 'true') === 'true',
+        recoveryMode,
+        recoveryReason: recoveryMode ? this.getState('recovery_reason', '') || null : null,
+        queueDepth: this.db.prepare("SELECT COUNT(*) AS count FROM inbound_events WHERE status IN ('queued','processing')").get().count,
+        events: this.db.prepare('SELECT COUNT(*) AS count FROM inbound_events').get().count,
+      })
     }
     if (url.pathname === '/api/v1/system-info' && req.method === 'GET') return this.systemInfo(req, res)
     if (url.pathname === '/api/v1/mcp' && req.method === 'GET') {
@@ -1377,6 +1387,8 @@ class AgentdServer {
     if (draftMatch && ['PATCH', 'PUT'].includes(req.method)) return this.updateDraftStatus(req, res, Number(draftMatch[1]))
     if (url.pathname === '/api/v1/pause-all' && req.method === 'POST') return this.control(req, res, true)
     if (url.pathname === '/api/v1/resume-all' && req.method === 'POST') return this.control(req, res, false)
+    if (url.pathname === '/api/v1/autonomy/recovery/enter' && req.method === 'POST') return this.recoveryControl(req, res, true)
+    if (url.pathname === '/api/v1/autonomy/recovery/clear' && req.method === 'POST') return this.recoveryControl(req, res, false)
     if (this.uiRoot && req.method === 'GET' && !url.pathname.startsWith('/api/')) return this.serveUi(url.pathname, res)
     return json(res, 404, { error: 'Not found' })
   }
@@ -4391,12 +4403,39 @@ class AgentdServer {
 
   control(req, res, paused) {
     const actor = this.authorize(req, { mutation: true })
+    if (!paused && this.getState('recovery_mode', 'false') === 'true') return json(res, 409, { error: 'Recovery hold must be cleared before resume' })
     const now = Date.now()
     this.db.transaction(() => {
       this.setState('paused', String(paused))
       this.db.prepare('INSERT INTO operator_actions(action,created_at) VALUES (?,?)').run(paused ? 'pause_all' : 'resume_all', now)
     })()
     return json(res, 200, { paused, actor: actor.kind })
+  }
+
+  async recoveryControl(req, res, entering) {
+    const actor = this.authorize(req, { mutation: true })
+    let reason = entering ? 'operator_requested' : ''
+    if (entering) {
+      if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
+      let body
+      try { body = await readBody(req, 16 * 1024) } catch (error) { return json(res, error.statusCode || 400, { error: error.message }) }
+      if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => key !== 'reason') || (body.reason !== undefined && (typeof body.reason !== 'string' || body.reason.length > 256))) return json(res, 400, { error: 'Invalid recovery reason' })
+      if (typeof body.reason === 'string' && body.reason.trim()) reason = body.reason.trim()
+    } else if (req.headers['content-length'] && req.headers['content-length'] !== '0') {
+      if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
+      let body
+      try { body = await readBody(req, 16 * 1024) } catch (error) { return json(res, error.statusCode || 400, { error: error.message }) }
+      if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length > 0) return json(res, 400, { error: 'Recovery clear accepts no input' })
+    }
+    const now = Date.now()
+    this.db.transaction(() => {
+      this.setState('recovery_mode', entering ? 'true' : 'false')
+      this.setState('recovery_reason', entering ? reason : '')
+      if (entering) this.setState('paused', 'true')
+      this.db.prepare('INSERT INTO operator_actions(action,created_at) VALUES (?,?)').run(entering ? 'enter_recovery_mode' : 'clear_recovery_mode', now)
+    })()
+    if (entering) this.createAutonomyNotification('recovery', { reason })
+    return json(res, 200, { recoveryMode: entering, paused: true, reason: entering ? reason : null, actor: actor.kind })
   }
 
   createAutonomyNotification(kind, details) {
@@ -4446,6 +4485,13 @@ class AgentdServer {
     const reviewCounts = this.db.prepare('SELECT label,COUNT(*) AS count FROM autonomy_decision_reviews WHERE reviewed_at >= ? GROUP BY label').all(since)
     const reviewByLabel = Object.fromEntries(reviewCounts.map((row) => [row.label, Number(row.count) || 0]))
     const reviewedDecisions = Object.values(reviewByLabel).reduce((sum, count) => sum + count, 0)
+    const recoveryActions = this.db.prepare("SELECT action,created_at AS createdAt FROM operator_actions WHERE action IN ('enter_recovery_mode','clear_recovery_mode') AND created_at >= ? ORDER BY created_at ASC, id ASC").all(since)
+    const recoveryStarts = []
+    const recoveryDurations = []
+    for (const action of recoveryActions) {
+      if (action.action === 'enter_recovery_mode') recoveryStarts.push(action.createdAt)
+      else if (recoveryStarts.length) recoveryDurations.push(Math.max(0, action.createdAt - recoveryStarts.shift()))
+    }
     return json(res, 200, {
       inbound,
       sent: outboxByStatus.sent || 0,
@@ -4465,8 +4511,8 @@ class AgentdServer {
       escalationPrecision: 0,
       unnecessaryEscalations: reviewByLabel.unnecessary_escalation || 0,
       missedEscalations: reviewByLabel.missed_escalation || 0,
-      recoveryDrills: 0,
-      averageRecoveryTimeMs: 0,
+      recoveryDrills: recoveryDurations.length,
+      averageRecoveryTimeMs: recoveryDurations.length ? recoveryDurations.reduce((sum, value) => sum + value, 0) / recoveryDurations.length : 0,
       days,
     })
   }

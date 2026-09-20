@@ -280,9 +280,13 @@ const readNativeHealth = (value: unknown): NativeHealth => {
   if (!isRecord(value) || (value.runtime !== 'agentd' && typeof value.runtime !== 'undefined')) {
     throw new Error('Invalid agentd status response')
   }
+  if (value.recoveryMode !== undefined && typeof value.recoveryMode !== 'boolean') throw new Error('Invalid agentd recovery status response')
+  if (value.recoveryReason !== undefined && value.recoveryReason !== null && typeof value.recoveryReason !== 'string') throw new Error('Invalid agentd recovery status response')
   return {
     status: 'ready',
     ...(typeof value.paused === 'boolean' ? { paused: value.paused } : {}),
+    ...(typeof value.recoveryMode === 'boolean' ? { recoveryMode: value.recoveryMode } : {}),
+    ...(value.recoveryReason === null || typeof value.recoveryReason === 'string' ? { recoveryReason: value.recoveryReason as string | null } : {}),
     ...(typeof value.queueDepth === 'number' ? { queueDepth: value.queueDepth } : {}),
     ...(typeof value.events === 'number' ? { events: value.events } : {}),
   }
@@ -822,6 +826,8 @@ export interface BrowserAgentdClient extends ChatClient {
   quarantineWhatsAppDraft(id: number): Promise<BrowserDraft>
   cancelWhatsAppDraft(id: number): Promise<BrowserDraft>
   getAutonomyMetrics(days?: number): Promise<BrowserAutonomyMetrics>
+  enterRecoveryMode(reason?: string): Promise<{ recoveryMode: boolean; paused: boolean; reason: string | null }>
+  clearRecoveryMode(): Promise<{ recoveryMode: boolean; paused: boolean; reason: string | null }>
   getAutonomyUsageHistory(days?: number): Promise<BrowserAutonomyUsageDay[]>
   getAutonomyChannelUsage(days?: number): Promise<BrowserAutonomyChannelUsage[]>
   listDecisionEvidence(limit?: number): Promise<BrowserDecisionEvidence[]>
@@ -1416,6 +1422,15 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     if (!isRecord(value) || typeof value.paused !== 'boolean') throw new Error('Invalid agentd resume response')
     return { paused: value.paused }
   }
+  const readRecoveryResponse = (value: unknown): { recoveryMode: boolean; paused: boolean; reason: string | null } => {
+    if (!isRecord(value) || typeof value.recoveryMode !== 'boolean' || typeof value.paused !== 'boolean' || (value.reason !== null && typeof value.reason !== 'string')) throw new Error('Invalid agentd recovery response')
+    return { recoveryMode: value.recoveryMode, paused: value.paused, reason: value.reason as string | null }
+  }
+  const enterRecoveryMode = async (reason = 'operator_requested') => {
+    if (typeof reason !== 'string' || reason.length > 256) throw new Error('Invalid recovery reason')
+    return readRecoveryResponse(await request('/api/v1/autonomy/recovery/enter', { method: 'POST', body: JSON.stringify({ reason }) }, true))
+  }
+  const clearRecoveryMode = async () => readRecoveryResponse(await request('/api/v1/autonomy/recovery/clear', { method: 'POST', body: '{}' }, true))
   const readDraft = (value: unknown): BrowserDraft => {
     if (!isRecord(value)
       || !Number.isSafeInteger(value.id)
@@ -1684,6 +1699,8 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     listAuditLogs,
     pauseAll,
     resumeAll,
+    enterRecoveryMode,
+    clearRecoveryMode,
     listDrafts,
     updateDraftStatus,
     sendWhatsAppDraft,

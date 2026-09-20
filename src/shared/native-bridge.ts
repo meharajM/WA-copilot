@@ -25,6 +25,8 @@ export interface NativeHealth {
   version?: string
   error?: string
   paused?: boolean
+  recoveryMode?: boolean
+  recoveryReason?: string | null
   queueDepth?: number
   events?: number
 }

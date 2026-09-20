@@ -765,6 +765,29 @@ test('agentd exposes bounded durable autonomy notifications with acknowledgement
   fs.rmSync(dataDir, { recursive: true, force: true })
 })
 
+test('agentd persists authenticated recovery holds and blocks resume until cleared', async () => {
+  const dataDir = makeTempDir('aica-agentd-recovery-')
+  const secret = 's'.repeat(32)
+  const server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
+  const { origin } = await server.start()
+  const bearer = { authorization: `Bearer ${secret}` }
+  assert.equal((await request(origin, 'GET', '/api/v1/status', undefined, bearer)).body.recoveryMode, false)
+  assert.equal((await request(origin, 'POST', '/api/v1/autonomy/recovery/enter', { reason: 'owner review' }, {})).status, 401)
+  const entered = await request(origin, 'POST', '/api/v1/autonomy/recovery/enter', { reason: 'owner review' }, bearer)
+  assert.deepEqual(entered.body, { recoveryMode: true, paused: true, reason: 'owner review', actor: 'bearer' })
+  const held = await request(origin, 'GET', '/api/v1/status', undefined, bearer)
+  assert.deepEqual({ recoveryMode: held.body.recoveryMode, recoveryReason: held.body.recoveryReason, paused: held.body.paused }, { recoveryMode: true, recoveryReason: 'owner review', paused: true })
+  assert.equal((await request(origin, 'POST', '/api/v1/resume-all', {}, bearer)).status, 409)
+  const cleared = await request(origin, 'POST', '/api/v1/autonomy/recovery/clear', {}, bearer)
+  assert.deepEqual(cleared.body, { recoveryMode: false, paused: true, reason: null, actor: 'bearer' })
+  assert.equal((await request(origin, 'POST', '/api/v1/resume-all', {}, bearer)).body.paused, false)
+  const metrics = await request(origin, 'GET', '/api/v1/autonomy/metrics?days=7', undefined, bearer)
+  assert.equal(metrics.body.recoveryDrills, 1)
+  assert.equal(metrics.body.averageRecoveryTimeMs >= 0, true)
+  await server.stop()
+  fs.rmSync(dataDir, { recursive: true, force: true })
+})
+
 test('agentd derives browser autonomy usage history and channel counts from durable records', async () => {
   const dataDir = makeTempDir('aica-agentd-usage-')
   const secret = 's'.repeat(32)

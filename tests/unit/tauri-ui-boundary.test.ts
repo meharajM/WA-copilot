@@ -287,6 +287,15 @@ describe('browser-first UI boundary', () => {
     expect(client).toContain('/api/v1/email/delivery-history?limit=')
   })
 
+  it('routes browser recovery holds through authenticated agentd', () => {
+    const electron = readSource('lib/electron.ts')
+    const client = readSource('lib/browser-agentd-client.ts')
+    expect(electron).toContain('getBrowserAgentdClient().enterRecoveryMode(reason)')
+    expect(electron).toContain('getBrowserAgentdClient().clearRecoveryMode()')
+    expect(client).toContain('/api/v1/autonomy/recovery/enter')
+    expect(client).toContain('/api/v1/autonomy/recovery/clear')
+  })
+
   it('routes browser persona reads and writes through agentd', () => {
     const electron = readSource('lib/electron.ts')
     expect(electron).toContain('getBrowserAgentdClient().getPersonaSettings()')

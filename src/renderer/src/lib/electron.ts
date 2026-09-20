@@ -51,12 +51,12 @@ const browserAutonomyState = async () => {
         responsePermission: whatsappState.whatsappEnabled,
         paused: status.paused !== false,
         emergencyPaused: false,
-        recoveryMode: false,
-        status: status.paused === false ? 'running' : 'paused',
+        recoveryMode: status.recoveryMode === true,
+        status: status.recoveryMode === true ? 'degraded' : status.paused === false ? 'running' : 'paused',
         queueDepth: status.queueDepth || 0,
         activeJob: null,
         lastProcessedMessage: null,
-        lastError: null,
+        lastError: status.recoveryMode === true ? status.recoveryReason || 'Recovery hold active' : null,
         escalations: 0,
         lastDeliveryStatus: null,
         lastProviderMessageId: null,
@@ -561,8 +561,16 @@ export const electron = {
         stop: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.stop() : (isBrowserProduct() ? getBrowserAgentdClient().pauseAll().then(browserAutonomyState) : null),
         pause: async (emergency = false) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.pause(emergency) : (isBrowserProduct() ? getBrowserAgentdClient().pauseAll().then(browserAutonomyState) : null),
         resume: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.resume() : (isBrowserProduct() ? getBrowserAgentdClient().resumeAll().then(browserAutonomyState) : null),
-        enterRecoveryMode: async (reason?: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.enterRecoveryMode(reason) : null,
-        clearRecoveryMode: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.clearRecoveryMode() : null,
+        enterRecoveryMode: async (reason?: string) => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.enterRecoveryMode(reason)
+            if (isBrowserProduct()) return getBrowserAgentdClient().enterRecoveryMode(reason)
+            return null
+        },
+        clearRecoveryMode: async () => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.clearRecoveryMode()
+            if (isBrowserProduct()) return getBrowserAgentdClient().clearRecoveryMode()
+            return null
+        },
         stageBackup: async (backupPath: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.stageBackup(backupPath) : null,
         pruneRetention: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.pruneRetention() : null,
         pauseConversation: async (jid: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.pauseConversation(jid) : null,
