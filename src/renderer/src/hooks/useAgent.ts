@@ -559,7 +559,13 @@ export function useAgent(): UseAgentReturn {
                         ? browserRuntime
                             ? await prepareBrowserAttachments(attachments)
                             : attachmentData?.map((item, index) => ({ ...item, size: attachments[index]?.size || 0 }))
-                        : undefined;
+                        : userLLMMessage?.attachments?.map((item) => ({
+                            name: item.name,
+                            type: item.type,
+                            size: item.size || 0,
+                            ...(item.dataUrl ? { dataUrl: item.dataUrl } : {}),
+                            ...(item.mediaUrl ? { mediaUrl: item.mediaUrl } : {}),
+                        }));
                     const daemonSession = useChatStore.getState().sessions.find((session) => session.id === originSessionId);
                     // Zustand persistence is intentionally asynchronous. Ensure the
                     // daemon owns the session/message before generation instead of

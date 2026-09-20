@@ -12,6 +12,7 @@ export interface ChatAttachment {
   size: number
   text?: string
   dataUrl?: string
+  mediaUrl?: string
 }
 
 export interface ChatSessionSummary {

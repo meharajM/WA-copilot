@@ -29,6 +29,7 @@ function fakeBaileys() {
       return { state: { creds: {} }, saveCreds: async () => {} }
     },
     fetchLatestBaileysVersion: async () => ({ version: [2, 3000, 1] }),
+    downloadMediaMessage: async raw => raw?.key?.id === 'media-1' ? Buffer.from('incoming-image') : null,
     DisconnectReason: { loggedOut: 401 },
     socket: null,
     options: null,
@@ -91,6 +92,16 @@ test('agentd Baileys worker exposes bounded QR/state, text inbound, dedupe, and 
   assert.equal(inbound.length, 2)
   assert.equal(inbound[1].content, 'See this')
   assert.equal(inbound[1].type, 'image')
+  baileys.socket.ev.emit('messages.upsert', {
+    type: 'notify',
+    messages: [{ key: { id: 'media-1', remoteJid: '919888888888@s.whatsapp.net', fromMe: false }, message: { imageMessage: { mimetype: 'image/jpeg', fileLength: 14 } } }],
+  })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(inbound.length, 3)
+  assert.equal(inbound[2].content, '')
+  assert.equal(inbound[2].media.type, 'image')
+  assert.equal(inbound[2].media.fileName, 'whatsapp-image.jpg')
+  assert.equal(inbound[2].media.bytes.toString(), 'incoming-image')
   service.pendingHandshake = { phoneNumber: '919888888888', code: '123456', expires: Date.now() - 1 }
   baileys.socket.ev.emit('messages.upsert', {
     type: 'notify',
@@ -98,7 +109,7 @@ test('agentd Baileys worker exposes bounded QR/state, text inbound, dedupe, and 
   })
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(service.getState().handshakeStatus, 'expired')
-  assert.equal(inbound.length, 3)
+  assert.equal(inbound.length, 4)
   await service.disconnect(true)
   assert.equal(service.getState().status, 'disconnected')
   assert.equal(fs.existsSync(path.join(dataDir, 'whatsapp-auth')), false)
@@ -128,6 +139,15 @@ test('agentd browser WhatsApp routes use the daemon Baileys worker for connectio
     })
     req.on('error', reject)
     req.end(payload)
+  })
+  const requestRaw = (origin, method, pathname, headers = {}) => new Promise((resolve, reject) => {
+    const req = require('node:http').request(`${origin}${pathname}`, { method, headers }, res => {
+      const chunks = []
+      res.on('data', chunk => chunks.push(Buffer.from(chunk)))
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }))
+    })
+    req.on('error', reject)
+    req.end()
   })
   try {
     const { origin } = await server.start()
@@ -165,9 +185,34 @@ test('agentd browser WhatsApp routes use the daemon Baileys worker for connectio
     assert.equal(inbound.status, 200)
     assert.equal(inbound.body.events[0].providerEventId, 'baileys:inbound-1')
     assert.equal(inbound.body.events[0].payload.body, 'Inbound text')
+    server.ingestWhatsAppServiceMessage({
+      providerEventId: 'baileys:inbound-media-1',
+      conversationId: '919888888888@s.whatsapp.net',
+      from: '919888888888',
+      to: '919999999999',
+      content: '',
+      type: 'image',
+      media: { type: 'image', fileName: 'photo.jpg', mimeType: 'image/jpeg', bytes: Buffer.from('inbound') },
+      timestamp: Date.now(),
+      isFromMe: false,
+    })
+    const mediaRoute = await requestRaw(origin, 'GET', '/api/v1/whatsapp/inbound/media/baileys%3Ainbound-media-1', auth)
+    assert.equal(mediaRoute.status, 200)
+    assert.equal(mediaRoute.headers['content-type'], 'image/jpeg')
+    assert.equal(mediaRoute.body.toString(), 'inbound')
+    const unauthorizedMediaRoute = await requestRaw(origin, 'GET', '/api/v1/whatsapp/inbound/media/baileys%3Ainbound-media-1')
+    assert.equal(unauthorizedMediaRoute.status, 401)
+    // Re-ingesting the same event must not remove the already persisted blob.
+    server.ingestWhatsAppServiceMessage({
+      providerEventId: 'baileys:inbound-media-1', conversationId: '919888888888@s.whatsapp.net', content: '', type: 'image',
+      media: { type: 'image', fileName: 'photo.jpg', mimeType: 'image/jpeg', bytes: Buffer.from('inbound') }, timestamp: Date.now(), isFromMe: false,
+    })
+    const duplicateMediaRoute = await requestRaw(origin, 'GET', '/api/v1/whatsapp/inbound/media/baileys%3Ainbound-media-1', auth)
+    assert.equal(duplicateMediaRoute.status, 200)
+    assert.equal(duplicateMediaRoute.body.toString(), 'inbound')
     server.ingestWhatsAppServiceMessage({ providerEventId: 'unsafe\nprovider', conversationId: 'chat', content: 'ignored' })
     const afterInvalid = await request(origin, 'GET', '/api/v1/whatsapp/inbound?after_id=0&limit=10', undefined, auth)
-    assert.equal(afterInvalid.body.events.length, 1)
+    assert.equal(afterInvalid.body.events.length, 2)
     assert.deepEqual(calls, [
       ['connect', undefined],
       ['target', '+919888888888'],

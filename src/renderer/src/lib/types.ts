@@ -22,7 +22,7 @@ export interface LLMMessage {
   tool_call_id?: string;
   name?: string; // For Gemini/OpenAI tool names
   actions?: MessageAction[]; // For button-based interactions
-  attachments?: { name: string; path: string; type: string }[]; // User-uploaded files
+  attachments?: { name: string; path: string; type: string; size?: number; dataUrl?: string; mediaUrl?: string }[]; // User-uploaded files
   thought?: string; // Gemini 2.0 reasoning — must be echoed back in subsequent turns
   thought_signature?: string; // Gemini tool-call integrity token — required to avoid 400 errors
 }

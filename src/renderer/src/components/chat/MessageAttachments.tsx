@@ -6,6 +6,8 @@ interface Attachment {
   name: string
   type: string
   path: string
+  dataUrl?: string
+  mediaUrl?: string
 }
 
 interface MessageAttachmentsProps {
@@ -37,9 +39,18 @@ export function MessageAttachments({ attachments, isUser = false }: MessageAttac
           className="group/card flex items-center gap-3 bg-[var(--color-surface)] border border-[var(--color-border)] rounded-2xl p-3 pr-5 transition-all hover:bg-[var(--color-surface-hover)] hover:border-[var(--color-border-hover)] shadow-sm"
           title={att.path}
         >
-          <div className="flex-shrink-0 w-10 h-10 rounded-xl bg-[var(--color-tool-chip-bg)] flex items-center justify-center border border-[var(--color-border)]">
-            <FileIcon type={att.type} name={att.name} size={20} />
-          </div>
+          {att.type.startsWith('image/') && (att.dataUrl || att.mediaUrl) ? (
+            <img
+              src={att.dataUrl || att.mediaUrl}
+              alt={att.name}
+              className="flex-shrink-0 w-10 h-10 rounded-xl object-cover border border-[var(--color-border)]"
+              loading="lazy"
+            />
+          ) : (
+            <div className="flex-shrink-0 w-10 h-10 rounded-xl bg-[var(--color-tool-chip-bg)] flex items-center justify-center border border-[var(--color-border)]">
+              <FileIcon type={att.type} name={att.name} size={20} />
+            </div>
+          )}
           <div className="flex flex-col min-w-0">
             <span className="text-[13px] font-medium text-[var(--color-text-primary)] truncate max-w-[200px] leading-tight">
               {att.name}

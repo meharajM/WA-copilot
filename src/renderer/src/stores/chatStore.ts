@@ -18,7 +18,7 @@ export interface Message {
     timestamp: number
     toolCalls?: ToolCall[]
     actions?: MessageAction[]
-    attachments?: { name: string; path: string; type: string }[]
+    attachments?: { name: string; path: string; type: string; size?: number; dataUrl?: string; mediaUrl?: string }[]
     thought?: string
     thought_signature?: string
     progress?: number        // 0–100 representation of task completion
@@ -63,6 +63,15 @@ export const createTauriChatStorage = (chatClient: ChatClient): StateStorage => 
         role: message.role,
         content: message.content,
         timestamp: message.timestamp,
+        ...(message.attachments?.length ? {
+            attachments: message.attachments.map((attachment) => ({
+                name: attachment.name,
+                type: attachment.type,
+                size: attachment.size || 0,
+                ...(attachment.dataUrl ? { dataUrl: attachment.dataUrl } : {}),
+                ...(attachment.mediaUrl ? { mediaUrl: attachment.mediaUrl } : {}),
+            })),
+        } : {}),
     })
 
     return {
@@ -87,8 +96,11 @@ export const createTauriChatStorage = (chatClient: ChatClient): StateStorage => 
                     ...(message.attachments?.length ? {
                         attachments: message.attachments.map((attachment) => ({
                             name: attachment.name,
-                            path: '',
+                            path: attachment.dataUrl || attachment.mediaUrl || '',
                             type: attachment.type,
+                            ...(attachment.size !== undefined ? { size: attachment.size } : {}),
+                            ...(attachment.dataUrl ? { dataUrl: attachment.dataUrl } : {}),
+                            ...(attachment.mediaUrl ? { mediaUrl: attachment.mediaUrl } : {}),
                         })),
                     } : {}),
                 })),

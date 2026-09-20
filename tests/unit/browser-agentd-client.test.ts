@@ -408,6 +408,33 @@ describe('browser agentd client', () => {
     expect(fetcher.mock.calls.some(([input]) => String(input).includes('/api/v1/whatsapp/inbound?after_id=0&limit=10'))).toBe(true)
   })
 
+  it('hydrates authenticated WhatsApp inbound media without exposing native paths', async () => {
+    const calls: string[] = []
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      calls.push(url)
+      if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
+      if (url.endsWith('/api/v1/whatsapp/inbound/media/baileys%3Amedia-1')) {
+        return new Response(Uint8Array.from([1, 2, 3]), {
+          status: 200,
+          headers: {
+            'content-type': 'image/jpeg',
+            'content-length': '3',
+            'content-disposition': 'inline; filename="photo.jpg"',
+          },
+        })
+      }
+      return response({ success: true })
+    })
+    const client = createBrowserAgentdClient({ origin: 'http://127.0.0.1:4141', fetch: fetcher })
+    await client.pair('123456')
+    await expect(client.getWhatsAppInboundMedia('baileys:media-1')).resolves.toEqual({
+      fileName: 'photo.jpg', mimeType: 'image/jpeg', size: 3,
+      mediaUrl: '/api/v1/whatsapp/inbound/media/baileys%3Amedia-1', dataUrl: 'data:image/jpeg;base64,AQID',
+    })
+    expect(calls.some(url => url.endsWith('/api/v1/whatsapp/inbound/media/baileys%3Amedia-1'))).toBe(true)
+  })
+
   it('admits browser WhatsApp generations as durable review drafts', async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = []
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

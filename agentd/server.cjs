@@ -370,6 +370,31 @@ function writePrivateFileAtomically(filename, contents) {
   }
 }
 
+function writePrivateBufferAtomically(filename, contents) {
+  if (!Buffer.isBuffer(contents)) throw new TypeError('Private media must be a buffer')
+  const temporary = `${filename}.${process.pid}.${crypto.randomBytes(8).toString('hex')}.tmp`
+  try {
+    fs.writeFileSync(temporary, contents, { flag: 'wx', mode: 0o600 })
+    fs.chmodSync(temporary, 0o600)
+    fs.renameSync(temporary, filename)
+  } catch (error) {
+    try { fs.unlinkSync(temporary) } catch {}
+    throw error
+  }
+}
+
+function isSafeWhatsAppMediaUrl(value) {
+  if (typeof value !== 'string' || value.length > 512) return false
+  const prefix = '/api/v1/whatsapp/inbound/media/'
+  if (!value.startsWith(prefix)) return false
+  const encodedId = value.slice(prefix.length)
+  if (!encodedId || encodedId.includes('/')) return false
+  try {
+    const decodedId = decodeURIComponent(encodedId)
+    return /^[\x21-\x7e]{1,300}$/.test(decodedId) && encodeURIComponent(decodedId) === encodedId
+  } catch { return false }
+}
+
 function readMigrationFile(filename, maxBytes = null) {
   if (process.platform === 'win32' && fs.constants.O_NOFOLLOW === undefined) {
     const reader = process.env.AICA_AGENTD_MIGRATION_READER || path.resolve(__dirname, '..', `aica-migration-reader${process.platform === 'win32' ? '.exe' : ''}`)
@@ -492,6 +517,7 @@ class AgentdServer {
   constructor({ dataDir, secret, uiRoot = null, logger = console, pairingCode = null, credentials = null, providerFetch = fetch, emailProbe = probeEmailTransport, emailSend = sendTextEmail, emailPoll = undefined, gmailPoll: configuredGmailPoll = undefined, whatsappService = null, mcpWorker = null } = {}) {
     if (!secret || typeof secret !== 'string' || secret.length < 32) throw new Error('A per-install bearer secret of at least 32 characters is required')
     this.dataDir = resolveDataDir(dataDir)
+    this.whatsappMediaDir = path.join(this.dataDir, 'whatsapp-media')
     this.secret = secret
     this.uiRoot = uiRoot
     this.logger = logger
@@ -542,6 +568,8 @@ class AgentdServer {
   async start() {
     fs.mkdirSync(this.dataDir, { recursive: true, mode: 0o700 })
     fs.chmodSync(this.dataDir, 0o700)
+    fs.mkdirSync(this.whatsappMediaDir, { recursive: true, mode: 0o700 })
+    fs.chmodSync(this.whatsappMediaDir, 0o700)
     try {
       this.acquireRuntimeLock()
       this.db = new Database(path.join(this.dataDir, 'agentd.db'))
@@ -558,6 +586,17 @@ class AgentdServer {
           status TEXT NOT NULL DEFAULT 'draft',
           created_at INTEGER NOT NULL,
           UNIQUE(channel, provider_event_id)
+        );
+        CREATE TABLE IF NOT EXISTS whatsapp_media (
+          media_id TEXT PRIMARY KEY,
+          provider_event_id TEXT NOT NULL UNIQUE,
+          media_type TEXT NOT NULL,
+          file_name TEXT NOT NULL,
+          mime_type TEXT NOT NULL,
+          size INTEGER NOT NULL,
+          sha256 TEXT NOT NULL,
+          storage_name TEXT NOT NULL UNIQUE,
+          created_at INTEGER NOT NULL
         );
         CREATE TABLE IF NOT EXISTS whatsapp_drafts (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1137,6 +1176,12 @@ class AgentdServer {
     if (emailDraftMatch && ['PATCH', 'DELETE'].includes(req.method)) return this.emailDraft(req, res, decodeURIComponent(emailDraftMatch[1]))
     if (url.pathname === '/api/v1/whatsapp/messages' && req.method === 'POST') return this.sendWhatsAppMessage(req, res)
     if (url.pathname === '/api/v1/whatsapp/media' && req.method === 'POST') return this.sendWhatsAppMedia(req, res)
+    const inboundMediaMatch = /^\/api\/v1\/whatsapp\/inbound\/media\/([^/]+)$/.exec(url.pathname)
+    if (inboundMediaMatch && req.method === 'GET') {
+      let providerEventId
+      try { providerEventId = decodeURIComponent(inboundMediaMatch[1]) } catch { return json(res, 400, { error: 'Invalid WhatsApp media identity' }) }
+      return this.whatsappInboundMedia(req, res, providerEventId)
+    }
     const providerTestMatch = /^\/api\/v1\/providers\/(openai|openrouter|ollama|gemini)\/test$/.exec(url.pathname)
     if (providerTestMatch && req.method === 'POST') return this.testProvider(req, res, providerTestMatch[1])
     if (url.pathname === '/api/v1/status' && req.method === 'GET') {
@@ -3337,12 +3382,13 @@ class AgentdServer {
     for (const item of value) {
       if (!item || typeof item !== 'object' || Array.isArray(item)) return null
       const keys = Object.keys(item).sort()
-      if (keys.some((key) => !['dataUrl', 'name', 'size', 'text', 'type'].includes(key))) return null
+      if (keys.some((key) => !['dataUrl', 'mediaUrl', 'name', 'size', 'text', 'type'].includes(key))) return null
       if (!validBoundedText(item.name, MAX_ATTACHMENT_NAME_LENGTH)
         || !validBoundedText(item.type, MAX_ATTACHMENT_TYPE_LENGTH, true)
         || !Number.isSafeInteger(item.size) || item.size < 0 || item.size > 16 * 1024 * 1024
         || (item.text !== undefined && (!validBoundedText(item.text, MAX_ATTACHMENT_TEXT_LENGTH, true) || Buffer.byteLength(item.text, 'utf8') > MAX_ATTACHMENT_TEXT_LENGTH))
-        || (item.dataUrl !== undefined && (typeof item.dataUrl !== 'string' || item.dataUrl.length > MAX_ATTACHMENT_DATA_URL_LENGTH || !/^data:[^,]{1,128};base64,[A-Za-z0-9+/=]+$/.test(item.dataUrl)))) return null
+        || (item.dataUrl !== undefined && (typeof item.dataUrl !== 'string' || item.dataUrl.length > MAX_ATTACHMENT_DATA_URL_LENGTH || !/^data:[^,]{1,128};base64,[A-Za-z0-9+/=]+$/.test(item.dataUrl)))
+        || (item.mediaUrl !== undefined && !isSafeWhatsAppMediaUrl(item.mediaUrl))) return null
       if (item.text === undefined && item.dataUrl === undefined) {
         // Metadata-only attachment is valid for formats the browser cannot parse.
       }
@@ -3352,6 +3398,7 @@ class AgentdServer {
         size: item.size,
         ...(typeof item.text === 'string' && item.text ? { text: item.text } : {}),
         ...(typeof item.dataUrl === 'string' && item.dataUrl ? { dataUrl: item.dataUrl } : {}),
+        ...(typeof item.mediaUrl === 'string' && item.mediaUrl ? { mediaUrl: item.mediaUrl } : {}),
       })
     }
     return attachments
@@ -3833,6 +3880,36 @@ class AgentdServer {
 
   ingestWhatsAppServiceMessage(message) {
     if (this.migrationHold || !message || message.isFromMe === true || typeof message.providerEventId !== 'string' || !/^[\x21-\x7e]{1,300}$/.test(message.providerEventId) || typeof message.conversationId !== 'string' || !message.conversationId.trim()) return
+    const media = message.media
+    let storedMedia = null
+    let wroteMedia = false
+    if (media !== undefined) {
+      if (!media || !Buffer.isBuffer(media.bytes) || media.bytes.length < 1 || media.bytes.length > MAX_WHATSAPP_MEDIA_BYTES
+        || !['image', 'video', 'audio', 'document'].includes(media.type)
+        || typeof media.fileName !== 'string' || !media.fileName.trim() || media.fileName.length > 256 || /[\0\r\n\\/]/.test(media.fileName)
+        || typeof media.mimeType !== 'string' || !media.mimeType.trim() || media.mimeType.length > 128 || /[\0\r\n]/.test(media.mimeType)
+        || !isSupportedMediaMime(media.type, media.mimeType)) return
+      const mediaId = crypto.createHash('sha256').update(`whatsapp-media\0${message.providerEventId}`).digest('hex')
+      const storageName = `${mediaId}.bin`
+      const mediaPath = path.join(this.whatsappMediaDir, storageName)
+      const bytes = media.bytes
+      const sha256 = crypto.createHash('sha256').update(bytes).digest('hex')
+      try {
+        if (!fs.existsSync(mediaPath)) {
+          writePrivateBufferAtomically(mediaPath, bytes)
+          wroteMedia = true
+        }
+      } catch { return }
+      storedMedia = {
+        mediaId,
+        storageName,
+        mediaType: media.type,
+        fileName: media.fileName.trim(),
+        mimeType: media.mimeType.trim().toLowerCase(),
+        size: bytes.length,
+        sha256,
+      }
+    }
     const payload = {
       from: typeof message.from === 'string' ? message.from : 'unknown',
       to: typeof message.to === 'string' ? message.to : '',
@@ -3842,10 +3919,62 @@ class AgentdServer {
       messageId: typeof message.id === 'string' ? message.id : message.providerEventId,
       isFromMe: false,
       ...(typeof message.type === 'string' ? { messageType: message.type } : {}),
+      ...(storedMedia ? { media: {
+        id: storedMedia.mediaId,
+        type: storedMedia.mediaType,
+        fileName: storedMedia.fileName,
+        mimeType: storedMedia.mimeType,
+        size: storedMedia.size,
+        sha256: storedMedia.sha256,
+      } } : {}),
     }
     const payloadJson = JSON.stringify(redactPayload(payload))
-    if (Buffer.byteLength(payloadJson, 'utf8') > MAX_WHATSAPP_PAYLOAD_BYTES) return
-    this.db.prepare('INSERT INTO inbound_events(channel,provider_event_id,conversation_id,payload,status,created_at) VALUES (?,?,?,?,?,?) ON CONFLICT(channel,provider_event_id) DO NOTHING').run('whatsapp', message.providerEventId, message.conversationId.slice(0, 500), payloadJson, 'draft', Date.now())
+    if (Buffer.byteLength(payloadJson, 'utf8') > MAX_WHATSAPP_PAYLOAD_BYTES) {
+      if (wroteMedia) try { fs.unlinkSync(path.join(this.whatsappMediaDir, storedMedia.storageName)) } catch {}
+      return
+    }
+    try {
+      const inserted = this.db.transaction(() => {
+        const result = this.db.prepare('INSERT INTO inbound_events(channel,provider_event_id,conversation_id,payload,status,created_at) VALUES (?,?,?,?,?,?) ON CONFLICT(channel,provider_event_id) DO NOTHING').run('whatsapp', message.providerEventId, message.conversationId.slice(0, 500), payloadJson, 'draft', Date.now())
+        if (storedMedia && result.changes > 0) {
+          this.db.prepare('INSERT INTO whatsapp_media(media_id,provider_event_id,media_type,file_name,mime_type,size,sha256,storage_name,created_at) VALUES (?,?,?,?,?,?,?,?,?)').run(storedMedia.mediaId, message.providerEventId, storedMedia.mediaType, storedMedia.fileName, storedMedia.mimeType, storedMedia.size, storedMedia.sha256, storedMedia.storageName, Date.now())
+        }
+        return result.changes
+      })()
+      if (wroteMedia && !inserted) try { fs.unlinkSync(path.join(this.whatsappMediaDir, storedMedia.storageName)) } catch {}
+    } catch {
+      if (wroteMedia) try { fs.unlinkSync(path.join(this.whatsappMediaDir, storedMedia.storageName)) } catch {}
+    }
+  }
+
+  whatsappInboundMedia(req, res, providerEventId) {
+    this.authorize(req)
+    if (typeof providerEventId !== 'string' || !/^[\x21-\x7e]{1,300}$/.test(providerEventId)) return json(res, 400, { error: 'Invalid WhatsApp media identity' })
+    const row = this.db.prepare('SELECT media_type,file_name,mime_type,size,sha256,storage_name FROM whatsapp_media WHERE provider_event_id = ?').get(providerEventId)
+    if (!row) return json(res, 404, { error: 'WhatsApp media not found' })
+    const mediaPath = path.join(this.whatsappMediaDir, row.storage_name)
+    let handle
+    try {
+      const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0)
+      handle = fs.openSync(mediaPath, flags)
+      const stat = fs.fstatSync(handle)
+      if (!stat.isFile() || stat.size !== row.size || stat.size < 1 || stat.size > MAX_WHATSAPP_MEDIA_BYTES) throw new Error('unsafe')
+      const bytes = fs.readFileSync(handle)
+      if (bytes.length !== row.size || crypto.createHash('sha256').update(bytes).digest('hex') !== row.sha256) throw new Error('changed')
+      const safeName = row.file_name.replace(/["\r\n\\/]/g, '_').slice(0, 256) || 'whatsapp-media'
+      res.writeHead(200, {
+        'content-type': row.mime_type,
+        'content-length': String(bytes.length),
+        'content-disposition': `inline; filename="${safeName}"`,
+        'cache-control': 'no-store',
+      })
+      res.end(bytes)
+    } catch {
+      if (!res.headersSent) json(res, 409, { error: 'WhatsApp media is unavailable' })
+      else res.destroy()
+    } finally {
+      if (handle !== undefined) fs.closeSync(handle)
+    }
   }
 
   async whatsappInbound(req, res, url) {

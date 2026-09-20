@@ -102,6 +102,10 @@ export interface WhatsAppMessage {
     content: string;
     type: 'image' | 'audio' | 'video' | 'spreadsheet' | 'document' | 'text' | string;
     mediaUrl?: string;
+    mediaDataUrl?: string;
+    mediaName?: string;
+    mediaMimeType?: string;
+    mediaSize?: number;
     caption?: string;
     timestamp: number;
     isFromMe: boolean;
@@ -116,7 +120,12 @@ export const resolveWhatsAppMessageToLLM = async (waMsg: WhatsAppMessage): Promi
     let parts: LLMContentPart[] = [];
     
     // 1. Handle Multimodal Attachments (Priority for Vision models)
-    if (waMsg.mediaUrl) {
+    if (waMsg.mediaDataUrl && waMsg.type === 'image') {
+        if (waMsg.content && waMsg.content !== '[Media Message]') {
+            parts.push({ type: 'text', text: waMsg.content });
+        }
+        parts.push({ type: 'image_url', image_url: { url: waMsg.mediaDataUrl } });
+    } else if (waMsg.mediaUrl) {
         const localPath = waMsg.mediaUrl.replace('file://', '');
         const mediaType = waMsg.type as MediaType;
         
@@ -130,10 +139,12 @@ export const resolveWhatsAppMessageToLLM = async (waMsg: WhatsAppMessage): Promi
         role: "user",
         // Fallback to plain string if it's just one text part, otherwise use multimodal array
         content: parts.length === 1 && parts[0].type === 'text' ? parts[0].text : parts,
-        attachments: waMsg.mediaUrl ? [{
-            name: waMsg.caption || `whatsapp_${waMsg.type}_${Date.now()}`,
-            path: waMsg.mediaUrl.replace('file://', ''),
-            type: waMsg.type
+        attachments: (waMsg.mediaUrl || waMsg.mediaDataUrl) ? [{
+            name: waMsg.mediaName || waMsg.caption || `whatsapp_${waMsg.type}_${Date.now()}`,
+            path: waMsg.mediaUrl ? waMsg.mediaUrl.replace('file://', '') : '',
+            type: waMsg.mediaMimeType || waMsg.type,
+            ...(waMsg.mediaSize !== undefined ? { size: waMsg.mediaSize } : {}),
+            ...(waMsg.mediaDataUrl ? { dataUrl: waMsg.mediaDataUrl } : {})
         }] : undefined
     };
 };

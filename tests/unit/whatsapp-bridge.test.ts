@@ -39,4 +39,26 @@ describe('browser WhatsApp inbound normalization', () => {
       createdAt: 42,
     })).toBeNull()
   })
+
+  it('normalizes media-only payloads into bounded attachment metadata', () => {
+    expect(normalizeBrowserWhatsAppEvent({
+      id: 4,
+      providerEventId: 'baileys:media-4',
+      conversationId: 'chat-4',
+      payload: {
+        from: '15551234567',
+        type: 'image',
+        media: { type: 'image', fileName: 'photo.jpg', mimeType: 'image/jpeg', size: 1234 },
+        timestamp: 1_700_000_000,
+      },
+      status: 'draft',
+      createdAt: 42,
+    })).toMatchObject({
+      content: '[WhatsApp image attachment]',
+      type: 'image',
+      mediaName: 'photo.jpg',
+      mediaMimeType: 'image/jpeg',
+      mediaSize: 1234,
+    })
+  })
 })

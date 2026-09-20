@@ -13,7 +13,7 @@ import { useEffect, useCallback } from 'react'
 import { useWhatsAppStore, WhatsAppConnectionState } from '../stores/whatsappStore'
 import electron, { isElectron } from '../lib/electron'
 import { useChatStore, type ChatSession } from '../stores/chatStore'
-import { BrowserAgentdError, getBrowserAgentdClient, type BrowserWhatsAppInboundEvent } from '../lib/browser-agentd-client'
+import { BrowserAgentdError, getBrowserAgentdClient, type BrowserWhatsAppInboundEvent, type BrowserWhatsAppInboundMedia } from '../lib/browser-agentd-client'
 import { isTauriRuntime } from '../lib/tauri-native-bridge'
 import type { ChatSession as AgentdChatSession } from '../../../shared/chat-protocol'
 
@@ -34,6 +34,11 @@ export interface BrowserWhatsAppMessage {
     timestamp: number
     isFromMe: boolean
     conversationId: string
+    mediaUrl?: string
+    mediaDataUrl?: string
+    mediaName?: string
+    mediaMimeType?: string
+    mediaSize?: number
 }
 
 const readPayloadString = (payload: Record<string, unknown>, keys: string[]): string => {
@@ -50,7 +55,11 @@ export const normalizeBrowserWhatsAppEvent = (event: BrowserWhatsAppInboundEvent
         ? payload.message as Record<string, unknown>
         : null
     const read = (keys: string[]) => readPayloadString(payload, keys) || (nested ? readPayloadString(nested, keys) : '')
-    const content = read(['content', 'body', 'text', 'caption'])
+    const media = payload.media && typeof payload.media === 'object' && !Array.isArray(payload.media)
+        ? payload.media as Record<string, unknown>
+        : null
+    const mediaType = media && typeof media.type === 'string' ? media.type : ''
+    const content = read(['content', 'body', 'text', 'caption']) || (mediaType ? `[WhatsApp ${mediaType} attachment]` : '')
     if (!content) return null
     const timestampValue = payload.timestamp ?? payload.timestampMs ?? payload.createdAt
     const timestamp = typeof timestampValue === 'number' && Number.isFinite(timestampValue)
@@ -69,6 +78,9 @@ export const normalizeBrowserWhatsAppEvent = (event: BrowserWhatsAppInboundEvent
         timestamp,
         isFromMe: isFromMeValue === true,
         conversationId,
+        ...(media && typeof media.fileName === 'string' ? { mediaName: media.fileName } : {}),
+        ...(media && typeof media.mimeType === 'string' ? { mediaMimeType: media.mimeType } : {}),
+        ...(media && Number.isSafeInteger(media.size) ? { mediaSize: media.size as number } : {}),
     }
 }
 
@@ -88,6 +100,14 @@ const toRendererSession = (session: AgentdChatSession): ChatSession => ({
         role: message.role,
         content: message.content,
         timestamp: message.timestamp,
+        ...(message.attachments?.length ? { attachments: message.attachments.map((attachment) => ({
+            name: attachment.name,
+            path: attachment.dataUrl || attachment.mediaUrl || '',
+            type: attachment.type,
+            size: attachment.size,
+            ...(attachment.dataUrl ? { dataUrl: attachment.dataUrl } : {}),
+            ...(attachment.mediaUrl ? { mediaUrl: attachment.mediaUrl } : {}),
+        })) } : {}),
     })),
 })
 
@@ -95,6 +115,18 @@ const ingestBrowserWhatsAppEvent = async (event: BrowserWhatsAppInboundEvent): P
     const message = normalizeBrowserWhatsAppEvent(event)
     if (!message || message.isFromMe) return { message: null, sessionId: null, alreadyHandled: true }
     const client = getBrowserAgentdClient()
+    let media: BrowserWhatsAppInboundMedia | null = null
+    if (message.mediaName && message.mediaMimeType && Number.isSafeInteger(message.mediaSize)) {
+        try { media = await client.getWhatsAppInboundMedia(event.providerEventId) } catch { media = null }
+    }
+    const hydratedMessage = media ? {
+        ...message,
+        mediaUrl: media.mediaUrl,
+        ...(media.dataUrl ? { mediaDataUrl: media.dataUrl } : {}),
+        mediaName: media.fileName,
+        mediaMimeType: media.mimeType,
+        mediaSize: media.size,
+    } : message
     const sessionId = stableWhatsAppSessionId(message.conversationId)
     const sessions = await client.loadSessions()
     const existing = sessions.find((session) => session.id === sessionId)
@@ -111,8 +143,15 @@ const ingestBrowserWhatsAppEvent = async (event: BrowserWhatsAppInboundEvent): P
         await client.appendMessage(resolvedSessionId, {
             id: `whatsapp_${event.providerEventId}`,
             role: 'user',
-            content: `📱 **WhatsApp** (${message.from}): ${message.content}`,
-            timestamp: message.timestamp,
+            content: `📱 **WhatsApp** (${hydratedMessage.from}): ${hydratedMessage.content}`,
+            timestamp: hydratedMessage.timestamp,
+            ...(media ? { attachments: [{
+                name: media.fileName,
+                type: media.mimeType,
+                size: media.size,
+                mediaUrl: media.mediaUrl,
+                ...(media.dataUrl ? { dataUrl: media.dataUrl } : {}),
+            }] } : {}),
         })
     } catch (error) {
         if (!(error instanceof BrowserAgentdError) || error.status !== 409) throw error
@@ -128,7 +167,7 @@ const ingestBrowserWhatsAppEvent = async (event: BrowserWhatsAppInboundEvent): P
     // the completion marker that makes a reload safe without losing review work.
     const durableDrafts = await client.listDrafts(100)
     return {
-        message,
+        message: hydratedMessage,
         sessionId: resolvedSessionId,
         alreadyHandled: durableDrafts.some((draft) => draft.providerEventId === event.providerEventId),
     }
