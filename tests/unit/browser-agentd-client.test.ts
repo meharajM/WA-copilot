@@ -357,6 +357,18 @@ describe('browser agentd client', () => {
     expect(JSON.parse(String(retrieve.init?.body))).toEqual({ mimeType: 'application/pdf', name: 'guide.pdf' })
   })
 
+  it('maps bounded browser email delivery history through agentd', async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
+      if (url.includes('/api/v1/email/delivery-history?')) return response({ events: [{ providerMessageId: 'email:draft_email_1', channel: 'email', status: 'sent', eventAt: 10, inboundId: 'draft_email_1' }] })
+      return response({ success: true })
+    })
+    const client = createBrowserAgentdClient({ origin: 'http://127.0.0.1:4141', fetch: fetcher })
+    await client.pair('123456')
+    await expect(client.listEmailDeliveryHistory(10)).resolves.toEqual([{ providerMessageId: 'email:draft_email_1', channel: 'email', status: 'sent', eventAt: 10, inboundId: 'draft_email_1' }])
+  })
+
   it('hydrates bounded IMAP inbound media through the authenticated daemon route', async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = []
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

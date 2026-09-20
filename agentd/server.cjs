@@ -1277,6 +1277,7 @@ class AgentdServer {
       return this.emailInboundMedia(req, res, providerEventId, attachmentId)
     }
     if (url.pathname === '/api/v1/email/attachments' && req.method === 'GET') return this.emailAttachments(req, res, url)
+    if (url.pathname === '/api/v1/email/delivery-history' && req.method === 'GET') return this.emailDeliveryHistory(req, res, url)
     const emailAttachmentMatch = /^\/api\/v1\/email\/attachments\/([^/]+)\/([^/]+)$/.exec(url.pathname)
     if (emailAttachmentMatch && req.method === 'POST') return this.retrieveGmailAttachmentRoute(req, res, decodeURIComponent(emailAttachmentMatch[1]), decodeURIComponent(emailAttachmentMatch[2]))
     if (url.pathname === '/api/v1/email/drafts' && ['GET', 'POST'].includes(req.method)) return this.emailDrafts(req, res, url)
@@ -2702,6 +2703,24 @@ class AgentdServer {
       ON CONFLICT(id) DO UPDATE SET status = excluded.status, payload = excluded.payload, updated_at = excluded.updated_at`)
       .run(draft.id, draft.status, JSON.stringify(draft), draft.createdAt, now)
     return json(res, 200, draft)
+  }
+
+  emailDeliveryHistory(req, res, url) {
+    this.authorize(req)
+    const requestedLimit = Number.parseInt(url.searchParams.get('limit') || '50', 10)
+    const limit = Number.isSafeInteger(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 100) : 50
+    const rows = this.db.prepare("SELECT id,status,updated_at AS eventAt FROM email_drafts WHERE status IN ('sent','failed') ORDER BY updated_at DESC LIMIT ?").all(limit)
+    return json(res, 200, {
+      events: rows.map(row => ({
+        // SMTP does not expose a stable message receipt and Gmail's bounded
+        // sender path does not persist one yet; keep a durable local delivery ID.
+        providerMessageId: `email:${row.id}`,
+        channel: 'email',
+        status: row.status,
+        eventAt: row.eventAt,
+        inboundId: row.id,
+      })),
+    })
   }
 
   async emailDraft(req, res, id) {

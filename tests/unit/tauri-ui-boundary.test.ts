@@ -279,6 +279,14 @@ describe('browser-first UI boundary', () => {
     expect(client).toContain('/review')
   })
 
+  it('routes browser delivery history across WhatsApp and Email through authenticated agentd', () => {
+    const electron = readSource('lib/electron.ts')
+    const client = readSource('lib/browser-agentd-client.ts')
+    expect(electron).toContain('getBrowserAgentdClient().listEmailDeliveryHistory(boundedLimit)')
+    expect(electron).toContain('getBrowserAgentdClient().listDrafts(boundedLimit)')
+    expect(client).toContain('/api/v1/email/delivery-history?limit=')
+  })
+
   it('routes browser persona reads and writes through agentd', () => {
     const electron = readSource('lib/electron.ts')
     expect(electron).toContain('getBrowserAgentdClient().getPersonaSettings()')

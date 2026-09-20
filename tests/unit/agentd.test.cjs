@@ -721,6 +721,26 @@ test('agentd persists authenticated email drafts without renderer storage', asyn
   fs.rmSync(dataDir, { recursive: true, force: true })
 })
 
+test('agentd exposes bounded authenticated email delivery history with durable local IDs', async () => {
+  const dataDir = makeTempDir('aica-agentd-email-delivery-history-')
+  const secret = 's'.repeat(32)
+  const server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
+  const { origin } = await server.start()
+  const bearer = { authorization: `Bearer ${secret}` }
+  assert.equal((await request(origin, 'GET', '/api/v1/email/delivery-history', undefined, {})).status, 401)
+  const now = Date.now()
+  server.db.prepare('INSERT INTO email_drafts(id,status,payload,created_at,updated_at) VALUES (?,?,?,?,?)').run('email-failed', 'failed', '{}', now - 10, now - 10)
+  server.db.prepare('INSERT INTO email_drafts(id,status,payload,created_at,updated_at) VALUES (?,?,?,?,?)').run('email-sent', 'sent', '{}', now, now)
+  server.db.prepare('INSERT INTO email_drafts(id,status,payload,created_at,updated_at) VALUES (?,?,?,?,?)').run('email-review', 'approved', '{}', now + 10, now + 10)
+  const history = await request(origin, 'GET', '/api/v1/email/delivery-history?limit=1', undefined, bearer)
+  assert.equal(history.status, 200)
+  assert.deepEqual(history.body.events, [{ providerMessageId: 'email:email-sent', channel: 'email', status: 'sent', eventAt: now, inboundId: 'email-sent' }])
+  const full = await request(origin, 'GET', '/api/v1/email/delivery-history?limit=10', undefined, bearer)
+  assert.deepEqual(full.body.events.map(event => event.providerMessageId), ['email:email-sent', 'email:email-failed'])
+  await server.stop()
+  fs.rmSync(dataDir, { recursive: true, force: true })
+})
+
 test('agentd exposes bounded durable autonomy notifications with acknowledgement', async () => {
   const dataDir = makeTempDir('aica-agentd-notifications-')
   const secret = 's'.repeat(32)

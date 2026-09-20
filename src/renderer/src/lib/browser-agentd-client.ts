@@ -660,6 +660,14 @@ export interface BrowserDecisionEvidence {
   reviewedAt?: number
 }
 
+export interface BrowserEmailDeliveryEvent {
+  providerMessageId: string
+  channel: 'email'
+  status: 'sent' | 'failed'
+  eventAt: number
+  inboundId: string
+}
+
 export interface BrowserAutonomyNotification {
   id: number
   kind: 'failure' | 'budget' | 'recovery' | 'escalation_sla_overdue'
@@ -781,6 +789,7 @@ export interface BrowserAgentdClient extends ChatClient {
   saveEmailSettings(settings: EmailSettings): Promise<EmailSettings>
   testEmail(): Promise<BrowserEmailTestResult>
   listEmailAttachments(limit?: number): Promise<BrowserEmailAttachment[]>
+  listEmailDeliveryHistory(limit?: number): Promise<BrowserEmailDeliveryEvent[]>
   retrieveGmailAttachment(messageId: string, attachmentId: string, metadata?: { mimeType?: string; name?: string }): Promise<BrowserEmailAttachmentResult>
   getEmailInboundAttachment(providerEventId: string, attachmentId: string): Promise<BrowserEmailInboundAttachmentResult>
   getGmailOAuthStatus(): Promise<BrowserGmailOAuthStatus>
@@ -1214,6 +1223,19 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     if (!isRecord(value) || !Array.isArray(value.attachments)) throw new Error('Invalid agentd email attachment list response')
     return value.attachments.map(readEmailAttachmentMetadata)
   }
+  const listEmailDeliveryHistory = async (limit = 50): Promise<BrowserEmailDeliveryEvent[]> => {
+    const boundedLimit = Number.isSafeInteger(limit) ? Math.min(Math.max(limit, 1), 100) : 50
+    const value = await request<unknown>(`/api/v1/email/delivery-history?limit=${boundedLimit}`)
+    if (!isRecord(value) || !Array.isArray(value.events)) throw new Error('Invalid agentd email delivery history response')
+    return value.events.map((item) => {
+      if (!isRecord(item)
+        || typeof item.providerMessageId !== 'string' || !item.providerMessageId.startsWith('email:')
+        || item.channel !== 'email' || !['sent', 'failed'].includes(item.status as string)
+        || !Number.isSafeInteger(item.eventAt) || (item.eventAt as number) < 0
+        || typeof item.inboundId !== 'string') throw new Error('Invalid agentd email delivery event')
+      return item as unknown as BrowserEmailDeliveryEvent
+    })
+  }
   const retrieveGmailAttachment = async (messageId: string, attachmentId: string, metadata: { mimeType?: string; name?: string } = {}): Promise<BrowserEmailAttachmentResult> => {
     if (!/^[A-Za-z0-9_-]{1,256}$/.test(messageId) || !/^[A-Za-z0-9_-]{1,256}$/.test(attachmentId)) throw new Error('Invalid Gmail attachment identity')
     if (metadata.mimeType !== undefined && (typeof metadata.mimeType !== 'string' || metadata.mimeType.length > 128)) throw new Error('Invalid Gmail attachment MIME type')
@@ -1637,6 +1659,7 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     saveEmailSettings,
     testEmail,
     listEmailAttachments,
+    listEmailDeliveryHistory,
     retrieveGmailAttachment,
     getEmailInboundAttachment,
     getGmailOAuthStatus,

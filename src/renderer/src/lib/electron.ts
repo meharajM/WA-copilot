@@ -605,14 +605,19 @@ export const electron = {
         listDeliveryHistory: async (limit = 50) => {
             if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.listDeliveryHistory(limit)
             if (!isBrowserProduct()) return []
-            const drafts = await getBrowserAgentdClient().listDrafts(Math.min(Math.max(limit, 1), 100))
-            return drafts.filter(draft => draft.sendStatus === 'sent' && draft.providerMessageId).map(draft => ({
+            const boundedLimit = Math.min(Math.max(limit, 1), 100)
+            const [drafts, emailEvents] = await Promise.all([
+                getBrowserAgentdClient().listDrafts(boundedLimit),
+                getBrowserAgentdClient().listEmailDeliveryHistory(boundedLimit),
+            ])
+            const whatsappEvents = drafts.filter(draft => draft.sendStatus === 'sent' && draft.providerMessageId).map(draft => ({
                 providerMessageId: draft.providerMessageId as string,
                 channel: 'whatsapp',
                 status: 'sent',
                 eventAt: draft.updatedAt,
                 inboundId: draft.providerEventId,
             }))
+            return [...whatsappEvents, ...emailEvents].sort((left, right) => right.eventAt - left.eventAt).slice(0, boundedLimit)
         },
         listEmailAttachments: async (limit = 20) => {
             if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.listEmailAttachments(limit)
