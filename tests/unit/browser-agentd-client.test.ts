@@ -174,6 +174,39 @@ describe('browser agentd client', () => {
     })
   })
 
+  it('accepts durable migrated and recovery-required continuity states', async () => {
+    let recovery = false
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
+      if (url.endsWith('/api/v1/continuity/status')) return response({
+        version: 1,
+        runtime: 'agentd',
+        migration: {
+          source: 'electron', target: 'agentd', state: recovery ? 'recovery-required' : 'migrated', secretsExcluded: true,
+          note: recovery ? 'recovery required' : 'cutovers complete',
+        },
+        stores: [
+          { id: 'electron-settings', source: 'electron', target: 'settings.json', format: 'json', schemaVersion: 'electron.settings.v1', requiresReauthentication: true, state: recovery ? 'needs-recovery' : 'active' },
+          { id: 'electron-persona', source: 'electron', target: 'persona.json', format: 'json', schemaVersion: 'persona.v1', requiresReauthentication: false, state: recovery ? 'needs-recovery' : 'active' },
+          { id: 'electron-chat-history', source: 'electron', target: 'chat-history.db', format: 'sqlite', schemaVersion: 'chat-history.v1', requiresReauthentication: true, state: 'active' },
+          { id: 'agentd-state', source: 'agentd', target: 'agentd.db', format: 'sqlite', schemaVersion: 'agentd.v1', requiresReauthentication: true, state: 'active' },
+        ],
+        data: { sessions: 0, messages: 0, knowledgeDocuments: 0, inboundEvents: 0, drafts: 0 },
+        credentials: [],
+      })
+      return response({ success: true })
+    })
+    const client = createBrowserAgentdClient({ origin: 'http://127.0.0.1:4141', fetch: fetcher })
+    await client.pair('123456')
+    await expect(client.getContinuityStatus()).resolves.toMatchObject({ migration: { state: 'migrated' } })
+    recovery = true
+    await expect(client.getContinuityStatus()).resolves.toMatchObject({
+      migration: { state: 'recovery-required' },
+      stores: expect.arrayContaining([expect.objectContaining({ state: 'needs-recovery' })]),
+    })
+  })
+
   it('maps authenticated persona settings without using renderer secret storage', async () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)

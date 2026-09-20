@@ -349,7 +349,7 @@ const readMcpServers = (value: unknown): { servers: BrowserMcpServer[]; executio
 const readContinuityStatus = (value: unknown): BrowserContinuityStatus => {
   if (!isRecord(value) || value.version !== 1 || value.runtime !== 'agentd' || !isRecord(value.migration)
     || value.migration.source !== 'electron' || value.migration.target !== 'agentd'
-    || value.migration.state !== 'native-owner-action-required' || value.migration.secretsExcluded !== true
+    || !['native-owner-action-required', 'in-progress', 'recovery-required', 'migrated'].includes(value.migration.state as string) || value.migration.secretsExcluded !== true
     || typeof value.migration.note !== 'string' || !Array.isArray(value.stores) || !isRecord(value.data) || !Array.isArray(value.credentials)) {
     throw new Error('Invalid agentd continuity status response')
   }
@@ -359,7 +359,7 @@ const readContinuityStatus = (value: unknown): BrowserContinuityStatus => {
       || !['electron', 'agentd'].includes(store.source as string)
       || typeof store.target !== 'string' || !['json', 'sqlite'].includes(store.format as string)
       || typeof store.schemaVersion !== 'string' || typeof store.requiresReauthentication !== 'boolean'
-      || !['pending', 'active'].includes(store.state as string)) throw new Error('Invalid agentd continuity status response')
+      || !['pending', 'active', 'in-progress', 'needs-recovery'].includes(store.state as string)) throw new Error('Invalid agentd continuity status response')
     return store
   })
   const dataKeys = ['sessions', 'messages', 'knowledgeDocuments', 'inboundEvents', 'drafts']
@@ -697,7 +697,7 @@ export interface BrowserContinuityStatus {
   migration: {
     source: 'electron'
     target: 'agentd'
-    state: 'native-owner-action-required'
+    state: 'native-owner-action-required' | 'in-progress' | 'recovery-required' | 'migrated'
     secretsExcluded: true
     note: string
   }
@@ -708,7 +708,7 @@ export interface BrowserContinuityStatus {
     format: 'json' | 'sqlite'
     schemaVersion: string
     requiresReauthentication: boolean
-    state: 'pending' | 'active'
+    state: 'pending' | 'active' | 'in-progress' | 'needs-recovery'
   }>
   data: {
     sessions: number

@@ -204,6 +204,33 @@ test('agentd exposes read-only continuity status without returning credential va
   fs.rmSync(dataDir, { recursive: true, force: true })
 })
 
+test('continuity status reflects durable cutover completion and recovery holds', async () => {
+  const dataDir = makeTempDir('aica-agentd-continuity-state-')
+  const server = new AgentdServer({ dataDir, secret: 's'.repeat(32), pairingCode: '135791', logger: { log() {} } })
+  const { origin } = await server.start()
+  const pair = await request(origin, 'POST', '/api/v1/pair', { code: '135791' }, { origin })
+  const session = { origin, cookie: pair.headers['set-cookie'][0].split(';')[0] }
+  const now = Date.now()
+  server.db.prepare(`INSERT INTO settings_persona_cutovers
+    (preview_id, manifest, manifest_hash, scope, target_runtime, state, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)`).run('settings-state', '{}', 'a'.repeat(64), 'settings-persona', 'runtime', 'applied', now)
+  server.db.prepare(`INSERT INTO chat_history_cutovers
+    (preview_id, manifest, manifest_hash, scope, target_runtime, state, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)`).run('chat-state', '{}', 'b'.repeat(64), 'chat-history', 'runtime', 'applied', now + 1)
+  let result = await request(origin, 'GET', '/api/v1/continuity/status', undefined, session)
+  assert.equal(result.status, 200)
+  assert.equal(result.body.migration.state, 'migrated')
+  assert.equal(result.body.stores.find(store => store.id === 'electron-settings').state, 'active')
+  assert.equal(result.body.stores.find(store => store.id === 'electron-persona').state, 'active')
+  assert.equal(result.body.stores.find(store => store.id === 'electron-chat-history').state, 'active')
+  server.db.prepare('UPDATE chat_history_cutovers SET state = ?, updated_at = ? WHERE preview_id = ?').run('needs-recovery', now + 2, 'chat-state')
+  result = await request(origin, 'GET', '/api/v1/continuity/status', undefined, session)
+  assert.equal(result.body.migration.state, 'recovery-required')
+  assert.equal(result.body.stores.find(store => store.id === 'electron-chat-history').state, 'needs-recovery')
+  await server.stop()
+  fs.rmSync(dataDir, { recursive: true, force: true })
+})
+
 test('agentd stages owner-approved continuity imports without touching live data or secrets', async () => {
   const dataDir = makeTempDir('aica-agentd-continuity-stage-')
   const sourceRoot = makeTempDir('aica-electron-source-')

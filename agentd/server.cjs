@@ -1515,6 +1515,29 @@ class AgentdServer {
   async continuityStatus(req, res) {
     this.authorize(req)
     const count = (table) => this.db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get().count
+    // Report the durable cutover state instead of leaving the browser on the
+    // initial "pending" view forever.  The native owner flow persists every
+    // transition in agentd.db, so this status remains correct after a daemon
+    // restart and cannot be spoofed by browser state.
+    const cutoverState = (scope) => {
+      const row = this.db.prepare('SELECT state FROM settings_persona_cutovers WHERE scope = ? ORDER BY updated_at DESC LIMIT 1').get(scope)
+        || this.db.prepare('SELECT state FROM chat_history_cutovers WHERE scope = ? ORDER BY updated_at DESC LIMIT 1').get(scope)
+      if (!row) return 'pending'
+      if (row.state === 'applied') return 'active'
+      if (row.state === 'needs-recovery') return 'needs-recovery'
+      if (row.state === 'applying') return 'in-progress'
+      return 'pending'
+    }
+    const settingsPersonaState = cutoverState(SETTINGS_PERSONA_SCOPE)
+    const chatHistoryState = cutoverState(CHAT_HISTORY_SCOPE)
+    const migrationStates = [settingsPersonaState, chatHistoryState]
+    const migrationState = migrationStates.includes('needs-recovery')
+      ? 'recovery-required'
+      : migrationStates.includes('in-progress')
+        ? 'in-progress'
+        : migrationStates.every(state => state === 'active')
+          ? 'migrated'
+          : 'native-owner-action-required'
     const credentials = []
     for (const key of CONTINUITY_CREDENTIAL_KEYS) {
       let present = false
@@ -1530,13 +1553,17 @@ class AgentdServer {
       migration: {
         source: 'electron',
         target: 'agentd',
-        state: 'native-owner-action-required',
+        state: migrationState,
         secretsExcluded: true,
-        note: 'Electron stores require an explicit owner-approved native migration; this read-only endpoint never reads or imports them.',
+        note: migrationState === 'migrated'
+          ? 'Allowlisted Electron data cutovers are complete; credentials remain OS-store entries and any missing values require owner reauthentication.'
+          : 'Electron stores require an explicit owner-approved native migration; this read-only endpoint never reads or imports them.',
       },
       stores: CONTINUITY_STORE_CONTRACT.map(store => ({
         ...store,
-        state: store.id === 'agentd-state' ? 'active' : 'pending',
+        state: store.id === 'agentd-state'
+          ? 'active'
+          : store.id === 'electron-chat-history' ? chatHistoryState : settingsPersonaState,
       })),
       data: {
         sessions: count('chat_sessions'),
