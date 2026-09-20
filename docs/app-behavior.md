@@ -23,6 +23,7 @@ If older manuals, screenshots, or marketing copy disagree with the running code,
 ## Runtime boundary
 
 - The supported product workspace is rendered in the user's web browser (Windows Edge or Chrome are the primary targets) and talks to the local authenticated `agentd` service over loopback HTTP.
+- The browser shell defers Chat, Settings, Knowledge, Lead Directory, Drafts, WhatsApp dialog, and file-review code until those surfaces are opened; the WebLLM worker is loaded only for an explicit on-device provider choice. This keeps normal browser startup lighter for Windows users while preserving the same views and workflows.
 - The Tauri companion is a lightweight native host for OS-only capabilities such as keychain access, file/folder dialogs, service lifecycle and diagnostics. It must not render a second product workspace or own business workflows.
 - In a real Tauri runtime, the only rendered surface is the native-host diagnostics/onboarding screen. Chat, settings, channels, Brain/knowledge, memory, approvals and all other product screens are browser-only; no query parameter can opt a Tauri window into them.
 - The runtime entrypoints are intentionally different: Electron's `index.html` mounts the legacy `App.tsx` client, while `tauri.html` mounts `tauri-main.tsx`. In a normal Edge/Chrome tab, `tauri-main.tsx` mounts `BrowserProduct`; inside a Tauri webview it mounts `NativeHostDiagnostics` only.
