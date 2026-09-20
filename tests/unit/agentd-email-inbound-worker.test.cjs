@@ -7,7 +7,7 @@ function listen(server) {
   return new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve(server.address().port)))
 }
 
-test('email inbound parser accepts bounded text/plain and rejects MIME outside browser scope', () => {
+test('email inbound parser accepts bounded text/plain and safe MIME attachments', () => {
   const payload = parseTextMessage(Buffer.from([
     'From: Sender <sender@example.test>',
     'To: support@example.test',
@@ -22,7 +22,31 @@ test('email inbound parser accepts bounded text/plain and rejects MIME outside b
   assert.equal(payload.body, 'Hello world')
   assert.equal(payload.bodyType, 'text')
   assert.equal(payload.messageId, '<one@example.test>')
-  assert.throws(() => parseTextMessage(Buffer.from('Content-Type: multipart/mixed\r\n\r\nbody')), /text\/plain/)
+  const multipart = [
+    'From: Sender <sender@example.test>',
+    'To: support@example.test',
+    'Subject: Photo',
+    'Message-ID: <two@example.test>',
+    'Content-Type: multipart/mixed; boundary="aica-boundary"',
+    '',
+    '--aica-boundary',
+    'Content-Type: text/plain; charset=utf-8',
+    '',
+    'See attached',
+    '--aica-boundary',
+    'Content-Type: image/png; name="photo.png"',
+    'Content-Disposition: attachment; filename="photo.png"',
+    'Content-Transfer-Encoding: base64',
+    '',
+    'iVBORw0KGgo=',
+    '--aica-boundary--',
+    '',
+  ].join('\r\n')
+  const multipartPayload = parseTextMessage(Buffer.from(multipart))
+  assert.equal(multipartPayload.body, 'See attached')
+  assert.deepEqual(multipartPayload.attachments?.[0], {
+    id: 'imap-1', name: 'photo.png', mimeType: 'image/png', size: 8, bytes: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+  })
   assert.throws(() => parseTextMessage(Buffer.from('Content-Type: text/html\r\n\r\nbody')), /text\/plain/)
 })
 

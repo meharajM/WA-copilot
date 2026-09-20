@@ -11,7 +11,7 @@ For QA pass/fail expectations, treat [docs/app-behavior.md](/Users/meharaj/WA-co
 The repo’s main architecture doc is WhatsApp-oriented. Email currently has two explicit runtime paths:
 
 - Electron owns the legacy/native path: renderer settings, the Zustand store and bridge hook; the main process owns MCP email-server spawn, IMAP/Gmail polling and outbound delivery; IPC connects those layers.
-- Browser mode owns the migrated agentd slice: authenticated settings/credential writes, bounded secure-transport probes, daemon-owned app-password IMAP or signed-in Gmail API polling for text-only messages, gated SMTP/Gmail API delivery for approved drafts with optional bounded operator-selected attachments, queued inbound-event consumption, and durable draft/session records. Custom MCP and unsupported providers remain unavailable. When a Gmail OAuth session expires or is revoked, agentd reports reauthentication and the browser requires a fresh sign-in.
+- Browser mode owns the migrated agentd slice: authenticated settings/credential writes, bounded secure-transport probes, daemon-owned app-password IMAP MIME or signed-in Gmail API polling, private scanned media retrieval for small safe images, gated SMTP/Gmail API delivery for approved drafts with optional bounded operator-selected attachments, queued inbound-event consumption, and durable draft/session records. Custom MCP and unsupported providers remain unavailable. When a Gmail OAuth session expires or is revoked, agentd reports reauthentication and the browser requires a fresh sign-in.
 - Both paths map email sessions into chat sessions using deterministic thread keys.
 
 Electron flow:
@@ -30,14 +30,14 @@ Browser flow:
 1. User configures settings in Edge/Chrome.
 2. The browser persists non-secret settings and write-only credentials through authenticated agentd routes. Form writes are serialized and flushed before Test Connection or Save Setup reports success, so rapid edits cannot restore stale settings.
 3. `Test Connection` runs a bounded IMAP/SMTP transport probe; the daemon mailbox worker separately starts only when Enable, app-password, IMAP TLS/host, and OS-credential gates pass.
-4. The daemon polls bounded text/plain IMAP or Gmail API messages using durable cursors and queues normalized inbound events; the browser claims them only when `Enable Email Channel` and `Auto-Reply` are both on.
-5. Browser drafts and session records remain agentd-owned. `Auto-Reply` only hydrates review sessions in this slice; it does not invoke the LLM or send automatic replies. Native file/credential operations remain outside the browser slice; approved SMTP/Gmail drafts use the daemon route, with optional bounded operator-selected attachments.
+4. The daemon polls bounded MIME-aware IMAP or Gmail API messages using durable cursors and queues normalized inbound events; the browser claims them only when `Enable Email Channel` and `Auto-Reply` are both on. Small scanned images can be hydrated through authenticated media routes; larger/unsupported files remain metadata-only.
+5. Browser drafts, generation policy and session records remain agentd-owned. `Auto-Reply` runs the authenticated browser generation/confidence path and acknowledges only after policy handling; native file/credential operations remain outside the browser slice. Approved SMTP/Gmail drafts use the daemon route, with optional bounded operator-selected attachments.
 
-Electron policy behavior (the browser slice is review/session-only):
+Policy behavior:
 
-1. High-confidence, knowledge-grounded replies may send automatically when policy and settings allow it.
-2. Low-confidence, non-sensitive cases send one standard acknowledgement to the customer.
-3. The generated response becomes an escalated Drafts-panel review item for owner follow-up.
+1. Electron retains the legacy client-side confidence/delivery policy; browser agentd applies the same bounded policy after authenticated generation.
+2. High-confidence, knowledge-grounded replies may send automatically when policy and settings allow it.
+3. Low-confidence, non-sensitive cases send one standard acknowledgement to the customer and retain the generated response as a Drafts-panel review item.
 4. Sensitive and do-not-contact cases never auto-send an acknowledgement.
 5. The runtime owns each delivery once: an agent tool send and post-response delivery cannot both send the same response.
 
@@ -123,7 +123,7 @@ The live OpenRouter suite does not replace the dedicated-mailbox email QA flow.
 If you want a true end-to-end email smoke test:
 
 - Electron: configure a real mailbox, run `Test Connection`, enable the channel, and verify a real inbound message and policy-controlled response.
-- Browser: verify settings/credential persistence and the bounded transport probe, then use an authorized app-password IMAP or Gmail OAuth test mailbox. Confirm bounded text-only messages queue through the daemon cursor and become a review session only when both `Enable Email Channel` and `Auto-Reply` are on; verify that no automatic reply is generated, then approve a draft with an optional safe attachment and verify the separately gated SMTP/Gmail route.
+- Browser: verify settings/credential persistence and the bounded transport probe, then use an authorized app-password IMAP or Gmail OAuth test mailbox. Confirm bounded text/MIME messages queue through the daemon cursor and become a session only when both `Enable Email Channel` and `Auto-Reply` are on; verify small safe images hydrate while larger/unsupported files stay metadata-only, then approve a draft with an optional safe attachment and verify the separately gated SMTP/Gmail route.
 
 ## Current Work Status
 

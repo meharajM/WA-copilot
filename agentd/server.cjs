@@ -39,6 +39,8 @@ const MAX_EMAIL_ATTACHMENT_COUNT = 20
 const MAX_EMAIL_ATTACHMENT_NAME_LENGTH = 256
 const MAX_EMAIL_ATTACHMENT_MIME_LENGTH = 128
 const MAX_EMAIL_ATTACHMENT_RESPONSE_BYTES = Math.ceil(MAX_SCANNED_EMAIL_ATTACHMENT_BYTES * 4 / 3) + 32 * 1024
+const MAX_EMAIL_INBOUND_MEDIA_BYTES = 512 * 1024
+const MAX_EMAIL_INBOUND_MEDIA_TOTAL_BYTES = 1024 * 1024
 const MAX_WHATSAPP_INBOUND_BATCH = 50
 const MAX_DRAFT_TEXT_LENGTH = 4096
 const WHATSAPP_INACTIVITY_TIMEOUT_MS = 10 * 60 * 1000
@@ -518,6 +520,7 @@ class AgentdServer {
     if (!secret || typeof secret !== 'string' || secret.length < 32) throw new Error('A per-install bearer secret of at least 32 characters is required')
     this.dataDir = resolveDataDir(dataDir)
     this.whatsappMediaDir = path.join(this.dataDir, 'whatsapp-media')
+    this.emailMediaDir = path.join(this.dataDir, 'email-media')
     this.secret = secret
     this.uiRoot = uiRoot
     this.logger = logger
@@ -570,6 +573,8 @@ class AgentdServer {
     fs.chmodSync(this.dataDir, 0o700)
     fs.mkdirSync(this.whatsappMediaDir, { recursive: true, mode: 0o700 })
     fs.chmodSync(this.whatsappMediaDir, 0o700)
+    fs.mkdirSync(this.emailMediaDir, { recursive: true, mode: 0o700 })
+    fs.chmodSync(this.emailMediaDir, 0o700)
     try {
       this.acquireRuntimeLock()
       this.db = new Database(path.join(this.dataDir, 'agentd.db'))
@@ -597,6 +602,18 @@ class AgentdServer {
           sha256 TEXT NOT NULL,
           storage_name TEXT NOT NULL UNIQUE,
           created_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS email_media (
+          media_id TEXT PRIMARY KEY,
+          provider_event_id TEXT NOT NULL,
+          attachment_id TEXT NOT NULL,
+          file_name TEXT NOT NULL,
+          mime_type TEXT NOT NULL,
+          size INTEGER NOT NULL,
+          sha256 TEXT NOT NULL,
+          storage_name TEXT NOT NULL UNIQUE,
+          created_at INTEGER NOT NULL,
+          UNIQUE(provider_event_id, attachment_id)
         );
         CREATE TABLE IF NOT EXISTS whatsapp_drafts (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -954,7 +971,21 @@ class AgentdServer {
       const providerEventId = `${settings.provider === 'gmail-api' ? 'gmail' : 'imap'}:${settings.accountName}:${message.uid}`
       const from = message.payload.from || 'unknown'
       const messageId = message.payload.messageId || providerEventId
-      this.ingestEmailInbound({ providerEventId, conversationId: `email::${from}::${messageId}`, payload: message.payload })
+      const mediaAttachments = Array.isArray(message.payload.attachments)
+        ? message.payload.attachments.filter(attachment => Buffer.isBuffer(attachment?.bytes)).map(attachment => ({
+          id: attachment.id,
+          name: attachment.name,
+          mimeType: attachment.mimeType,
+          bytes: attachment.bytes,
+        }))
+        : []
+      const payload = {
+        ...message.payload,
+        ...(Array.isArray(message.payload.attachments)
+          ? { attachments: message.payload.attachments.map(({ bytes, ...metadata }) => metadata) }
+          : {}),
+      }
+      await this.ingestEmailInbound({ providerEventId, conversationId: `email::${from}::${messageId}`, payload }, mediaAttachments)
     }
     if (settings.provider === 'gmail-api' && settings.gmailAuthMode === 'google-oauth') {
       this.emailInboundWorker = new GmailInboundWorker({
@@ -1088,15 +1119,68 @@ class AgentdServer {
     }
   }
 
-  ingestEmailInbound(body) {
+  ingestEmailInbound(body, mediaAttachments = []) {
     if (this.migrationHold) throw Object.assign(new Error('Settings migration is committing'), { statusCode: 409 })
     if (!parseEmailInbound(body)) throw new Error('Invalid email inbound event')
     const payload = JSON.stringify(body.payload)
     if (Buffer.byteLength(payload, 'utf8') > MAX_EMAIL_INBOUND_BODY_BYTES) throw new Error('Email inbound payload too large')
     const existing = this.db.prepare('SELECT id FROM inbound_events WHERE channel = ? AND provider_event_id = ?').get('email', body.providerEventId)
     if (existing) return { accepted: true, duplicate: true, id: existing.id }
-    const result = this.db.prepare('INSERT INTO inbound_events(channel,provider_event_id,conversation_id,payload,status,created_at) VALUES (?,?,?,?,?,?)').run('email', body.providerEventId, body.conversationId, payload, 'queued', Date.now())
-    return { accepted: true, duplicate: false, id: result.lastInsertRowid }
+    if (!Array.isArray(mediaAttachments) || mediaAttachments.length > MAX_EMAIL_ATTACHMENT_COUNT) throw new Error('Invalid email media attachments')
+    const media = []
+    let totalBytes = 0
+    for (const attachment of mediaAttachments) {
+      const metadata = attachment && typeof attachment === 'object' ? { ...attachment } : null
+      if (metadata) delete metadata.bytes
+      if (!metadata || !parseEmailAttachmentMetadata(metadata) || !Buffer.isBuffer(attachment.bytes)) throw new Error('Invalid email media attachment')
+      const declared = Array.isArray(body.payload.attachments) ? body.payload.attachments.find(item => item && item.id === metadata.id) : null
+      const normalizedDeclared = declared ? parseEmailAttachmentMetadata(declared) : null
+      const normalizedMedia = parseEmailAttachmentMetadata(metadata)
+      if (!normalizedDeclared || !normalizedMedia || JSON.stringify(normalizedDeclared) !== JSON.stringify(normalizedMedia)) throw new Error('Email media attachment is not declared by the event')
+      if (attachment.bytes.length !== metadata.size || attachment.bytes.length > MAX_EMAIL_INBOUND_MEDIA_BYTES) throw new Error('Email media attachment is too large')
+      const scan = scanEmailAttachment({ bytes: attachment.bytes, mimeType: metadata.mimeType })
+      // Keep the normalized event even when a MIME part is unsupported or
+      // fails magic-byte validation; only safe bytes are admitted to storage.
+      // This prevents one untrusted attachment from wedging the UID cursor.
+      if (!scan.safe) continue
+      totalBytes += attachment.bytes.length
+      if (totalBytes > MAX_EMAIL_INBOUND_MEDIA_TOTAL_BYTES) continue
+      const mediaId = crypto.createHash('sha256').update(`email-media\0${body.providerEventId}\0${metadata.id}`).digest('hex')
+      const storageName = `${mediaId}.bin`
+      media.push({ mediaId, storageName, attachment: { ...metadata, bytes: attachment.bytes }, sha256: scan.sha256 })
+    }
+    const written = []
+    try {
+      for (const item of media) {
+        const filename = path.join(this.emailMediaDir, item.storageName)
+        if (!fs.existsSync(filename)) {
+          writePrivateBufferAtomically(filename, item.attachment.bytes)
+          written.push(filename)
+        } else {
+          const existingStat = fs.lstatSync(filename)
+          if (!existingStat.isFile() || existingStat.size !== item.attachment.bytes.length) throw new Error('Email media storage collision')
+          const existing = fs.readFileSync(filename)
+          if (crypto.createHash('sha256').update(existing).digest('hex') !== item.sha256) throw new Error('Email media storage collision')
+        }
+      }
+      const now = Date.now()
+      const result = this.db.transaction(() => {
+        const inserted = this.db.prepare('INSERT INTO inbound_events(channel,provider_event_id,conversation_id,payload,status,created_at) VALUES (?,?,?,?,?,?)').run('email', body.providerEventId, body.conversationId, payload, 'queued', now)
+        for (const item of media) {
+          this.db.prepare('INSERT INTO email_media(media_id,provider_event_id,attachment_id,file_name,mime_type,size,sha256,storage_name,created_at) VALUES (?,?,?,?,?,?,?,?,?)')
+            .run(item.mediaId, body.providerEventId, item.attachment.id, item.attachment.name || item.attachment.id, item.attachment.mimeType || 'application/octet-stream', item.attachment.bytes.length, item.sha256, item.storageName, now)
+        }
+        return inserted
+      })()
+      return { accepted: true, duplicate: false, id: result.lastInsertRowid }
+    } catch (error) {
+      for (const filename of written) try { fs.unlinkSync(filename) } catch {}
+      if (/UNIQUE|constraint/i.test(error.message || '')) {
+        const duplicate = this.db.prepare('SELECT id FROM inbound_events WHERE channel = ? AND provider_event_id = ?').get('email', body.providerEventId)
+        if (duplicate) return { accepted: true, duplicate: true, id: duplicate.id }
+      }
+      throw error
+    }
   }
 
   getState(key, fallback) {
@@ -1166,6 +1250,15 @@ class AgentdServer {
     if (url.pathname === '/api/v1/email/inbound/ack' && req.method === 'POST') return this.acknowledgeEmailInbound(req, res)
     if (url.pathname === '/api/v1/email/inbound/claim' && req.method === 'POST') return this.claimEmailInbound(req, res)
     if (url.pathname === '/api/v1/email/inbound' && ['GET', 'POST'].includes(req.method)) return this.emailInbound(req, res, url)
+    const emailInboundMediaMatch = /^\/api\/v1\/email\/inbound\/media\/([^/]+)\/([^/]+)$/.exec(url.pathname)
+    if (emailInboundMediaMatch && req.method === 'GET') {
+      let providerEventId; let attachmentId
+      try {
+        providerEventId = decodeURIComponent(emailInboundMediaMatch[1])
+        attachmentId = decodeURIComponent(emailInboundMediaMatch[2])
+      } catch { return json(res, 400, { error: 'Invalid email media identity' }) }
+      return this.emailInboundMedia(req, res, providerEventId, attachmentId)
+    }
     if (url.pathname === '/api/v1/email/attachments' && req.method === 'GET') return this.emailAttachments(req, res, url)
     const emailAttachmentMatch = /^\/api\/v1\/email\/attachments\/([^/]+)\/([^/]+)$/.exec(url.pathname)
     if (emailAttachmentMatch && req.method === 'POST') return this.retrieveGmailAttachmentRoute(req, res, decodeURIComponent(emailAttachmentMatch[1]), decodeURIComponent(emailAttachmentMatch[2]))
@@ -2422,6 +2515,39 @@ class AgentdServer {
       }
     }
     return json(res, 200, { attachments })
+  }
+
+  emailInboundMedia(req, res, providerEventId, attachmentId) {
+    this.authorize(req)
+    if (!validBoundedText(providerEventId, 300) || !/^[A-Za-z0-9_.:@-]{1,300}$/.test(providerEventId)
+      || !/^[A-Za-z0-9_-]{1,256}$/.test(attachmentId)) return json(res, 400, { error: 'Invalid email media identity' })
+    const row = this.db.prepare('SELECT file_name,mime_type,size,sha256,storage_name FROM email_media WHERE provider_event_id = ? AND attachment_id = ?').get(providerEventId, attachmentId)
+    if (!row) return json(res, 404, { error: 'Email media not found' })
+    if (!Number.isSafeInteger(row.size) || row.size < 0 || row.size > MAX_EMAIL_INBOUND_MEDIA_BYTES || !/^[a-f0-9]{64}$/.test(row.sha256) || !/^[a-f0-9]{64}\.bin$/.test(row.storage_name)) return json(res, 409, { error: 'Email media metadata is invalid' })
+    const filename = path.join(this.emailMediaDir, row.storage_name)
+    let handle
+    try {
+      const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0)
+      handle = fs.openSync(filename, flags)
+      const stat = fs.fstatSync(handle)
+      if (!stat.isFile() || stat.size !== row.size) return json(res, 409, { error: 'Email media integrity check failed' })
+      const bytes = fs.readFileSync(handle)
+      const digest = crypto.createHash('sha256').update(bytes).digest('hex')
+      if (digest !== row.sha256) return json(res, 409, { error: 'Email media integrity check failed' })
+      res.writeHead(200, {
+        'content-type': row.mime_type || 'application/octet-stream',
+        'content-length': String(bytes.length),
+        'content-disposition': `inline; filename="${String(row.file_name || attachmentId).replace(/[\\"\r\n]/g, '_').slice(0, 256)}"`,
+        'cache-control': 'no-store',
+        'x-content-type-options': 'nosniff',
+      })
+      return res.end(bytes)
+    } catch (error) {
+      if (error?.code === 'ENOENT') return json(res, 404, { error: 'Email media not found' })
+      return json(res, 409, { error: 'Email media unavailable' })
+    } finally {
+      if (handle !== undefined) try { fs.closeSync(handle) } catch {}
+    }
   }
 
   async retrieveGmailAttachmentRoute(req, res, messageId, attachmentId) {

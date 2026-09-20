@@ -388,7 +388,7 @@ export function EmailSettingsPanel() {
         <Sparkles size={18} className="text-[var(--color-brand-teal)] shrink-0 mt-0.5" />
         <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed">
           {browserRuntime
-            ? <><strong>Browser setup:</strong> agentd stores mailbox settings and credentials, performs a bounded secure-transport or Gmail API probe, and runs text-only IMAP/Gmail workers when their OAuth/app-password, TLS, enable, and approval gates pass.</>
+            ? <><strong>Browser setup:</strong> agentd stores mailbox settings and credentials, performs a bounded secure-transport or Gmail API probe, and runs bounded IMAP/Gmail workers when their OAuth/app-password, TLS, enable, and approval gates pass. Safe small inbound images may be hydrated; larger or unsupported files stay operator-only.</>
             : <><strong>Client-side setup:</strong> choose a mailbox preset, use an app password by default, test the local IMAP/SMTP bridge, then go live.</>}
           {' '}Keep Draft Mode on and Auto-Reply off until verification is complete.
         </p>
@@ -523,7 +523,7 @@ export function EmailSettingsPanel() {
             {localGmailAuthMode === 'app-password' && (
               <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg p-3 text-xs text-[var(--color-text-dim)]">
                 {browserRuntime
-                  ? 'Gmail preset values are already loaded. Use an app password for the bounded transport probe, text-only mailbox polling, and approved-draft delivery.'
+                  ? 'Gmail preset values are already loaded. Use an app password for the bounded transport probe, MIME-aware mailbox polling, and approved-draft delivery. Only small safe images enter generation.'
                   : 'Gmail preset values are already loaded. Use a Gmail app password and keep Draft Mode on for the first end-to-end run.'}
               </div>
             )}
@@ -736,7 +736,7 @@ export function EmailSettingsPanel() {
         <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg p-3 text-xs text-[var(--color-text-dim)] flex gap-2">
           <Info size={14} className="shrink-0 mt-0.5" />
           {browserRuntime
-            ? 'Browser mode uses authenticated local agentd for bounded IMAP/Gmail polling and approved SMTP/Gmail delivery. IMAP remains text-only; Gmail may hydrate scanned small images, while other inbound attachments stay operator-inspection-only. HTML/multipart, custom MCP, and unsupported providers remain fail-closed; the daemon connects directly to the selected mailbox provider.'
+            ? 'Browser mode uses authenticated local agentd for bounded IMAP/Gmail polling and approved SMTP/Gmail delivery. IMAP and Gmail may hydrate scanned small images, while larger or unsupported inbound attachments stay operator-inspection-only. HTML-only messages, custom MCP, and unsupported providers remain fail-closed; the daemon connects directly to the selected mailbox provider.'
             : 'This email channel runs as a local client connector. No hosted mail server is required for Gmail, Outlook, or other IMAP/SMTP providers.'}
         </div>
       </Card>

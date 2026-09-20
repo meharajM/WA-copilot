@@ -357,6 +357,24 @@ describe('browser agentd client', () => {
     expect(JSON.parse(String(retrieve.init?.body))).toEqual({ mimeType: 'application/pdf', name: 'guide.pdf' })
   })
 
+  it('hydrates bounded IMAP inbound media through the authenticated daemon route', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = []
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      calls.push({ url, init })
+      if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
+      if (url.endsWith('/api/v1/email/inbound/media/imap%3Asupport%3A1/imap-1')) {
+        return new Response(Uint8Array.from([0x89, 0x50, 0x4e, 0x47]), { status: 200, headers: { 'content-type': 'image/png', 'content-length': '4', 'content-disposition': 'inline; filename="photo.png"' } })
+      }
+      return response({ success: true })
+    })
+    const client = createBrowserAgentdClient({ origin: 'http://127.0.0.1:4141', fetch: fetcher })
+    await client.pair('123456')
+    await expect(client.getEmailInboundAttachment('imap:support:1', 'imap-1')).resolves.toMatchObject({ fileName: 'photo.png', mimeType: 'image/png', size: 4, bytes: Uint8Array.from([0x89, 0x50, 0x4e, 0x47]) })
+    const media = calls.find(call => call.url.includes('/api/v1/email/inbound/media/'))!
+    expect(new Headers(media.init?.headers).has('x-csrf-token')).toBe(false)
+  })
+
   it('persists browser email drafts through authenticated agentd routes', async () => {
     const draft = {
       id: 'draft_email_1', responseText: 'Reply', originalFrom: 'customer@example.test', originalSubject: 'Question', replyTo: 'customer@example.test',

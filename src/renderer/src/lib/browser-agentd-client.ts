@@ -110,6 +110,13 @@ export interface BrowserEmailAttachmentResult {
   bytes?: Uint8Array
 }
 
+export interface BrowserEmailInboundAttachmentResult {
+  fileName: string
+  mimeType: string
+  size: number
+  bytes: Uint8Array
+}
+
 export interface BrowserGmailOAuthStatus {
   signedIn: boolean
   email: string | null
@@ -736,6 +743,7 @@ export interface BrowserAgentdClient extends ChatClient {
   testEmail(): Promise<BrowserEmailTestResult>
   listEmailAttachments(limit?: number): Promise<BrowserEmailAttachment[]>
   retrieveGmailAttachment(messageId: string, attachmentId: string, metadata?: { mimeType?: string; name?: string }): Promise<BrowserEmailAttachmentResult>
+  getEmailInboundAttachment(providerEventId: string, attachmentId: string): Promise<BrowserEmailInboundAttachmentResult>
   getGmailOAuthStatus(): Promise<BrowserGmailOAuthStatus>
   startGmailOAuth(): Promise<{ authorizationUrl: string; expiresAt: number }>
   signOutGmailOAuth(): Promise<void>
@@ -1177,6 +1185,25 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
     return { scan, bytes }
   }
+  const getEmailInboundAttachment = async (providerEventId: string, attachmentId: string): Promise<BrowserEmailInboundAttachmentResult> => {
+    if (typeof providerEventId !== 'string' || !/^[A-Za-z0-9_.:@-]{1,300}$/.test(providerEventId) || !/^[A-Za-z0-9_-]{1,256}$/.test(attachmentId)) throw new Error('Invalid email attachment identity')
+    const response = await requestResponse(`/api/v1/email/inbound/media/${encodeURIComponent(providerEventId)}/${encodeURIComponent(attachmentId)}`)
+    if (!response.ok) {
+      const body = await readJson(response)
+      throw new BrowserAgentdError(isRecord(body) ? errorText(body.error, 'Email attachment unavailable') : 'Email attachment unavailable', response.status || 500)
+    }
+    const mimeType = (response.headers.get('content-type') || 'application/octet-stream').split(';', 1)[0].trim().toLowerCase()
+    if (!/^(?:image|application|text)\/[A-Za-z0-9.+-]+$/.test(mimeType)) throw new Error('Invalid email attachment MIME type')
+    const lengthHeader = response.headers.get('content-length')
+    const size = lengthHeader && /^\d+$/.test(lengthHeader) ? Number(lengthHeader) : NaN
+    if (!Number.isSafeInteger(size) || size < 1 || size > 512 * 1024) throw new Error('Invalid email attachment size')
+    const bytes = new Uint8Array(await response.arrayBuffer())
+    if (bytes.length !== size) throw new Error('Email attachment size changed')
+    const disposition = response.headers.get('content-disposition') || ''
+    const filenameMatch = /filename="([^"]{1,256})"/i.exec(disposition)
+    const fileName = (filenameMatch?.[1] || attachmentId).replace(/[\0\r\n\\/]/g, '_')
+    return { fileName, mimeType, size, bytes }
+  }
   const ingestEmailInbound = async (event: { providerEventId: string; conversationId: string; payload: BrowserEmailInboundEvent['payload'] }) => {
     const value = await request<unknown>('/api/v1/email/inbound', { method: 'POST', body: JSON.stringify(event) }, true)
     if (!isRecord(value) || value.accepted !== true || typeof value.duplicate !== 'boolean' || !Number.isSafeInteger(value.id)) throw new Error('Invalid email inbound response')
@@ -1494,6 +1521,7 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     testEmail,
     listEmailAttachments,
     retrieveGmailAttachment,
+    getEmailInboundAttachment,
     getGmailOAuthStatus,
     startGmailOAuth,
     signOutGmailOAuth,
