@@ -1319,6 +1319,8 @@ class AgentdServer {
     if (url.pathname === '/api/v1/continuity/chat-history/rollback' && req.method === 'POST') return this.chatHistoryRollback(req, res)
     if (url.pathname === '/api/v1/continuity/chat-history/status' && req.method === 'GET') return this.chatHistoryStatus(req, res)
     if (url.pathname === '/api/v1/autonomy/metrics' && req.method === 'GET') return this.autonomyMetrics(req, res, url)
+    if (url.pathname === '/api/v1/autonomy/usage-history' && req.method === 'GET') return this.autonomyUsageHistory(req, res, url)
+    if (url.pathname === '/api/v1/autonomy/channel-usage' && req.method === 'GET') return this.autonomyChannelUsage(req, res, url)
     if (url.pathname === '/api/v1/autonomy/notifications' && req.method === 'GET') return this.autonomyNotifications(req, res, url)
     const autonomyNotificationAckMatch = /^\/api\/v1\/autonomy\/notifications\/(\d+)\/ack$/.exec(url.pathname)
     if (autonomyNotificationAckMatch && req.method === 'POST') return this.ackAutonomyNotification(req, res, Number(autonomyNotificationAckMatch[1]))
@@ -4432,6 +4434,35 @@ class AgentdServer {
       averageRecoveryTimeMs: 0,
       days,
     })
+  }
+
+  autonomyUsageHistory(req, res, url) {
+    this.authorize(req)
+    const requestedDays = Number.parseInt(url.searchParams.get('days') || '30', 10)
+    const days = Number.isSafeInteger(requestedDays) ? Math.min(Math.max(requestedDays, 1), 90) : 30
+    const since = Date.now() - days * 24 * 60 * 60 * 1000
+    const byDay = new Map()
+    const add = (rows, field) => {
+      for (const row of rows) {
+        const current = byDay.get(row.day) || { day: row.day, llmCalls: 0, outboundMessages: 0, estimatedCost: 0 }
+        current[field] += Number(row.amount) || 0
+        byDay.set(row.day, current)
+      }
+    }
+    add(this.db.prepare("SELECT date(created_at / 1000, 'unixepoch', 'localtime') AS day, COUNT(*) AS amount FROM chat_generations WHERE status = 'completed' AND created_at >= ? GROUP BY day").all(since), 'llmCalls')
+    add(this.db.prepare("SELECT date(updated_at / 1000, 'unixepoch', 'localtime') AS day, COUNT(*) AS amount FROM whatsapp_outbox WHERE status = 'sent' AND updated_at >= ? GROUP BY day").all(since), 'outboundMessages')
+    add(this.db.prepare("SELECT date(updated_at / 1000, 'unixepoch', 'localtime') AS day, COUNT(*) AS amount FROM email_drafts WHERE status = 'sent' AND updated_at >= ? GROUP BY day").all(since), 'outboundMessages')
+    return json(res, 200, { days: [...byDay.values()].sort((a, b) => b.day.localeCompare(a.day)) })
+  }
+
+  autonomyChannelUsage(req, res, url) {
+    this.authorize(req)
+    const requestedDays = Number.parseInt(url.searchParams.get('days') || '1', 10)
+    const days = Number.isSafeInteger(requestedDays) ? Math.min(Math.max(requestedDays, 1), 90) : 1
+    const since = Date.now() - days * 24 * 60 * 60 * 1000
+    const whatsapp = this.db.prepare("SELECT COUNT(*) AS amount FROM whatsapp_outbox WHERE status = 'sent' AND updated_at >= ?").get(since).amount
+    const email = this.db.prepare("SELECT COUNT(*) AS amount FROM email_drafts WHERE status = 'sent' AND updated_at >= ?").get(since).amount
+    return json(res, 200, { channels: [{ channel: 'whatsapp', amount: Number(whatsapp) || 0 }, { channel: 'email', amount: Number(email) || 0 }].filter(item => item.amount > 0) })
   }
 
   serveUi(requestPath, res) {

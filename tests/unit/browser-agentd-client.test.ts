@@ -646,6 +646,20 @@ describe('browser agentd client', () => {
     await expect(client.getAutonomyMetrics(14)).resolves.toMatchObject({ inbound: 2, sent: 1, drafts: 1, llmCalls: 3 })
   })
 
+  it('reads durable browser autonomy usage history and channel counts from agentd', async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
+      if (url.includes('/api/v1/autonomy/usage-history')) return response({ days: [{ day: '2026-09-20', llmCalls: 2, outboundMessages: 1, estimatedCost: 0 }] })
+      if (url.includes('/api/v1/autonomy/channel-usage')) return response({ channels: [{ channel: 'whatsapp', amount: 1 }] })
+      return response({ success: true })
+    })
+    const client = createBrowserAgentdClient({ origin: 'http://127.0.0.1:4141', fetch: fetcher })
+    await client.pair('123456')
+    await expect(client.getAutonomyUsageHistory(14)).resolves.toEqual([{ day: '2026-09-20', llmCalls: 2, outboundMessages: 1, estimatedCost: 0 }])
+    await expect(client.getAutonomyChannelUsage(1)).resolves.toEqual([{ channel: 'whatsapp', amount: 1 }])
+  })
+
   it('maps durable browser autonomy notifications and acknowledgement through agentd', async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = []
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

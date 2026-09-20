@@ -629,6 +629,18 @@ export interface BrowserAutonomyMetrics {
   averageRecoveryTimeMs: number
 }
 
+export interface BrowserAutonomyUsageDay {
+  day: string
+  llmCalls: number
+  outboundMessages: number
+  estimatedCost: number
+}
+
+export interface BrowserAutonomyChannelUsage {
+  channel: string
+  amount: number
+}
+
 export interface BrowserAutonomyNotification {
   id: number
   kind: 'failure' | 'budget' | 'recovery' | 'escalation_sla_overdue'
@@ -782,6 +794,8 @@ export interface BrowserAgentdClient extends ChatClient {
   quarantineWhatsAppDraft(id: number): Promise<BrowserDraft>
   cancelWhatsAppDraft(id: number): Promise<BrowserDraft>
   getAutonomyMetrics(days?: number): Promise<BrowserAutonomyMetrics>
+  getAutonomyUsageHistory(days?: number): Promise<BrowserAutonomyUsageDay[]>
+  getAutonomyChannelUsage(days?: number): Promise<BrowserAutonomyChannelUsage[]>
   listAutonomyNotifications(limit?: number): Promise<BrowserAutonomyNotification[]>
   ackAutonomyNotification(id: number): Promise<{ acknowledged: boolean }>
   listKnowledge(limit?: number): Promise<BrowserKnowledgeDocument[]>
@@ -1412,6 +1426,28 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     if (!isRecord(value) || fields.some((field) => typeof value[field] !== 'number' || !Number.isFinite(value[field] as number))) throw new Error('Invalid agentd autonomy metrics response')
     return value as unknown as BrowserAutonomyMetrics
   }
+  const getAutonomyUsageHistory = async (days = 30): Promise<BrowserAutonomyUsageDay[]> => {
+    const boundedDays = Number.isSafeInteger(days) ? Math.min(Math.max(days, 1), 90) : 30
+    const value = await request<unknown>(`/api/v1/autonomy/usage-history?days=${boundedDays}`)
+    if (!isRecord(value) || !Array.isArray(value.days)) throw new Error('Invalid agentd autonomy usage response')
+    return value.days.map((item) => {
+      if (!isRecord(item) || typeof item.day !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(item.day)
+        || !Number.isSafeInteger(item.llmCalls) || item.llmCalls < 0
+        || !Number.isSafeInteger(item.outboundMessages) || item.outboundMessages < 0
+        || typeof item.estimatedCost !== 'number' || !Number.isFinite(item.estimatedCost) || item.estimatedCost < 0) throw new Error('Invalid agentd autonomy usage day')
+      return item as unknown as BrowserAutonomyUsageDay
+    })
+  }
+  const getAutonomyChannelUsage = async (days = 1): Promise<BrowserAutonomyChannelUsage[]> => {
+    const boundedDays = Number.isSafeInteger(days) ? Math.min(Math.max(days, 1), 90) : 1
+    const value = await request<unknown>(`/api/v1/autonomy/channel-usage?days=${boundedDays}`)
+    if (!isRecord(value) || !Array.isArray(value.channels)) throw new Error('Invalid agentd autonomy channel usage response')
+    return value.channels.map((item) => {
+      if (!isRecord(item) || typeof item.channel !== 'string' || !item.channel || item.channel.length > 32
+        || !Number.isSafeInteger(item.amount) || item.amount < 0) throw new Error('Invalid agentd autonomy channel usage item')
+      return item as unknown as BrowserAutonomyChannelUsage
+    })
+  }
   const readAutonomyNotification = (value: unknown): BrowserAutonomyNotification => {
     if (!isRecord(value)
       || !Number.isSafeInteger(value.id) || (value.id as number) < 1
@@ -1586,6 +1622,8 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     quarantineWhatsAppDraft,
     cancelWhatsAppDraft,
     getAutonomyMetrics,
+    getAutonomyUsageHistory,
+    getAutonomyChannelUsage,
     listAutonomyNotifications,
     ackAutonomyNotification,
     listKnowledge,

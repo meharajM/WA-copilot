@@ -261,6 +261,15 @@ describe('browser-first UI boundary', () => {
     expect(autonomy).toContain("item.status === 'delivery-unknown'")
   })
 
+  it('routes browser autonomy usage history through authenticated agentd', () => {
+    const electron = readSource('lib/electron.ts')
+    const client = readSource('lib/browser-agentd-client.ts')
+    expect(electron).toContain('getBrowserAgentdClient().getAutonomyUsageHistory(days)')
+    expect(electron).toContain('getBrowserAgentdClient().getAutonomyChannelUsage(days)')
+    expect(client).toContain('/api/v1/autonomy/usage-history?days=')
+    expect(client).toContain('/api/v1/autonomy/channel-usage?days=')
+  })
+
   it('routes browser persona reads and writes through agentd', () => {
     const electron = readSource('lib/electron.ts')
     expect(electron).toContain('getBrowserAgentdClient().getPersonaSettings()')

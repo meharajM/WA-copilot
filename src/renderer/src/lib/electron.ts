@@ -636,8 +636,16 @@ export const electron = {
             const drafts = await getBrowserAgentdClient().listDrafts(50)
             return drafts.filter(draft => draft.status === 'draft' || draft.status === 'approved').map(draft => ({ inboundId: draft.providerEventId, jid: draft.conversationId, content: draft.responseText, contentHash: '', expiresAt: draft.updatedAt + 7 * 24 * 60 * 60 * 1000, status: draft.status, providerMessageId: draft.providerMessageId, sendStatus: draft.sendStatus, sendError: draft.sendError }))
         },
-        usageHistory: async (days = 30) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.usageHistory(days) : [],
-        channelUsage: async (days = 1) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.channelUsage(days) : [],
+        usageHistory: async (days = 30) => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.usageHistory(days)
+            if (isBrowserProduct()) return getBrowserAgentdClient().getAutonomyUsageHistory(days)
+            return []
+        },
+        channelUsage: async (days = 1) => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.channelUsage(days)
+            if (isBrowserProduct()) return getBrowserAgentdClient().getAutonomyChannelUsage(days)
+            return []
+        },
         approveDraft: async (inboundId: string) => {
             if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.approveDraft(inboundId)
             if (!isBrowserProduct()) return null
