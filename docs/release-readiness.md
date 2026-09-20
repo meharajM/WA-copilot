@@ -23,6 +23,12 @@ The gate requires:
 
 Production publish scripts do not support `--skip-checks`. `--skip-build` may reuse artifacts, but all release and artifact-verification gates still run.
 
+The Electron smoke is launched through `scripts/electron-e2e.cjs`. It rebuilds
+`better-sqlite3` for the installed Electron ABI, runs the isolated UI/safety
+smoke, and restores the host-Node native binding before returning. This keeps
+the Electron transition gate reproducible on Windows/macOS/Linux developer
+machines that use a different Node ABI.
+
 For an isolated local macOS package check, run `npm run test:e2e:packaged:mac`. It creates an Apple Development-signed QA bundle under `dist/qa-mac`; it is not a public release artifact.
 
 ## macOS Distribution

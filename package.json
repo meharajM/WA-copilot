@@ -39,7 +39,7 @@
         "test:watch": "vitest",
         "test:e2e": "npm run test:playwright",
         "test:mock": "node tests/e2e/no-suite.cjs mock",
-        "test:playwright": "npm run build && node tests/e2e/electron-smoke.cjs",
+        "test:playwright": "npm run build && node scripts/electron-e2e.cjs",
         "test:e2e:packaged:mac": "npm run build:mac:qa && WA_COPILOT_E2E_EXECUTABLE=dist/qa-mac/mac-arm64/AIConsumerAgent.app/Contents/MacOS/AIConsumerAgent node tests/e2e/electron-smoke.cjs",
         "test:speech": "node tests/e2e/no-suite.cjs speech",
         "release:gate": "bash scripts/release-gate.sh",
