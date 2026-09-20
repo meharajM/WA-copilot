@@ -70,7 +70,14 @@ jobs:
         run: |
           npx vitest run tests/unit --exclude tests/unit/email-channel-service.test.ts
           $cjsTests = @(Get-ChildItem -Path tests/unit -Filter '*.test.cjs' | Select-Object -ExpandProperty FullName)
-          node --test $cjsTests
+          # Keep native-daemon fixtures isolated on the Windows runner. The
+          # suite owns many temporary SQLite servers and the default parallel
+          # file workers can starve or prolong cleanup on Windows.
+          foreach ($testFile in $cjsTests) {
+            Write-Host "Running $testFile"
+            node --test --test-concurrency=1 $testFile
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
 
       - name: Run Windows migration reader reparse smoke
         run: node --test tests/unit/windows-migration-reader-runtime.test.cjs
