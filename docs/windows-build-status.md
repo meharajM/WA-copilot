@@ -39,7 +39,9 @@ The public repository also includes a manual **Tauri Windows package** workflow.
 The Windows workflows also run `scripts/windows-install-smoke.ps1` against the
 generated NSIS installer. The smoke installs into an isolated runner directory,
 launches the native companion in background mode, checks the descriptor-advertised
-loopback `agentd` `/healthz` endpoint, stops the disposable processes, and
-silently uninstalls the package. This closes unsigned install/health/uninstall
-behavior; certificate signing, upgrade/downgrade and real-user profile rollback
-remain release gates.
+loopback `agentd` `/healthz` endpoint, samples the complete idle companion + agentd
+resident set and CPU footprint for five seconds, enforces conservative 512 MB / 50%
+guards, stops the disposable processes, and silently uninstalls the package. This
+closes unsigned install/health/uninstall behavior and adds a regression guard for
+the lightweight-host claim; certificate signing, upgrade/downgrade and real-user
+profile rollback remain release gates.

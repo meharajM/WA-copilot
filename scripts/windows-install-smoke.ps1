@@ -1,7 +1,10 @@
 [CmdletBinding()]
 param(
   [Parameter(Mandatory = $true)]
-  [string]$InstallerPath
+  [string]$InstallerPath,
+  [int]$MaxResidentSetMb = 512,
+  [double]$MaxAverageCpuPercent = 50,
+  [int]$ResourceSampleSeconds = 5
 )
 
 $ErrorActionPreference = 'Stop'
@@ -80,6 +83,42 @@ try {
   $healthBody = $health.Content | ConvertFrom-Json
   Assert-Condition ($healthBody.ok -eq $true) 'agentd health response was not ok=true'
 
+  # Measure the complete native companion + agentd footprint while idle. This
+  # is intentionally a conservative regression guard, not a claim about a
+  # user's local model workload: the browser UI and model process are outside
+  # this install smoke. The descriptor PID is the daemon owner; the companion
+  # PID is the native host launched above.
+  $resourcePids = @($companion.Id, [int]$descriptor.pid) | Sort-Object -Unique
+  $resourceSamples = @()
+  $sampleCount = [Math]::Max(2, $ResourceSampleSeconds + 1)
+  $sampleStarted = Get-Date
+  for ($sampleIndex = 0; $sampleIndex -lt $sampleCount; $sampleIndex++) {
+    $rssBytes = [int64]0
+    $cpuSeconds = [double]0
+    $sampleProcesses = @()
+    foreach ($resourcePid in $resourcePids) {
+      $process = Get-Process -Id $resourcePid -ErrorAction SilentlyContinue
+      if ($null -eq $process) { continue }
+      $rssBytes += [int64]$process.WorkingSet64
+      $cpuSeconds += [double]$process.TotalProcessorTime.TotalSeconds
+      $sampleProcesses += $process.ProcessName
+    }
+    Assert-Condition ($sampleProcesses.Count -eq $resourcePids.Count) 'Native companion or agentd exited during resource sampling'
+    $resourceSamples += [pscustomobject]@{
+      at = (Get-Date).ToUniversalTime().ToString('o')
+      rssBytes = $rssBytes
+      cpuSeconds = $cpuSeconds
+      processes = @($sampleProcesses | Sort-Object -Unique)
+    }
+    if ($sampleIndex -lt ($sampleCount - 1)) { Start-Sleep -Seconds 1 }
+  }
+  $peakRssMb = [Math]::Ceiling((($resourceSamples | Measure-Object -Property rssBytes -Maximum).Maximum) / 1MB)
+  $elapsedSeconds = [Math]::Max(1, ((Get-Date) - $sampleStarted).TotalSeconds)
+  $cpuDeltaSeconds = [Math]::Max(0, [double]$resourceSamples[-1].cpuSeconds - [double]$resourceSamples[0].cpuSeconds)
+  $averageCpuPercent = [Math]::Round(($cpuDeltaSeconds / ([Environment]::ProcessorCount * $elapsedSeconds)) * 100, 2)
+  Assert-Condition ($peakRssMb -le $MaxResidentSetMb) "Native companion + agentd exceeded resident-memory guard: ${peakRssMb} MB > ${MaxResidentSetMb} MB"
+  Assert-Condition ($averageCpuPercent -le $MaxAverageCpuPercent) "Native companion + agentd exceeded idle CPU guard: ${averageCpuPercent}% > ${MaxAverageCpuPercent}%"
+
   # The host deliberately leaves agentd alive when the companion exits. Stop
   # both processes explicitly so the CI runner cannot retain a user service.
   if ($null -ne $companion -and -not $companion.HasExited) {
@@ -103,7 +142,19 @@ try {
   Assert-Condition ($uninstall.ExitCode -eq 0) "NSIS uninstaller failed with exit code $($uninstall.ExitCode)"
   Assert-Condition (-not (Test-Path -LiteralPath $installRoot)) 'NSIS install directory still exists after uninstall'
 
-  Write-Host (ConvertTo-Json @{ installer = $installer; health = $healthBody; installedAndUninstalled = $true } -Compress)
+  Write-Host (ConvertTo-Json @{
+    installer = $installer
+    health = $healthBody
+    installedAndUninstalled = $true
+    resourceGuard = @{
+      sampleSeconds = $ResourceSampleSeconds
+      peakResidentSetMb = $peakRssMb
+      averageCpuPercent = $averageCpuPercent
+      maxResidentSetMb = $MaxResidentSetMb
+      maxAverageCpuPercent = $MaxAverageCpuPercent
+      processes = @($resourcePids)
+    }
+  } -Compress)
 }
 finally {
   Remove-Item Env:AICA_AGENTD_STARTUP_LOG -ErrorAction SilentlyContinue

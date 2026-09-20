@@ -6,6 +6,7 @@ const test = require('node:test')
 const { pathToFileURL } = require('node:url')
 
 const script = path.resolve(__dirname, '../../scripts/verify-tauri-windows-bundle.mjs')
+const installSmoke = path.resolve(__dirname, '../../scripts/windows-install-smoke.ps1')
 
 async function fixture() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aica-tauri-bundle-'))
@@ -40,4 +41,14 @@ test('Windows bundle verifier fails when an installer family is missing', async 
   } finally {
     await fs.rm(root, { recursive: true, force: true })
   }
+})
+
+test('Windows install smoke measures the complete native idle resource footprint', async () => {
+  const source = await fs.readFile(installSmoke, 'utf8')
+  assert.match(source, /MaxResidentSetMb = 512/)
+  assert.match(source, /MaxAverageCpuPercent = 50/)
+  assert.match(source, /Get-Process -Id \$resourcePid/)
+  assert.match(source, /peakResidentSetMb = \$peakRssMb/)
+  assert.match(source, /averageCpuPercent = \$averageCpuPercent/)
+  assert.match(source, /Native companion \+ agentd exceeded resident-memory guard/)
 })
