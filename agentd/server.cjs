@@ -552,6 +552,7 @@ class AgentdServer {
     this.whatsappExtensionBridge = whatsappExtensionBridge || new WhatsAppExtensionBridge({
       logger,
       allowMessage: message => this.allowsWhatsAppExtensionMessage(message),
+      allowOutbound: message => this.allowsWhatsAppExtensionOutbound(message),
       onMessage: message => this.ingestWhatsAppExtensionMessage(message),
     })
     this.server = null
@@ -3452,7 +3453,16 @@ class AgentdServer {
     const settings = parseWhatsAppSettings(storedSettings) || WHATSAPP_SETTINGS_DEFAULTS
     if (settings.whatsapp_transport === 'baileys') return this.whatsappBaileys.sendText(to, text)
     if (settings.whatsapp_transport === 'cloud') return this.sendWhatsAppCloudMessage(to, text)
-    throw Object.assign(new Error('WhatsApp Web transport is not available in browser mode'), { statusCode: 409 })
+    if (settings.whatsapp_transport === 'web') {
+      if (!this.allowsWhatsAppExtensionOutbound({ to, text })) {
+        throw Object.assign(new Error('WhatsApp Web outbound transport is not enabled'), { statusCode: 409 })
+      }
+      if (typeof this.whatsappExtensionBridge?.enqueueOutbound !== 'function') {
+        throw Object.assign(new Error('WhatsApp Web extension bridge is unavailable'), { statusCode: 503 })
+      }
+      return this.whatsappExtensionBridge.enqueueOutbound({ to, text })
+    }
+    throw Object.assign(new Error('WhatsApp transport is not configured'), { statusCode: 409 })
   }
 
   async sendWhatsAppConfiguredMedia(to, media) {
@@ -4208,6 +4218,17 @@ class AgentdServer {
     if (transport?.whatsapp_transport !== 'web' || ui?.whatsappEnabled !== true) return false
     if (message.from.length > 256 || /[\0\r\n]/.test(message.from)) return false
     if (typeof message.to === 'string' && message.to.length > 256) return false
+    return true
+  }
+
+  allowsWhatsAppExtensionOutbound(message) {
+    if (this.migrationHold || !message || typeof message.to !== 'string' || !message.to.trim() || typeof message.text !== 'string' || !message.text.trim()) return false
+    let transport = null
+    let ui = null
+    try { transport = parseWhatsAppSettings(JSON.parse(this.getState('whatsapp_settings', 'null'))) } catch {}
+    try { ui = parseWhatsAppUiSettings(JSON.parse(this.getState('whatsapp_ui_settings', 'null'))) } catch {}
+    if (transport?.whatsapp_transport !== 'web' || ui?.whatsappEnabled !== true) return false
+    if (message.to.length > 256 || /[\0\r\n]/.test(message.to) || message.text.length > MAX_DRAFT_TEXT_LENGTH) return false
     return true
   }
 

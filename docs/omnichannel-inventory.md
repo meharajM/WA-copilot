@@ -17,18 +17,21 @@ autonomous main-process paths from explicit human/operator paths.
 | Instagram/Messenger | `src/main/services/MetaWebhookServer.ts` verifies and normalizes the signed webhook | `autonomousSupervisor.onMetaMessage(message)` from `src/main/index.ts` |
 | X direct messages | `src/main/services/XWebhookServer.ts` verifies and normalizes the signed webhook | `autonomousSupervisor.onMetaMessage(message)` from `src/main/index.ts` |
 | Meta lead events | `MetaWebhookServer` normalizes leadgen events | `autonomousSupervisor.recordMetaLead(lead)`; attribution storage, not messaging consent |
-| Optional browser extension | `agentd/whatsapp-extension-bridge.cjs` accepts authenticated loopback status/message posts when Web transport is explicitly enabled | `agentd` durable WhatsApp inbound store; inbound text only |
+| Optional browser extension | `agentd/whatsapp-extension-bridge.cjs` accepts authenticated loopback status/message posts and owner-chat outbound text command acknowledgements when Web transport is explicitly enabled | `agentd` durable WhatsApp inbound store and bounded explicit text-send correlation |
 
 All autonomous ingress is normalized through `ChannelMessage`, scoped to a
 business and channel account, validated before queue admission, deduplicated by
 provider/message identity, and persisted by `AutonomousSupervisor`.
 
 The browser-extension bridge is disabled unless `AICA_EXTENSION_BRIDGE_TOKEN` is
-configured. It binds only to loopback, has bounded JSON input and no outbound
-send or arbitrary browser-control endpoint. It is owned by the canonical
-agentd process in the browser-first runtime; the Electron bridge remains for the
-transition client. The Web connector remains a bounded desktop connector with
-operator-supplied chat monitoring and manual takeover.
+configured. It binds only to loopback and has bounded JSON input. Outbound text
+is a claimed command for the configured chat only; the extension must prove a
+visible matching conversation and a feature-detected composer before returning
+an acknowledgement. It has no media, navigation, arbitrary browser-control,
+file, or page-evaluation endpoint. It is owned by the canonical agentd process
+in the browser-first runtime; the Electron bridge remains for the transition
+client. Live WhatsApp Web selector/send and provider-delivery verification are
+still manual release gates.
 
 ## Outbound senders
 
@@ -45,9 +48,10 @@ dispatch path. It sends through:
 
 The supervisor validates mode, permission, pause/takeover, consent, response
 window, grounding, sensitivity, revision, caps, content bounds and transport
-selection immediately before creating and claiming an outbound record. WhatsApp
-Web intentionally returns a manual-only failure until live send semantics and
-delivery reconciliation are verified.
+selection immediately before creating and claiming an outbound record. Web
+transport remains unavailable to autonomous dispatch; explicit browser text can
+use the owner-chat extension command path, while media and provider-delivery
+reconciliation remain fail-closed until live send semantics are verified.
 
 ### Explicit human/operator paths
 

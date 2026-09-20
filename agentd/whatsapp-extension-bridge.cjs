@@ -4,6 +4,8 @@ const http = require('node:http')
 const MAX_BODY_BYTES = 256 * 1024
 const DEFAULT_PORT = 8790
 const MIN_TOKEN_LENGTH = 16
+const MAX_OUTBOUND_TEXT_LENGTH = 32 * 1024
+const OUTBOUND_TIMEOUT_MS = 75_000
 
 function configuredPort() {
   const port = Number(process.env.AICA_EXTENSION_BRIDGE_PORT)
@@ -29,13 +31,15 @@ function normalizeMessage(value) {
 }
 
 class WhatsAppExtensionBridge {
-  constructor({ logger = console, onMessage = () => {}, allowMessage = () => false, token = process.env.AICA_EXTENSION_BRIDGE_TOKEN, port = configuredPort() } = {}) {
+  constructor({ logger = console, onMessage = () => {}, allowMessage = () => false, allowOutbound = () => false, token = process.env.AICA_EXTENSION_BRIDGE_TOKEN, port = configuredPort() } = {}) {
     this.logger = logger
     this.onMessage = onMessage
     this.allowMessage = allowMessage
+    this.allowOutbound = allowOutbound
     this.token = typeof token === 'string' ? token.trim() : ''
     this.state = { status: 'disabled', port, lastStatus: null, error: null }
     this.server = null
+    this.outbound = new Map()
   }
 
   async start() {
@@ -68,25 +72,98 @@ class WhatsAppExtensionBridge {
     const server = this.server
     this.server = null
     if (server) await new Promise(resolve => server.close(() => resolve()))
+    for (const command of this.outbound.values()) {
+      clearTimeout(command.timer)
+      command.reject(Object.assign(new Error('WhatsApp Web bridge stopped'), { statusCode: 503 }))
+    }
+    this.outbound.clear()
     this.state = { ...this.state, status: 'disabled' }
   }
 
-  getState() { return { ...this.state } }
+  getState() { return { ...this.state, outboundPending: this.outbound.size } }
+
+  async enqueueOutbound(value) {
+    const to = typeof value?.to === 'string' ? value.to.trim() : ''
+    const text = typeof value?.text === 'string' ? value.text.trim() : ''
+    if (!to || to.length > 256 || /[\0\r\n]/.test(to) || !text || text.length > MAX_OUTBOUND_TEXT_LENGTH) {
+      throw Object.assign(new Error('Invalid WhatsApp Web message'), { statusCode: 400 })
+    }
+    let allowed = false
+    try { allowed = this.allowOutbound({ to, text }) } catch { allowed = false }
+    if (!allowed) throw Object.assign(new Error('WhatsApp Web outbound transport is not enabled'), { statusCode: 409 })
+    if (!this.server || this.state.status !== 'connected') throw Object.assign(new Error('WhatsApp Web extension is not connected'), { statusCode: 409 })
+    const id = `web-send:${crypto.randomUUID()}`
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.outbound.delete(id)
+        reject(Object.assign(new Error('WhatsApp Web send timed out; keep the chat open and retry'), { statusCode: 504 }))
+      }, OUTBOUND_TIMEOUT_MS)
+      timer.unref?.()
+      this.outbound.set(id, { id, to, text, createdAt: Date.now(), claimed: false, timer, resolve, reject })
+    })
+  }
+
+  claimOutbound(chatId) {
+    if (typeof chatId !== 'string' || !chatId.trim()) return null
+    const target = chatId.trim()
+    for (const command of this.outbound.values()) {
+      if (!command.claimed && command.to === target) {
+        command.claimed = true
+        return { id: command.id, to: command.to, text: command.text, createdAt: command.createdAt }
+      }
+    }
+    return null
+  }
+
+  settleOutbound(value) {
+    const id = typeof value?.id === 'string' ? value.id.trim() : ''
+    const command = this.outbound.get(id)
+    if (!command) return { accepted: false, error: 'unknown_command' }
+    if (!command.claimed) return { accepted: false, error: 'command_not_claimed' }
+    clearTimeout(command.timer)
+    this.outbound.delete(id)
+    if (value.success === true) {
+      const providerMessageId = typeof value.providerMessageId === 'string' && /^[\x21-\x7e]{1,300}$/.test(value.providerMessageId)
+        ? value.providerMessageId
+        : `web:${id}`
+      command.resolve({ providerMessageId })
+    } else {
+      const error = typeof value.error === 'string' && value.error.trim() ? value.error.trim().slice(0, 256) : 'WhatsApp Web send failed'
+      command.reject(Object.assign(new Error(error), { statusCode: 502 }))
+    }
+    return { accepted: true, id }
+  }
 
   async handle(request, response) {
     response.setHeader('content-type', 'application/json')
     response.setHeader('cache-control', 'no-store')
     if (request.method === 'OPTIONS') { response.writeHead(204); response.end(); return }
     if (!this.authorized(request)) { this.json(response, 401, { error: 'unauthorized' }); return }
-    if (request.method === 'GET' && request.url === '/health') { this.json(response, 200, this.getState()); return }
-    if (request.method !== 'POST' || (request.url !== '/status' && request.url !== '/messages')) { this.json(response, 404, { error: 'not_found' }); return }
+    const parsedUrl = new URL(request.url || '/', 'http://127.0.0.1')
+    if (request.method === 'GET' && parsedUrl.pathname === '/health') { this.json(response, 200, this.getState()); return }
+    if (request.method === 'GET' && parsedUrl.pathname === '/outbound') {
+      this.json(response, 200, { command: this.claimOutbound(parsedUrl.searchParams.get('chatId')) })
+      return
+    }
+    if (request.method !== 'POST' || !['/status', '/messages', '/outbound/result'].includes(parsedUrl.pathname)) { this.json(response, 404, { error: 'not_found' }); return }
     const body = await this.readBody(request)
     if (!body) { this.json(response, 413, { error: 'body_too_large_or_invalid' }); return }
-    if (request.url === '/status') {
+    if (parsedUrl.pathname === '/status') {
       const status = typeof body.status === 'string' ? body.status.trim().slice(0, 64) : ''
       if (!status) { this.json(response, 400, { error: 'invalid_status' }); return }
       this.state.lastStatus = status
       this.json(response, 200, { ok: true })
+      return
+    }
+    if (parsedUrl.pathname === '/outbound/result') {
+      if (typeof body.id !== 'string' || body.id.length > 128 || typeof body.success !== 'boolean'
+        || (body.providerMessageId !== undefined && (typeof body.providerMessageId !== 'string' || body.providerMessageId.length > 300))
+        || (body.error !== undefined && (typeof body.error !== 'string' || body.error.length > 256))) {
+        this.json(response, 400, { error: 'invalid_outbound_result' })
+        return
+      }
+      const result = this.settleOutbound(body)
+      this.json(response, result.accepted ? 200 : 409, result)
       return
     }
     const message = normalizeMessage(body.message ?? body)
