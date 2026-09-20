@@ -108,7 +108,7 @@ async function sendTextEmail({ host, port, secure, username, password, from, to,
     socket.write(message.data)
     await response(reader, ['250'], 'message delivery')
     socket.write('QUIT\r\n')
-    return { delivered: true }
+    return messageId ? { delivered: true, messageId } : { delivered: true }
   } finally {
     reader.close()
     socket.destroy?.()

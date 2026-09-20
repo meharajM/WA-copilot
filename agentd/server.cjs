@@ -32,6 +32,7 @@ const MAX_EMAIL_INBOUND_BATCH = 50
 const MAX_EMAIL_DRAFT_BATCH = 100
 const MAX_EMAIL_DRAFT_BODY_BYTES = 15 * 1024 * 1024
 const MAX_EMAIL_DRAFT_TEXT_LENGTH = 32 * 1024
+const MAX_EMAIL_PROVIDER_MESSAGE_ID_LENGTH = 1024
 const MAX_EMAIL_DRAFT_ATTACHMENT_COUNT = 5
 const MAX_EMAIL_DRAFT_ATTACHMENT_TOTAL_BYTES = 10 * 1024 * 1024
 const MAX_EMAIL_DRAFT_ATTACHMENT_BASE64_LENGTH = Math.ceil(MAX_EMAIL_DRAFT_ATTACHMENT_TOTAL_BYTES * 4 / 3) + 64
@@ -2713,6 +2714,7 @@ class AgentdServer {
     if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
     let body
     try { body = await readBody(req, MAX_EMAIL_DRAFT_BODY_BYTES) } catch (error) { return json(res, error.statusCode || 400, { error: error.message }) }
+    if (body && typeof body === 'object' && !Array.isArray(body) && Object.prototype.hasOwnProperty.call(body, 'providerMessageId')) return json(res, 400, { error: 'Provider delivery identity is daemon-owned' })
     const draft = parseEmailDraft(body)
     if (!draft) return json(res, 400, { error: 'Invalid email draft' })
     if (!['pending_review', 'approved', 'rejected', 'escalated'].includes(draft.status)) return json(res, 400, { error: 'Email delivery status is owned by the daemon transport' })
@@ -2728,12 +2730,11 @@ class AgentdServer {
     this.authorize(req)
     const requestedLimit = Number.parseInt(url.searchParams.get('limit') || '50', 10)
     const limit = Number.isSafeInteger(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 100) : 50
-    const rows = this.db.prepare("SELECT id,status,updated_at AS eventAt FROM email_drafts WHERE status IN ('sent','failed') ORDER BY updated_at DESC LIMIT ?").all(limit)
+    const rows = this.db.prepare("SELECT id,status,payload,updated_at AS eventAt FROM email_drafts WHERE status IN ('sent','failed') ORDER BY updated_at DESC LIMIT ?").all(limit)
     return json(res, 200, {
       events: rows.map(row => ({
-        // SMTP does not expose a stable message receipt and Gmail's bounded
-        // sender path does not persist one yet; keep a durable local delivery ID.
-        providerMessageId: `email:${row.id}`,
+        // Provider IDs are correlation handles, not proof of final delivery.
+        providerMessageId: parseStoredEmailProviderMessageId(row.payload) || `email:${row.id}`,
         channel: 'email',
         status: row.status,
         eventAt: row.eventAt,
@@ -2823,19 +2824,23 @@ class AgentdServer {
       return json(res, 409, { success: false, error: 'Email draft delivery is already in progress' })
     }
     const recipient = draft.replyTo || draft.originalFrom
+    const messageId = `<aica-${id}-${crypto.randomBytes(8).toString('hex')}@localhost>`
     try {
       this.assertMigrationOpen()
+      let providerMessageId
       if (gmailOAuthTransport) {
-        await this.gmailOAuth.sendText({
+        const gmailMessageId = await this.gmailOAuth.sendText({
           to: recipient,
           subject: draft.originalSubject ? (draft.originalSubject.startsWith('Re:') ? draft.originalSubject : `Re: ${draft.originalSubject}`) : '(no subject)',
           body: draft.responseText,
+          messageId,
           inReplyTo: draft.inReplyTo,
           references: draft.references,
           attachments: draft.attachments,
         })
+        if (typeof gmailMessageId === 'string' && gmailMessageId) providerMessageId = `gmail:${gmailMessageId}`
       } else {
-        await this.emailSend({
+        const smtpResult = await this.emailSend({
           host: settings.smtpHost,
           port: settings.smtpPort,
           secure: settings.smtpTls,
@@ -2845,12 +2850,15 @@ class AgentdServer {
           to: recipient,
           subject: draft.originalSubject ? (draft.originalSubject.startsWith('Re:') ? draft.originalSubject : `Re: ${draft.originalSubject}`) : '(no subject)',
           body: draft.responseText,
+          messageId,
           inReplyTo: draft.inReplyTo,
           references: draft.references,
           attachments: draft.attachments,
         })
+        const returnedMessageId = typeof smtpResult?.messageId === 'string' && smtpResult.messageId ? smtpResult.messageId : messageId
+        providerMessageId = `smtp:${returnedMessageId}`
       }
-      const sent = { ...draft, status: 'sent' }
+      const sent = { ...draft, status: 'sent', ...(providerMessageId ? { providerMessageId } : {}) }
       this.db.prepare('UPDATE email_drafts SET status = ?, payload = ?, updated_at = ? WHERE id = ? AND status = ?').run('sent', JSON.stringify(sent), Date.now(), id, 'approved')
       this.db.prepare('DELETE FROM email_delivery_locks WHERE draft_id = ?').run(id)
       return json(res, 200, { success: true, duplicate: false, draft: sent })
@@ -4937,7 +4945,7 @@ function parseEmailAttachmentMetadata(value) {
 
 function parseEmailDraft(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
-  const allowedKeys = ['accountName', 'attachments', 'createdAt', 'id', 'inReplyTo', 'originalFrom', 'originalSubject', 'policyDecision', 'references', 'replyTo', 'responseText', 'status']
+  const allowedKeys = ['accountName', 'attachments', 'createdAt', 'id', 'inReplyTo', 'originalFrom', 'originalSubject', 'policyDecision', 'providerMessageId', 'references', 'replyTo', 'responseText', 'status']
   if (Object.keys(value).some((key) => !allowedKeys.includes(key))) return null
   const policy = value.policyDecision
   if (!/^draft_[A-Za-z0-9_-]{1,120}$/.test(value.id || '')
@@ -4947,6 +4955,7 @@ function parseEmailDraft(value) {
     || !validBoundedText(value.replyTo, 320)
     || (value.inReplyTo !== undefined && !validBoundedText(value.inReplyTo, 998, true))
     || (value.references !== undefined && !validBoundedText(value.references, 8192, true))
+    || (value.providerMessageId !== undefined && !validEmailProviderMessageId(value.providerMessageId))
     || (value.accountName !== undefined && !validBoundedText(value.accountName, 128, true))
     || !Number.isSafeInteger(value.createdAt) || value.createdAt < 0
     || !EMAIL_DRAFT_STATUSES.includes(value.status)
@@ -4969,6 +4978,7 @@ function parseEmailDraft(value) {
     ...(value.inReplyTo !== undefined && value.inReplyTo ? { inReplyTo: value.inReplyTo } : {}),
     ...(value.references !== undefined && value.references ? { references: value.references } : {}),
     ...(value.accountName !== undefined && value.accountName ? { accountName: value.accountName } : {}),
+    ...(value.providerMessageId !== undefined && value.providerMessageId ? { providerMessageId: value.providerMessageId } : {}),
     ...(attachments.length ? { attachments } : {}),
     policyDecision: {
       action: policy.action,
@@ -4979,6 +4989,19 @@ function parseEmailDraft(value) {
     },
     createdAt: value.createdAt,
     status: value.status,
+  }
+}
+
+function validEmailProviderMessageId(value) {
+  return validBoundedText(value, MAX_EMAIL_PROVIDER_MESSAGE_ID_LENGTH) && !/[\u0000\r\n]/.test(value)
+}
+
+function parseStoredEmailProviderMessageId(payload) {
+  try {
+    const parsed = JSON.parse(payload)
+    return validEmailProviderMessageId(parsed?.providerMessageId) ? parsed.providerMessageId : null
+  } catch {
+    return null
   }
 }
 

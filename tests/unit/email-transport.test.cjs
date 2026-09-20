@@ -76,6 +76,18 @@ test('sendTextEmail authenticates and delivers only text over SMTP', async () =>
   assert.equal(socket.writes.some(write => /multipart|attachment/i.test(write)), false)
 })
 
+test('sendTextEmail returns the caller-supplied RFC message ID for correlation', async () => {
+  const socket = new FakeSmtpSocket()
+  const result = await sendTextEmail({
+    host: 'fake.example', port: 587, secure: false,
+    username: 'sender@example.com', password: 'app-password',
+    from: 'sender@example.com', to: 'user@example.com', subject: 'Correlation', body: 'Safe reply',
+    messageId: '<aica-correlation@localhost>', connect: () => socket,
+  })
+  assert.deepEqual(result, { delivered: true, messageId: '<aica-correlation@localhost>' })
+  assert.ok(socket.writes.some(write => write.includes('Message-ID: <aica-correlation@localhost>')))
+})
+
 test('sendTextEmail upgrades STARTTLS before AUTH', async () => {
   const plain = new FakeSmtpSocket()
   const secure = new FakeSmtpSocket({ greeting: false })

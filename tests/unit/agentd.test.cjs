@@ -721,7 +721,7 @@ test('agentd persists authenticated email drafts without renderer storage', asyn
   fs.rmSync(dataDir, { recursive: true, force: true })
 })
 
-test('agentd exposes bounded authenticated email delivery history with durable local IDs', async () => {
+test('agentd exposes bounded authenticated email delivery history with provider correlation IDs', async () => {
   const dataDir = makeTempDir('aica-agentd-email-delivery-history-')
   const secret = 's'.repeat(32)
   const server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
@@ -729,14 +729,14 @@ test('agentd exposes bounded authenticated email delivery history with durable l
   const bearer = { authorization: `Bearer ${secret}` }
   assert.equal((await request(origin, 'GET', '/api/v1/email/delivery-history', undefined, {})).status, 401)
   const now = Date.now()
-  server.db.prepare('INSERT INTO email_drafts(id,status,payload,created_at,updated_at) VALUES (?,?,?,?,?)').run('email-failed', 'failed', '{}', now - 10, now - 10)
-  server.db.prepare('INSERT INTO email_drafts(id,status,payload,created_at,updated_at) VALUES (?,?,?,?,?)').run('email-sent', 'sent', '{}', now, now)
+  server.db.prepare('INSERT INTO email_drafts(id,status,payload,created_at,updated_at) VALUES (?,?,?,?,?)').run('email-failed', 'failed', JSON.stringify({ providerMessageId: 'smtp:<aica-failed@localhost>' }), now - 10, now - 10)
+  server.db.prepare('INSERT INTO email_drafts(id,status,payload,created_at,updated_at) VALUES (?,?,?,?,?)').run('email-sent', 'sent', JSON.stringify({ providerMessageId: 'gmail:gmail-sent-1' }), now, now)
   server.db.prepare('INSERT INTO email_drafts(id,status,payload,created_at,updated_at) VALUES (?,?,?,?,?)').run('email-review', 'approved', '{}', now + 10, now + 10)
   const history = await request(origin, 'GET', '/api/v1/email/delivery-history?limit=1', undefined, bearer)
   assert.equal(history.status, 200)
-  assert.deepEqual(history.body.events, [{ providerMessageId: 'email:email-sent', channel: 'email', status: 'sent', eventAt: now, inboundId: 'email-sent' }])
+  assert.deepEqual(history.body.events, [{ providerMessageId: 'gmail:gmail-sent-1', channel: 'email', status: 'sent', eventAt: now, inboundId: 'email-sent' }])
   const full = await request(origin, 'GET', '/api/v1/email/delivery-history?limit=10', undefined, bearer)
-  assert.deepEqual(full.body.events.map(event => event.providerMessageId), ['email:email-sent', 'email:email-failed'])
+  assert.deepEqual(full.body.events.map(event => event.providerMessageId), ['gmail:gmail-sent-1', 'smtp:<aica-failed@localhost>'])
   await server.stop()
   fs.rmSync(dataDir, { recursive: true, force: true })
 })

@@ -212,6 +212,7 @@ export interface BrowserEmailDraft {
   references?: string
   accountName?: string
   attachments?: BrowserEmailDraftAttachment[]
+  providerMessageId?: string
   policyDecision: {
     action: 'send' | 'draft' | 'escalate'
     confidence: number
@@ -476,6 +477,7 @@ const readEmailDraft = (value: unknown): BrowserEmailDraft => {
     || (value.inReplyTo !== undefined && typeof value.inReplyTo !== 'string')
     || (value.references !== undefined && typeof value.references !== 'string')
     || (value.accountName !== undefined && typeof value.accountName !== 'string')
+    || (value.providerMessageId !== undefined && (typeof value.providerMessageId !== 'string' || !value.providerMessageId || value.providerMessageId.length > 1024 || value.providerMessageId.includes('\u0000') || /[\r\n]/.test(value.providerMessageId)))
     || !Number.isSafeInteger(value.createdAt)
     || !['pending_review', 'approved', 'rejected', 'escalated', 'sent', 'failed'].includes(value.status as string)
     || !isRecord(value.policyDecision)
@@ -1245,7 +1247,7 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     if (!isRecord(value) || !Array.isArray(value.events)) throw new Error('Invalid agentd email delivery history response')
     return value.events.map((item) => {
       if (!isRecord(item)
-        || typeof item.providerMessageId !== 'string' || !item.providerMessageId.startsWith('email:')
+        || typeof item.providerMessageId !== 'string' || !item.providerMessageId || item.providerMessageId.length > 1024 || item.providerMessageId.includes('\u0000') || /[\r\n]/.test(item.providerMessageId)
         || item.channel !== 'email' || !['sent', 'failed'].includes(item.status as string)
         || !Number.isSafeInteger(item.eventAt) || (item.eventAt as number) < 0
         || typeof item.inboundId !== 'string') throw new Error('Invalid agentd email delivery event')

@@ -204,6 +204,7 @@ test('agentd Gmail OAuth test and approved-draft send routes use Gmail API witho
     const sent = await request(origin, 'POST', '/api/v1/email/drafts/draft_gmail_1/send', {}, auth)
     assert.equal(sent.status, 200)
     assert.equal(sent.body.draft.status, 'sent')
+    assert.equal(sent.body.draft.providerMessageId, 'gmail:gmail-sent-1')
     assert.ok(calls.some(call => call.url === 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send'))
   } finally {
     await server.stop()
