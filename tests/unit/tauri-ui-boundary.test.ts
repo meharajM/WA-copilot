@@ -184,12 +184,18 @@ describe('browser-first UI boundary', () => {
   it('presents browser WhatsApp autonomous mode through the durable outbox', () => {
     const settings = readSource('components/SettingsPanel.tsx')
     const bridge = readSource('hooks/useWhatsAppBridge.ts')
+    const autonomy = readSource('components/AutonomyPanel.tsx')
+    const electronSource = readSource('lib/electron.ts')
 
     expect(settings).toContain('Autonomous Bot Mode')
     expect(settings).toContain('durable review/outbox path')
     expect(settings).not.toContain('disabled={browserRuntime}')
     expect(bridge).toContain('(!whatsappEnabled && !businessBotMode)')
     expect(bridge).toContain('same durable event cursor')
+    expect(autonomy).not.toContain('Auto-reply unavailable')
+    expect(autonomy).toContain('WhatsApp auto mode is controlled in Settings')
+    expect(electronSource).toContain("mode: whatsappState.businessBotMode ? 'auto'")
+    expect(electronSource).toContain('whatsapp.setBusinessBotMode(true)')
   })
 
   it('keeps browser email credentials transport-scoped and review-only', () => {

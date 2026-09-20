@@ -4,6 +4,10 @@ Date: September 11, 2026
 
 Implements the architecture plan. Complete phases in order. Keep observe-only as the default until phases 0–4 pass. Capture external evidence with `docs/omnichannel-live-evidence-record.md`; do not close a live gate from repository tests alone.
 
+### September 20 migration status amendment
+
+The bounded local WhatsApp backend gate is now implemented: browser text/caption ingress is durable and deduplicated, explicit and autonomous text sends use the authenticated provider-backed outbox, and the browser Autonomy panel controls the persisted response-permission/autonomous gates. Observe-only remains the safe default for new installs; Windows runtime/release evidence and the remaining channel/data parity gates are still open.
+
 ### September 15 delivery-model amendment
 
 The browser is the primary product UI for Windows users; independently supervised plain Node `agentd` owns product services, durable data and credentials. Tauri is a lightweight native companion for OS capabilities only (Credential Manager, pickers, notifications, tray/lifecycle and supervision), not a second product UI. Electron remains a transition/fallback client until browser + `agentd` feature and data parity pass. This supersedes the September 15 Tauri-desktop-first wording; checked items describe existing pilot evidence and must not be read as browser or full `agentd` completion. Follow backend-first gates here and in `docs/architecture/tauri-full-migration-plan.md`.

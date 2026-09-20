@@ -1,6 +1,7 @@
 import '../env.d.ts'
 import { getBrowserAgentdClient } from './browser-agentd-client'
 import { isTauriRuntime } from './tauri-native-bridge'
+import { useWhatsAppStore } from '../stores/whatsappStore'
 // Provides fallbacks for browser environment
 
 export const isElectron = (): boolean => {
@@ -22,13 +23,14 @@ export const getPlatform = (): 'mac' | 'windows' | 'linux' | 'browser' => {
 const isBrowserProduct = (): boolean => typeof window !== 'undefined' && !isElectron() && !isTauriRuntime()
 
 const browserAutonomyState = async () => {
+    const whatsappState = useWhatsAppStore.getState()
     let status
     try {
         status = await getBrowserAgentdClient().status()
     } catch (error) {
         return {
-            mode: 'draft' as const,
-            responsePermission: false,
+            mode: whatsappState.businessBotMode ? 'auto' as const : whatsappState.whatsappEnabled ? 'draft' as const : 'observe' as const,
+            responsePermission: whatsappState.whatsappEnabled,
             paused: true,
             emergencyPaused: false,
             recoveryMode: false,
@@ -45,8 +47,8 @@ const browserAutonomyState = async () => {
         }
     }
     return {
-        mode: 'draft' as const,
-        responsePermission: false,
+        mode: whatsappState.businessBotMode ? 'auto' as const : whatsappState.whatsappEnabled ? 'draft' as const : 'observe' as const,
+        responsePermission: whatsappState.whatsappEnabled,
         paused: status.paused !== false,
         emergencyPaused: false,
         recoveryMode: false,
@@ -630,13 +632,19 @@ export const electron = {
         setMode: async (mode: string, permission: boolean) => {
             if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.setMode(mode, permission)
             if (!isBrowserProduct()) return null
-            // Browser supervisor pause/resume is separate from the WhatsApp
-            // Response Permission/Autonomous Bot Mode settings. Those settings
-            // are persisted through the authenticated store and autonomous
-            // sends are routed through the durable outbox by the agent hook.
-            if (mode === 'draft') return getBrowserAgentdClient().resumeAll().then(browserAutonomyState)
-            // Observe and auto remain supervisor controls here; the browser
-            // panel intentionally does not mutate the channel settings.
+            const whatsapp = useWhatsAppStore.getState()
+            if (mode === 'auto') {
+                whatsapp.setBusinessBotMode(true)
+                whatsapp.setWhatsAppEnabled(permission)
+                return getBrowserAgentdClient().resumeAll().then(browserAutonomyState)
+            }
+            if (mode === 'draft') {
+                whatsapp.setBusinessBotMode(false)
+                whatsapp.setWhatsAppEnabled(permission)
+                return getBrowserAgentdClient().resumeAll().then(browserAutonomyState)
+            }
+            whatsapp.setBusinessBotMode(false)
+            whatsapp.setWhatsAppEnabled(false)
             return getBrowserAgentdClient().pauseAll().then(browserAutonomyState)
         },
         onState: (callback: (state: unknown) => void) => {
