@@ -1719,7 +1719,6 @@ class AgentdServer {
 
   readSettingsPersonaInput(preview) {
     if (!preview || !preview.manifest || !Array.isArray(preview.manifest.entries)) throw Object.assign(new Error('Migration preview expired'), { statusCode: 404 })
-    if (process.platform === 'win32' && fs.constants.O_NOFOLLOW === undefined) throw Object.assign(new Error('Settings migration requires trusted native no-reparse file access on Windows'), { statusCode: 503 })
     const entries = preview.manifest.entries
     const required = ['electron-settings', 'electron-persona']
     if (required.some(id => !entries.some(entry => entry.id === id))) throw Object.assign(new Error('Settings/persona stores are missing from preview'), { statusCode: 409 })
