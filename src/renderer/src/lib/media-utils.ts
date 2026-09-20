@@ -173,7 +173,7 @@ export function buildMediaLLMParts(
  * @param textContent  Original text content of the message (appended at the end)
  */
 export function buildAttachmentLLMParts(
-    attachments: { name: string; path: string; type: string }[],
+    attachments: { name: string; path: string; type: string; dataUrl?: string }[],
     textContent?: string
 ): LLMContentPart[] {
     const parts: LLMContentPart[] = [];
@@ -182,7 +182,9 @@ export function buildAttachmentLLMParts(
         // att.type may be a MIME string ('image/jpeg') or a canonical MediaType ('spreadsheet')
         // Normalize to canonical type
         const mediaType = normalizeAttachmentType(att.type, att.name);
-        const attParts = buildMediaLLMParts(att.path, mediaType);
+        const attParts = att.dataUrl && mediaType === 'image'
+            ? [{ type: 'image_url' as const, image_url: { url: att.dataUrl } }]
+            : buildMediaLLMParts(att.path, mediaType);
         parts.push(...attParts);
     }
 

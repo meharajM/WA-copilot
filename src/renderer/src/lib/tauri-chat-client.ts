@@ -27,6 +27,18 @@ const isRecord = (value: unknown): value is Record<string, unknown> => (
   typeof value === 'object' && value !== null && !Array.isArray(value)
 )
 
+const isSafeWhatsAppMediaUrl = (value: unknown): value is string => {
+  if (typeof value !== 'string' || value.length > 512) return false
+  const prefix = '/api/v1/whatsapp/inbound/media/'
+  if (!value.startsWith(prefix)) return false
+  const encodedId = value.slice(prefix.length)
+  if (!encodedId || encodedId.includes('/')) return false
+  try {
+    const decodedId = decodeURIComponent(encodedId)
+    return /^[\x21-\x7e]{1,300}$/.test(decodedId) && encodeURIComponent(decodedId) === encodedId
+  } catch { return false }
+}
+
 export const readMessage = (value: unknown): ChatMessage => {
   if (!isRecord(value)
     || typeof value.id !== 'string'
@@ -48,13 +60,15 @@ export const readMessage = (value: unknown): ChatMessage => {
 const readAttachment = (value: unknown): ChatAttachment => {
   if (!isRecord(value) || typeof value.name !== 'string' || typeof value.type !== 'string' || !Number.isSafeInteger(value.size)
     || (value.text !== undefined && typeof value.text !== 'string')
-    || (value.dataUrl !== undefined && typeof value.dataUrl !== 'string')) throw new Error('Invalid agentd attachment response')
+    || (value.dataUrl !== undefined && typeof value.dataUrl !== 'string')
+    || (value.mediaUrl !== undefined && !isSafeWhatsAppMediaUrl(value.mediaUrl))) throw new Error('Invalid agentd attachment response')
   return {
     name: value.name,
     type: value.type,
     size: value.size as number,
     ...(typeof value.text === 'string' ? { text: value.text } : {}),
     ...(typeof value.dataUrl === 'string' ? { dataUrl: value.dataUrl } : {}),
+    ...(typeof value.mediaUrl === 'string' ? { mediaUrl: value.mediaUrl } : {}),
   }
 }
 

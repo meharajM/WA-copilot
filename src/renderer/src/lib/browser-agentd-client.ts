@@ -223,6 +223,14 @@ export interface BrowserWhatsAppInboundEvent {
   createdAt: number
 }
 
+export interface BrowserWhatsAppInboundMedia {
+  fileName: string
+  mimeType: string
+  size: number
+  mediaUrl: string
+  dataUrl?: string
+}
+
 type Json = Record<string, unknown> | unknown[]
 
 const isRecord = (value: unknown): value is Record<string, unknown> => (
@@ -740,6 +748,7 @@ export interface BrowserAgentdClient extends ChatClient {
   sendEmailDraft(id: string): Promise<BrowserEmailDraft>
   deleteEmailDraft(id: string): Promise<void>
   listWhatsAppInbound(afterId?: number, limit?: number): Promise<{ events: BrowserWhatsAppInboundEvent[]; nextAfterId: number }>
+  getWhatsAppInboundMedia(providerEventId: string): Promise<BrowserWhatsAppInboundMedia>
   createWhatsAppDraft(event: { providerEventId: string; conversationId: string; payload: Record<string, unknown>; draftText: string }): Promise<BrowserWhatsAppDraftResult>
   getPersonaSettings(): Promise<PersonaSettings>
   savePersonaSettings(settings: PersonaSettings): Promise<PersonaSettings>
@@ -1243,6 +1252,36 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     if (events.length !== value.events.length) throw new Error('Invalid WhatsApp inbound list response')
     return { events, nextAfterId: value.nextAfterId as number }
   }
+  const getWhatsAppInboundMedia = async (providerEventId: string): Promise<BrowserWhatsAppInboundMedia> => {
+    if (typeof providerEventId !== 'string' || !/^[\x21-\x7e]{1,300}$/.test(providerEventId)) throw new Error('Invalid WhatsApp media identity')
+    const mediaUrl = `/api/v1/whatsapp/inbound/media/${encodeURIComponent(providerEventId)}`
+    const response = await requestResponse(mediaUrl)
+    if (!response.ok) {
+      const body = await readJson(response)
+      throw new BrowserAgentdError(isRecord(body) ? errorText(body.error, 'WhatsApp media unavailable') : 'WhatsApp media unavailable', response.status || 500)
+    }
+    const mimeType = (response.headers.get('content-type') || 'application/octet-stream').split(';', 1)[0].trim().toLowerCase()
+    if (!/^(?:image|video|audio|application|text)\/[A-Za-z0-9.+-]+$/.test(mimeType)) throw new Error('Invalid WhatsApp media MIME type')
+    const lengthHeader = response.headers.get('content-length')
+    const size = lengthHeader && /^\d+$/.test(lengthHeader) ? Number(lengthHeader) : NaN
+    if (!Number.isSafeInteger(size) || size < 1 || size > MAX_BROWSER_WHATSAPP_MEDIA_BYTES) throw new Error('Invalid WhatsApp media size')
+    const disposition = response.headers.get('content-disposition') || ''
+    const filenameMatch = /filename="([^"]{1,256})"/i.exec(disposition)
+    const fileName = (filenameMatch?.[1] || 'whatsapp-media').replace(/[\0\r\n\\/]/g, '_')
+    const result: BrowserWhatsAppInboundMedia = { fileName, mimeType, size, mediaUrl }
+    // Keep large media streamable in the browser UI. Only small images are copied
+    // into the generation payload, matching the existing bounded image contract.
+    if (size <= 256 * 1024 && mimeType.startsWith('image/')) {
+      const bytes = new Uint8Array(await response.arrayBuffer())
+      if (bytes.length !== size) throw new Error('WhatsApp media size changed')
+      let binary = ''
+      for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, Math.min(offset + 0x8000, bytes.length)))
+      result.dataUrl = `data:${mimeType};base64,${btoa(binary)}`
+    } else {
+      await response.body?.cancel()
+    }
+    return result
+  }
   const getPersonaSettings = async () => readPersonaSettings(await request('/api/v1/settings/persona'))
   const savePersonaSettings = async (settings: PersonaSettings) => readPersonaSettings(await request('/api/v1/settings/persona', { method: 'PUT', body: JSON.stringify(settings) }, true))
   const getProductPreferences = async () => readProductPreferences(await request('/api/v1/settings/preferences'))
@@ -1465,6 +1504,7 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     sendEmailDraft,
     deleteEmailDraft,
     listWhatsAppInbound,
+    getWhatsAppInboundMedia,
     getPersonaSettings,
     savePersonaSettings,
     getProductPreferences,

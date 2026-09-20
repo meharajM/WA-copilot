@@ -8,6 +8,13 @@ const MAX_MEDIA_BYTES = 8 * 1024 * 1024
 const MAX_MEDIA_FILENAME_LENGTH = 256
 const MAX_MEDIA_MIME_LENGTH = 128
 
+const INBOUND_MEDIA_TYPES = Object.freeze({
+  image: { extension: 'jpg', mime: 'image/jpeg' },
+  video: { extension: 'mp4', mime: 'video/mp4' },
+  audio: { extension: 'ogg', mime: 'audio/ogg' },
+  document: { extension: 'bin', mime: 'application/octet-stream' },
+})
+
 function isSupportedMediaMime(type, mimeType) {
   if (typeof type !== 'string' || typeof mimeType !== 'string') return false
   const mime = mimeType.trim().toLowerCase()
@@ -16,6 +23,52 @@ function isSupportedMediaMime(type, mimeType) {
   if (type === 'audio') return /^(?:audio\/(?:aac|mp4|mpeg|amr|ogg|wav|webm))$/.test(mime)
   if (type === 'document') return /^(?:application\/(?:pdf|json|zip|octet-stream|msword|rtf|vnd\.ms-(?:excel|powerpoint)|vnd\.openxmlformats-officedocument\.[a-z0-9.+-]+)|text\/(?:plain|csv|markdown))$/.test(mime)
   return false
+}
+
+function inboundMediaDescriptor(message) {
+  if (!message || typeof message !== 'object') return null
+  const candidates = [
+    ['image', message.imageMessage],
+    ['video', message.videoMessage],
+    ['audio', message.audioMessage],
+    ['document', message.documentMessage],
+  ]
+  const [type, value] = candidates.find(([, candidate]) => candidate && typeof candidate === 'object') || []
+  if (!type || !value) return null
+  const defaults = INBOUND_MEDIA_TYPES[type]
+  const mimeType = typeof value.mimetype === 'string' && value.mimetype.trim()
+    ? value.mimetype.trim().toLowerCase()
+    : defaults.mime
+  const rawName = typeof value.fileName === 'string' && value.fileName.trim()
+    ? value.fileName.trim()
+    : `whatsapp-${type}.${defaults.extension}`
+  const fileName = rawName.slice(0, MAX_MEDIA_FILENAME_LENGTH)
+  if (!fileName || /[\0\r\n\\/]/.test(fileName) || !isSupportedMediaMime(type, mimeType)) return null
+  const declaredSize = Number(value.fileLength)
+  return {
+    type,
+    fileName,
+    mimeType,
+    ...(Number.isSafeInteger(declaredSize) && declaredSize > 0 ? { declaredSize } : {}),
+  }
+}
+
+async function readInboundMediaStream(stream) {
+  if (Buffer.isBuffer(stream)) {
+    if (stream.length < 1 || stream.length > MAX_MEDIA_BYTES) return null
+    return stream
+  }
+  if (!stream || typeof stream[Symbol.asyncIterator] !== 'function') return null
+  const chunks = []
+  let total = 0
+  for await (const chunk of stream) {
+    const value = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    total += value.length
+    if (total > MAX_MEDIA_BYTES) return null
+    chunks.push(value)
+  }
+  if (!total) return null
+  return Buffer.concat(chunks, total)
 }
 const RECONNECT_BASE_MS = 2000
 const RECONNECT_MAX_MS = 60 * 1000
@@ -96,6 +149,7 @@ class WhatsAppBaileysService {
     this.processedMessageIds = new Map()
     this.stateGet = () => null
     this.stateSet = () => {}
+    this.baileys = null
   }
 
   configureStateAccessors({ get, set } = {}) {
@@ -128,6 +182,7 @@ class WhatsAppBaileysService {
     try {
       fs.mkdirSync(this.authDir, { recursive: true, mode: 0o700 })
       const baileys = await this.loadBaileys()
+      this.baileys = baileys
       const makeWASocket = baileys.default || baileys
       const { state, saveCreds } = await baileys.useMultiFileAuthState(this.authDir)
       const latest = await baileys.fetchLatestBaileysVersion()
@@ -219,7 +274,25 @@ class WhatsAppBaileysService {
         if (timestamp <= Date.now() - 10 * 60 * 1000) this.processedMessageIds.delete(seenId)
       }
       const parsed = textFromMessage(raw.message)
-      if (!parsed.text || parsed.text.length > MAX_TEXT_LENGTH) continue
+      if (parsed.text.length > MAX_TEXT_LENGTH) continue
+      const descriptor = inboundMediaDescriptor(raw.message)
+      if (!parsed.text && !descriptor) continue
+      let mediaBytes = null
+      if (descriptor && (!descriptor.declaredSize || descriptor.declaredSize <= MAX_MEDIA_BYTES)) {
+        try {
+          const downloader = this.baileys?.downloadMediaMessage
+          if (typeof downloader === 'function') {
+            const downloaded = await downloader(raw, 'buffer', {}, {
+              logger: this.logger,
+              reuploadRequest: this.socket?.updateMediaMessage,
+            })
+            mediaBytes = await readInboundMediaStream(downloaded)
+          }
+        } catch (error) {
+          this.logger.warn?.('[agentd] WhatsApp inbound media download failed')
+        }
+      }
+      if (!parsed.text && !mediaBytes) continue
       const fromJid = typeof key.participant === 'string' ? key.participant : remoteJid
       const from = phoneFromJid(fromJid) || fromJid
       const isFromMe = key.fromMe === true
@@ -248,6 +321,7 @@ class WhatsAppBaileysService {
           timestamp: Number.isSafeInteger(timestamp) && timestamp > 0 ? timestamp * 1000 : Date.now(),
           isFromMe: false,
           conversationId: remoteJid,
+          ...(mediaBytes && descriptor ? { media: { ...descriptor, bytes: mediaBytes, size: mediaBytes.length } } : {}),
         })
       } catch (error) {
         this.logger.warn?.('[agentd] WhatsApp inbound handling failed', error)
