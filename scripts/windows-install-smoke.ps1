@@ -17,6 +17,7 @@ Assert-Condition (Test-Path -LiteralPath $installer -PathType Leaf) "NSIS instal
 
 $smokeId = [Guid]::NewGuid().ToString('N')
 $installRoot = Join-Path $env:RUNNER_TEMP "aica-install-smoke-$smokeId"
+$startupLog = Join-Path $installRoot 'agentd-startup.log'
 $dataRoots = @(
   (Join-Path $env:APPDATA 'com.aica.tauri-pilot'),
   (Join-Path $env:LOCALAPPDATA 'com.aica.tauri-pilot')
@@ -36,6 +37,7 @@ try {
   $binary = Get-ChildItem -LiteralPath $installRoot -Filter 'aica-tauri-pilot.exe' -File -Recurse | Select-Object -First 1
   Assert-Condition ($null -ne $binary) "Installed native companion executable was not found under $installRoot"
 
+  $env:AICA_AGENTD_STARTUP_LOG = $startupLog
   $companion = Start-Process -FilePath $binary.FullName -ArgumentList '--background' -PassThru
   $deadline = (Get-Date).AddSeconds(20)
   $descriptor = $null
@@ -64,7 +66,13 @@ try {
       }
     }
     $candidateText = if ($descriptorCandidates.Count) { $descriptorCandidates -join ', ' } else { 'none' }
-    throw "Native companion did not publish a valid private agentd descriptor (process=$processState; candidates=$candidateText)"
+    $startupText = if (Test-Path -LiteralPath $startupLog -PathType Leaf) {
+      (Get-Content -LiteralPath $startupLog -Raw -ErrorAction SilentlyContinue).Trim()
+    } else {
+      'none'
+    }
+    if ($startupText.Length -gt 4096) { $startupText = $startupText.Substring($startupText.Length - 4096) }
+    throw "Native companion did not publish a valid private agentd descriptor (process=$processState; candidates=$candidateText; startup=$startupText)"
   }
 
   $health = Invoke-WebRequest -Uri "$($descriptor.origin)/healthz" -UseBasicParsing -TimeoutSec 5
@@ -91,6 +99,7 @@ try {
   Write-Host (ConvertTo-Json @{ installer = $installer; health = $healthBody; installedAndUninstalled = $true } -Compress)
 }
 finally {
+  Remove-Item Env:AICA_AGENTD_STARTUP_LOG -ErrorAction SilentlyContinue
   if ($null -ne $companion -and -not $companion.HasExited) { Stop-Process -Id $companion.Id -Force -ErrorAction SilentlyContinue }
   foreach ($agentdPid in $agentdPids) { Stop-Process -Id $agentdPid -Force -ErrorAction SilentlyContinue }
   if (Test-Path -LiteralPath $installRoot) { Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue }

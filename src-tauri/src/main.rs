@@ -7,7 +7,7 @@ use std::sync::{
     Arc,
 };
 use std::{
-    fs,
+    env, fs,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::Mutex,
@@ -15,8 +15,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[cfg(windows)]
-use std::env;
 #[cfg(windows)]
 use std::ffi::OsStr;
 #[cfg(windows)]
@@ -791,6 +789,17 @@ fn spawn_agentd<R: Runtime>(app: &AppHandle<R>, data_dir: &PathBuf) -> Result<Ch
             command.env(key, value);
         }
     }
+    let stderr = env::var_os("AICA_AGENTD_STARTUP_LOG")
+        .and_then(|path| {
+            fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .ok()
+        })
+        .map(Stdio::from)
+        .unwrap_or_else(Stdio::null);
+    command.stderr(stderr);
     command
         .spawn()
         .map_err(|_| "Packaged agentd runtime could not start".to_string())
