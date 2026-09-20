@@ -35,3 +35,11 @@ npm run build:tauri:win
 Expected outputs are under `src-tauri/target/x86_64-pc-windows-msvc/release/bundle/`. Upload the signed NSIS installer and portable artifact alongside this guide.
 
 The public repository also includes a manual **Tauri Windows package** workflow. It performs the browser/native resource preparation, installer build, and artifact verification without replacing the full PR test gate. Dispatch it from the Actions tab on the branch you want to package; the uploaded artifact is named `aica-tauri-windows-package-<commit-sha>`. Artifacts are unsigned until they are processed by the release-signing step.
+
+The Windows workflows also run `scripts/windows-install-smoke.ps1` against the
+generated NSIS installer. The smoke installs into an isolated runner directory,
+launches the native companion in background mode, checks the descriptor-advertised
+loopback `agentd` `/healthz` endpoint, stops the disposable processes, and
+silently uninstalls the package. This closes unsigned install/health/uninstall
+behavior; certificate signing, upgrade/downgrade and real-user profile rollback
+remain release gates.

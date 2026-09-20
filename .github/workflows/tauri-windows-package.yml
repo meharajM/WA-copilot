@@ -70,6 +70,13 @@ jobs:
       - name: Verify Windows installer artifacts
         run: node scripts/verify-tauri-windows-bundle.mjs --bundle-root src-tauri/target/x86_64-pc-windows-msvc/release/bundle
 
+      - name: Smoke-test NSIS install, agentd health, and uninstall
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem -Path src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis -Filter '*.exe' -File | Select-Object -First 1
+          if (-not $installer) { throw 'NSIS installer not found' }
+          ./scripts/windows-install-smoke.ps1 -InstallerPath $installer.FullName
+
       - name: Upload unsigned Windows artifacts
         uses: actions/upload-artifact@v4
         with:

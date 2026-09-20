@@ -6,7 +6,7 @@ Updated: 2026-09-18
 
 Primary release platform: Windows. Every new native boundary must have a Windows implementation and CI/package evidence before it can be called production-ready; macOS smoke evidence is supplemental.
 
-Windows package run [35528078107](https://github.com/meharajM/WA-copilot/actions/runs/35528078107) now stages `aica-keyring-helper.exe`, passes the packaged Credential Manager write/read/exists/delete smoke with a scoped throwaway secret, passes migration-reader final-file/parent-junction reparse smoke, and verifies NSIS/MSI output. The full PR gate [35528078104](https://github.com/meharajM/WA-copilot/actions/runs/35528078104) also passes native Rust host tests and Task Scheduler registration. Credential re-entry, chat-history continuity, signing, install/upgrade, and Electron retirement remain separate release gates.
+Windows package run [35528078107](https://github.com/meharajM/WA-copilot/actions/runs/35528078107) now stages `aica-keyring-helper.exe`, passes the packaged Credential Manager write/read/exists/delete smoke with a scoped throwaway secret, passes migration-reader final-file/parent-junction reparse smoke, verifies NSIS/MSI output, and now runs an NSIS install/agentd-health/uninstall smoke. The full PR gate [35528078104](https://github.com/meharajM/WA-copilot/actions/runs/35528078104) also passes native Rust host tests and Task Scheduler registration. Credential re-entry, chat-history continuity, signing/upgrade, resource budgets, and Electron retirement remain separate release gates.
 
 Current browser parity slice: Gmail Google Sign-In now runs through agentd's loopback PKCE callback. Agentd stores only the refresh token through the OS credential adapter, exposes status/start/sign-out routes to the browser, and owns bounded Gmail API inbox polling plus approved sends with optional bounded operator-selected MIME attachments. Electron Gmail behavior remains unchanged; custom MCP and Windows runtime evidence remain open gates.
 
@@ -64,6 +64,8 @@ Canonical product protocol decision: use the existing `agentd/server.cjs` loopba
 ### Execution record — Windows packaged security gates (2026-09-20)
 
 Windows Actions package run [35528078107](https://github.com/meharajM/WA-copilot/actions/runs/35528078107) and full PR gate [35528078104](https://github.com/meharajM/WA-copilot/actions/runs/35528078104) completed on the current migration branch. They built the x86_64 MSVC browser/native bundle, staged the migration reader and keyring helper, passed final-file/parent-junction reparse rejection, passed scoped Windows Credential Manager write/read/exists/delete round-trip, passed native Rust host tests and Task Scheduler registration, verified NSIS/MSI artifacts, and uploaded the unsigned installers. This closes packaged credential/reparse/resource evidence; owner reauthentication, chat-history cutover, signing, install/upgrade, resource budgets, and Electron retirement remain open.
+
+The Windows workflows now also exercise the generated NSIS installer in an isolated runner directory: silent install, packaged companion launch, descriptor-advertised loopback `/healthz`, explicit cleanup of the disposable companion/agentd processes, and silent uninstall. This closes unsigned install/health/uninstall behavior; signing, upgrade/downgrade, profile rollback, resource budgets, and Electron retirement remain release gates.
 
 ### Execution record — companion crash recovery
 
