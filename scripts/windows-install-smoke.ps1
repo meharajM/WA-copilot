@@ -17,8 +17,10 @@ Assert-Condition (Test-Path -LiteralPath $installer -PathType Leaf) "NSIS instal
 
 $smokeId = [Guid]::NewGuid().ToString('N')
 $installRoot = Join-Path $env:RUNNER_TEMP "aica-install-smoke-$smokeId"
-$dataRoot = Join-Path $env:LOCALAPPDATA 'com.aica.tauri-pilot'
-$descriptorPath = Join-Path $dataRoot 'agentd.runtime.json'
+$dataRoots = @(
+  (Join-Path $env:APPDATA 'com.aica.tauri-pilot'),
+  (Join-Path $env:LOCALAPPDATA 'com.aica.tauri-pilot')
+)
 $null = New-Item -ItemType Directory -Force -Path $installRoot
 
 $companion = $null
@@ -38,10 +40,13 @@ try {
   $deadline = (Get-Date).AddSeconds(20)
   $descriptor = $null
   while ((Get-Date) -lt $deadline) {
-    if (Test-Path -LiteralPath $descriptorPath -PathType Leaf) {
+    foreach ($dataRoot in $dataRoots) {
+      $descriptorPath = Join-Path $dataRoot 'agentd.runtime.json'
+      if (-not (Test-Path -LiteralPath $descriptorPath -PathType Leaf)) { continue }
       try { $descriptor = Get-Content -LiteralPath $descriptorPath -Raw | ConvertFrom-Json } catch { $descriptor = $null }
       if ($null -ne $descriptor -and $descriptor.origin -match '^http://127\.0\.0\.1:\d+$' -and [int]$descriptor.pid -gt 0) { break }
     }
+    if ($null -ne $descriptor) { break }
     Start-Sleep -Milliseconds 250
   }
   Assert-Condition ($null -ne $descriptor) 'Native companion did not publish a valid private agentd descriptor'
