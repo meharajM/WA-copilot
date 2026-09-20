@@ -215,6 +215,8 @@ describe('browser-first UI boundary', () => {
     expect(emailSettings).toContain('does not generate or send automatic replies')
     expect(drafts).toContain('gated IMAP/Gmail polling')
     expect(drafts).toContain('Safe operator-selected PDF, image, and text attachments')
+    expect(drafts).toContain('dispatchBrowserDeliveryStatus')
+    expect(drafts).toContain('Email delivered:')
     expect(drafts).not.toContain('IMAP polling, OAuth, attachments, and insecure SMTP remain unavailable.')
   })
 
