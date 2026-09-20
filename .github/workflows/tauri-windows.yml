@@ -53,6 +53,12 @@ jobs:
 
       - name: Run browser and agentd tests
         shell: pwsh
+        env:
+          # The Windows daemon uses the packaged no-reparse reader whenever
+          # O_NOFOLLOW is unavailable. Point the cross-platform CJS suite at
+          # the staged executable so continuity tests exercise the same native
+          # boundary as the shipped Tauri host.
+          AICA_AGENTD_MIGRATION_READER: ${{ github.workspace }}\src-tauri\sidecar\aica-migration-reader.exe
         run: |
           npx vitest run tests/unit --exclude tests/unit/email-channel-service.test.ts
           $cjsTests = @(Get-ChildItem -Path tests/unit -Filter '*.test.cjs' | Select-Object -ExpandProperty FullName)
