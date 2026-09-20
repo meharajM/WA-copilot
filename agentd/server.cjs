@@ -4064,9 +4064,11 @@ function parseWhatsAppSettings(value) {
 function parseWhatsAppUiSettings(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   const keys = Object.keys(value).sort()
-  if (keys.length !== 3 || keys.join(',') !== 'businessBotMode,targetPhoneNumber,whatsappEnabled'
+  const legacyShape = keys.length === 2 && keys.join(',') === 'targetPhoneNumber,whatsappEnabled'
+  const currentShape = keys.length === 3 && keys.join(',') === 'businessBotMode,targetPhoneNumber,whatsappEnabled'
+  if ((!legacyShape && !currentShape)
     || typeof value.whatsappEnabled !== 'boolean'
-    || typeof value.businessBotMode !== 'boolean'
+    || (currentShape && typeof value.businessBotMode !== 'boolean')
     || (value.targetPhoneNumber !== null
       && (typeof value.targetPhoneNumber !== 'string'
         || value.targetPhoneNumber.length > 32
@@ -4074,7 +4076,7 @@ function parseWhatsAppUiSettings(value) {
         || !/^\d{8,15}$/.test(value.targetPhoneNumber.replace(/\D/g, ''))))) return null
   return {
     whatsappEnabled: value.whatsappEnabled,
-    businessBotMode: value.businessBotMode,
+    businessBotMode: currentShape ? value.businessBotMode : false,
     targetPhoneNumber: value.targetPhoneNumber,
   }
 }

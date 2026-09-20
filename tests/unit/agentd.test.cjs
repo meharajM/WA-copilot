@@ -557,6 +557,7 @@ test('agentd persists browser WhatsApp UI state including the autonomous flag', 
   const settings = { whatsappEnabled: true, businessBotMode: true, targetPhoneNumber: '+1 (415) 555-0199' }
   assert.deepEqual((await request(origin, 'PUT', '/api/v1/settings/whatsapp-ui', settings, bearer)).body, settings)
   assert.deepEqual((await request(origin, 'GET', '/api/v1/settings/whatsapp-ui', undefined, bearer)).body, settings)
+  assert.deepEqual((await request(origin, 'PUT', '/api/v1/settings/whatsapp-ui', { whatsappEnabled: false, targetPhoneNumber: null }, bearer)).body, { whatsappEnabled: false, businessBotMode: false, targetPhoneNumber: null })
   for (const invalid of [
     { ...settings, targetPhoneNumber: 'not-a-phone' },
     { ...settings, targetPhoneNumber: '1'.repeat(16) },
