@@ -69,7 +69,10 @@ jobs:
           AICA_AGENTD_MIGRATION_READER: ${{ github.workspace }}\src-tauri\sidecar\aica-migration-reader.exe
         run: |
           npx vitest run tests/unit --exclude tests/unit/email-channel-service.test.ts
-          $cjsTests = @(Get-ChildItem -Path tests/unit -Filter '*.test.cjs' | Select-Object -ExpandProperty FullName)
+          $nativeRuntimeSmokes = @('windows-keyring-runtime.test.cjs', 'windows-migration-reader-runtime.test.cjs')
+          $cjsTests = @(Get-ChildItem -Path tests/unit -Filter '*.test.cjs' |
+            Where-Object { $nativeRuntimeSmokes -notcontains $_.Name } |
+            Select-Object -ExpandProperty FullName)
           # Keep native-daemon fixtures isolated on the Windows runner. The
           # suite owns many temporary SQLite servers and the default parallel
           # file workers can starve or prolong cleanup on Windows.
