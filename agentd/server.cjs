@@ -1329,7 +1329,11 @@ class AgentdServer {
     if (url.pathname === '/api/v1/autonomy/channel-usage' && req.method === 'GET') return this.autonomyChannelUsage(req, res, url)
     if (url.pathname === '/api/v1/autonomy/decision-evidence' && req.method === 'GET') return this.autonomyDecisionEvidence(req, res, url)
     const autonomyDecisionReviewMatch = /^\/api\/v1\/autonomy\/decision-evidence\/([^/]+)\/review$/.exec(url.pathname)
-    if (autonomyDecisionReviewMatch && req.method === 'POST') return this.reviewAutonomyDecision(req, res, decodeURIComponent(autonomyDecisionReviewMatch[1]))
+    if (autonomyDecisionReviewMatch && req.method === 'POST') {
+      let inboundId
+      try { inboundId = decodeURIComponent(autonomyDecisionReviewMatch[1]) } catch { return json(res, 400, { error: 'Invalid decision ID' }) }
+      return this.reviewAutonomyDecision(req, res, inboundId)
+    }
     if (url.pathname === '/api/v1/autonomy/notifications' && req.method === 'GET') return this.autonomyNotifications(req, res, url)
     const autonomyNotificationAckMatch = /^\/api\/v1\/autonomy\/notifications\/(\d+)\/ack$/.exec(url.pathname)
     if (autonomyNotificationAckMatch && req.method === 'POST') return this.ackAutonomyNotification(req, res, Number(autonomyNotificationAckMatch[1]))
