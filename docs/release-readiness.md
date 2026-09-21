@@ -18,7 +18,9 @@ The gate requires:
 - clean diff whitespace,
 - lint and both TypeScript checks,
 - unit and integration suites,
+- the bounded speech-model cache/integrity suite,
 - the Electron Playwright smoke suite,
+- the browser/agentd pairing and reload smoke suite,
 - a successful production bundle.
 
 Production publish scripts do not support `--skip-checks`. `--skip-build` may reuse artifacts, but all release and artifact-verification gates still run.

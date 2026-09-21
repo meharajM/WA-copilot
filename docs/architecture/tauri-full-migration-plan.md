@@ -2,13 +2,15 @@
 
 Status: active follow-up to the Tauri native-boundary pilot
 Branch: `codex/tauri-full-migration`
-Updated: 2026-09-21
+Updated: 2026-09-22
 
 Primary release platform: Windows. Every new native boundary must have a Windows implementation and CI/package evidence before it can be called production-ready; macOS smoke evidence is supplemental.
 
 Windows package run [35546650941](https://github.com/meharajM/WA-copilot/actions/runs/35546650941) for source `3d2b5980` stages `aica-keyring-helper.exe`, passes the packaged Credential Manager write/read/exists/delete smoke with a scoped throwaway secret, passes migration-reader final-file/parent-junction reparse smoke, verifies NSIS/MSI output, runs the NSIS install/agentd-health/uninstall smoke, and uploads the exact unsigned installers committed under `docs/downloads/`. Their SHA-256 values are NSIS `f7b996e495b11e0fa15406d077c48c87164e4953eeb22cec9e0117222a9a9a42` and MSI `d378a3509f3c73a548e569185516004d7884ef2db961a8cdb30471db43b30dc3`. The full PR gate [35546652858](https://github.com/meharajM/WA-copilot/actions/runs/35546652858) also passes browser/agentd checks, 11 native Rust tests, staged resource verification, installer verification, and the same resource-guarded install smoke (75 MB peak RSS, 0% average CPU, `reinstallDataPreserved: true`). Credential re-entry, manual user-profile continuity, signing, and Electron retirement remain separate release gates.
 
 Current browser parity slice: Gmail Google Sign-In now runs through agentd's loopback PKCE callback. Agentd stores only the refresh token through the OS credential adapter, exposes status/start/sign-out routes to the browser, and owns bounded Gmail API inbox polling plus approved sends with optional bounded operator-selected MIME attachments. Electron Gmail behavior remains unchanged; custom MCP remains an open parity gate. Unsigned Windows runtime/package evidence is recorded below; signing, upgrade/downgrade, profile continuity and owner reauthentication remain release gates.
+
+The 2026-09-22 speech slice completes browser offline speech model delivery without a native UI dependency: approved Vosk archives stream into a bounded private cache, are SHA-256 verified, and are reused after reload. Browser recognition now stops the active Vosk engine cleanly, while Web Speech remains an explicit fallback. The release gate includes the speech cache/integrity suite and the Windows resource fixture verifies that `speech-model.cjs` is packaged. This is code-level parity evidence; real Windows microphone/WebGPU and whole-process resource measurements remain release gates.
 
 Latest completed Windows evidence (source `a1d42686`): the full native workflow [35638480401](https://github.com/meharajM/WA-copilot/actions/runs/35638480401) and package workflow [35638480307](https://github.com/meharajM/WA-copilot/actions/runs/35638480307) both pass. They cover browser/agentd tests, reparse-safe migration-reader checks, Windows Credential Manager round-trip, staged sidecar/resources, Rust native host tests, x86_64 Windows bundle creation, NSIS/MSI verification, unsigned install/agentd-health/uninstall smoke, resource guard and artifact upload. This is unsigned release evidence; signing, upgrade/downgrade/profile continuity, owner reauthentication and Electron retirement remain separate gates.
 
