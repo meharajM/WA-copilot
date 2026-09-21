@@ -169,22 +169,16 @@ export const electron = {
         },
     },
 
-    // Storage with localStorage fallback
+    // Electron-only storage. Browser product preferences belong to the
+    // authenticated agentd settings routes; never silently create a second
+    // renderer-local authority when a legacy caller misses its browser branch.
     store: {
         get: async <T>(key: string, defaultValue?: T): Promise<T | undefined> => {
             if (isElectron() && window.electron?.store) {
                 const value = await window.electron.store.get(key)
                 return (value as T) ?? defaultValue
             }
-            // Browser fallback to localStorage
-            const stored = localStorage.getItem(key)
-            if (stored) {
-                try {
-                    return JSON.parse(stored) as T
-                } catch {
-                    return stored as unknown as T
-                }
-            }
+            if (isBrowserProduct()) return defaultValue
             return defaultValue
         },
 
@@ -192,17 +186,16 @@ export const electron = {
             if (isElectron() && window.electron?.store) {
                 return await window.electron.store.set(key, value)
             }
-            // Browser fallback
-            localStorage.setItem(key, JSON.stringify(value))
-            return true
+            if (isBrowserProduct()) throw new Error('Browser product storage is owned by authenticated agentd')
+            return false
         },
 
         delete: async (key: string): Promise<boolean> => {
             if (isElectron() && window.electron?.store) {
                 return await window.electron.store.delete(key)
             }
-            localStorage.removeItem(key)
-            return true
+            if (isBrowserProduct()) throw new Error('Browser product storage is owned by authenticated agentd')
+            return false
         },
     },
 

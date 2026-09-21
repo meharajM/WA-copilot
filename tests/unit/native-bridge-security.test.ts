@@ -30,9 +30,21 @@ describe('native bridge security boundary', () => {
     expect(secure).toContain("Not supported in browser mode")
   })
 
+  it('does not persist legacy Electron store calls in browser localStorage', async () => {
+    const electron = await source('src/renderer/src/lib/electron.ts')
+    const store = electron.slice(electron.indexOf('    store: {'), electron.indexOf('    // Secure storage'))
+
+    expect(store).not.toContain('localStorage')
+    expect(store).toContain('if (isBrowserProduct()) return defaultValue')
+    expect(store).toContain("Browser product storage is owned by authenticated agentd")
+    expect(store).toContain('const value = await window.electron.store.get(key)')
+    expect(store).toContain('return await window.electron.store.set(key, value)')
+    expect(store).toContain('return await window.electron.store.delete(key)')
+  })
+
   it('does not return success-shaped MCP browser mocks', async () => {
     const electron = await source('src/renderer/src/lib/electron.ts')
-    const mcp = electron.slice(electron.indexOf('    // MCP operations'), electron.indexOf('    // Storage with localStorage fallback'))
+    const mcp = electron.slice(electron.indexOf('    // MCP operations'), electron.indexOf('    // Electron-only storage.'))
 
     expect(mcp).not.toContain('mock_')
     expect(mcp).not.toContain('MCP connect mock')
