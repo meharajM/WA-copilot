@@ -23,6 +23,7 @@ async function fixture() {
     'agentd-http/email-transport.cjs',
     'agentd-http/email-inbound-worker.cjs',
     'agentd-http/mcp-worker.cjs',
+    'agentd-http/speech-model.cjs',
     'agentd-http/whatsapp-extension-bridge.cjs',
     'agentd-http/keyring-credential-store.cjs',
     'agentd-http/node_modules/better-sqlite3/package.json',
