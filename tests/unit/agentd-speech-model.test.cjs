@@ -55,8 +55,16 @@ test('speech model store downloads approved model, verifies digest and reuses ca
 test('speech model store rejects bad integrity and unapproved URLs', async () => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aica-speech-'))
   try {
-    const store = new SpeechModelStore(dataDir, { catalog: { bad: { ...catalog.fixture, id: 'bad', url: 'http://evil.test/model.zip' } }, fetchImpl: async () => response(bytes) })
+    const store = new SpeechModelStore(dataDir, {
+      catalog: {
+        bad: { ...catalog.fixture, id: 'bad', url: 'http://evil.test/model.zip' },
+        tampered: { ...catalog.fixture, id: 'tampered', sha256: '0'.repeat(64) },
+      },
+      fetchImpl: async () => response(bytes),
+    })
     await assert.rejects(() => store.ensure('bad'), /not approved/)
+    await assert.rejects(() => store.ensure('tampered'), /integrity/)
+    assert.deepEqual(fs.readdirSync(path.join(dataDir, 'speech-models')), [])
     assert.equal(store.status('missing').supported, false)
   } finally {
     fs.rmSync(dataDir, { recursive: true, force: true })
