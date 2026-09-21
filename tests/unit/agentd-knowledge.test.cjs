@@ -35,12 +35,21 @@ test('agentd persists bounded browser knowledge, searches it, and records accura
   }, auth)
   assert.equal(ingest.status, 201)
   assert.equal(ingest.body.document.file_name, 'refunds.md')
+  const documentId = ingest.body.document.id
+  assert.equal((await request(origin, 'GET', `/api/v1/knowledge/${documentId}/content`, undefined, {})).status, 401)
+  assert.equal((await request(origin, 'GET', `/api/v1/knowledge/${'9'.repeat(18)}/content`, undefined, auth)).status, 400)
+  const preview = await request(origin, 'GET', `/api/v1/knowledge/${documentId}/content`, undefined, auth)
+  assert.equal(preview.status, 200)
+  assert.equal(preview.body.document.file_name, 'refunds.md')
+  assert.equal(preview.body.document.file_path, 'browser://knowledge/refunds.md')
+  assert.equal(preview.body.content, '# Refunds\nCustomers may request refunds within 30 days.')
   assert.equal((await request(origin, 'GET', '/api/v1/knowledge/search?query=refunds&limit=3', undefined, auth)).body.results[0].content.includes('30 days'), true)
   assert.equal((await request(origin, 'POST', '/api/v1/intelligence/accuracy', { event: 'resolved', details: 'refund test' }, auth)).body.success, true)
   assert.equal((await request(origin, 'GET', '/api/v1/intelligence/stats', undefined, auth)).body.stats.resolvedQueries, 1)
   assert.equal((await request(origin, 'GET', '/api/v1/intelligence/logs?limit=5', undefined, auth)).body.logs.some(log => log.event === 'resolved'), true)
-  const id = ingest.body.document.id
+  const id = documentId
   assert.equal((await request(origin, 'DELETE', `/api/v1/knowledge/${id}`, undefined, auth)).body.deleted, true)
+  assert.equal((await request(origin, 'GET', `/api/v1/knowledge/${id}/content`, undefined, auth)).status, 404)
   assert.deepEqual((await request(origin, 'GET', '/api/v1/knowledge', undefined, auth)).body.documents, [])
   await server.stop()
   fs.rmSync(dataDir, { recursive: true, force: true })

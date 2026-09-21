@@ -378,6 +378,8 @@ describe('browser-first UI boundary', () => {
     expect(knowledge).toContain('bounded text and document files')
     expect(knowledge).toContain('convertKnowledge')
     expect(knowledge).toContain('readBrowserKnowledgeBinaryFile')
+    expect(knowledge).toContain('getKnowledgeContent')
+    expect(knowledge).toContain('native file paths are never exposed')
     expect(knowledge).not.toContain('Binary conversion is not available in the browser yet.')
     expect(knowledge).not.toContain('visual data')
     expect(knowledge).not.toContain('ToIndex documents, spreadsheets or images')

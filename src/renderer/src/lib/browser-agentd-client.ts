@@ -763,6 +763,11 @@ export interface BrowserKnowledgeResult extends BrowserKnowledgeDocument {
   rank?: number
 }
 
+export interface BrowserKnowledgeContent {
+  document: BrowserKnowledgeDocument
+  content: string
+}
+
 export interface BrowserIntelligenceLog {
   id: number
   type: string
@@ -885,6 +890,7 @@ export interface BrowserAgentdClient extends ChatClient {
   registerApprovedTemplate(template: BrowserApprovedTemplate): Promise<BrowserApprovedTemplate[]>
   revokeApprovedTemplate(name: string, languageCode: string): Promise<BrowserApprovedTemplate[]>
   listKnowledge(limit?: number): Promise<BrowserKnowledgeDocument[]>
+  getKnowledgeContent(id: number): Promise<BrowserKnowledgeContent>
   ingestKnowledge(input: { fileName: string; filePath: string; fileType: string; content: string; size: number }): Promise<BrowserKnowledgeDocument>
   convertKnowledge(input: { fileName: string; fileType: string; dataBase64: string; size: number }): Promise<BrowserKnowledgeDocument>
   deleteKnowledge(id: number): Promise<boolean>
@@ -1685,6 +1691,12 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     if (!isRecord(value) || !Array.isArray(value.documents)) throw new Error('Invalid agentd knowledge response')
     return value.documents.map(readKnowledgeDocument)
   }
+  const getKnowledgeContent = async (id: number): Promise<BrowserKnowledgeContent> => {
+    if (!Number.isSafeInteger(id) || id < 1) throw new Error('Invalid knowledge document ID')
+    const value = await request<unknown>(`/api/v1/knowledge/${encodeURIComponent(String(id))}/content`)
+    if (!isRecord(value) || typeof value.content !== 'string' || new TextEncoder().encode(value.content).byteLength > MAX_BROWSER_KNOWLEDGE_CONTENT_BYTES) throw new Error('Invalid agentd knowledge preview response')
+    return { document: readKnowledgeDocument(value.document), content: value.content }
+  }
   const ingestKnowledge = async (input: { fileName: string; filePath: string; fileType: string; content: string; size: number }): Promise<BrowserKnowledgeDocument> => {
     const value = await request<unknown>('/api/v1/knowledge', { method: 'POST', body: JSON.stringify(input) }, true)
     if (!isRecord(value) || value.success !== true) throw new Error('Knowledge ingestion failed')
@@ -1842,6 +1854,7 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     registerApprovedTemplate,
     revokeApprovedTemplate,
     listKnowledge,
+    getKnowledgeContent,
     ingestKnowledge,
     convertKnowledge,
     deleteKnowledge,

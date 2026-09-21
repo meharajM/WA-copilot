@@ -1421,6 +1421,8 @@ class AgentdServer {
     if (url.pathname === '/api/v1/logs' && ['GET', 'POST'].includes(req.method)) return this.auditLogs(req, res, url)
     if (url.pathname === '/api/v1/knowledge/convert' && req.method === 'POST') return this.convertKnowledge(req, res)
     if (url.pathname === '/api/v1/knowledge' && ['GET', 'POST'].includes(req.method)) return this.knowledge(req, res, url)
+    const knowledgeContentMatch = /^\/api\/v1\/knowledge\/(\d+)\/content$/.exec(url.pathname)
+    if (knowledgeContentMatch && req.method === 'GET') return this.knowledgeContent(req, res, Number(knowledgeContentMatch[1]))
     const knowledgeMatch = /^\/api\/v1\/knowledge\/(\d+)$/.exec(url.pathname)
     if (knowledgeMatch && req.method === 'DELETE') return this.deleteKnowledge(req, res, Number(knowledgeMatch[1]))
     if (url.pathname === '/api/v1/knowledge/search' && req.method === 'GET') return this.searchKnowledge(req, res, url)
@@ -3137,6 +3139,23 @@ class AgentdServer {
     this.authorize(req, { mutation: true })
     const result = this.db.prepare('DELETE FROM knowledge_documents WHERE id = ?').run(id)
     return json(res, 200, { success: true, deleted: result.changes > 0 })
+  }
+
+  async knowledgeContent(req, res, id) {
+    this.authorize(req)
+    if (!Number.isSafeInteger(id) || id < 1) return json(res, 400, { error: 'Invalid knowledge document ID' })
+    const row = this.db.prepare('SELECT id,file_path,file_name,file_type,size,created_at,content FROM knowledge_documents WHERE id = ?').get(id)
+    if (!row) return json(res, 404, { error: 'Knowledge document not found' })
+    // Content is already bounded at ingestion/conversion time. Keep the
+    // response contract explicit so a future schema change cannot accidentally
+    // turn this read-only preview into an unbounded file download.
+    if (typeof row.content !== 'string' || Buffer.byteLength(row.content, 'utf8') > MAX_KNOWLEDGE_CONTENT_LENGTH) {
+      return json(res, 409, { error: 'Knowledge preview is unavailable' })
+    }
+    return json(res, 200, {
+      document: this.knowledgeView(row),
+      content: row.content,
+    })
   }
 
   async searchKnowledge(req, res, url) {

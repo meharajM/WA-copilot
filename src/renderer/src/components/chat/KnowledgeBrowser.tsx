@@ -21,6 +21,8 @@ export function KnowledgeBrowser() {
     const [search, setSearch] = useState('')
     const [loading, setLoading] = useState(true)
     const [uploading, setUploading] = useState(false)
+    const [preview, setPreview] = useState<{ fileName: string; content: string } | null>(null)
+    const [previewingId, setPreviewingId] = useState<number | null>(null)
     const fileInputRef = useRef<HTMLInputElement>(null)
 
     useEffect(() => {
@@ -46,6 +48,20 @@ export function KnowledgeBrowser() {
             setDocs(docs.filter(d => d.id !== id))
         } catch (error) {
             console.error('Failed to delete knowledge:', error)
+        }
+    }
+
+    const handlePreview = async (doc: Document) => {
+        if (!isBrowserProduct()) return
+        setPreviewingId(doc.id)
+        try {
+            const value = await getBrowserAgentdClient().getKnowledgeContent(doc.id)
+            setPreview({ fileName: value.document.file_name, content: value.content })
+        } catch (error) {
+            console.error('Failed to preview knowledge:', error)
+            alert(`Preview unavailable: ${error instanceof Error ? error.message : String(error)}`)
+        } finally {
+            setPreviewingId(null)
         }
     }
 
@@ -217,7 +233,14 @@ export function KnowledgeBrowser() {
                                         <FileText className="w-5 h-5 text-gray-400 group-hover:text-blue-400" />
                                     </div>
                                     <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                        {!isBrowserProduct() && <button
+                                        {isBrowserProduct() ? <button
+                                            onClick={() => void handlePreview(doc)}
+                                            disabled={previewingId === doc.id}
+                                            title="Preview indexed content"
+                                            className="p-2 rounded-lg hover:bg-white/10 transition-colors text-gray-400 hover:text-white disabled:opacity-50"
+                                        >
+                                            <ExternalLink className="w-4 h-4" />
+                                        </button> : <button
                                             onClick={() => electron.openExternal(`file://${doc.file_path}`)}
                                             title="Open file location"
                                             className="p-2 rounded-lg hover:bg-white/10 transition-colors text-gray-400 hover:text-white"
@@ -251,6 +274,18 @@ export function KnowledgeBrowser() {
                     </div>
                 )}
             </main>
+            {preview && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6" role="dialog" aria-modal="true" aria-label={`Preview ${preview.fileName}`}>
+                <div className="flex max-h-[80vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#171a21] shadow-2xl">
+                    <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
+                        <div>
+                            <h2 className="font-semibold text-gray-100">{preview.fileName}</h2>
+                            <p className="text-xs text-gray-500">Indexed content preview · native file paths are never exposed</p>
+                        </div>
+                        <button type="button" onClick={() => setPreview(null)} className="rounded-lg px-3 py-1.5 text-sm text-gray-300 hover:bg-white/10">Close</button>
+                    </div>
+                    <pre className="overflow-auto whitespace-pre-wrap p-5 text-sm leading-6 text-gray-200">{preview.content}</pre>
+                </div>
+            </div>}
         </div>
     )
 }

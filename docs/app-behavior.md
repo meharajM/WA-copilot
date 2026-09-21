@@ -377,7 +377,7 @@ Pass evidence:
   - open the original file in Electron when a native path exists
   - delete indexed knowledge
 - Electron ingestion uses the internal RAG tool path. Browser ingestion uses authenticated agentd knowledge routes and stores bounded text or converted Markdown content in the daemon-owned SQLite database; the browser sends file bytes, never an arbitrary native path.
-- Browser-indexed `browser://knowledge/...` entries do not expose an original native file path or an open-in-Explorer action. Binary conversion runs only through the fixed supervised MarkItDown capability, with a private daemon temp file removed after conversion; native-file reveal remains unsupported in the browser.
+- Browser-indexed `browser://knowledge/...` entries do not expose an original native file path or an open-in-Explorer action. Binary conversion runs only through the fixed supervised MarkItDown capability, with a private daemon temp file removed after conversion. The browser Knowledge Brain can preview the bounded, already-indexed Markdown/text content through an authenticated `GET /api/v1/knowledge/:id/content` route; the route returns no native path and never reads from the user's filesystem. Native-file reveal remains a Tauri/Electron-only operation.
 
 Pass evidence:
 
