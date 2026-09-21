@@ -230,6 +230,9 @@ describe('browser-first UI boundary', () => {
     expect(autonomy).toContain("!browserRuntime && <button")
     expect(autonomy).not.toContain("browserRuntime ? electron.whatsapp.web.start")
     expect(autonomy).toContain('(metrics.estimatedCostPerResolvedConversation ?? 0).toFixed(4)')
+    expect(autonomy).toContain('recordConversationOutcome')
+    expect(autonomy).toContain('Owner evidence')
+    expect(autonomy).toContain('Record outcome')
   })
 
   it('presents browser WhatsApp autonomous mode through the durable outbox', () => {

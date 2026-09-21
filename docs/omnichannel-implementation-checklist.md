@@ -28,7 +28,8 @@ The completed items below describe the Electron pilot, not completion of the ind
 - [ ] Implement the selected public Node HTTPS/SQLite relay before a real Cloud API pilot: signature authentication, durable commit before ack, outbound agent polling, local-commit acknowledgments, TTL/expiry and offline no-send tests.
 - [ ] Record all four hardware states (UI open/closed × model loaded/unloaded), whole-process-tree RAM/CPU/GPU, p95 model/concurrent latency and results against the architecture capacity budget.
 - [x] Replace sent-plus-escalated resolution counts with durable, revision-bound owner outcomes; show N/A without resolutions and keep escalation separate. (Host API and regression test; outcome-review UI remains below.)
-- [ ] Add owner outcome-review UI and measure resolution episodes/attributed provider cost before pricing from cost per resolution.
+- [x] Add owner outcome-review UI. (The browser Autonomy panel now records revision-checked resolved-agent, resolved-human, escalated, closed-unresolved or open outcomes with required owner evidence through the authenticated agentd route.)
+- [ ] Measure resolution episodes and attributed provider-authoritative cost before pricing from cost per resolution.
 
 ### Existing pilot baseline
 
