@@ -30,6 +30,7 @@ npm run typecheck
 npm run typecheck:renderer
 npm run test:unit
 npm run test:integration
+npm run test:agentd:speech
 npm run test:e2e
 npm run test:e2e:browser
 npm run build

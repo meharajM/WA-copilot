@@ -51,6 +51,7 @@ Optional:
 
 - `npm run test:unit` - unit tests only.
 - `npm run test:integration` - integration contract tests only.
+- `npm run test:agentd:speech` - bounded speech-model cache/download tests (streaming, size, URL and digest gates).
 - `npm run test` - full suite with live tests auto-skipped unless enabled.
 - `npm run test:live` - live suite only (requires valid OpenRouter env vars).
 - `npm run test:robust` - unit + integration + live.
@@ -59,7 +60,7 @@ Optional:
 - `npm run test:e2e:packaged:mac` - run the smoke suite against the packaged macOS app.
 - `npm run test:mock` - intentionally fails because no separate mocked E2E suite exists.
 - `npm run test:speech` - intentionally fails because no speech E2E suite exists.
-- `npm run release:gate` - clean-tree, version, lint, typecheck, unit, integration, Electron E2E, and build gate.
+- `npm run release:gate` - clean-tree, version, lint, typecheck, unit, integration, speech-model, Electron E2E, browser E2E, and build gate.
 
 ## Notes
 
