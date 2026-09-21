@@ -17,6 +17,18 @@ describe('browser-first UI boundary', () => {
     expect(entry).not.toMatch(/workspace\s*=|location\.(search|hash)/)
   })
 
+  it('opens the selected Lead Directory session in the chat view', () => {
+    const app = readSource('App.tsx')
+    const leads = readSource('components/chat/LeadDirectory.tsx')
+
+    expect(app).toContain("<LeadDirectory onOpenChat={() => setCurrentView('chat')} />")
+    expect(leads).toContain('onOpenChat?: () => void')
+    expect(leads).toContain('setActiveSession(id)')
+    expect(leads).toContain('onOpenChat?.()')
+    expect(leads).toContain('role="button"')
+    expect(leads).toContain("event.key === 'Enter' || event.key === ' '")
+  })
+
   it('keeps the native host free of product workspace imports', () => {
     const host = readSource('NativeHostDiagnostics.tsx')
 

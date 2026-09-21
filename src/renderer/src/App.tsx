@@ -66,7 +66,7 @@ function App() {
       case 'brain':
         return <KnowledgeBrowser />
       case 'leads':
-        return <LeadDirectory />
+        return <LeadDirectory onOpenChat={() => setCurrentView('chat')} />
       case 'drafts':
         return (
           <div className="flex-1 overflow-y-auto p-10 bg-[var(--color-bg-dark)]">
