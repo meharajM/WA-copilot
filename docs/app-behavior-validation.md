@@ -1,6 +1,6 @@
 # App Behavior Validation
 
-Last updated: 2026-09-20
+Last updated: 2026-09-21
 
 ## Purpose
 
@@ -25,6 +25,8 @@ The follow-up runtime-boundary audit also corrected the launch contract: Edge/Ch
 The 2026-09-20 WhatsApp follow-up audit moved inactivity resolution into agentd. Durable active sessions are swept every minute after ten minutes of silence; review mode creates one deterministic draft, Autonomous Bot Mode uses the existing approved outbox, and customer-last silence is logged once. Browser-side timers are disabled, so tab closure/reload cannot drop or duplicate follow-ups.
 
 The older support-doc drift identified by the first audit is now corrected in the checked-in HTML manuals, email progress note, and architecture overview. The code-first follow-up also corrected `docs/tester_flow.html`, which had incorrectly presented the legacy Electron flow, PDF ingestion, and Browser MCP/Playwright as browser capabilities. The browser MCP boundary is now a supervised agentd worker for approved external servers; internal/native command definitions remain fail-closed. Browser PDF/Office/document ingestion now uses the same supervised agentd boundary with bounded conversion output and explicit failure states. The native companion now supervises and restarts a child daemon that it started, while still preserving the independent daemon lifetime. Explicit Windows per-user service registration is implemented; installer enrollment, recovery after intentional user quit, and Windows release evidence remain implementation gates, not competing product-contract descriptions.
+
+The 2026-09-21 browser-storage hardening removed the last generic `electron.store` renderer-local fallback. Electron continues delegating to its native store; Edge/Chrome calls now return defaults or fail closed with an explicit agentd-owned-storage error, while product settings remain persisted through authenticated agentd routes. Focused boundary tests, 341 unit tests, renderer typecheck, and browser pairing/reload E2E passed after this change.
 
 ## Validation Scope
 
