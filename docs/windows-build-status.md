@@ -44,9 +44,10 @@ The Windows workflows also run `scripts/windows-install-smoke.ps1` against the
 generated NSIS installer. The smoke installs into an isolated runner directory,
 launches the native companion in background mode, checks the descriptor-advertised
 loopback `agentd` `/healthz` endpoint, samples the complete idle companion + agentd
-resident set and CPU footprint for five seconds, enforces conservative 512 MB / 50%
-guards, stops the disposable processes, performs a same-build repair/reinstall and
-checks that a scoped per-user data sentinel survives, then silently uninstalls the
-package. This closes unsigned install/health/uninstall and reinstall-preservation
-behavior; certificate signing, version-to-version upgrade/downgrade and real-user
-profile rollback remain release gates.
+resident set and CPU footprint for five seconds, stops the companion and verifies
+that the independently supervised `agentd` health endpoint remains available,
+performs a same-build repair/reinstall and checks that a scoped per-user data
+sentinel survives, then silently uninstalls the package. This closes unsigned
+install/health/companion-lifecycle/uninstall and reinstall-preservation behavior;
+certificate signing, version-to-version upgrade/downgrade and real-user profile
+rollback remain release gates.

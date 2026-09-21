@@ -53,4 +53,6 @@ test('Windows install smoke measures the complete native idle resource footprint
   assert.match(source, /Native companion \+ agentd exceeded resident-memory guard/)
   assert.match(source, /reinstallDataPreserved = \$reinstallDataPreserved/)
   assert.match(source, /NSIS reinstall removed the user-data sentinel/)
+  assert.match(source, /agentd stopped when the native companion exited/)
+  assert.match(source, /agentd health was not ok=true after native companion exit/)
 })

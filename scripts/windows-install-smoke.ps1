@@ -126,7 +126,15 @@ try {
   if ($null -ne $companion -and -not $companion.HasExited) {
     Stop-Process -Id $companion.Id -Force -ErrorAction SilentlyContinue
   }
+  if ($null -ne $companion) { $companion.WaitForExit(5000) | Out-Null }
   Start-Sleep -Milliseconds 500
+  # The browser-first contract keeps the independently supervised daemon alive
+  # when the native companion window/process exits. Prove that lifecycle
+  # boundary before explicitly cleaning up the disposable daemon below.
+  $survivingHealth = Invoke-WebRequest -Uri "$($descriptor.origin)/healthz" -UseBasicParsing -TimeoutSec 5
+  Assert-Condition ($survivingHealth.StatusCode -eq 200) "agentd stopped when the native companion exited (HTTP $($survivingHealth.StatusCode))"
+  $survivingHealthBody = $survivingHealth.Content | ConvertFrom-Json
+  Assert-Condition ($survivingHealthBody.ok -eq $true) 'agentd health was not ok=true after native companion exit'
   $runtimeBinary = Get-ChildItem -LiteralPath $installRoot -Filter 'agentd-runtime.exe' -File -Recurse | Select-Object -First 1
   $runtimePath = if ($null -ne $runtimeBinary) { $runtimeBinary.FullName } else { '' }
   $agentdPids = @(Get-CimInstance Win32_Process -Filter "Name = 'agentd-runtime.exe'" |
