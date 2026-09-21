@@ -174,12 +174,33 @@ export const electron = {
             if (isElectron() && window.electron?.mcp) {
                 return await window.electron.mcp.connect(serverConfig)
             }
+            if (isBrowserProduct()) {
+                if (!serverConfig || typeof serverConfig !== 'object' || Array.isArray(serverConfig)) {
+                    return { success: false, error: 'Invalid MCP server configuration' }
+                }
+                const serverId = (serverConfig as { id?: unknown }).id
+                if (typeof serverId !== 'string') return { success: false, error: 'Invalid MCP server ID' }
+                try {
+                    const server = await getBrowserAgentdClient().connectMcpServer(serverId)
+                    return { success: true, server }
+                } catch (error) {
+                    return { success: false, error: error instanceof Error ? error.message : String(error) }
+                }
+            }
             return { success: false, error: 'MCP server management is not available in browser mode' }
         },
 
         disconnect: async (serverId: string) => {
             if (isElectron() && window.electron?.mcp) {
                 return await window.electron.mcp.disconnect(serverId)
+            }
+            if (isBrowserProduct()) {
+                try {
+                    const server = await getBrowserAgentdClient().disconnectMcpServer(serverId)
+                    return { success: true, server }
+                } catch (error) {
+                    return { success: false, error: error instanceof Error ? error.message : String(error) }
+                }
             }
             return { success: false, error: 'MCP server management is not available in browser mode' }
         },
@@ -188,6 +209,14 @@ export const electron = {
             if (isElectron() && window.electron?.mcp) {
                 return await window.electron.mcp.listTools(serverId)
             }
+            if (isBrowserProduct()) {
+                try {
+                    const result = await getBrowserAgentdClient().listMcpTools(serverId)
+                    return { success: true, server: result.server, tools: result.tools }
+                } catch (error) {
+                    return { success: false, error: error instanceof Error ? error.message : String(error), tools: [] }
+                }
+            }
             return { success: false, error: 'MCP server management is not available in browser mode', tools: [] }
         },
 
@@ -195,10 +224,25 @@ export const electron = {
             if (isElectron() && window.electron?.mcp) {
                 return await window.electron.mcp.callTool(serverId, toolName, args, requestId)
             }
+            if (isBrowserProduct()) {
+                try {
+                    const boundedArgs = args && typeof args === 'object' && !Array.isArray(args) ? args as Record<string, unknown> : {}
+                    return await getBrowserAgentdClient().callMcpTool(serverId, toolName, boundedArgs, requestId)
+                } catch (error) {
+                    return { result: null, error: error instanceof Error ? error.message : String(error), ...(requestId ? { requestId } : {}) }
+                }
+            }
             return { success: false, error: 'MCP tool execution is not available in browser mode', result: null }
         },
         cancelTool: async (requestId: string) => {
             if (isElectron() && window.electron?.mcp) return await window.electron.mcp.cancelTool(requestId)
+            if (isBrowserProduct()) {
+                try {
+                    return { success: await getBrowserAgentdClient().cancelMcpTool(requestId) }
+                } catch (error) {
+                    return { success: false, error: error instanceof Error ? error.message : String(error) }
+                }
+            }
             return { success: false, error: 'Not supported in browser mode' }
         },
     },

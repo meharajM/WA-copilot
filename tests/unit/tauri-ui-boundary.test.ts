@@ -287,6 +287,15 @@ describe('browser-first UI boundary', () => {
     expect(electron).toContain('getBrowserAgentdClient().disconnectWhatsApp(clearAuth)')
   })
 
+  it('routes legacy MCP wrapper calls through authenticated agentd in browsers', () => {
+    const electron = readSource('lib/electron.ts')
+    expect(electron).toContain('getBrowserAgentdClient().connectMcpServer(serverId)')
+    expect(electron).toContain('getBrowserAgentdClient().disconnectMcpServer(serverId)')
+    expect(electron).toContain('getBrowserAgentdClient().listMcpTools(serverId)')
+    expect(electron).toContain('getBrowserAgentdClient().callMcpTool(serverId, toolName, boundedArgs, requestId)')
+    expect(electron).toContain('getBrowserAgentdClient().cancelMcpTool(requestId)')
+  })
+
   it('keeps browser autonomy state live without reviving Electron events', () => {
     const electron = readSource('lib/electron.ts')
     const onState = electron.indexOf('onState: (callback: (state: unknown) => void) => {')
