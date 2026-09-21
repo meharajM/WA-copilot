@@ -758,6 +758,30 @@ describe('browser agentd client', () => {
     expect(new Headers(ack.init?.headers).get('x-csrf-token')).toBe('csrf-token')
   })
 
+  it('maps browser approved-template registry and send routes with CSRF protection', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = []
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      calls.push({ url, init })
+      if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
+      if (url.endsWith('/api/v1/autonomy/templates') && init?.method === 'POST') return response({ templates: [{ name: 'support_followup', languageCode: 'en_US', category: 'utility' }] })
+      if (url.endsWith('/api/v1/autonomy/templates')) return response({ templates: [{ name: 'support_followup', languageCode: 'en_US', category: 'utility' }] })
+      if (url.endsWith('/api/v1/autonomy/templates/support_followup/en_US')) return response({ templates: [] })
+      if (url.endsWith('/api/v1/whatsapp/templates/send')) return response({ success: true, duplicate: false, providerMessageId: 'wamid.template-1', draft: { id: 7, channel: 'whatsapp', providerEventId: 'evt-7', conversationId: '14155551212@s.whatsapp.net', responseText: 'draft reply', status: 'sent', createdAt: 10, updatedAt: 30, sendStatus: 'sent', providerMessageId: 'wamid.template-1', sendAttempts: 1 } })
+      return response({ success: true })
+    })
+    const client = createBrowserAgentdClient({ origin: 'http://127.0.0.1:4141', fetch: fetcher })
+    await client.pair('123456')
+    await expect(client.listApprovedTemplates()).resolves.toEqual([{ name: 'support_followup', languageCode: 'en_US', category: 'utility' }])
+    await expect(client.registerApprovedTemplate({ name: 'support_followup', languageCode: 'en_US', category: 'utility' })).resolves.toHaveLength(1)
+    await expect(client.sendApprovedTemplate('evt-7', 'support_followup', 'en_US', ['Alex'])).resolves.toMatchObject({ providerMessageId: 'wamid.template-1', draft: { status: 'sent' } })
+    await expect(client.revokeApprovedTemplate('support_followup', 'en_US')).resolves.toEqual([])
+    const mutationCalls = calls.filter(call => call.init?.method && call.init.method !== 'GET' && !call.url.endsWith('/api/v1/pair'))
+    expect(mutationCalls.every(call => new Headers(call.init?.headers).get('x-csrf-token') === 'csrf-token')).toBe(true)
+    const send = calls.find(call => call.url.endsWith('/api/v1/whatsapp/templates/send'))!
+    expect(JSON.parse(String(send.init?.body))).toEqual({ providerEventId: 'evt-7', name: 'support_followup', languageCode: 'en_US', parameters: ['Alex'] })
+  })
+
   it('maps browser knowledge and intelligence routes without Electron fallbacks', async () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)

@@ -621,6 +621,12 @@ export interface BrowserDraftSendResult {
   draft: BrowserDraft
 }
 
+export interface BrowserApprovedTemplate {
+  name: string
+  languageCode: string
+  category: string
+}
+
 export interface BrowserWhatsAppDraftResult {
   accepted: boolean
   duplicate: boolean
@@ -861,6 +867,10 @@ export interface BrowserAgentdClient extends ChatClient {
   reviewDecision(inboundId: string, label: BrowserDecisionReviewLabel, notes?: string): Promise<{ reviewed: boolean; inboundId: string; label: BrowserDecisionReviewLabel }>
   listAutonomyNotifications(limit?: number): Promise<BrowserAutonomyNotification[]>
   ackAutonomyNotification(id: number): Promise<{ acknowledged: boolean }>
+  sendApprovedTemplate(inboundId: string, name: string, languageCode: string, parameters?: string[]): Promise<BrowserDraftSendResult>
+  listApprovedTemplates(): Promise<BrowserApprovedTemplate[]>
+  registerApprovedTemplate(template: BrowserApprovedTemplate): Promise<BrowserApprovedTemplate[]>
+  revokeApprovedTemplate(name: string, languageCode: string): Promise<BrowserApprovedTemplate[]>
   listKnowledge(limit?: number): Promise<BrowserKnowledgeDocument[]>
   ingestKnowledge(input: { fileName: string; filePath: string; fileType: string; content: string; size: number }): Promise<BrowserKnowledgeDocument>
   convertKnowledge(input: { fileName: string; fileType: string; dataBase64: string; size: number }): Promise<BrowserKnowledgeDocument>
@@ -1580,6 +1590,32 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     if (!isRecord(value) || typeof value.acknowledged !== 'boolean') throw new Error('Invalid agentd autonomy notification acknowledgement response')
     return { acknowledged: value.acknowledged }
   }
+  const readApprovedTemplate = (value: unknown): BrowserApprovedTemplate => {
+    if (!isRecord(value)
+      || typeof value.name !== 'string' || !/^[a-zA-Z0-9_.-]{1,100}$/.test(value.name)
+      || typeof value.languageCode !== 'string' || !/^[a-zA-Z0-9_-]{2,20}$/.test(value.languageCode)
+      || typeof value.category !== 'string' || !/^[a-zA-Z0-9_.-]{1,40}$/.test(value.category)) throw new Error('Invalid approved template response')
+    return { name: value.name, languageCode: value.languageCode, category: value.category }
+  }
+  const readApprovedTemplateList = (value: unknown): BrowserApprovedTemplate[] => {
+    if (!isRecord(value) || !Array.isArray(value.templates)) throw new Error('Invalid approved template list response')
+    return value.templates.map(readApprovedTemplate)
+  }
+  const listApprovedTemplates = async (): Promise<BrowserApprovedTemplate[]> => readApprovedTemplateList(await request('/api/v1/autonomy/templates'))
+  const registerApprovedTemplate = async (template: BrowserApprovedTemplate): Promise<BrowserApprovedTemplate[]> => {
+    readApprovedTemplate(template)
+    return readApprovedTemplateList(await request('/api/v1/autonomy/templates', { method: 'POST', body: JSON.stringify(template) }, true))
+  }
+  const revokeApprovedTemplate = async (name: string, languageCode: string): Promise<BrowserApprovedTemplate[]> => {
+    if (!/^[a-zA-Z0-9_.-]{1,100}$/.test(name) || !/^[a-zA-Z0-9_-]{2,20}$/.test(languageCode)) throw new Error('Invalid approved template')
+    return readApprovedTemplateList(await request(`/api/v1/autonomy/templates/${encodeURIComponent(name)}/${encodeURIComponent(languageCode)}`, { method: 'DELETE' }, true))
+  }
+  const sendApprovedTemplate = async (inboundId: string, name: string, languageCode: string, parameters: string[] = []): Promise<BrowserDraftSendResult> => {
+    if (!/^[\x21-\x7e]{1,300}$/.test(inboundId) || !/^[a-zA-Z0-9_.-]{1,100}$/.test(name) || !/^[a-zA-Z0-9_-]{2,20}$/.test(languageCode) || !Array.isArray(parameters) || parameters.length > 10 || parameters.some(value => typeof value !== 'string' || [...value].length > 500)) throw new Error('Invalid approved template request')
+    const value = await request<unknown>('/api/v1/whatsapp/templates/send', { method: 'POST', body: JSON.stringify({ providerEventId: inboundId, name, languageCode, ...(parameters.length ? { parameters } : {}) }) }, true)
+    if (!isRecord(value) || typeof value.providerMessageId !== 'string' || !value.providerMessageId || typeof value.duplicate !== 'boolean' || !value.draft) throw new Error('Invalid approved template send response')
+    return { providerMessageId: value.providerMessageId, duplicate: value.duplicate, draft: readDraft(value.draft) }
+  }
   const readKnowledgeDocument = (value: unknown): BrowserKnowledgeDocument => {
     if (!isRecord(value) || !Number.isSafeInteger(value.id) || typeof value.file_path !== 'string' || typeof value.file_name !== 'string' || typeof value.created_at !== 'string') throw new Error('Invalid agentd knowledge document')
     return {
@@ -1743,6 +1779,10 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     reviewDecision,
     listAutonomyNotifications,
     ackAutonomyNotification,
+    sendApprovedTemplate,
+    listApprovedTemplates,
+    registerApprovedTemplate,
+    revokeApprovedTemplate,
     listKnowledge,
     ingestKnowledge,
     convertKnowledge,

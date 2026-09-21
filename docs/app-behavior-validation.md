@@ -26,7 +26,9 @@ The 2026-09-20 WhatsApp follow-up audit moved inactivity resolution into agentd.
 
 The older support-doc drift identified by the first audit is now corrected in the checked-in HTML manuals, email progress note, and architecture overview. The code-first follow-up also corrected `docs/tester_flow.html`, which had incorrectly presented the legacy Electron flow, PDF ingestion, and Browser MCP/Playwright as browser capabilities. The browser MCP boundary is now a supervised agentd worker for approved external servers; internal/native command definitions remain fail-closed. Browser PDF/Office/document ingestion now uses the same supervised agentd boundary with bounded conversion output and explicit failure states. The native companion now supervises and restarts a child daemon that it started, while still preserving the independent daemon lifetime. Explicit Windows per-user service registration is implemented; installer enrollment, recovery after intentional user quit, and Windows release evidence remain implementation gates, not competing product-contract descriptions.
 
-The 2026-09-21 browser-storage hardening removed the last generic `electron.store` renderer-local fallback. Electron continues delegating to its native store; Edge/Chrome calls now return defaults or fail closed with an explicit agentd-owned-storage error, while product settings remain persisted through authenticated agentd routes. Focused boundary tests, 341 unit tests, renderer typecheck, and browser pairing/reload E2E passed after this change.
+The 2026-09-21 browser-storage hardening removed the last generic `electron.store` renderer-local fallback. Electron continues delegating to its native store; Edge/Chrome calls now return defaults or fail closed with an explicit agentd-owned-storage error, while product settings remain persisted through authenticated agentd routes. Focused boundary tests, 343 unit tests, renderer typecheck, and browser pairing/reload E2E passed after this change.
+
+The 2026-09-21 real-user autonomy pass found and fixed two browser gaps. Approved-template controls were present in the shared panel but had no browser registry/send authority; authenticated agentd registry, Cloud template payloads, service-window/stale-inbound/utility-template gates, and durable idempotent outbox dispatch now back those controls. The same pass found that a rejected template send surfaced as an unhandled browser page error with no operator feedback; the panel now catches the rejection and renders a status message. A disposable Playwright flow paired the browser, opened Settings → Autonomous Supervisor, loaded an approved draft/template selector, clicked Send template with non-Cloud transport, showed the visible failure message, and produced no page errors. A DELETE-body socket-reset regression was also reproduced and fixed by consuming revoke requests before the next browser request.
 
 ## Validation Scope
 
@@ -80,6 +82,9 @@ The 2026-09-21 browser-storage hardening removed the last generic `electron.stor
 - `npx vitest run tests/unit/whatsapp-browser-persistence.test.ts`
 - `node --test tests/unit/agentd-knowledge.test.cjs`
 - `node --test tests/unit/agentd.test.cjs tests/unit/agentd-chat-generations.test.cjs tests/unit/agentd-settings-persona.test.cjs`
+- `node --test tests/unit/agentd-whatsapp-drafts.test.cjs` (11 passed, including browser approved-template registry/send and revoke-request sequencing)
+- `npx vitest run tests/unit/browser-agentd-client.test.ts tests/unit/tauri-ui-boundary.test.ts` (focused browser client/UI boundary checks)
+- `npm run test:e2e:browser` (browser pairing/workspace/reload smoke)
 - `cargo test --manifest-path src-tauri/Cargo.toml --locked` also covers the native supervisor build and descriptor ownership guards; the supervisor restart loop is conservative and target-specific Windows runtime behavior still requires the Windows runner.
 - On Windows, the same Rust test binary additionally registers, queries, and removes a disposable current-user Task Scheduler definition; macOS/Linux runs validate XML escaping and the fixed native command boundary without claiming Windows runtime behavior.
 

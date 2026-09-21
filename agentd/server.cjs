@@ -45,6 +45,7 @@ const MAX_EMAIL_INBOUND_MEDIA_BYTES = 512 * 1024
 const MAX_EMAIL_INBOUND_MEDIA_TOTAL_BYTES = 1024 * 1024
 const MAX_WHATSAPP_INBOUND_BATCH = 50
 const MAX_DRAFT_TEXT_LENGTH = 4096
+const WHATSAPP_TEMPLATE_SERVICE_WINDOW_MS = 24 * 60 * 60 * 1000
 const WHATSAPP_INACTIVITY_TIMEOUT_MS = 10 * 60 * 1000
 const WHATSAPP_INACTIVITY_SWEEP_MS = 60 * 1000
 const WHATSAPP_RESOLUTION_PROMPT = "It's been a while! Just checking in—did that resolve your inquiry? (Reply 'Yes' or 'No', or feel free to ask more questions!)"
@@ -636,6 +637,14 @@ class AgentdServer {
           status TEXT NOT NULL CHECK(status IN ('draft','approved','rejected','sent')) DEFAULT 'draft',
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS approved_templates (
+          name TEXT NOT NULL,
+          language_code TEXT NOT NULL,
+          category TEXT NOT NULL,
+          active INTEGER NOT NULL DEFAULT 1,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (name, language_code)
         );
         CREATE TABLE IF NOT EXISTS whatsapp_outbox (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1370,6 +1379,13 @@ class AgentdServer {
     if (url.pathname === '/api/v1/autonomy/notifications' && req.method === 'GET') return this.autonomyNotifications(req, res, url)
     const autonomyNotificationAckMatch = /^\/api\/v1\/autonomy\/notifications\/(\d+)\/ack$/.exec(url.pathname)
     if (autonomyNotificationAckMatch && req.method === 'POST') return this.ackAutonomyNotification(req, res, Number(autonomyNotificationAckMatch[1]))
+    if (url.pathname === '/api/v1/autonomy/templates' && ['GET', 'POST'].includes(req.method)) return this.autonomyTemplates(req, res)
+    const autonomyTemplateMatch = /^\/api\/v1\/autonomy\/templates\/([^/]+)\/([^/]+)$/.exec(url.pathname)
+    if (autonomyTemplateMatch && req.method === 'DELETE') {
+      let name; let languageCode
+      try { name = decodeURIComponent(autonomyTemplateMatch[1]); languageCode = decodeURIComponent(autonomyTemplateMatch[2]) } catch { return json(res, 400, { error: 'Invalid template identity' }) }
+      return this.revokeAutonomyTemplate(req, res, name, languageCode)
+    }
     if (url.pathname === '/api/v1/logs' && ['GET', 'POST'].includes(req.method)) return this.auditLogs(req, res, url)
     if (url.pathname === '/api/v1/knowledge/convert' && req.method === 'POST') return this.convertKnowledge(req, res)
     if (url.pathname === '/api/v1/knowledge' && ['GET', 'POST'].includes(req.method)) return this.knowledge(req, res, url)
@@ -1401,6 +1417,7 @@ class AgentdServer {
     const draftRetryMatch = /^\/api\/v1\/whatsapp\/drafts\/(\d+)\/retry$/.exec(url.pathname)
     const draftQuarantineMatch = /^\/api\/v1\/whatsapp\/drafts\/(\d+)\/quarantine$/.exec(url.pathname)
     const draftCancelMatch = /^\/api\/v1\/whatsapp\/drafts\/(\d+)\/cancel$/.exec(url.pathname)
+    if (url.pathname === '/api/v1/whatsapp/templates/send' && req.method === 'POST') return this.sendApprovedTemplate(req, res)
     if (draftSendMatch && req.method === 'POST') return this.sendWhatsAppDraft(req, res, Number(draftSendMatch[1]))
     if (draftRetryMatch && req.method === 'POST') return this.retryWhatsAppDraft(req, res, Number(draftRetryMatch[1]))
     if (draftQuarantineMatch && req.method === 'POST') return this.dispositionWhatsAppDraft(req, res, Number(draftQuarantineMatch[1]), OUTBOX_QUARANTINED_ERROR)
@@ -3394,6 +3411,50 @@ class AgentdServer {
     }
   }
 
+  async sendWhatsAppCloudTemplate(to, name, languageCode, parameters = []) {
+    let storedSettings = null
+    try { storedSettings = JSON.parse(this.getState('whatsapp_settings', 'null')) } catch {}
+    const settings = parseWhatsAppSettings(storedSettings) || WHATSAPP_SETTINGS_DEFAULTS
+    if (settings.whatsapp_transport !== 'cloud') throw Object.assign(new Error('WhatsApp Cloud transport is not enabled'), { statusCode: 409 })
+    if (!/^\d{5,32}$/.test(settings.whatsapp_cloud_phone_number_id)
+      || !/^v\d+(?:\.\d+)?$/.test(settings.whatsapp_cloud_api_version)) {
+      throw Object.assign(new Error('WhatsApp Cloud transport is not configured'), { statusCode: 409 })
+    }
+    if (!/^\+?[0-9\s().-]{8,32}$/.test(String(to).trim())) throw Object.assign(new Error('Invalid WhatsApp recipient'), { statusCode: 400 })
+    const recipient = String(to).replace(/\D/g, '')
+    if (!/^\d{8,15}$/.test(recipient)) throw Object.assign(new Error('Invalid WhatsApp recipient'), { statusCode: 400 })
+    if (!/^[a-zA-Z0-9_.-]{1,100}$/.test(name) || !/^[a-zA-Z0-9_-]{2,20}$/.test(languageCode)) throw Object.assign(new Error('Invalid approved template'), { statusCode: 400 })
+    if (!Array.isArray(parameters) || parameters.length > 10 || parameters.some(value => typeof value !== 'string' || [...value].length > 500)) throw Object.assign(new Error('Invalid template parameters'), { statusCode: 400 })
+
+    let accessToken
+    try { accessToken = await this.credentials?.get('whatsapp_cloud_access_token') } catch {}
+    if (typeof accessToken !== 'string' || !accessToken) throw Object.assign(new Error('WhatsApp Cloud credentials are not configured'), { statusCode: 409 })
+
+    let response
+    try {
+      const template = {
+        name,
+        language: { code: languageCode },
+        ...(parameters.length ? { components: [{ type: 'body', parameters: parameters.map(text => ({ type: 'text', text })) }] } : {}),
+      }
+      response = await this.providerFetch(`https://graph.facebook.com/${settings.whatsapp_cloud_api_version}/${settings.whatsapp_cloud_phone_number_id}/messages`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messaging_product: 'whatsapp', to: recipient, type: 'template', template }),
+        redirect: 'manual',
+        signal: AbortSignal.timeout(10_000),
+      })
+      const payload = await readProviderResponse(response)
+      const providerMessageId = payload?.messages?.[0]?.id
+      if (!response.ok || typeof providerMessageId !== 'string' || !providerMessageId) throw new Error('WhatsApp Cloud template message failed')
+      return { providerMessageId }
+    } catch (error) {
+      try { await response?.body?.cancel() } catch {}
+      if (error?.statusCode) throw error
+      throw Object.assign(new Error('WhatsApp Cloud template message failed'), { statusCode: 502 })
+    }
+  }
+
   async sendWhatsAppCloudMedia(to, media) {
     let storedSettings = null
     try { storedSettings = JSON.parse(this.getState('whatsapp_settings', 'null')) } catch {}
@@ -3463,6 +3524,14 @@ class AgentdServer {
       return this.whatsappExtensionBridge.enqueueOutbound({ to, text })
     }
     throw Object.assign(new Error('WhatsApp transport is not configured'), { statusCode: 409 })
+  }
+
+  async sendWhatsAppConfiguredTemplate(to, name, languageCode, parameters = []) {
+    let storedSettings = null
+    try { storedSettings = JSON.parse(this.getState('whatsapp_settings', 'null')) } catch {}
+    const settings = parseWhatsAppSettings(storedSettings) || WHATSAPP_SETTINGS_DEFAULTS
+    if (settings.whatsapp_transport !== 'cloud') throw Object.assign(new Error('Approved templates require WhatsApp Cloud transport'), { statusCode: 409 })
+    return this.sendWhatsAppCloudTemplate(to, name, languageCode, parameters)
   }
 
   async sendWhatsAppConfiguredMedia(to, media) {
@@ -4453,6 +4522,88 @@ class AgentdServer {
     }
   }
 
+  async performWhatsAppTemplateSend(providerEventId, name, languageCode, parameters = []) {
+    const releaseOperation = this.beginActiveOperation()
+    if (!releaseOperation) return { status: 409, body: { error: 'Settings migration is committing' } }
+    let draftId = null
+    try {
+      const draft = this.db.prepare('SELECT * FROM whatsapp_drafts WHERE provider_event_id = ?').get(providerEventId)
+      if (!draft) return { status: 404, body: { error: 'WhatsApp draft not found' } }
+      draftId = draft.id
+      if (!['approved', 'sent'].includes(draft.status)) return { status: 409, body: { error: 'Draft must be approved before sending a template' } }
+      const template = this.db.prepare('SELECT category FROM approved_templates WHERE name = ? AND language_code = ? AND active = 1').get(name, languageCode)
+      if (!template) return { status: 409, body: { error: 'Template is not active in the approved registry' } }
+      if (template.category !== 'utility') return { status: 409, body: { error: 'Only utility templates are allowed for customer support' } }
+      if (!Array.isArray(parameters) || parameters.length > 10 || parameters.some(value => typeof value !== 'string' || [...value].length > 500)) return { status: 400, body: { error: 'Invalid template parameters' } }
+      if (Date.now() - draft.created_at < WHATSAPP_TEMPLATE_SERVICE_WINDOW_MS) return { status: 409, body: { error: 'Use free-form response inside the WhatsApp service window' } }
+      if (this.db.prepare("SELECT 1 FROM inbound_events WHERE channel = 'whatsapp' AND conversation_id = ? AND created_at > ? AND provider_event_id <> ? LIMIT 1").get(draft.conversation_id, draft.created_at, draft.provider_event_id)) return { status: 409, body: { error: 'Template inbound is stale; review the latest customer message' } }
+
+      const existing = this.db.prepare('SELECT * FROM whatsapp_outbox WHERE draft_id = ?').get(draftId)
+      if (existing?.status === 'failed' && [OUTBOX_QUARANTINED_ERROR, OUTBOX_CANCELLED_ERROR].includes(existing.error)) return { status: 409, body: { error: `Draft outbox is ${existing.error.toLowerCase()}` } }
+      if (existing?.status === 'sent' && existing.provider_message_id) return { status: 200, body: { success: true, duplicate: true, providerMessageId: existing.provider_message_id, draft: this.draftView(draft) } }
+      if (existing?.status === 'pending') return { status: 409, body: { error: existing.cancel_requested ? OUTBOX_CANCEL_REQUESTED_ERROR : 'WhatsApp send is already pending' } }
+
+      const now = Date.now()
+      const claimed = this.db.transaction(() => {
+        const current = this.db.prepare('SELECT * FROM whatsapp_drafts WHERE id = ?').get(draftId)
+        if (!current) return { missing: true }
+        if (!['approved', 'sent'].includes(current.status)) return { invalid: true }
+        const prior = this.db.prepare('SELECT * FROM whatsapp_outbox WHERE draft_id = ?').get(draftId)
+        if (prior?.status === 'sent' && prior.provider_message_id) return { sent: prior }
+        if (prior?.status === 'pending') return { pending: true }
+        this.db.prepare(`INSERT INTO whatsapp_outbox(draft_id,status,attempts,created_at,updated_at)
+          VALUES (?,?,?,?,?)
+          ON CONFLICT(draft_id) DO UPDATE SET status = 'pending', error = NULL, attempts = whatsapp_outbox.attempts + 1, updated_at = excluded.updated_at`).run(draftId, 'pending', prior?.attempts ? prior.attempts + 1 : 1, now, now)
+        return { current }
+      })()
+      if (claimed.missing) return { status: 404, body: { error: 'WhatsApp draft not found' } }
+      if (claimed.invalid) return { status: 409, body: { error: 'Draft must be approved before sending a template' } }
+      if (claimed.sent) return { status: 200, body: { success: true, duplicate: true, providerMessageId: claimed.sent.provider_message_id, draft: this.draftView(draft) } }
+      if (claimed.pending) return { status: 409, body: { error: 'WhatsApp send is already pending' } }
+
+      const cancellation = this.db.prepare('SELECT cancel_requested FROM whatsapp_outbox WHERE draft_id = ?').get(draftId)
+      if (cancellation?.cancel_requested) {
+        this.db.prepare("UPDATE whatsapp_outbox SET status = 'failed', error = ?, cancel_requested = 0, updated_at = ? WHERE draft_id = ? AND status = 'pending'").run(OUTBOX_CANCELLED_ERROR, Date.now(), draftId)
+        return { status: 409, body: { success: false, error: OUTBOX_CANCELLED_ERROR, draft: this.draftView(this.db.prepare('SELECT * FROM whatsapp_drafts WHERE id = ?').get(draftId)) } }
+      }
+
+      const recipient = draft.conversation_id.replace(/@s\.whatsapp\.net$/i, '')
+      this.assertMigrationOpen()
+      const { providerMessageId } = await this.sendWhatsAppConfiguredTemplate(recipient, name, languageCode, parameters)
+      this.db.transaction(() => {
+        this.db.prepare("UPDATE whatsapp_outbox SET status = 'sent', provider_message_id = ?, error = NULL, cancel_requested = 0, updated_at = ? WHERE draft_id = ?").run(providerMessageId, Date.now(), draftId)
+        this.db.prepare("UPDATE whatsapp_drafts SET status = 'sent', updated_at = ? WHERE id = ? AND status = 'approved'").run(Date.now(), draftId)
+      })()
+      return { status: 200, body: { success: true, duplicate: false, providerMessageId, draft: this.draftView(this.db.prepare('SELECT * FROM whatsapp_drafts WHERE id = ?').get(draftId)) } }
+    } catch (error) {
+      const message = Number.isInteger(error?.statusCode) && error.statusCode !== 502 ? error.message : 'WhatsApp template message failed'
+      if (draftId !== null) {
+        this.db.prepare("UPDATE whatsapp_outbox SET status = 'failed', error = ?, cancel_requested = 0, updated_at = ? WHERE draft_id = ?").run(message, Date.now(), draftId)
+        this.createAutonomyNotification('failure', { channel: 'whatsapp', operation: 'template-send', draftId, message })
+      }
+      const statusCode = Number.isInteger(error?.statusCode) ? error.statusCode : 502
+      return { status: statusCode, body: { success: false, error: message } }
+    } finally {
+      releaseOperation()
+    }
+  }
+
+  async sendApprovedTemplate(req, res) {
+    this.authorize(req, { mutation: true })
+    if (this.migrationFence(req, res)) return
+    if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
+    let body
+    try { body = await readBody(req, 16 * 1024) } catch (error) { return json(res, error.statusCode || 400, { error: error.message }) }
+    if (!body || typeof body !== 'object' || Array.isArray(body)
+      || Object.keys(body).some(key => !['providerEventId', 'name', 'languageCode', 'parameters'].includes(key))
+      || typeof body.providerEventId !== 'string' || !/^[\x21-\x7e]{1,300}$/.test(body.providerEventId)
+      || typeof body.name !== 'string' || !/^[a-zA-Z0-9_.-]{1,100}$/.test(body.name)
+      || typeof body.languageCode !== 'string' || !/^[a-zA-Z0-9_-]{2,20}$/.test(body.languageCode)
+      || (body.parameters !== undefined && (!Array.isArray(body.parameters) || body.parameters.length > 10 || body.parameters.some(value => typeof value !== 'string' || [...value].length > 500)))) return json(res, 400, { error: 'Invalid approved template request' })
+    const result = await this.performWhatsAppTemplateSend(body.providerEventId, body.name, body.languageCode, body.parameters || [])
+    return json(res, result.status, result.body)
+  }
+
   async readEmptyDraftMutation(req, res, message) {
     if (!String(req.headers['content-type'] || '').startsWith('application/json')) {
       json(res, 415, { error: 'application/json required' })
@@ -4587,6 +4738,38 @@ class AgentdServer {
     if (!Number.isSafeInteger(id) || id < 1) return json(res, 400, { error: 'Invalid notification ID' })
     const result = this.db.prepare("UPDATE autonomy_notifications SET status = 'read' WHERE id = ? AND status = 'unread'").run(id)
     return json(res, 200, { acknowledged: result.changes === 1 })
+  }
+
+  listApprovedTemplates() {
+    return this.db.prepare('SELECT name, language_code AS languageCode, category FROM approved_templates WHERE active = 1 ORDER BY name, language_code').all()
+  }
+
+  async autonomyTemplates(req, res) {
+    if (req.method === 'GET') {
+      this.authorize(req)
+      return json(res, 200, { templates: this.listApprovedTemplates() })
+    }
+    this.authorize(req, { mutation: true })
+    if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
+    let body
+    try { body = await readBody(req, 8 * 1024) } catch (error) { return json(res, error.statusCode || 400, { error: error.message }) }
+    if (!body || typeof body !== 'object' || Array.isArray(body)
+      || Object.keys(body).some(key => !['name', 'languageCode', 'category'].includes(key))
+      || typeof body.name !== 'string' || !/^[a-zA-Z0-9_.-]{1,100}$/.test(body.name)
+      || typeof body.languageCode !== 'string' || !/^[a-zA-Z0-9_-]{2,20}$/.test(body.languageCode)
+      || typeof body.category !== 'string' || !/^[a-zA-Z0-9_.-]{1,40}$/.test(body.category)) return json(res, 400, { error: 'Invalid approved template' })
+    this.db.prepare(`INSERT INTO approved_templates(name,language_code,category,active,updated_at) VALUES (?,?,?,?,?)
+      ON CONFLICT(name,language_code) DO UPDATE SET category = excluded.category, active = 1, updated_at = excluded.updated_at`)
+      .run(body.name, body.languageCode, body.category, 1, Date.now())
+    return json(res, 200, { templates: this.listApprovedTemplates() })
+  }
+
+  async revokeAutonomyTemplate(req, res, name, languageCode) {
+    this.authorize(req, { mutation: true })
+    if (!req.readableEnded) await new Promise((resolve, reject) => { req.on('end', resolve); req.on('error', reject); req.resume() })
+    if (!/^[a-zA-Z0-9_.-]{1,100}$/.test(name) || !/^[a-zA-Z0-9_-]{2,20}$/.test(languageCode)) return json(res, 400, { error: 'Invalid approved template' })
+    this.db.prepare('UPDATE approved_templates SET active = 0, updated_at = ? WHERE name = ? AND language_code = ?').run(Date.now(), name, languageCode)
+    return json(res, 200, { templates: this.listApprovedTemplates() })
   }
 
   autonomyMetrics(req, res, url) {

@@ -225,6 +225,9 @@ describe('browser-first UI boundary', () => {
     expect(autonomy).toContain('WhatsApp auto mode is controlled in Settings')
     expect(electronSource).toContain("mode: whatsappState.businessBotMode ? 'auto'")
     expect(electronSource).toContain('whatsapp.setBusinessBotMode(true)')
+    expect(autonomy).toContain('setTemplateError')
+    expect(autonomy).toContain('role="status"')
+    expect(autonomy).toContain('sendApprovedTemplate(draft.inboundId, name, languageCode)')
   })
 
   it('keeps browser email credentials transport-scoped and review-only', () => {

@@ -129,6 +129,63 @@ test('browser WhatsApp send stays fail-closed when transport/configuration is un
   await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true })
 })
 
+test('browser approved template registry and durable Cloud template send stay gated and idempotent', async () => {
+  const dataDir = makeTempDir('aica-agentd-wa-template-')
+  const secret = 't'.repeat(32)
+  const calls = []
+  const server = new AgentdServer({
+    dataDir,
+    secret,
+    credentials: { async get() { return 'cloud-template-secret' }, async exists() { return true } },
+    providerFetch: async (url, init) => {
+      calls.push({ url, init })
+      return new Response(JSON.stringify({ messages: [{ id: 'wamid.template-1' }] }), { status: 200, headers: { 'content-type': 'application/json' } })
+    },
+    logger: { log() {} },
+  })
+  const { origin } = await server.start()
+  const auth = { authorization: `Bearer ${secret}` }
+  await request(origin, 'PUT', '/api/v1/settings/whatsapp', { whatsapp_transport: 'cloud', whatsapp_cloud_phone_number_id: '1234567890', whatsapp_cloud_api_version: 'v23.0' }, auth)
+  assert.deepEqual((await request(origin, 'GET', '/api/v1/autonomy/templates', undefined, auth)).body, { templates: [] })
+  assert.equal((await request(origin, 'POST', '/api/v1/autonomy/templates', { name: 'support_followup', languageCode: 'en_US', category: 'utility' })).status, 401)
+  assert.equal((await request(origin, 'POST', '/api/v1/autonomy/templates', { name: 'support_followup', languageCode: 'en_US', category: 'utility' }, auth)).status, 200)
+  assert.equal((await request(origin, 'POST', '/api/v1/autonomy/templates', { name: 'support_followup', languageCode: 'en_US', category: 'marketing' }, auth)).body.templates[0].category, 'marketing')
+  assert.equal((await request(origin, 'POST', '/api/v1/autonomy/templates', { name: 'bad name', languageCode: 'en_US', category: 'utility' }, auth)).status, 400)
+  await request(origin, 'POST', '/api/v1/autonomy/templates', { name: 'support_followup', languageCode: 'en_US', category: 'utility' }, auth)
+
+  const event = await request(origin, 'POST', '/api/v1/whatsapp/events', { channel: 'whatsapp', providerEventId: 'template-event', conversationId: '14155551212@s.whatsapp.net', payload: {}, draftText: 'review reply' }, auth)
+  assert.equal(event.status, 202)
+  const draft = (await request(origin, 'GET', '/api/v1/drafts', undefined, auth)).body.drafts[0]
+  assert.equal((await request(origin, 'PATCH', `/api/v1/drafts/${draft.id}`, { status: 'approved' }, auth)).status, 200)
+  const freshEvent = await request(origin, 'POST', '/api/v1/whatsapp/events', { channel: 'whatsapp', providerEventId: 'template-fresh', conversationId: '14155559876@s.whatsapp.net', payload: {}, draftText: 'fresh reply' }, auth)
+  assert.equal(freshEvent.status, 202)
+  const freshDraft = (await request(origin, 'GET', '/api/v1/drafts', undefined, auth)).body.drafts.find(item => item.providerEventId === 'template-fresh')
+  assert.equal((await request(origin, 'PATCH', `/api/v1/drafts/${freshDraft.id}`, { status: 'approved' }, auth)).status, 200)
+  assert.equal((await request(origin, 'POST', '/api/v1/whatsapp/templates/send', { providerEventId: 'template-fresh', name: 'support_followup', languageCode: 'en_US' }, auth)).body.error, 'Use free-form response inside the WhatsApp service window')
+  const db = new (require('better-sqlite3'))(`${dataDir}/agentd.db`)
+  const old = Date.now() - 25 * 60 * 60 * 1000
+  db.prepare('UPDATE whatsapp_drafts SET created_at = ? WHERE id = ?').run(old, draft.id)
+  db.prepare('UPDATE inbound_events SET created_at = ? WHERE provider_event_id = ?').run(old, 'template-event')
+  db.close()
+
+  const sent = await request(origin, 'POST', '/api/v1/whatsapp/templates/send', { providerEventId: 'template-event', name: 'support_followup', languageCode: 'en_US', parameters: ['Alex'] }, auth)
+  assert.equal(sent.status, 200)
+  assert.equal(sent.body.providerMessageId, 'wamid.template-1')
+  assert.equal(sent.body.draft.status, 'sent')
+  assert.deepEqual(JSON.parse(calls[0].init.body), {
+    messaging_product: 'whatsapp', to: '14155551212', type: 'template',
+    template: { name: 'support_followup', language: { code: 'en_US' }, components: [{ type: 'body', parameters: [{ type: 'text', text: 'Alex' }] }] },
+  })
+  const duplicate = await request(origin, 'POST', '/api/v1/whatsapp/templates/send', { providerEventId: 'template-event', name: 'support_followup', languageCode: 'en_US' }, auth)
+  assert.deepEqual(duplicate.body, { success: true, duplicate: true, providerMessageId: 'wamid.template-1', draft: sent.body.draft })
+  assert.equal(calls.length, 1)
+  assert.equal(JSON.stringify(sent.body).includes('cloud-template-secret'), false)
+
+  assert.equal((await request(origin, 'DELETE', '/api/v1/autonomy/templates/support_followup/en_US', undefined, auth)).status, 200)
+  assert.deepEqual((await request(origin, 'GET', '/api/v1/autonomy/templates', undefined, auth)).body, { templates: [] })
+  await server.stop(); fs.rmSync(dataDir, { recursive: true, force: true })
+})
+
 test('approved WhatsApp drafts send through the durable browser outbox exactly once', async () => {
   const dataDir = makeTempDir('aica-agentd-wa-outbox-')
   const secret = 'o'.repeat(32)

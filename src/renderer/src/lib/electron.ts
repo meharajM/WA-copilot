@@ -600,7 +600,11 @@ export const electron = {
             const draft = (await getBrowserAgentdClient().listDrafts(100)).find(item => item.providerEventId === inboundId)
             return draft ? getBrowserAgentdClient().cancelWhatsAppDraft(draft.id).then(() => browserAutonomyState()) : null
         },
-        listApprovedTemplates: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listApprovedTemplates() : [],
+        listApprovedTemplates: async () => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.listApprovedTemplates()
+            if (isBrowserProduct()) return getBrowserAgentdClient().listApprovedTemplates()
+            return []
+        },
         listTakeovers: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listTakeovers() : [],
         listUnresolvedOutbound: async () => {
             if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.listUnresolvedOutbound()
@@ -685,7 +689,11 @@ export const electron = {
             const draft = (await getBrowserAgentdClient().listDrafts(100, 'approved')).find(item => item.providerEventId === inboundId)
             return draft ? getBrowserAgentdClient().sendWhatsAppDraft(draft.id).then(() => browserAutonomyState()) : null
         },
-        sendApprovedTemplate: async (inboundId: string, name: string, languageCode: string, parameters: string[] = []) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.sendApprovedTemplate(inboundId, name, languageCode, parameters) : null,
+        sendApprovedTemplate: async (inboundId: string, name: string, languageCode: string, parameters: string[] = []) => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.sendApprovedTemplate(inboundId, name, languageCode, parameters)
+            if (isBrowserProduct()) return getBrowserAgentdClient().sendApprovedTemplate(inboundId, name, languageCode, parameters).then(() => browserAutonomyState())
+            return null
+        },
         listNotifications: async () => {
             if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.listNotifications()
             if (isBrowserProduct()) return getBrowserAgentdClient().listAutonomyNotifications()
@@ -697,8 +705,16 @@ export const electron = {
             return null
         },
         onNotification: (callback: (data: unknown) => void) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.onNotification(callback) : () => {},
-        registerApprovedTemplate: async (name: string, languageCode: string, category: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.registerApprovedTemplate(name, languageCode, category) : null,
-        revokeApprovedTemplate: async (name: string, languageCode: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.revokeApprovedTemplate(name, languageCode) : null,
+        registerApprovedTemplate: async (name: string, languageCode: string, category: string) => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.registerApprovedTemplate(name, languageCode, category)
+            if (isBrowserProduct()) return getBrowserAgentdClient().registerApprovedTemplate({ name, languageCode, category })
+            return null
+        },
+        revokeApprovedTemplate: async (name: string, languageCode: string) => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.revokeApprovedTemplate(name, languageCode)
+            if (isBrowserProduct()) return getBrowserAgentdClient().revokeApprovedTemplate(name, languageCode)
+            return null
+        },
         setMode: async (mode: string, permission: boolean) => {
             if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.setMode(mode, permission)
             if (!isBrowserProduct()) return null
