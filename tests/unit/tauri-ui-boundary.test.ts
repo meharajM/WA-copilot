@@ -375,4 +375,13 @@ describe('browser-first UI boundary', () => {
     expect(dashboard).toContain('No analyzed sessions yet.')
     expect(dashboard).not.toContain('Math.max(metrics.messagesToday, 10)')
   })
+
+  it('stops the active speech engine without crossing into the other runtime path', () => {
+    const speech = readSource('hooks/useSpeechRecognition.ts')
+    const stop = speech.slice(speech.indexOf('const stopListening'))
+
+    expect(stop).toContain('if (useVoskSpeech)')
+    expect(stop).toContain('recognitionRef.current.stop()')
+    expect(stop).toContain('stopVisualization()')
+  })
 })

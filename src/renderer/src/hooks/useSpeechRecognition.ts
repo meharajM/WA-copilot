@@ -479,7 +479,7 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
         addLog({ eventType: 'STATE_CHANGE', sessionId, component: 'useSpeechRecognition', details: { metadata: { state: 'listening_stopped' } } })
 
         shouldListenRef.current = false
-        if (useNativeSpeech) {
+        if (useVoskSpeech) {
             setIsListening(false)
             setIsInitializing(false)
             stopVisualization()
