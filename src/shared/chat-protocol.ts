@@ -4,6 +4,8 @@ export interface ChatMessage {
   content: string
   timestamp: number
   attachments?: ChatAttachment[]
+  /** Durable agent metadata; currently used for browser execution-plan recovery. */
+  metadata?: { executionPlan?: unknown }
 }
 
 export interface ChatAttachment {

@@ -3746,7 +3746,7 @@ class AgentdServer {
       content: row.content,
       createdAt: row.created_at,
       ...(attachments ? { attachments } : {}),
-      ...(metadata ? metadata : {}),
+      ...(metadata ? { metadata } : {}),
     }
   }
 
@@ -3967,7 +3967,10 @@ class AgentdServer {
     if (!body || typeof body !== 'object' || Array.isArray(body)) return json(res, 400, { error: 'Invalid message' })
     const keys = Object.keys(body).sort()
     const attachments = this.parseChatAttachments(body.attachments)
-    if (keys.some(key => !['attachments', 'id', 'role', 'content'].includes(key)) || attachments === null || typeof body.role !== 'string' || !['user', 'assistant', 'system'].includes(body.role) || typeof body.content !== 'string' || (!body.content && attachments.length === 0) || body.content.length > MAX_CHAT_CONTENT_LENGTH || Buffer.byteLength(body.content, 'utf8') > MAX_CHAT_CONTENT_LENGTH) {
+    const metadata = body.metadata === undefined ? null : body.metadata
+    const executionPlan = metadata && typeof metadata === 'object' && !Array.isArray(metadata) ? metadata.executionPlan : undefined
+    const validPlan = executionPlan === undefined || (executionPlan && typeof executionPlan === 'object' && !Array.isArray(executionPlan) && typeof executionPlan.goal === 'string' && executionPlan.goal.length <= 4096 && Array.isArray(executionPlan.steps) && executionPlan.steps.length <= 150 && executionPlan.steps.every(step => step && typeof step === 'object' && Number.isSafeInteger(step.id) && typeof step.description === 'string' && step.description.length <= 4096 && ['pending', 'active', 'completed', 'failed'].includes(step.status)))
+    if (keys.some(key => !['attachments', 'id', 'role', 'content', 'metadata'].includes(key)) || attachments === null || (metadata !== null && (!metadata || typeof metadata !== 'object' || Array.isArray(metadata) || Object.keys(metadata).some(key => key !== 'executionPlan') || !validPlan || Buffer.byteLength(JSON.stringify(metadata), 'utf8') > 64 * 1024)) || typeof body.role !== 'string' || !['user', 'assistant', 'system'].includes(body.role) || typeof body.content !== 'string' || (!body.content && attachments.length === 0) || body.content.length > MAX_CHAT_CONTENT_LENGTH || Buffer.byteLength(body.content, 'utf8') > MAX_CHAT_CONTENT_LENGTH) {
       return json(res, 400, { error: 'Invalid message' })
     }
     const messageId = body.id === undefined ? crypto.randomUUID() : body.id
@@ -3978,12 +3981,12 @@ class AgentdServer {
       if (!session) return { missing: true }
       const existing = this.db.prepare('SELECT * FROM chat_messages WHERE session_id = ? AND message_id = ?').get(rawId, messageId)
       if (existing) {
-        if (existing.role !== body.role || existing.content !== body.content || (existing.attachments || null) !== (attachments.length ? JSON.stringify(attachments) : null)) return { conflict: true }
+        if (existing.role !== body.role || existing.content !== body.content || (existing.attachments || null) !== (attachments.length ? JSON.stringify(attachments) : null) || (existing.metadata || null) !== (metadata ? JSON.stringify(metadata) : null)) return { conflict: true }
         return { duplicate: true, row: existing }
       }
       const count = this.db.prepare('SELECT COUNT(*) AS count FROM chat_messages WHERE session_id = ?').get(rawId).count
       if (count >= MAX_CHAT_MESSAGES_PER_SESSION) return { full: true }
-      this.db.prepare('INSERT INTO chat_messages(session_id,message_id,role,content,attachments,created_at) VALUES (?,?,?,?,?,?)').run(rawId, messageId, body.role, body.content, attachments.length ? JSON.stringify(attachments) : null, now)
+      this.db.prepare('INSERT INTO chat_messages(session_id,message_id,role,content,attachments,metadata,created_at) VALUES (?,?,?,?,?,?,?)').run(rawId, messageId, body.role, body.content, attachments.length ? JSON.stringify(attachments) : null, metadata ? JSON.stringify(metadata) : null, now)
       this.db.prepare('UPDATE chat_sessions SET updated_at = ? WHERE id = ?').run(now, rawId)
       return { duplicate: false, row: this.db.prepare('SELECT * FROM chat_messages WHERE session_id = ? AND message_id = ?').get(rawId, messageId) }
     })()

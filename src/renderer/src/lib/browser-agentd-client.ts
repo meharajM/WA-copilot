@@ -1083,7 +1083,7 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
   const appendMessage = async (sessionId: string, message: ChatMessage): Promise<void> => {
     await request(`/api/v1/sessions/${encodeURIComponent(sessionId)}/messages`, {
       method: 'POST',
-      body: JSON.stringify({ id: message.id, role: message.role, content: message.content, ...(message.attachments ? { attachments: message.attachments } : {}) }),
+      body: JSON.stringify({ id: message.id, role: message.role, content: message.content, ...(message.attachments ? { attachments: message.attachments } : {}), ...(message.metadata ? { metadata: message.metadata } : {}) }),
     }, true)
   }
 

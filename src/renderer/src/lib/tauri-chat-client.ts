@@ -48,12 +48,16 @@ export const readMessage = (value: unknown): ChatMessage => {
     throw new Error('Invalid agentd chat message response')
   }
   const attachments = Array.isArray(value.attachments) ? value.attachments.map(readAttachment) : undefined
+  const metadata = isRecord(value.metadata) && isRecord(value.metadata.executionPlan)
+    ? { executionPlan: value.metadata.executionPlan }
+    : undefined
   return {
     id: value.id,
     role: value.role as ChatMessage['role'],
     content: value.content,
     timestamp: value.createdAt as number,
     ...(attachments?.length ? { attachments } : {}),
+    ...(metadata ? { metadata } : {}),
   }
 }
 
