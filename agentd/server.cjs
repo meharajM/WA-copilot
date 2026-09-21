@@ -722,6 +722,18 @@ class AgentdServer {
           notes TEXT,
           reviewed_at INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS autonomy_conversation_controls (
+          conversation_id TEXT PRIMARY KEY,
+          source TEXT NOT NULL,
+          active INTEGER NOT NULL DEFAULT 1,
+          revision INTEGER NOT NULL DEFAULT 0,
+          outcome TEXT CHECK(outcome IN ('resolved_agent','resolved_human','escalated','closed_unresolved','open')),
+          evidence TEXT,
+          started_at INTEGER NOT NULL,
+          ended_at INTEGER,
+          outcome_recorded_at INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS autonomy_conversation_controls_active_idx ON autonomy_conversation_controls(active, started_at DESC);
         CREATE TABLE IF NOT EXISTS settings_persona_cutovers (
           preview_id TEXT PRIMARY KEY,
           manifest TEXT NOT NULL,
@@ -1428,6 +1440,15 @@ class AgentdServer {
     if (url.pathname === '/api/v1/resume-all' && req.method === 'POST') return this.control(req, res, false)
     if (url.pathname === '/api/v1/autonomy/recovery/enter' && req.method === 'POST') return this.recoveryControl(req, res, true)
     if (url.pathname === '/api/v1/autonomy/recovery/clear' && req.method === 'POST') return this.recoveryControl(req, res, false)
+    if (url.pathname === '/api/v1/autonomy/takeovers' && req.method === 'GET') return this.listAutonomyTakeovers(req, res)
+    const conversationControlMatch = /^\/api\/v1\/autonomy\/conversations\/([^/]+)\/(pause|resume|outcome)$/.exec(url.pathname)
+    if (conversationControlMatch && req.method === 'POST') {
+      let conversationId
+      try { conversationId = decodeURIComponent(conversationControlMatch[1]) } catch { return json(res, 400, { error: 'Invalid conversation ID' }) }
+      if (conversationControlMatch[2] === 'pause') return this.pauseAutonomyConversation(req, res, conversationId)
+      if (conversationControlMatch[2] === 'resume') return this.resumeAutonomyConversation(req, res, conversationId)
+      return this.recordAutonomyConversationOutcome(req, res, conversationId)
+    }
     if (this.uiRoot && req.method === 'GET' && !url.pathname.startsWith('/api/')) return this.serveUi(url.pathname, res)
     return json(res, 404, { error: 'Not found' })
   }
@@ -4386,6 +4407,8 @@ class AgentdServer {
     const now = Date.now()
     const transaction = this.db.transaction(() => {
       if (this.getState('paused', 'true') === 'true') return { paused: true }
+      const conversationControl = this.db.prepare('SELECT active FROM autonomy_conversation_controls WHERE conversation_id = ?').get(body.conversationId)
+      if (conversationControl?.active === 1) return { paused: true, conversationPaused: true }
       const event = this.db.prepare('INSERT INTO inbound_events(channel,provider_event_id,conversation_id,payload,status,created_at) VALUES (?,?,?,?,?,?) ON CONFLICT(channel,provider_event_id) DO NOTHING').run('whatsapp', body.providerEventId, body.conversationId, payloadJson, 'draft', now)
       const existingDraft = this.db.prepare('SELECT id FROM whatsapp_drafts WHERE provider_event_id = ?').get(body.providerEventId)
       if (existingDraft) return { duplicate: true, draftId: existingDraft.id }
@@ -4670,6 +4693,81 @@ class AgentdServer {
       .run(disposition, Date.now(), id, 'failed', OUTBOX_QUARANTINED_ERROR, OUTBOX_CANCELLED_ERROR)
     if (updated.changes === 0) return json(res, 409, { error: 'Draft outbox changed before the operator disposition was applied' })
     return json(res, 200, this.draftView(this.db.prepare('SELECT * FROM whatsapp_drafts WHERE id = ?').get(id)))
+  }
+
+  listAutonomyTakeovers(req, res) {
+    this.authorize(req)
+    const rows = this.db.prepare(`SELECT conversation_id AS jid, source, started_at AS startedAt, revision, outcome
+      FROM autonomy_conversation_controls WHERE active = 1 ORDER BY started_at DESC LIMIT 100`).all()
+    return json(res, 200, {
+      takeovers: rows.map(row => ({
+        jid: row.jid,
+        source: row.source,
+        startedAt: row.startedAt,
+        revision: row.revision,
+        ...(row.outcome ? { outcome: row.outcome } : {}),
+      })),
+    })
+  }
+
+  validateAutonomyConversationId(conversationId) {
+    return typeof conversationId === 'string'
+      && conversationId.length > 0
+      && conversationId.length <= MAX_CHAT_CONTACT_LENGTH
+      && /^[^\u0000\r\n/]+$/.test(conversationId)
+  }
+
+  async pauseAutonomyConversation(req, res, conversationId) {
+    this.authorize(req, { mutation: true })
+    if (this.migrationFence(req, res)) return
+    if (!this.validateAutonomyConversationId(conversationId)) return json(res, 400, { error: 'Invalid conversation ID' })
+    if (!await this.readEmptyDraftMutation(req, res, 'Conversation pause accepts no input')) return
+    const now = Date.now()
+    this.db.prepare(`INSERT INTO autonomy_conversation_controls(conversation_id,source,active,revision,started_at)
+      VALUES (?, 'browser_operator', 1, 0, ?)
+      ON CONFLICT(conversation_id) DO UPDATE SET active = 1, source = 'browser_operator', started_at = excluded.started_at, ended_at = NULL`).run(conversationId, now)
+    const row = this.db.prepare('SELECT conversation_id AS jid, source, active, revision, started_at AS startedAt, outcome FROM autonomy_conversation_controls WHERE conversation_id = ?').get(conversationId)
+    this.db.prepare('INSERT INTO operator_actions(action,created_at) VALUES (?,?)').run('pause_conversation', now)
+    return json(res, 200, { conversationId: row.jid, active: row.active === 1, source: row.source, revision: row.revision, startedAt: row.startedAt, ...(row.outcome ? { outcome: row.outcome } : {}) })
+  }
+
+  async resumeAutonomyConversation(req, res, conversationId) {
+    this.authorize(req, { mutation: true })
+    if (this.migrationFence(req, res)) return
+    if (!this.validateAutonomyConversationId(conversationId)) return json(res, 400, { error: 'Invalid conversation ID' })
+    if (!await this.readEmptyDraftMutation(req, res, 'Conversation resume accepts no input')) return
+    const now = Date.now()
+    const updated = this.db.prepare(`UPDATE autonomy_conversation_controls
+      SET active = 0, ended_at = ? WHERE conversation_id = ? AND active = 1`).run(now, conversationId)
+    if (updated.changes === 0) return json(res, 404, { error: 'Conversation takeover not found' })
+    this.db.prepare('INSERT INTO operator_actions(action,created_at) VALUES (?,?)').run('resume_conversation', now)
+    const row = this.db.prepare('SELECT conversation_id AS jid, source, active, revision, started_at AS startedAt, ended_at AS endedAt, outcome FROM autonomy_conversation_controls WHERE conversation_id = ?').get(conversationId)
+    return json(res, 200, { conversationId: row.jid, active: false, source: row.source, revision: row.revision, startedAt: row.startedAt, endedAt: row.endedAt, ...(row.outcome ? { outcome: row.outcome } : {}) })
+  }
+
+  async recordAutonomyConversationOutcome(req, res, conversationId) {
+    this.authorize(req, { mutation: true })
+    if (this.migrationFence(req, res)) return
+    if (!this.validateAutonomyConversationId(conversationId)) return json(res, 400, { error: 'Invalid conversation ID' })
+    if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
+    let body
+    try { body = await readBody(req, 16 * 1024) } catch (error) { return json(res, error.statusCode || 400, { error: error.message }) }
+    const allowed = ['revision', 'outcome', 'evidence']
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => !allowed.includes(key))
+      || !Number.isSafeInteger(body.revision) || body.revision < 0
+      || !['resolved_agent', 'resolved_human', 'escalated', 'closed_unresolved', 'open'].includes(body.outcome)
+      || typeof body.evidence !== 'string' || body.evidence.trim().length < 1 || body.evidence.length > 2000) {
+      return json(res, 400, { error: 'Invalid conversation outcome' })
+    }
+    const row = this.db.prepare('SELECT revision FROM autonomy_conversation_controls WHERE conversation_id = ?').get(conversationId)
+    if (!row) return json(res, 404, { error: 'Conversation takeover not found' })
+    if (row.revision !== body.revision) return json(res, 409, { error: 'Conversation outcome revision changed' })
+    const now = Date.now()
+    this.db.prepare(`UPDATE autonomy_conversation_controls
+      SET revision = ?, outcome = ?, evidence = ?, outcome_recorded_at = ?
+      WHERE conversation_id = ? AND revision = ?`).run(body.revision + 1, body.outcome, body.evidence.trim(), now, conversationId, body.revision)
+    this.db.prepare('INSERT INTO operator_actions(action,created_at) VALUES (?,?)').run('conversation_outcome', now)
+    return json(res, 200, { conversationId, revision: body.revision + 1, outcome: body.outcome, recordedAt: now })
   }
 
   control(req, res, paused) {

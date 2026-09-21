@@ -122,6 +122,51 @@ test('agentd removes a stale lock left by a crashed owner', async () => {
   fs.rmSync(dataDir, { recursive: true, force: true })
 })
 
+test('agentd persists browser conversation takeovers and blocks only the paused conversation', async () => {
+  const dataDir = makeTempDir('aica-agentd-takeover-')
+  const server = new AgentdServer({ dataDir, secret: 't'.repeat(32), pairingCode: '246801', logger: { log() {} } })
+  const { origin } = await server.start()
+  const pair = await request(origin, 'POST', '/api/v1/pair', { code: '246801' }, { origin })
+  const auth = { origin, cookie: pair.headers['set-cookie'][0].split(';')[0] }
+  const session = { ...auth, 'x-csrf-token': pair.body.csrfToken }
+
+  const paused = await request(origin, 'POST', '/api/v1/autonomy/conversations/customer-1/pause', {}, session)
+  assert.equal(paused.status, 200)
+  assert.equal(paused.body.active, true)
+  assert.equal(paused.body.revision, 0)
+  assert.deepEqual((await request(origin, 'GET', '/api/v1/autonomy/takeovers', undefined, auth)).body.takeovers.map(item => item.jid), ['customer-1'])
+
+  const blocked = await request(origin, 'POST', '/api/v1/whatsapp/events', {
+    channel: 'whatsapp', providerEventId: 'takeover-event-1', conversationId: 'customer-1', payload: { text: 'while owner is handling this' }, draftText: 'must not be admitted',
+  }, session)
+  assert.deepEqual(blocked.body, { accepted: false, paused: true, duplicate: false })
+  const unrelated = await request(origin, 'POST', '/api/v1/whatsapp/events', {
+    channel: 'whatsapp', providerEventId: 'takeover-event-2', conversationId: 'customer-2', payload: { text: 'independent conversation' }, draftText: 'admitted',
+  }, session)
+  assert.equal(unrelated.status, 202)
+  assert.equal(unrelated.body.accepted, true)
+
+  const outcome = await request(origin, 'POST', '/api/v1/autonomy/conversations/customer-1/outcome', { revision: 0, outcome: 'resolved_human', evidence: 'Owner confirmed the issue is resolved.' }, session)
+  assert.deepEqual(outcome.body, { conversationId: 'customer-1', revision: 1, outcome: 'resolved_human', recordedAt: outcome.body.recordedAt })
+  assert.equal((await request(origin, 'POST', '/api/v1/autonomy/conversations/customer-1/outcome', { revision: 0, outcome: 'open', evidence: 'stale' }, session)).status, 409)
+  const resumed = await request(origin, 'POST', '/api/v1/autonomy/conversations/customer-1/resume', {}, session)
+  assert.equal(resumed.status, 200)
+  assert.equal(resumed.body.active, false)
+  const admitted = await request(origin, 'POST', '/api/v1/whatsapp/events', {
+    channel: 'whatsapp', providerEventId: 'takeover-event-3', conversationId: 'customer-1', payload: { text: 'new message after resume' }, draftText: 'admitted after resume',
+  }, session)
+  assert.equal(admitted.status, 202)
+  assert.equal(admitted.body.accepted, true)
+
+  await server.stop()
+  const recovered = new AgentdServer({ dataDir, secret: 't'.repeat(32), pairingCode: '135790', logger: { log() {} } })
+  const recoveredInfo = await recovered.start()
+  const bearer = { authorization: 'Bearer ' + 't'.repeat(32) }
+  assert.deepEqual((await request(recoveredInfo.origin, 'GET', '/api/v1/autonomy/takeovers', undefined, bearer)).body.takeovers, [])
+  await recovered.stop()
+  fs.rmSync(dataDir, { recursive: true, force: true })
+})
+
 test('agentd rate-limits wrong pairing codes without logging secrets', async () => {
   const dataDir = makeTempDir('aica-agentd-pair-limit-')
   const logMessages = []

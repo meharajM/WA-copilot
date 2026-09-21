@@ -579,8 +579,16 @@ export const electron = {
         },
         stageBackup: async (backupPath: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.stageBackup(backupPath) : null,
         pruneRetention: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.pruneRetention() : null,
-        pauseConversation: async (jid: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.pauseConversation(jid) : null,
-        resumeConversation: async (jid: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.resumeConversation(jid) : null,
+        pauseConversation: async (jid: string) => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.pauseConversation(jid)
+            if (isBrowserProduct()) return getBrowserAgentdClient().pauseConversation(jid)
+            return null
+        },
+        resumeConversation: async (jid: string) => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.resumeConversation(jid)
+            if (isBrowserProduct()) return getBrowserAgentdClient().resumeConversation(jid)
+            return null
+        },
         retryDelivery: async (inboundId: string) => {
             if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.retryDelivery(inboundId)
             if (!isBrowserProduct()) return null
@@ -605,7 +613,11 @@ export const electron = {
             if (isBrowserProduct()) return getBrowserAgentdClient().listApprovedTemplates()
             return []
         },
-        listTakeovers: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listTakeovers() : [],
+        listTakeovers: async () => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.listTakeovers()
+            if (isBrowserProduct()) return getBrowserAgentdClient().listAutonomyTakeovers()
+            return []
+        },
         listUnresolvedOutbound: async () => {
             if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.listUnresolvedOutbound()
             if (!isBrowserProduct()) return []
@@ -660,7 +672,11 @@ export const electron = {
             if (isBrowserProduct()) return getBrowserAgentdClient().reviewDecision(inboundId, label as 'correct' | 'incorrect' | 'unnecessary_escalation' | 'missed_escalation', notes)
             return null
         },
-        recordConversationOutcome: async (jid: string, revision: number, outcome: string, evidence: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.recordConversationOutcome(jid, revision, outcome, evidence) : null,
+        recordConversationOutcome: async (jid: string, revision: number, outcome: string, evidence: string) => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.recordConversationOutcome(jid, revision, outcome, evidence)
+            if (isBrowserProduct()) return getBrowserAgentdClient().recordConversationOutcome(jid, revision, outcome as 'resolved_agent' | 'resolved_human' | 'escalated' | 'closed_unresolved' | 'open', evidence)
+            return null
+        },
         listDrafts: async () => {
             if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.listDrafts()
             if (!isBrowserProduct()) return []

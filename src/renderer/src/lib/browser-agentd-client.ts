@@ -712,6 +712,14 @@ export interface BrowserAutonomyNotification {
   createdAt: number
 }
 
+export interface BrowserAutonomyTakeover {
+  jid: string
+  source: string
+  startedAt: number
+  revision: number
+  outcome?: 'resolved_agent' | 'resolved_human' | 'escalated' | 'closed_unresolved' | 'open'
+}
+
 export interface BrowserContinuityStatus {
   version: 1
   runtime: 'agentd'
@@ -867,6 +875,10 @@ export interface BrowserAgentdClient extends ChatClient {
   reviewDecision(inboundId: string, label: BrowserDecisionReviewLabel, notes?: string): Promise<{ reviewed: boolean; inboundId: string; label: BrowserDecisionReviewLabel }>
   listAutonomyNotifications(limit?: number): Promise<BrowserAutonomyNotification[]>
   ackAutonomyNotification(id: number): Promise<{ acknowledged: boolean }>
+  listAutonomyTakeovers(): Promise<BrowserAutonomyTakeover[]>
+  pauseConversation(jid: string): Promise<BrowserAutonomyTakeover>
+  resumeConversation(jid: string): Promise<BrowserAutonomyTakeover>
+  recordConversationOutcome(jid: string, revision: number, outcome: BrowserAutonomyTakeover['outcome'], evidence: string): Promise<{ conversationId: string; revision: number; outcome: NonNullable<BrowserAutonomyTakeover['outcome']>; recordedAt: number }>
   sendApprovedTemplate(inboundId: string, name: string, languageCode: string, parameters?: string[]): Promise<BrowserDraftSendResult>
   listApprovedTemplates(): Promise<BrowserApprovedTemplate[]>
   registerApprovedTemplate(template: BrowserApprovedTemplate): Promise<BrowserApprovedTemplate[]>
@@ -1590,6 +1602,40 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     if (!isRecord(value) || typeof value.acknowledged !== 'boolean') throw new Error('Invalid agentd autonomy notification acknowledgement response')
     return { acknowledged: value.acknowledged }
   }
+  const readAutonomyTakeover = (value: unknown): BrowserAutonomyTakeover => {
+    if (!isRecord(value)
+      || typeof value.jid !== 'string' || !value.jid || value.jid.length > 512 || /[\u0000\r\n/]/.test(value.jid)
+      || typeof value.source !== 'string' || !value.source || value.source.length > 64
+      || !Number.isSafeInteger(value.startedAt) || (value.startedAt as number) < 0
+      || !Number.isSafeInteger(value.revision) || (value.revision as number) < 0
+      || (value.outcome !== undefined && !['resolved_agent', 'resolved_human', 'escalated', 'closed_unresolved', 'open'].includes(value.outcome as string))) throw new Error('Invalid agentd autonomy takeover response')
+    return {
+      jid: value.jid,
+      source: value.source,
+      startedAt: value.startedAt as number,
+      revision: value.revision as number,
+      ...(value.outcome ? { outcome: value.outcome as NonNullable<BrowserAutonomyTakeover['outcome']> } : {}),
+    }
+  }
+  const listAutonomyTakeovers = async (): Promise<BrowserAutonomyTakeover[]> => {
+    const value = await request<unknown>('/api/v1/autonomy/takeovers')
+    if (!isRecord(value) || !Array.isArray(value.takeovers)) throw new Error('Invalid agentd autonomy takeover list response')
+    return value.takeovers.map(readAutonomyTakeover)
+  }
+  const conversationControl = async (jid: string, action: 'pause' | 'resume'): Promise<BrowserAutonomyTakeover> => {
+    if (typeof jid !== 'string' || !jid || jid.length > 512 || /[\u0000\r\n/]/.test(jid)) throw new Error('Invalid conversation ID')
+    const value = await request<unknown>(`/api/v1/autonomy/conversations/${encodeURIComponent(jid)}/${action}`, { method: 'POST', body: '{}' }, true)
+    if (!isRecord(value) || value.conversationId !== jid || typeof value.active !== 'boolean' || typeof value.source !== 'string' || !Number.isSafeInteger(value.revision) || !Number.isSafeInteger(value.startedAt)) throw new Error('Invalid agentd conversation control response')
+    return { jid: value.conversationId, source: value.source, startedAt: value.startedAt as number, revision: value.revision as number, ...(typeof value.outcome === 'string' ? { outcome: value.outcome as NonNullable<BrowserAutonomyTakeover['outcome']> } : {}) }
+  }
+  const pauseConversation = async (jid: string): Promise<BrowserAutonomyTakeover> => conversationControl(jid, 'pause')
+  const resumeConversation = async (jid: string): Promise<BrowserAutonomyTakeover> => conversationControl(jid, 'resume')
+  const recordConversationOutcome = async (jid: string, revision: number, outcome: BrowserAutonomyTakeover['outcome'], evidence: string) => {
+    if (typeof jid !== 'string' || !jid || jid.length > 512 || /[\u0000\r\n/]/.test(jid) || !Number.isSafeInteger(revision) || revision < 0 || !outcome || !['resolved_agent', 'resolved_human', 'escalated', 'closed_unresolved', 'open'].includes(outcome) || typeof evidence !== 'string' || evidence.trim().length < 1 || evidence.length > 2000) throw new Error('Invalid conversation outcome')
+    const value = await request<unknown>(`/api/v1/autonomy/conversations/${encodeURIComponent(jid)}/outcome`, { method: 'POST', body: JSON.stringify({ revision, outcome, evidence }) }, true)
+    if (!isRecord(value) || value.conversationId !== jid || !Number.isSafeInteger(value.revision) || (value.revision as number) < 1 || value.outcome !== outcome || !Number.isSafeInteger(value.recordedAt)) throw new Error('Invalid agentd conversation outcome response')
+    return { conversationId: jid, revision: value.revision as number, outcome, recordedAt: value.recordedAt as number }
+  }
   const readApprovedTemplate = (value: unknown): BrowserApprovedTemplate => {
     if (!isRecord(value)
       || typeof value.name !== 'string' || !/^[a-zA-Z0-9_.-]{1,100}$/.test(value.name)
@@ -1779,6 +1825,10 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     reviewDecision,
     listAutonomyNotifications,
     ackAutonomyNotification,
+    listAutonomyTakeovers,
+    pauseConversation,
+    resumeConversation,
+    recordConversationOutcome,
     sendApprovedTemplate,
     listApprovedTemplates,
     registerApprovedTemplate,
