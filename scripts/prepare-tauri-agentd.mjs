@@ -47,6 +47,7 @@ await cp(join(projectRoot, 'agentd', 'email-attachment-safety.cjs'), join(stageR
 await cp(join(projectRoot, 'agentd', 'email-transport.cjs'), join(stageRoot, 'email-transport.cjs'))
 await cp(join(projectRoot, 'agentd', 'email-inbound-worker.cjs'), join(stageRoot, 'email-inbound-worker.cjs'))
 await cp(join(projectRoot, 'agentd', 'mcp-worker.cjs'), join(stageRoot, 'mcp-worker.cjs'))
+await cp(join(projectRoot, 'agentd', 'speech-model.cjs'), join(stageRoot, 'speech-model.cjs'))
 await cp(join(projectRoot, 'package.json'), join(stageRoot, 'package.json'))
 await cp(join(projectRoot, 'scripts', 'tauri-agentd-runner.cjs'), join(stageRoot, 'index.cjs'))
 

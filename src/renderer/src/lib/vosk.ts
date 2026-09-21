@@ -7,6 +7,7 @@ interface VoskServiceState {
     isReady: boolean
     isLoading: boolean
     error: string | null
+    ownsCurrentModelUrl: boolean
 }
 
 class VoskService {
@@ -17,7 +18,8 @@ class VoskService {
         currentModelUrl: null,
         isReady: false,
         isLoading: false,
-        error: null
+        error: null,
+        ownsCurrentModelUrl: false,
     }
 
     // Config
@@ -30,6 +32,18 @@ class VoskService {
             VoskService.instance = new VoskService()
         }
         return VoskService.instance
+    }
+
+    async loadModelFromBlob(blob: Blob): Promise<void> {
+        if (typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') throw new Error('Blob URLs are not supported in this browser')
+        const modelUrl = URL.createObjectURL(blob)
+        try {
+            await this.loadModel(modelUrl)
+            this.state.ownsCurrentModelUrl = true
+        } catch (error) {
+            URL.revokeObjectURL(modelUrl)
+            throw error
+        }
     }
 
     async loadModel(modelUrl: string): Promise<void> {
@@ -64,6 +78,7 @@ class VoskService {
             this.state.error = String(error)
             this.state.isLoading = false
             this.state.currentModelUrl = null
+            this.state.ownsCurrentModelUrl = false
             throw error
         }
     }
@@ -91,7 +106,9 @@ class VoskService {
             this.state.model.terminate()
             this.state.model = null
         }
+        if (this.state.ownsCurrentModelUrl && this.state.currentModelUrl && typeof URL !== 'undefined') URL.revokeObjectURL(this.state.currentModelUrl)
         this.state.currentModelUrl = null
+        this.state.ownsCurrentModelUrl = false
         this.state.isReady = false
     }
 

@@ -36,7 +36,7 @@
   <figure><img src="assets/windows-guide-email-settings.png" alt="AICA Email Channel settings"><figcaption>Email setup keeps credentials write-only through agentd.</figcaption></figure>
 
   <h2>5. Post-setup behavior</h2>
-  <ul><li>Browser actions call authenticated local agentd APIs.</li><li>Agentd persists sessions, drafts, queues, recovery state, notifications, and delivery history.</li><li>Draft approval gates outbound sends.</li><li>Tauri handles only native seams: lifecycle, tray, OS credentials, folder reveal, diagnostics, and future native speech.</li><li>Gmail IDs and SMTP RFC Message-IDs provide correlation, not final-delivery proof.</li></ul>
+  <ul><li>Browser actions call authenticated local agentd APIs.</li><li>Agentd persists sessions, drafts, queues, recovery state, notifications, and delivery history.</li><li>Draft approval gates outbound sends.</li><li>Tauri handles only native seams: lifecycle, tray, OS credentials, folder reveal, and diagnostics. Browser offline speech uses the authenticated agentd/Vosk path.</li><li>Gmail IDs and SMTP RFC Message-IDs provide correlation, not final-delivery proof.</li></ul>
 
   <h2>6. Restart and troubleshoot</h2>
   <ol><li>Restart the native companion and open the new workspace URL it reports.</li><li>Pair again only when the session expired.</li><li>For “Local service unavailable,” start the companion and refresh.</li><li>For revoked credentials, use native reauthentication or provider sign-in.</li></ol>

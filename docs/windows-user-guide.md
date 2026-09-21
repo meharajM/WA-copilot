@@ -70,7 +70,7 @@ Configure these from the corresponding Settings pages. The browser sends mutatio
 - Draft Mode creates reviewable drafts. Approval is required before outbound delivery.
 - Autonomy controls expose durable queue, recovery, notification, evidence, and delivery history.
 - Gmail history retains provider IDs. SMTP history retains RFC `Message-ID` correlation handles. Neither is proof of final mailbox delivery; provider bounce/webhook parity remains pending.
-- Tauri is used only for native seams: startup, tray/lifecycle, OS credential storage, folder reveal, diagnostics, and future native speech.
+- Tauri is used only for native seams: startup, tray/lifecycle, OS credential storage, folder reveal, and diagnostics. Browser offline speech uses the authenticated agentd/Vosk path; the native companion does not render the product workspace.
 
 ## 7. Restart, upgrade, and recovery
 
@@ -94,6 +94,6 @@ Use **Settings → System Info** to confirm runtime, platform, engine, and depen
 
 ## Build status
 
-The browser bundle was built locally with `npm run build:tauri:web`. Local verification passed: typecheck, lint with existing warnings, 346 Vitest unit tests, focused browser-extension DOM/bridge tests, 196 integration tests with 8 skips, Tauri web build, 20 Rust tests, and diff checks. Current-head Windows package/full workflows also pass the native packaging and unsigned installer smoke; signing and real-profile upgrade continuity remain release gates.
+The browser bundle was built locally with `npm run build:tauri:web`. Local verification passed: typecheck, lint with existing warnings, 348 Vitest unit tests, focused browser-extension DOM/bridge tests, 196 integration tests with 8 skips, Tauri web build, 20 Rust tests, and diff checks. Current-head Windows package/full workflows also pass the native packaging and unsigned installer smoke; signing and real-profile upgrade continuity remain release gates.
 
 `npm run build:tauri:win` was attempted on macOS arm64. Frontend compilation passed, then the repository's cross-target guard stopped before packaging because Windows keyring/migration sidecars require a Windows toolchain. The public Windows packaging workflow then produced and verified unsigned NSIS/MSI artifacts; release signing is still required for distribution.

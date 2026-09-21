@@ -17,6 +17,7 @@ const { sendTextEmail } = require('./email-transport.cjs')
 const { EmailInboundWorker, pollMailbox } = require('./email-inbound-worker.cjs')
 const { MAX_SCANNED_EMAIL_ATTACHMENT_BYTES, scanEmailAttachment } = require('./email-attachment-safety.cjs')
 const { McpWorker, MCP_LIFECYCLE } = require('./mcp-worker.cjs')
+const { SpeechModelStore } = require('./speech-model.cjs')
 
 const SESSION_TTL_MS = 15 * 60 * 1000
 const PAIRING_TTL_MS = 5 * 60 * 1000
@@ -522,7 +523,7 @@ function whatsappInactivityProviderEventId(sessionId, messageId) {
 }
 
 class AgentdServer {
-  constructor({ dataDir, secret, uiRoot = null, logger = console, pairingCode = null, credentials = null, providerFetch = fetch, emailProbe = probeEmailTransport, emailSend = sendTextEmail, emailPoll = undefined, gmailPoll: configuredGmailPoll = undefined, whatsappService = null, whatsappExtensionBridge = null, mcpWorker = null } = {}) {
+  constructor({ dataDir, secret, uiRoot = null, logger = console, pairingCode = null, credentials = null, providerFetch = fetch, speechFetch = fetch, speechModelStore = null, emailProbe = probeEmailTransport, emailSend = sendTextEmail, emailPoll = undefined, gmailPoll: configuredGmailPoll = undefined, whatsappService = null, whatsappExtensionBridge = null, mcpWorker = null } = {}) {
     if (!secret || typeof secret !== 'string' || secret.length < 32) throw new Error('A per-install bearer secret of at least 32 characters is required')
     this.dataDir = resolveDataDir(dataDir)
     this.whatsappMediaDir = path.join(this.dataDir, 'whatsapp-media')
@@ -532,6 +533,7 @@ class AgentdServer {
     this.logger = logger
     this.credentials = credentials
     this.providerFetch = providerFetch
+    this.speechModels = speechModelStore || new SpeechModelStore(this.dataDir, { fetchImpl: speechFetch })
     this.emailProbe = emailProbe
     this.emailSend = emailSend
     this.emailPoll = emailPoll
@@ -1299,6 +1301,10 @@ class AgentdServer {
     }
     const credentialMatch = /^\/api\/v1\/credentials\/([^/]+)$/.exec(url.pathname)
     if (credentialMatch && ['GET', 'POST', 'DELETE'].includes(req.method)) return this.credential(req, res, credentialMatch[1])
+    const speechModelMatch = /^\/api\/v1\/speech\/models\/([A-Za-z0-9-]+)(?:\/(prepare|status))?$/.exec(url.pathname)
+    if (speechModelMatch && ((speechModelMatch[2] === 'prepare' && req.method === 'POST') || (speechModelMatch[2] === 'status' && req.method === 'GET') || (!speechModelMatch[2] && req.method === 'GET'))) {
+      return this.speechModel(req, res, speechModelMatch[1], speechModelMatch[2] || 'archive')
+    }
     if (url.pathname === '/api/v1/settings/llm' && ['GET', 'PUT'].includes(req.method)) return this.llmSettings(req, res)
     if (url.pathname === '/api/v1/settings/persona' && ['GET', 'PUT'].includes(req.method)) return this.personaSettings(req, res)
     if (url.pathname === '/api/v1/settings/preferences' && ['GET', 'PUT'].includes(req.method)) return this.productPreferences(req, res)
@@ -1459,6 +1465,29 @@ class AgentdServer {
     }
     if (this.uiRoot && req.method === 'GET' && !url.pathname.startsWith('/api/')) return this.serveUi(url.pathname, res)
     return json(res, 404, { error: 'Not found' })
+  }
+
+  async speechModel(req, res, modelId, action) {
+    this.authorize(req, { mutation: action === 'prepare' })
+    try {
+      if (action === 'status') return json(res, 200, await this.speechModels.status(modelId))
+      const model = await this.speechModels.ensure(modelId)
+      if (action === 'prepare') return json(res, 200, { modelId: model.id, locale: model.locale, name: model.name, size: model.size })
+      const stat = fs.lstatSync(model.path)
+      if (!stat.isFile() || stat.size !== model.size) return json(res, 503, { error: 'Speech model is unavailable' })
+      res.writeHead(200, {
+        'content-type': 'application/zip',
+        'content-length': String(stat.size),
+        'cache-control': 'private, no-store',
+        'x-content-digest': `sha-256=${model.sha256}`,
+      })
+      const stream = fs.createReadStream(model.path)
+      stream.on('error', () => res.destroy())
+      stream.pipe(res)
+    } catch (error) {
+      const status = Number.isSafeInteger(error?.statusCode) ? error.statusCode : 503
+      return json(res, status, { error: error instanceof Error ? error.message : 'Speech model unavailable' })
+    }
   }
 
   async credential(req, res, encodedKey) {

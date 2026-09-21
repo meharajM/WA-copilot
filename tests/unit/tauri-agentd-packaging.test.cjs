@@ -49,6 +49,7 @@ test('Windows sidecar preparation preserves executable extensions', () => {
   assert.match(preparation, /email-transport\.cjs/)
   assert.match(preparation, /email-inbound-worker\.cjs/)
   assert.match(preparation, /mcp-worker\.cjs/)
+  assert.match(preparation, /speech-model\.cjs/)
   assert.match(preparation, /@whiskeysockets\/baileys/)
   assert.match(preparation, /@modelcontextprotocol\/sdk/)
   assert.match(preparation, /optionalDependencies/)

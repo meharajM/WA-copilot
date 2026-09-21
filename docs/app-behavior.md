@@ -161,18 +161,19 @@ Pass evidence:
 - In Electron, offline/native Vosk speech remains the default path and keeps its
   model-download/setup flow.
 - In the browser product (including Windows Edge/Chrome), voice input uses the
-  browser Web Speech API when `SpeechRecognition` or
-  `webkitSpeechRecognition` is available. Browser speech is browser/provider-
-  controlled and may require network access; it does not download or execute
-  Vosk models in the browser.
+  browser Web Speech API by default. When the user enables offline speech—or
+  the browser has no Web Speech API—the authenticated agentd speech route
+  downloads an approved, SHA-256-pinned Vosk archive into its private cache;
+  the browser loads that archive as a Blob URL and runs Vosk locally. If the
+  local model cannot be prepared and Web Speech exists, the hook falls back to
+  Web Speech with a visible notice.
 - Browser voice starts only after the user presses the microphone control, so
   microphone permission is not requested at page load. A browser that does not
   expose Web Speech API keeps the microphone control disabled and remains fully
   usable for text input. Permission, missing-device, unsupported-language and
   speech-service errors show actionable text instead of silently retrying.
-- The browser path does not open a second `getUserMedia` stream for a level
-  meter; the Web Speech API owns microphone capture. Native Vosk visualization
-  remains unchanged in Electron.
+- The browser Vosk path owns one `getUserMedia` stream for recognition and the
+  level meter. Native Vosk visualization remains unchanged in Electron.
 - Agent execution writes user messages immediately, then streams assistant/tool progress into the owning session.
 - In the browser product, assistant text arrives through authenticated `agentd` SSE events. Canceling a generation aborts daemon/provider work, leaves no partial assistant message, and allows retry with the same request id; cancellation is not shown as an error message.
 - Background memory reflection runs asynchronously after submission.
