@@ -4,7 +4,7 @@ Date: September 9, 2026
 
 Cost and architecture rationale reviewed: September 13, 2026. See sections 2 and 10 for alternatives, operating assumptions and pricing sources.
 
-Status: Selected target architecture. The current branch implements a bounded single-business desktop pilot; this document is not evidence that its deferred hosted, live-provider, legal, or operational gates are complete.
+Status: Selected target architecture. As of 2026-09-22, the current branch implements the Windows-first browser/`agentd` migration slices and a bounded authenticated WhatsApp Web text/media command bridge. This document is not evidence that deferred hosted, live-provider, legal, hardware, or operational gates are complete.
 
 Decision: Make `agentd`, an independently managed plain Node service, the authoritative local runtime. The supported product UI is the existing React console in the user's Windows browser (Edge/Chrome) over an authenticated loopback API. Tauri is a lightweight native companion for OS-only capabilities; it does not render the product workspace or own business workflows. Electron remains an optional transition client until browser + `agentd` feature and data parity are proven. This supersedes the earlier browser-only/Tauri-deferred and Tauri-desktop-first wording without changing `agentd` ownership, safety model or backend-first extraction order. Keep LangGraph, RAG and channel workflows; extract lifecycle and a typed API before changing workflows.
 
@@ -48,7 +48,7 @@ V1 targets a single-business, single-owner installation. `agentd` owns SQLite, c
 
 Run `agentd` independently under the OS user-service manager and expose a versioned, typed API plus browser console on IPv4 loopback. Publish its ephemeral origin through a private owner-readable runtime descriptor containing no credentials. The browser uses pairing/session/CSRF controls below; Tauri uses narrow native commands only, including an explicit owner-triggered pairing-code reveal for the browser handoff. Extract and harden service lifecycle, API and host dependencies first; prove a restart-safe draft-only WhatsApp path through a minimal authenticated browser client before migrating additional workflows.
 
-Current product behavior remains Electron-backed: `src/main/index.ts` initializes autonomous services in `app.whenReady()` and stops them in `before-quit`. The current branch mounts `App.tsx` in a normal browser page only after local `agentd` pairing; the first authenticated browser adapter covers chat persistence/generation and WhatsApp cloud settings/credential presence. Workflow parity is not complete. Tauri remains a native-boundary diagnostics surface only. The independently supervised product daemon and browser integration are not yet complete; the public relay below is also a required implementation gate, not a shipped feature.
+Historical baseline (superseded): `src/main/index.ts` initialized autonomous services in `app.whenReady()` and stopped them in `before-quit`, while the first browser adapter covered only chat persistence/generation and WhatsApp cloud settings. The current branch now mounts the product workspace in Edge/Chrome after local `agentd` pairing, with the daemon owning the authenticated browser routes, durable state, speech delivery and bounded Web-extension text/media command path. Electron remains the transition client until the explicit parity, Windows release, hardware and live-provider gates below are evidenced; the public relay is still a required hosted-operation gate, not a shipped feature.
 
 ### Runtime and client trust boundaries
 
@@ -82,7 +82,7 @@ Customer-owned Meta, Instagram, Messenger, WhatsApp and X accounts must use the 
 
 - Autonomous ad creation, spend changes, audience changes, public posting, and bulk outreach.
 - Automatic cross-channel customer identity matching from names or model guesses.
-- WhatsApp Web autonomous outbound automation; the repository includes an optional restricted browser-extension connector with bounded inbound text and owner-chat explicit text command/ack, while live session/provider validation, media and autonomous outbound control remain deferred.
+- WhatsApp Web autonomous outbound automation; the repository includes an optional restricted browser-extension connector with bounded inbound text plus owner-chat explicit text/media command/ack, while live session/provider validation and unattended/autonomous outbound control remain deferred.
 - A mandatory Chatwoot deployment, mandatory LangSmith subscription, vector database, or distributed queue.
 - Multi-tenant hosted SaaS in the first deployment. Include business/account IDs in contracts now, but do not claim tenant isolation is proven until tested.
 
