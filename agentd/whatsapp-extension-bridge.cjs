@@ -5,7 +5,9 @@ const MAX_BODY_BYTES = 256 * 1024
 const DEFAULT_PORT = 8790
 const MIN_TOKEN_LENGTH = 16
 const MAX_OUTBOUND_TEXT_LENGTH = 32 * 1024
+const MAX_OUTBOUND_MEDIA_BYTES = 8 * 1024 * 1024
 const OUTBOUND_TIMEOUT_MS = 75_000
+const MEDIA_TYPES = new Set(['image', 'video', 'audio', 'document'])
 
 function configuredPort() {
   const port = Number(process.env.AICA_EXTENSION_BRIDGE_PORT)
@@ -85,11 +87,31 @@ class WhatsAppExtensionBridge {
   async enqueueOutbound(value) {
     const to = typeof value?.to === 'string' ? value.to.trim() : ''
     const text = typeof value?.text === 'string' ? value.text.trim() : ''
-    if (!to || to.length > 256 || /[\0\r\n]/.test(to) || !text || text.length > MAX_OUTBOUND_TEXT_LENGTH) {
+    const kind = value?.kind === 'media' ? 'media' : 'text'
+    const media = value?.media && typeof value.media === 'object' && !Array.isArray(value.media) ? value.media : null
+    const mediaType = media && typeof media.type === 'string' ? media.type : ''
+    const mediaName = media && typeof media.fileName === 'string' ? media.fileName.trim() : ''
+    const mediaMime = media && typeof media.mimeType === 'string' ? media.mimeType.trim().toLowerCase() : ''
+    const mediaSize = media && Number.isSafeInteger(media.size) ? media.size : 0
+    const mediaData = media && typeof media.dataBase64 === 'string' ? media.dataBase64 : ''
+    const validMedia = kind === 'media'
+      && MEDIA_TYPES.has(mediaType)
+      && !!mediaName && mediaName.length <= 256 && !/[\0\r\n\\/]/.test(mediaName)
+      && !!mediaMime && mediaMime.length <= 128 && !/[\0\r\n]/.test(mediaMime)
+      && mediaSize > 0 && mediaSize <= MAX_OUTBOUND_MEDIA_BYTES
+      && mediaData.length > 0 && mediaData.length <= Math.ceil(MAX_OUTBOUND_MEDIA_BYTES * 4 / 3) + 64
+      && mediaData.length % 4 !== 1 && /^[A-Za-z0-9+/]*={0,2}$/.test(mediaData)
+    if (!to || to.length > 256 || /[\0\r\n]/.test(to)
+      || (kind === 'text' && (!text || text.length > MAX_OUTBOUND_TEXT_LENGTH))
+      || (kind === 'media' && (!validMedia || Buffer.from(mediaData, 'base64').length !== mediaSize))) {
       throw Object.assign(new Error('Invalid WhatsApp Web message'), { statusCode: 400 })
     }
     let allowed = false
-    try { allowed = this.allowOutbound({ to, text }) } catch { allowed = false }
+    try {
+      allowed = this.allowOutbound(kind === 'media'
+        ? { kind, to, media: { type: mediaType, fileName: mediaName, mimeType: mediaMime, size: mediaSize, caption: typeof media?.caption === 'string' ? media.caption.slice(0, MAX_OUTBOUND_TEXT_LENGTH) : '' } }
+        : { kind, to, text })
+    } catch { allowed = false }
     if (!allowed) throw Object.assign(new Error('WhatsApp Web outbound transport is not enabled'), { statusCode: 409 })
     if (!this.server || this.state.status !== 'connected') throw Object.assign(new Error('WhatsApp Web extension is not connected'), { statusCode: 409 })
     const id = `web-send:${crypto.randomUUID()}`
@@ -99,7 +121,26 @@ class WhatsAppExtensionBridge {
         reject(Object.assign(new Error('WhatsApp Web send timed out; keep the chat open and retry'), { statusCode: 504 }))
       }, OUTBOUND_TIMEOUT_MS)
       timer.unref?.()
-      this.outbound.set(id, { id, to, text, createdAt: Date.now(), claimed: false, timer, resolve, reject })
+      this.outbound.set(id, {
+        id,
+        to,
+        ...(kind === 'media' ? {
+          kind,
+          media: {
+            type: mediaType,
+            fileName: mediaName,
+            mimeType: mediaMime,
+            size: mediaSize,
+            dataBase64: mediaData,
+            caption: typeof media.caption === 'string' ? media.caption.slice(0, MAX_OUTBOUND_TEXT_LENGTH) : '',
+          },
+        } : { text }),
+        createdAt: Date.now(),
+        claimed: false,
+        timer,
+        resolve,
+        reject,
+      })
     })
   }
 
@@ -109,7 +150,12 @@ class WhatsAppExtensionBridge {
     for (const command of this.outbound.values()) {
       if (!command.claimed && command.to === target) {
         command.claimed = true
-        return { id: command.id, to: command.to, text: command.text, createdAt: command.createdAt }
+        return {
+          id: command.id,
+          to: command.to,
+          ...(command.kind === 'media' ? { kind: command.kind, media: command.media } : { text: command.text }),
+          createdAt: command.createdAt,
+        }
       }
     }
     return null

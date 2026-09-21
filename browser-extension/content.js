@@ -30,11 +30,18 @@ function composer() {
     || document.querySelector('[contenteditable="true"][data-tab]')
 }
 
+function mediaInput() {
+  const inputs = [...document.querySelectorAll('input[type="file"]')]
+  return inputs.find(input => input && (input.offsetParent !== null || input.getClientRects?.().length)) || inputs[0] || null
+}
+
 function wait(milliseconds) { return new Promise(resolve => setTimeout(resolve, milliseconds)) }
 
 async function sendOutbound(command) {
-  if (!command || typeof command.id !== 'string' || typeof command.to !== 'string' || typeof command.text !== 'string') return { success: false, error: 'invalid_command' }
+  if (!command || typeof command.id !== 'string' || typeof command.to !== 'string') return { success: false, error: 'invalid_command' }
   if (!activeChatMatches(command.to)) return { success: false, error: 'active_chat_mismatch' }
+  if (command.kind === 'media') return sendMediaOutbound(command)
+  if (typeof command.text !== 'string') return { success: false, error: 'invalid_command' }
   const input = composer()
   if (!input) return { success: false, error: 'message_composer_unavailable' }
   input.focus()
@@ -47,6 +54,38 @@ async function sendOutbound(command) {
   input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }))
   await wait(250)
   if ((input.innerText || input.textContent || '').trim()) return { success: false, error: 'message_composer_did_not_clear' }
+  return { success: true, providerMessageId: `web:${command.id}` }
+}
+
+async function sendMediaOutbound(command) {
+  const media = command.media
+  if (!media || !['image', 'video', 'audio', 'document'].includes(media.type)
+    || typeof media.fileName !== 'string' || typeof media.mimeType !== 'string'
+    || !Number.isSafeInteger(media.size) || media.size < 1
+    || typeof media.dataBase64 !== 'string' || !media.dataBase64
+    || media.dataBase64.length % 4 === 1 || !/^[A-Za-z0-9+/]*={0,2}$/.test(media.dataBase64)) {
+    return { success: false, error: 'invalid_media_command' }
+  }
+  const input = mediaInput()
+  if (!input) return { success: false, error: 'media_input_unavailable' }
+  let bytes
+  try {
+    const binary = atob(media.dataBase64)
+    bytes = Uint8Array.from(binary, character => character.charCodeAt(0))
+  } catch {
+    return { success: false, error: 'invalid_media_encoding' }
+  }
+  if (bytes.length !== media.size) return { success: false, error: 'media_size_mismatch' }
+  try {
+    const file = new File([bytes], media.fileName, { type: media.mimeType })
+    const transfer = new DataTransfer()
+    transfer.items.add(file)
+    input.files = transfer.files
+    input.dispatchEvent(new Event('change', { bubbles: true }))
+  } catch {
+    return { success: false, error: 'media_input_rejected' }
+  }
+  await wait(500)
   return { success: true, providerMessageId: `web:${command.id}` }
 }
 

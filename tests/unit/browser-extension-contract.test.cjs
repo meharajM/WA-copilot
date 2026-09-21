@@ -19,5 +19,7 @@ test('WhatsApp Web extension outbound contract is syntax-valid and fail-closed b
   assert.doesNotMatch(background, /settings\.port/)
   assert.match(content, /activeChatMatches/)
   assert.match(content, /message_composer_unavailable/)
+  assert.match(content, /media_input_unavailable/)
+  assert.match(content, /input\[type="file"\]/)
   assert.deepEqual(manifest.host_permissions, ['https://web.whatsapp.com/*', 'http://127.0.0.1:8790/*'])
 })

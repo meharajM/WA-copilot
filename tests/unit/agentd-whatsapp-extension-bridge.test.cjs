@@ -71,6 +71,33 @@ test('agentd extension bridge queues outbound text only for the configured chat 
   }
 })
 
+test('agentd extension bridge queues bounded outbound media commands', async () => {
+  const token = 'extension-token-media'
+  const bridge = new WhatsAppExtensionBridge({ token, port: 19_900 + Math.floor(Math.random() * 400), allowOutbound: () => true })
+  try {
+    assert.equal((await bridge.start()).status, 'connected')
+    const pending = bridge.enqueueOutbound({
+      kind: 'media',
+      to: 'chat-1',
+      media: { type: 'image', fileName: 'photo.png', mimeType: 'image/png', size: 5, dataBase64: 'aGVsbG8=', caption: 'photo' },
+    })
+    const port = bridge.getState().port
+    const command = (await request(port, 'GET', '/outbound?chatId=chat-1', undefined, token)).body.command
+    assert.deepEqual(command, {
+      id: command.id,
+      to: 'chat-1',
+      kind: 'media',
+      media: { type: 'image', fileName: 'photo.png', mimeType: 'image/png', size: 5, dataBase64: 'aGVsbG8=', caption: 'photo' },
+      createdAt: command.createdAt,
+    })
+    const result = await request(port, 'POST', '/outbound/result', { id: command.id, success: true }, token)
+    assert.deepEqual(result.body, { accepted: true, id: command.id })
+    assert.deepEqual(await pending, { providerMessageId: `web:${command.id}` })
+  } finally {
+    await bridge.stop()
+  }
+})
+
 test('agentd owns browser WhatsApp Web ingress only when Web transport and channel are enabled', async () => {
   const dataDir = makeTempDir('aica-agentd-whatsapp-extension-')
   const token = 'extension-token-5678'
@@ -138,6 +165,46 @@ test('agentd routes explicitly enabled Web text sends through the authenticated 
     assert.deepEqual(calls, [{ to: 'chat-1', text: 'hello from browser' }])
     assert.equal((await api('PUT', '/api/v1/settings/whatsapp-ui', { whatsappEnabled: false, businessBotMode: false, targetPhoneNumber: null })).status, 200)
     assert.equal((await api('POST', '/api/v1/whatsapp/messages', { to: 'chat-1', text: 'blocked' })).status, 409)
+  } finally {
+    await server.stop()
+    fs.rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('agentd routes explicitly enabled Web media sends through the authenticated extension bridge', async () => {
+  const dataDir = makeTempDir('aica-agentd-whatsapp-extension-media-')
+  const calls = []
+  const extensionBridge = {
+    async start() { return { status: 'connected', port: 8790, lastStatus: null, error: null, outboundPending: 0 } },
+    async stop() {},
+    getState() { return { status: 'connected', port: 8790, lastStatus: 'connected', error: null, outboundPending: 0 } },
+    async enqueueOutbound(message) { calls.push(message); return { providerMessageId: 'web-media:fixture' } },
+  }
+  const fakeService = {
+    configureStateAccessors() {},
+    async initialize() {},
+    async disconnect() {},
+    getState: () => ({ status: 'disconnected', qrCode: null, error: null, phoneNumber: null, workerNumber: null, handshakeStatus: 'idle' }),
+  }
+  const server = new AgentdServer({ dataDir, secret: 'm'.repeat(32), whatsappService: fakeService, whatsappExtensionBridge: extensionBridge, logger: { log() {}, warn() {} } })
+  const { origin } = await server.start()
+  const port = Number(new URL(origin).port)
+  const auth = 'm'.repeat(32)
+  try {
+    const api = (method, pathname, body) => request(port, method, pathname, body, auth)
+    const settings = { whatsapp_transport: 'web', whatsapp_cloud_phone_number_id: '', whatsapp_cloud_api_version: 'v23.0' }
+    assert.equal((await api('PUT', '/api/v1/settings/whatsapp', settings)).status, 200)
+    assert.equal((await api('PUT', '/api/v1/settings/whatsapp-ui', { whatsappEnabled: true, businessBotMode: false, targetPhoneNumber: null })).status, 200)
+    const sent = await api('POST', '/api/v1/whatsapp/media', {
+      to: 'chat-1', type: 'image', fileName: 'photo.png', mimeType: 'image/png', size: 5, dataBase64: 'aGVsbG8=', caption: 'photo',
+    })
+    assert.deepEqual(sent.body, { success: true, providerMessageId: 'web-media:fixture' })
+    assert.equal(calls.length, 1)
+    assert.deepEqual(calls[0], {
+      kind: 'media',
+      to: 'chat-1',
+      media: { type: 'image', fileName: 'photo.png', mimeType: 'image/png', size: 5, dataBase64: 'aGVsbG8=', caption: 'photo' },
+    })
   } finally {
     await server.stop()
     fs.rmSync(dataDir, { recursive: true, force: true })

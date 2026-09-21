@@ -562,7 +562,9 @@ class AgentdServer {
     this.whatsappExtensionBridge = whatsappExtensionBridge || new WhatsAppExtensionBridge({
       logger,
       allowMessage: message => this.allowsWhatsAppExtensionMessage(message),
-      allowOutbound: message => this.allowsWhatsAppExtensionOutbound(message),
+      allowOutbound: message => message?.kind === 'media'
+        ? this.allowsWhatsAppExtensionMedia({ to: message.to, ...(message.media || {}) })
+        : this.allowsWhatsAppExtensionOutbound(message),
       onMessage: message => this.ingestWhatsAppExtensionMessage(message),
     })
     this.server = null
@@ -3629,7 +3631,27 @@ class AgentdServer {
     const settings = parseWhatsAppSettings(storedSettings) || WHATSAPP_SETTINGS_DEFAULTS
     if (settings.whatsapp_transport === 'baileys') return this.whatsappBaileys.sendMedia(to, media.bytes, media)
     if (settings.whatsapp_transport === 'cloud') return this.sendWhatsAppCloudMedia(to, media)
-    throw Object.assign(new Error('WhatsApp Web transport is not available in browser mode'), { statusCode: 409 })
+    if (settings.whatsapp_transport === 'web') {
+      if (!this.allowsWhatsAppExtensionMedia({ to, ...media })) {
+        throw Object.assign(new Error('WhatsApp Web media transport is not enabled'), { statusCode: 409 })
+      }
+      if (typeof this.whatsappExtensionBridge?.enqueueOutbound !== 'function') {
+        throw Object.assign(new Error('WhatsApp Web extension bridge is unavailable'), { statusCode: 503 })
+      }
+      return this.whatsappExtensionBridge.enqueueOutbound({
+        kind: 'media',
+        to,
+        media: {
+          type: media.type,
+          fileName: media.fileName,
+          mimeType: media.mimeType,
+          size: media.bytes.length,
+          dataBase64: media.bytes.toString('base64'),
+          caption: media.caption || '',
+        },
+      })
+    }
+    throw Object.assign(new Error('WhatsApp transport is not configured'), { statusCode: 409 })
   }
 
   async sendWhatsAppMessage(req, res) {
@@ -4402,6 +4424,21 @@ class AgentdServer {
     if (transport?.whatsapp_transport !== 'web' || ui?.whatsappEnabled !== true) return false
     if (message.to.length > 256 || /[\0\r\n]/.test(message.to) || message.text.length > MAX_DRAFT_TEXT_LENGTH) return false
     return true
+  }
+
+  allowsWhatsAppExtensionMedia(media) {
+    if (this.migrationHold || !media || typeof media.to !== 'string' || !media.to.trim()) return false
+    let transport = null
+    let ui = null
+    try { transport = parseWhatsAppSettings(JSON.parse(this.getState('whatsapp_settings', 'null'))) } catch {}
+    try { ui = parseWhatsAppUiSettings(JSON.parse(this.getState('whatsapp_ui_settings', 'null'))) } catch {}
+    if (transport?.whatsapp_transport !== 'web' || ui?.whatsappEnabled !== true) return false
+    if (media.to.length > 256 || /[\0\r\n]/.test(media.to)) return false
+    if (!['image', 'video', 'audio', 'document'].includes(media.type)) return false
+    if (typeof media.fileName !== 'string' || !media.fileName.trim() || media.fileName.length > 256 || /[\0\r\n\\/]/.test(media.fileName)) return false
+    if (typeof media.mimeType !== 'string' || !isSupportedMediaMime(media.type, media.mimeType)) return false
+    if (!Buffer.isBuffer(media.bytes) || media.bytes.length < 1 || media.bytes.length > MAX_WHATSAPP_MEDIA_BYTES) return false
+    return typeof media.caption === 'string' && media.caption.length <= MAX_DRAFT_TEXT_LENGTH
   }
 
   ingestWhatsAppExtensionMessage(message) {

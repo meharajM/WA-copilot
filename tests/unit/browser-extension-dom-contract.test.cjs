@@ -6,7 +6,7 @@ const test = require('node:test')
 
 const source = fs.readFileSync(path.resolve(__dirname, '../../browser-extension/content.js'), 'utf8')
 
-function loadContentScript({ chatLabel = '+1 (555) 010-0200', composerAvailable = true, clearOnEnter = true } = {}) {
+function loadContentScript({ chatLabel = '+1 (555) 010-0200', composerAvailable = true, mediaInputAvailable = false, clearOnEnter = true } = {}) {
   const events = []
   const input = {
     innerText: '',
@@ -18,6 +18,14 @@ function loadContentScript({ chatLabel = '+1 (555) 010-0200', composerAvailable 
         this.innerText = ''
         this.textContent = ''
       }
+      return true
+    },
+  }
+  const mediaInput = {
+    files: [],
+    offsetParent: {},
+    dispatchEvent(event) {
+      events.push(event)
       return true
     },
   }
@@ -35,6 +43,7 @@ function loadContentScript({ chatLabel = '+1 (555) 010-0200', composerAvailable 
     },
     querySelectorAll(selector) {
       if (selector === 'header [title]') return [header]
+      if (selector === 'input[type="file"]') return mediaInputAvailable ? [mediaInput] : []
       return []
     },
     execCommand(command, _showUi, text) {
@@ -58,6 +67,15 @@ function loadContentScript({ chatLabel = '+1 (555) 010-0200', composerAvailable 
     document,
     InputEvent: class InputEvent { constructor(type, init = {}) { this.type = type; Object.assign(this, init) } },
     KeyboardEvent: class KeyboardEvent { constructor(type, init = {}) { this.type = type; Object.assign(this, init) } },
+    Event: class Event { constructor(type, init = {}) { this.type = type; Object.assign(this, init) } },
+    File: class File { constructor(parts, name, options = {}) { this.parts = parts; this.name = name; this.type = options.type || '' } },
+    DataTransfer: class DataTransfer {
+      constructor() {
+        this.files = []
+        this.items = { add: file => { this.files.push(file) } }
+      }
+    },
+    atob(value) { return Buffer.from(value, 'base64').toString('binary') },
     MutationObserver: class MutationObserver { observe() {} disconnect() {} },
     setInterval() { return 1 },
     clearInterval() {},
@@ -108,4 +126,22 @@ test('WhatsApp Web content script does not acknowledge when the composer stays p
   const result = await send(context, { id: 'web-send:4', to: '+15550100200', text: 'not acknowledged' })
   assertResult(result, { success: false, error: 'message_composer_did_not_clear' })
   assert.equal(input.textContent, 'not acknowledged')
+})
+
+test('WhatsApp Web content script attaches bounded media through the visible file input', async () => {
+  const { context, events } = loadContentScript({ mediaInputAvailable: true })
+  const result = await send(context, {
+    id: 'web-media:1',
+    kind: 'media',
+    to: '+15550100200',
+    media: {
+      type: 'image',
+      fileName: 'photo.png',
+      mimeType: 'image/png',
+      size: 5,
+      dataBase64: 'aGVsbG8=',
+    },
+  })
+  assertResult(result, { success: true, providerMessageId: 'web:web-media:1' })
+  assert.ok(events.some(event => event.type === 'change'))
 })
