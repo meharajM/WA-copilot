@@ -548,7 +548,14 @@ class AgentdServer {
       onState: state => {
         if (this.db) this.setState('whatsapp_connection_state', JSON.stringify(state))
       },
-      onMessage: message => this.ingestWhatsAppServiceMessage(message),
+      // Keep provider ingress behind the same explicit UI gates as browser
+      // generation.  Without this boundary, a message received while both
+      // modes are off would remain queued and be processed when the user
+      // later enables a mode.
+      onMessage: message => {
+        if (!this.allowsWhatsAppServiceMessage()) return
+        this.ingestWhatsAppServiceMessage(message)
+      },
     })
     this.whatsappExtensionBridge = whatsappExtensionBridge || new WhatsAppExtensionBridge({
       logger,
@@ -4331,6 +4338,17 @@ class AgentdServer {
     } catch {
       if (wroteMedia) try { fs.unlinkSync(path.join(this.whatsappMediaDir, storedMedia.storageName)) } catch {}
     }
+  }
+
+  allowsWhatsAppServiceMessage() {
+    if (this.migrationHold) return false
+    let transport = null
+    let ui = null
+    try { transport = parseWhatsAppSettings(JSON.parse(this.getState('whatsapp_settings', 'null'))) } catch {}
+    try { ui = parseWhatsAppUiSettings(JSON.parse(this.getState('whatsapp_ui_settings', 'null'))) } catch {}
+    const selectedTransport = transport || WHATSAPP_SETTINGS_DEFAULTS
+    return selectedTransport.whatsapp_transport === 'baileys'
+      && (ui?.whatsappEnabled === true || ui?.businessBotMode === true)
   }
 
   allowsWhatsAppExtensionMessage(message) {

@@ -278,6 +278,43 @@ test('approved browser WhatsApp drafts use the selected Baileys outbox transport
   }
 })
 
+test('agentd Baileys provider ingress is dropped unless a WhatsApp mode is enabled', async () => {
+  const dataDir = makeTempDir('aica-agentd-whatsapp-ingress-gate-')
+  const server = new AgentdServer({ dataDir, secret: 'g'.repeat(32), logger: { log() {}, warn() {} } })
+  const message = (providerEventId, content = 'Inbound') => ({
+    providerEventId,
+    conversationId: '919888888888@s.whatsapp.net',
+    from: '919888888888',
+    to: '919999999999',
+    content,
+    type: 'text',
+    timestamp: Date.now(),
+    isFromMe: false,
+  })
+  const countInbound = () => server.db.prepare("SELECT COUNT(*) AS count FROM inbound_events WHERE channel = 'whatsapp'").get().count
+  try {
+    await server.start()
+    await server.whatsappBaileys.onMessage(message('baileys:off'))
+    assert.equal(countInbound(), 0)
+
+    server.setState('whatsapp_ui_settings', JSON.stringify({ whatsappEnabled: false, businessBotMode: true, targetPhoneNumber: null }))
+    await server.whatsappBaileys.onMessage(message('baileys:auto'))
+    assert.equal(countInbound(), 1)
+
+    server.setState('whatsapp_ui_settings', JSON.stringify({ whatsappEnabled: false, businessBotMode: false, targetPhoneNumber: null }))
+    await server.whatsappBaileys.onMessage(message('baileys:disabled'))
+    assert.equal(countInbound(), 1)
+
+    server.setState('whatsapp_ui_settings', JSON.stringify({ whatsappEnabled: true, businessBotMode: false, targetPhoneNumber: null }))
+    server.setState('whatsapp_settings', JSON.stringify({ whatsapp_transport: 'cloud', whatsapp_cloud_phone_number_id: '', whatsapp_cloud_api_version: 'v23.0' }))
+    await server.whatsappBaileys.onMessage(message('baileys:wrong-transport'))
+    assert.equal(countInbound(), 1)
+  } finally {
+    await server.stop()
+    fs.rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
 test('browser WhatsApp Cloud media uploads then sends through the authenticated Graph route', async () => {
   const dataDir = makeTempDir('aica-agentd-whatsapp-cloud-media-')
   const calls = []
