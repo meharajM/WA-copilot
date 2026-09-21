@@ -213,6 +213,12 @@ export async function executeToolCall(
     // This blocks:  relative paths with no workspace context.
     const wsPath = args?.workspacePath as string | undefined;
     const targetPath = args?.path as string | undefined;
+    if (wsPath?.startsWith('browser://') || targetPath?.startsWith('browser://')) {
+      return {
+        result: null,
+        error: 'BROWSER WORKSPACE: Native filesystem tools are unavailable for a browser workspace reference. Use a browser file upload or an owner-approved native workflow.',
+      };
+    }
     const targetIsAbsolute =
       !!targetPath &&
       (targetPath.startsWith('/') || !!targetPath.match(/^[a-zA-Z]:[\\/]/));

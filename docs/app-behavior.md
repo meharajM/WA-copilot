@@ -155,6 +155,7 @@ Pass evidence:
 - File attachments are supported.
 - If no workspace is set and a file has a native path, the parent folder becomes the session workspace.
 - In the browser, supported text and small image attachments are bounded and persisted through `agentd`; the browser directory picker records a workspace reference without exposing arbitrary native paths to page JavaScript.
+- Browser-selected attachments never infer or persist a native parent path, even if a browser wrapper exposes a non-standard `File.path` property. Native `fs_*` tools fail closed for `browser://workspace/...` references; use a browser upload or an owner-approved native workflow instead.
 - Browser generation forwards those validated text/image parts through the authenticated `agentd` request, so providers receive the same bounded attachment content that durable chat history records; unsupported binary formats remain metadata-only and are never uploaded as raw bytes.
 - Voice input is supported through the speech hook.
 - In Electron, offline/native Vosk speech remains the default path and keeps its

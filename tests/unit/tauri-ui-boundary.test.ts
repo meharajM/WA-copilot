@@ -108,6 +108,15 @@ describe('browser-first UI boundary', () => {
     expect(storage).toContain('The Tauri native companion does not mount the product workspace')
   })
 
+  it('never derives a browser workspace from a non-standard File.path value', () => {
+    const input = readSource('components/input/ChatInput.tsx')
+    const guard = input.indexOf('if (!isElectron()) return')
+    const nativePath = input.indexOf('getPathForFile(firstFile)')
+
+    expect(guard).toBeGreaterThan(-1)
+    expect(nativePath).toBeGreaterThan(guard)
+  })
+
   it('keeps browser email auto-reply inside the authenticated agentd policy path', () => {
     const agent = readSource('hooks/useAgent.ts')
     const bridge = readSource('hooks/useEmailBridge.ts')
