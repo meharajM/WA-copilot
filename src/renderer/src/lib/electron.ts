@@ -105,6 +105,18 @@ export const electron = {
             if (isElectron() && window.electron?.app) {
                 return await window.electron.app.getVersion()
             }
+            if (isBrowserProduct()) {
+                try {
+                    // The browser shell has no package metadata API. Read the
+                    // version from the authenticated daemon so About/system
+                    // surfaces do not silently advertise a stale hardcoded
+                    // renderer fallback.
+                    return (await getBrowserAgentdClient().getSystemInfo()).productVersion
+                } catch {
+                    // Pairing/startup may not be ready yet; preserve the
+                    // existing neutral fallback until agentd is reachable.
+                }
+            }
             return '0.1.0' // Fallback to package.json version
         },
 

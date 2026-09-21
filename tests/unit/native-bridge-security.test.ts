@@ -42,6 +42,15 @@ describe('native bridge security boundary', () => {
     expect(store).toContain('return await window.electron.store.delete(key)')
   })
 
+  it('gets the browser version from authenticated agentd instead of a stale renderer constant', async () => {
+    const electron = await source('src/renderer/src/lib/electron.ts')
+    const app = electron.slice(electron.indexOf('    app: {'), electron.indexOf('    // MCP operations'))
+
+    expect(app).toContain('getBrowserAgentdClient().getSystemInfo()')
+    expect(app).toContain('productVersion')
+    expect(app).toContain("return '0.1.0'")
+  })
+
   it('does not return success-shaped MCP browser mocks', async () => {
     const electron = await source('src/renderer/src/lib/electron.ts')
     const mcp = electron.slice(electron.indexOf('    // MCP operations'), electron.indexOf('    // Electron-only storage.'))
