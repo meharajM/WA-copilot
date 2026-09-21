@@ -94,6 +94,6 @@ Use **Settings → System Info** to confirm runtime, platform, engine, and depen
 
 ## Build status
 
-The browser bundle was built locally with `npm run build:tauri:web`. Local verification passed: typecheck, lint with existing warnings, 340 Vitest unit tests, focused browser-extension DOM/bridge tests, 196 integration tests with 8 skips, Tauri web build, 20 Rust tests, and diff checks.
+The browser bundle was built locally with `npm run build:tauri:web`. Local verification passed: typecheck, lint with existing warnings, 344 Vitest unit tests, focused browser-extension DOM/bridge tests, 196 integration tests with 8 skips, Tauri web build, 20 Rust tests, and diff checks. Current-head Windows package/full workflows also pass the native packaging and unsigned installer smoke; signing and real-profile upgrade continuity remain release gates.
 
 `npm run build:tauri:win` was attempted on macOS arm64. Frontend compilation passed, then the repository's cross-target guard stopped before packaging because Windows keyring/migration sidecars require a Windows toolchain. The public Windows packaging workflow then produced and verified unsigned NSIS/MSI artifacts; release signing is still required for distribution.
