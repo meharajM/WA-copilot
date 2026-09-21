@@ -88,6 +88,28 @@ const browserAutonomyHealth = async () => {
     }
 }
 
+/**
+ * Browser Web transport is owned by the user's existing browser plus the
+ * authenticated agentd loopback bridge. Keep the legacy Electron connector
+ * state shape, but source browser status from the daemon so the UI never
+ * reports a misleading disconnected placeholder.
+ */
+const browserWhatsAppWebState = async () => {
+    try {
+        const extension = (await getBrowserAgentdClient().status()).extension
+        if (!extension) return { status: 'disconnected', error: 'agentd did not report the browser bridge' }
+        return {
+            status: extension.status,
+            error: extension.error,
+            lastStatus: extension.lastStatus,
+            port: extension.port,
+            profile: 'Manifest V3 extension on the user browser',
+        }
+    } catch (error) {
+        return { status: 'disconnected', error: error instanceof Error ? error.message : 'agentd unavailable' }
+    }
+}
+
 // Safe wrapper for Electron APIs with browser fallbacks
 export const electron = {
     // Open external URL
@@ -544,7 +566,11 @@ export const electron = {
             return { success: false, error: 'Not supported in browser mode' }
         },
         web: {
-            getState: async () => isElectron() && window.electron?.whatsapp?.web ? window.electron.whatsapp.web.getState() : { status: 'disconnected' },
+            getState: async () => {
+                if (isElectron() && window.electron?.whatsapp?.web) return window.electron.whatsapp.web.getState()
+                if (isBrowserProduct()) return browserWhatsAppWebState()
+                return { status: 'disconnected' }
+            },
             start: async () => isElectron() && window.electron?.whatsapp?.web ? window.electron.whatsapp.web.start() : { status: 'disconnected' },
             stop: async () => isElectron() && window.electron?.whatsapp?.web ? window.electron.whatsapp.web.stop() : { status: 'disconnected' },
             humanTakeover: async () => isElectron() && window.electron?.whatsapp?.web ? window.electron.whatsapp.web.humanTakeover() : { status: 'disconnected' },

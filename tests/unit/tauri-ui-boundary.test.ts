@@ -204,9 +204,10 @@ describe('browser-first UI boundary', () => {
   it('does not expose Electron-only autonomy controls in the browser workspace', () => {
     const autonomy = readSource('components/AutonomyPanel.tsx')
 
-    expect(autonomy).toContain("!browserRuntime && webState")
+    expect(autonomy).toContain('browserRuntime ?')
+    expect(autonomy).toContain('Refresh bridge')
     expect(autonomy).toContain("!browserRuntime && <button")
-    expect(autonomy).not.toContain("browserRuntime ? electron.whatsapp.web")
+    expect(autonomy).not.toContain("browserRuntime ? electron.whatsapp.web.start")
     expect(autonomy).toContain('(metrics.estimatedCostPerResolvedConversation ?? 0).toFixed(4)')
   })
 
