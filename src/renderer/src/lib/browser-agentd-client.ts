@@ -826,6 +826,7 @@ export interface BrowserAgentdClient extends ChatClient {
   disconnectWhatsApp(clearAuth?: boolean): Promise<BrowserWhatsAppConnectionState>
   setWhatsAppTarget(phoneNumber: string): Promise<{ success: boolean; error?: string; handshakeCode?: string }>
   sendWhatsAppText(to: string, text: string): Promise<BrowserWhatsAppSendResult>
+  sendWhatsAppPresence(to: string, state: 'unavailable' | 'available' | 'composing' | 'recording' | 'paused'): Promise<{ success: true }>
   sendWhatsAppMedia(to: string, media: { fileName: string; mimeType: string; size: number; dataBase64: string; type: 'image' | 'video' | 'audio' | 'document'; caption?: string }): Promise<BrowserWhatsAppSendResult>
   getOllamaSettings(): Promise<BrowserOllamaSettings>
   saveOllamaSettings(settings: BrowserOllamaSettings): Promise<BrowserOllamaSettings>
@@ -1210,6 +1211,12 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     const value = await request<unknown>('/api/v1/whatsapp/messages', { method: 'POST', body: JSON.stringify({ to, text }) }, true)
     if (!isRecord(value) || value.success !== true || typeof value.providerMessageId !== 'string' || !value.providerMessageId) throw new Error('Invalid WhatsApp send response')
     return { providerMessageId: value.providerMessageId }
+  }
+  const sendWhatsAppPresence = async (to: string, state: 'unavailable' | 'available' | 'composing' | 'recording' | 'paused'): Promise<{ success: true }> => {
+    if (!to.trim() || !['unavailable', 'available', 'composing', 'recording', 'paused'].includes(state)) throw new Error('WhatsApp recipient and presence state are required')
+    const value = await request<unknown>('/api/v1/whatsapp/presence', { method: 'POST', body: JSON.stringify({ to, state }) }, true)
+    if (!isRecord(value) || value.success !== true) throw new Error('Invalid WhatsApp presence response')
+    return { success: true }
   }
   const sendWhatsAppMedia = async (to: string, media: { fileName: string; mimeType: string; size: number; dataBase64: string; type: 'image' | 'video' | 'audio' | 'document'; caption?: string }): Promise<BrowserWhatsAppSendResult> => {
     if (!to.trim() || !media.fileName.trim() || !media.mimeType.trim() || !media.dataBase64 || media.size < 1) throw new Error('WhatsApp recipient and media are required')
@@ -1776,6 +1783,7 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     disconnectWhatsApp,
     setWhatsAppTarget,
     sendWhatsAppText,
+    sendWhatsAppPresence,
     sendWhatsAppMedia,
     createWhatsAppDraft,
     getOllamaSettings,

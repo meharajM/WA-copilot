@@ -1307,6 +1307,7 @@ class AgentdServer {
     if (url.pathname === '/api/v1/whatsapp/connect' && req.method === 'POST') return this.whatsappConnect(req, res)
     if (url.pathname === '/api/v1/whatsapp/disconnect' && req.method === 'POST') return this.whatsappDisconnect(req, res)
     if (url.pathname === '/api/v1/whatsapp/target' && req.method === 'POST') return this.whatsappTarget(req, res)
+    if (url.pathname === '/api/v1/whatsapp/presence' && req.method === 'POST') return this.sendWhatsAppPresence(req, res)
     if (url.pathname === '/api/v1/email/test' && req.method === 'POST') return this.testEmail(req, res)
     if (url.pathname === '/api/v1/email/inbound/ack' && req.method === 'POST') return this.acknowledgeEmailInbound(req, res)
     if (url.pathname === '/api/v1/email/inbound/claim' && req.method === 'POST') return this.claimEmailInbound(req, res)
@@ -3354,6 +3355,37 @@ class AgentdServer {
     if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 1 || typeof body.phoneNumber !== 'string') return json(res, 400, { error: 'Invalid WhatsApp target request' })
     const result = await this.whatsappBaileys.setTargetPhoneNumber(body.phoneNumber)
     return json(res, result.success ? 200 : 409, result)
+  }
+
+  async sendWhatsAppPresence(req, res) {
+    this.authorize(req, { mutation: true })
+    if (this.migrationFence(req, res)) return
+    if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
+    const body = await readBody(req, 8 * 1024)
+    const keys = Object.keys(body || {}).sort()
+    if (!body || typeof body !== 'object' || Array.isArray(body)
+      || keys.length !== 2 || keys[0] !== 'state' || keys[1] !== 'to'
+      || typeof body.to !== 'string' || !body.to.trim() || body.to.length > 32
+      || typeof body.state !== 'string' || !['unavailable', 'available', 'composing', 'recording', 'paused'].includes(body.state)) {
+      return json(res, 400, { error: 'Invalid WhatsApp presence request' })
+    }
+    let storedSettings = null
+    try { storedSettings = JSON.parse(this.getState('whatsapp_settings', 'null')) } catch {}
+    const settings = parseWhatsAppSettings(storedSettings) || WHATSAPP_SETTINGS_DEFAULTS
+    if (settings.whatsapp_transport !== 'baileys') return json(res, 409, { error: 'WhatsApp presence is available only for the Baileys transport' })
+    let releaseOperation = null
+    try {
+      releaseOperation = this.beginActiveOperation()
+      if (!releaseOperation) return json(res, 409, { error: 'Settings migration is committing' })
+      this.assertMigrationOpen()
+      const result = await this.whatsappBaileys.sendPresence(body.to, body.state)
+      releaseOperation()
+      return json(res, 200, result)
+    } catch (error) {
+      releaseOperation?.()
+      const statusCode = Number.isInteger(error?.statusCode) ? error.statusCode : 502
+      return json(res, statusCode, { success: false, error: statusCode === 502 ? 'WhatsApp presence failed' : error.message })
+    }
   }
 
   async ollamaSettings(req, res) {

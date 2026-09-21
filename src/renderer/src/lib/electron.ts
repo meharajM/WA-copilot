@@ -503,6 +503,9 @@ export const electron = {
             if (isElectron() && window.electron?.whatsapp) {
                 return window.electron.whatsapp.sendPresence(to, state)
             }
+            if (isBrowserProduct() && ['unavailable', 'available', 'composing', 'recording', 'paused'].includes(state)) {
+                return getBrowserAgentdClient().sendWhatsAppPresence(to, state as 'unavailable' | 'available' | 'composing' | 'recording' | 'paused')
+            }
             console.warn('[Browser] WhatsApp sendPresence not supported')
             return { success: false, error: 'Not supported in browser mode' }
         },

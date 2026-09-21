@@ -340,6 +340,20 @@ class WhatsAppBaileysService {
     return { providerMessageId }
   }
 
+  async sendPresence(to, state) {
+    if (this.state.status !== 'connected' || !this.socket) throw Object.assign(new Error('WhatsApp is not connected'), { statusCode: 409 })
+    const jid = normalizeJid(to)
+    if (!jid) throw Object.assign(new Error('Invalid WhatsApp recipient'), { statusCode: 400 })
+    if (!['unavailable', 'available', 'composing', 'recording', 'paused'].includes(state)) {
+      throw Object.assign(new Error('Invalid WhatsApp presence state'), { statusCode: 400 })
+    }
+    if (typeof this.socket.sendPresenceUpdate !== 'function') {
+      throw Object.assign(new Error('WhatsApp presence is unavailable'), { statusCode: 503 })
+    }
+    await this.socket.sendPresenceUpdate(state, jid)
+    return { success: true }
+  }
+
   async sendMedia(to, bytes, { type, fileName, mimeType, caption = '' } = {}) {
     if (this.state.status !== 'connected' || !this.socket) throw Object.assign(new Error('WhatsApp is not connected'), { statusCode: 409 })
     const jid = normalizeJid(to)

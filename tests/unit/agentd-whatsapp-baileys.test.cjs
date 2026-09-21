@@ -18,6 +18,9 @@ function fakeBaileys() {
         module.lastMessage = { jid, payload }
         return { key: { id: `sent-${jid}-${payload.text || payload.fileName || payload.image?.length || 'media' }` }, message: payload }
       }
+      socket.sendPresenceUpdate = async (state, jid) => {
+        module.lastPresence = { state, jid }
+      }
       socket.end = () => {}
       socket.logout = async () => {}
       module.socket = socket
@@ -58,6 +61,9 @@ test('agentd Baileys worker exposes bounded QR/state, text inbound, dedupe, and 
   assert.equal(service.getState().workerNumber, '919999999999')
   const sent = await service.sendText('+919888888888', 'Hello')
   assert.match(sent.providerMessageId, /^sent-919888888888@s\.whatsapp\.net-Hello$/)
+  assert.deepEqual(await service.sendPresence('+919888888888', 'composing'), { success: true })
+  assert.deepEqual(baileys.lastPresence, { state: 'composing', jid: '919888888888@s.whatsapp.net' })
+  await assert.rejects(() => service.sendPresence('+919888888888', 'invalid'), /Invalid WhatsApp presence state/)
   const media = await service.sendMedia('+919888888888', Buffer.from('png-bytes'), {
     type: 'image', fileName: 'receipt.png', mimeType: 'image/png', caption: 'Receipt',
   })
@@ -127,6 +133,7 @@ test('agentd browser WhatsApp routes use the daemon Baileys worker for connectio
     async disconnect(value) { calls.push(['disconnect', value]); return this.getState() },
     async setTargetPhoneNumber(value) { calls.push(['target', value]); return { success: true, handshakeCode: '123456' } },
     async sendText(to, text) { calls.push(['send', to, text]); return { providerMessageId: 'baileys-message-1' } },
+    async sendPresence(to, state) { calls.push(['presence', to, state]); return { success: true } },
     async sendMedia(to, bytes, media) { calls.push(['media', to, bytes.toString(), media.type, media.fileName]); return { providerMessageId: 'baileys-media-1' } },
   }
   const server = new AgentdServer({ dataDir, secret: 'w'.repeat(32), whatsappService: fakeService, logger: { log() {} } })
@@ -159,6 +166,10 @@ test('agentd browser WhatsApp routes use the daemon Baileys worker for connectio
     assert.equal((await request(origin, 'PUT', '/api/v1/settings/whatsapp', settings, auth)).status, 200)
     const sent = await request(origin, 'POST', '/api/v1/whatsapp/messages', { to: '+919888888888', text: 'Hello' }, auth)
     assert.deepEqual(sent.body, { success: true, providerMessageId: 'baileys-message-1' })
+    const presence = await request(origin, 'POST', '/api/v1/whatsapp/presence', { to: '+919888888888', state: 'composing' }, auth)
+    assert.deepEqual(presence.body, { success: true })
+    assert.deepEqual(calls.find(call => call[0] === 'presence'), ['presence', '+919888888888', 'composing'])
+    assert.equal((await request(origin, 'POST', '/api/v1/whatsapp/presence', { to: '+919888888888', state: 'invalid' }, auth)).status, 400)
     const media = await request(origin, 'POST', '/api/v1/whatsapp/media', {
       to: '+919888888888', type: 'image', fileName: 'receipt.png', mimeType: 'image/png', size: 3, dataBase64: 'AQID', caption: 'Receipt',
     }, auth)
@@ -217,6 +228,7 @@ test('agentd browser WhatsApp routes use the daemon Baileys worker for connectio
       ['connect', undefined],
       ['target', '+919888888888'],
       ['send', '+919888888888', 'Hello'],
+      ['presence', '+919888888888', 'composing'],
       ['media', '+919888888888', '\u0001\u0002\u0003', 'image', 'receipt.png'],
     ])
   } finally {
