@@ -4,9 +4,10 @@ This Manifest V3 extension is an optional, single-chat browser connector for
 the local AICA `agentd` bridge. It has `storage` permission and host access
 only for WhatsApp Web and the configured loopback port. It reads inbound text
 DOM nodes, deduplicates them in memory, and posts them to `/messages`. It can
-also poll for one explicit text-send command and acknowledge it after a
-feature-detected active-chat composer action; media, arbitrary navigation,
-page-script evaluation, files, and remote services remain unsupported.
+also poll for one explicit text/media-send command and acknowledge it only
+after a feature-detected active-chat composer/file-input action. Arbitrary
+navigation, page-script evaluation, files outside the selected media command,
+and remote services remain unsupported.
 
 1. Start the browser-first AICA native companion/agentd with
    `AICA_EXTENSION_BRIDGE_TOKEN` on the default extension port `8790`.
@@ -23,7 +24,7 @@ page-script evaluation, files, and remote services remain unsupported.
 
 The WhatsApp DOM selectors and session behavior require live verification and
 may change when WhatsApp Web changes. Keep Autonomous Bot Mode off until a
-human confirms the active-chat send behavior. If the composer or visible chat
-cannot be proven, the extension reports a bounded failure and agentd marks the
-send failed; Baileys or Cloud API remains the provider-backed path for media
-and unattended operation.
+human confirms the active-chat text and media behavior. If the composer, file
+input, send control, or visible chat cannot be proven, the extension reports a
+bounded failure and agentd marks the send failed. Baileys or Cloud API remains
+the provider-backed path for unattended operation.
