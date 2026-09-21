@@ -40,8 +40,18 @@ function modelPath(dataDir, model) {
 
 function sha256File(filename) {
   const hash = crypto.createHash('sha256')
-  hash.update(fs.readFileSync(filename))
-  return hash.digest('hex')
+  const descriptor = fs.openSync(filename, fs.constants.O_RDONLY)
+  const buffer = Buffer.allocUnsafe(1024 * 1024)
+  try {
+    let bytesRead
+    do {
+      bytesRead = fs.readSync(descriptor, buffer, 0, buffer.length, null)
+      if (bytesRead > 0) hash.update(buffer.subarray(0, bytesRead))
+    } while (bytesRead > 0)
+    return hash.digest('hex')
+  } finally {
+    fs.closeSync(descriptor)
+  }
 }
 
 async function writeResponseAtomically(filename, response, expectedDigest) {
