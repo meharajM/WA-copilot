@@ -96,6 +96,7 @@ Pass evidence:
   - `Lead Directory`
   - `Email Drafts`
 - Settings-style views hide the main sidebar and render the settings control panel instead.
+- All Chats with no active messages shows a focused empty conversation state; the Command Center dashboard is not repeated inside the chat view. The composer remains available so typing the first message creates the session.
 
 Pass evidence:
 

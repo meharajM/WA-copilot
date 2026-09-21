@@ -183,7 +183,12 @@ export class AgentRuntime implements IAgentClient {
     }
 
     // ── Recover execution plan through agentd in browser mode; Electron keeps tasks.json. ──
-    if (!this.executionPlan && !this.options.isSubAgent && this.options.workspacePath) {
+    // Browser sessions may not have a workspace selected. Their execution
+    // plan is still durable in the authenticated agentd session, so recover
+    // by session id rather than treating a missing native workspace as a
+    // reason to skip crash recovery. Electron continues to require its
+    // workspace-backed tasks.json path inside recoverPlan().
+    if (!this.executionPlan && !this.options.isSubAgent && (this.options.workspacePath || this.options.activeSessionId)) {
       try {
         const { recoverPlan } = await import('./task-manager');
         this.executionPlan = await recoverPlan(this.options.workspacePath, this.options.activeSessionId);
