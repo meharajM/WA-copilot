@@ -6,6 +6,7 @@ const test = require('node:test')
 const root = path.resolve(__dirname, '../..')
 const config = JSON.parse(fs.readFileSync(path.join(root, 'src-tauri/tauri.conf.json'), 'utf8'))
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
+const cargoToml = fs.readFileSync(path.join(root, 'src-tauri/Cargo.toml'), 'utf8')
 const rust = fs.readFileSync(path.join(root, 'src-tauri/src/main.rs'), 'utf8')
 const agentdApi = fs.readFileSync(path.join(root, 'src-tauri/src/agentd_api.rs'), 'utf8')
 const runner = fs.readFileSync(path.join(root, 'scripts/tauri-agentd-runner.cjs'), 'utf8')
@@ -29,6 +30,11 @@ test('Tauri package declares fixed agentd runtime, entrypoint, and keyring helpe
   assert.match(rust, /AICA_AGENTD_UI_ROOT/)
   assert.match(agentdApi, /fn reject_reparse_path\(path: &Path\)/)
   assert.match(agentdApi, /let source_for_agentd = source_path\.to_path_buf\(\)/)
+})
+
+test('native package versions match the browser package version for upgrade semantics', () => {
+  assert.equal(config.version, packageJson.version)
+  assert.match(cargoToml, new RegExp(`^version = "${packageJson.version.replaceAll('.', '\\.') }"$`, 'm'))
 })
 
 test('Tauri dev stages sidecars before Cargo watch starts', () => {
