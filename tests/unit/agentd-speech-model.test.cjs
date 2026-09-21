@@ -14,6 +14,27 @@ function response(body, status = 200) {
   return { ok: status >= 200 && status < 300, status, headers: new Map([['content-length', String(body.length)]]), arrayBuffer: async () => body }
 }
 
+function streamingResponse(body, status = 200) {
+  let offset = 0
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers: new Map([['content-length', String(body.length)]]),
+    body: {
+      getReader() {
+        return {
+          async read() {
+            if (offset >= body.length) return { done: true, value: undefined }
+            const value = body.subarray(offset, offset += 3)
+            return { done: false, value }
+          },
+          releaseLock() {},
+        }
+      },
+    },
+  }
+}
+
 test('speech model store downloads approved model, verifies digest and reuses cache', async () => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aica-speech-'))
   let calls = 0
@@ -37,6 +58,20 @@ test('speech model store rejects bad integrity and unapproved URLs', async () =>
     const store = new SpeechModelStore(dataDir, { catalog: { bad: { ...catalog.fixture, id: 'bad', url: 'http://evil.test/model.zip' } }, fetchImpl: async () => response(bytes) })
     await assert.rejects(() => store.ensure('bad'), /not approved/)
     assert.equal(store.status('missing').supported, false)
+  } finally {
+    fs.rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('speech model store streams response bytes to the private cache', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aica-speech-'))
+  try {
+    const store = new SpeechModelStore(dataDir, { catalog, fetchImpl: async () => streamingResponse(bytes) })
+    const result = await store.ensure('fixture')
+    assert.equal(result.size, bytes.length)
+    const cached = fs.readFileSync(path.join(dataDir, 'speech-models', 'fixture.zip'))
+    assert.deepEqual(cached, bytes)
+    assert.deepEqual(fs.readdirSync(path.join(dataDir, 'speech-models')), ['fixture.zip'])
   } finally {
     fs.rmSync(dataDir, { recursive: true, force: true })
   }

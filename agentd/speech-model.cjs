@@ -44,39 +44,46 @@ function sha256File(filename) {
   return hash.digest('hex')
 }
 
-async function readResponseBounded(response) {
+async function writeResponseAtomically(filename, response, expectedDigest) {
+  const temporary = `${filename}.${process.pid}.${crypto.randomBytes(8).toString('hex')}.tmp`
   const declared = Number(response.headers?.get?.('content-length') || 0)
   if (declared > MAX_SPEECH_MODEL_BYTES) throw Object.assign(new Error('Speech model exceeds size limit'), { statusCode: 413 })
-  if (!response.body?.getReader) {
-    const bytes = Buffer.from(await response.arrayBuffer())
-    if (bytes.length > MAX_SPEECH_MODEL_BYTES) throw Object.assign(new Error('Speech model exceeds size limit'), { statusCode: 413 })
-    return bytes
-  }
-  const reader = response.body.getReader()
-  const chunks = []
+
+  let handle
+  let reader
   let total = 0
+  const hash = crypto.createHash('sha256')
   try {
-    while (true) {
-      const next = await reader.read()
-      if (next.done) break
-      const chunk = Buffer.from(next.value)
+    handle = await fs.promises.open(temporary, 'wx', 0o600)
+    const writeChunk = async chunkValue => {
+      const chunk = Buffer.from(chunkValue)
       total += chunk.length
       if (total > MAX_SPEECH_MODEL_BYTES) throw Object.assign(new Error('Speech model exceeds size limit'), { statusCode: 413 })
-      chunks.push(chunk)
+      hash.update(chunk)
+      await handle.writeFile(chunk)
     }
-  } finally {
-    reader.releaseLock?.()
-  }
-  return Buffer.concat(chunks, total)
-}
-
-function writePrivateBufferAtomically(filename, contents) {
-  const temporary = `${filename}.${process.pid}.${crypto.randomBytes(8).toString('hex')}.tmp`
-  try {
-    fs.writeFileSync(temporary, contents, { flag: 'wx', mode: 0o600 })
+    if (response.body?.getReader) {
+      reader = response.body.getReader()
+      while (true) {
+        const next = await reader.read()
+        if (next.done) break
+        await writeChunk(next.value)
+      }
+    } else {
+      await writeChunk(await response.arrayBuffer())
+    }
+    reader?.releaseLock?.()
+    reader = null
+    await handle.sync()
+    await handle.close()
+    handle = null
     fs.chmodSync(temporary, 0o600)
+    if (hash.digest('hex') !== expectedDigest.toLowerCase()) throw Object.assign(new Error('Speech model integrity check failed'), { statusCode: 503 })
     fs.renameSync(temporary, filename)
+    return { size: total }
   } catch (error) {
+    reader?.releaseLock?.()
+    try { await handle?.close() } catch {}
     try { fs.unlinkSync(temporary) } catch {}
     throw error
   }
@@ -149,11 +156,8 @@ class SpeechModelStore {
       break
     }
     if (!response?.ok) throw Object.assign(new Error('Speech model download failed'), { statusCode: 503 })
-    const bytes = await readResponseBounded(response)
-    const digest = crypto.createHash('sha256').update(bytes).digest('hex')
-    if (digest !== model.sha256.toLowerCase()) throw Object.assign(new Error('Speech model integrity check failed'), { statusCode: 503 })
-    writePrivateBufferAtomically(filename, bytes)
-    return { ...model, path: filename, size: bytes.length }
+    const written = await writeResponseAtomically(filename, response, model.sha256)
+    return { ...model, path: filename, size: written.size }
   }
 }
 

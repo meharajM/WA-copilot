@@ -163,7 +163,8 @@ Pass evidence:
 - In the browser product (including Windows Edge/Chrome), voice input uses the
   browser Web Speech API by default. When the user enables offline speech—or
   the browser has no Web Speech API—the authenticated agentd speech route
-  downloads an approved, SHA-256-pinned Vosk archive into its private cache;
+  streams an approved, SHA-256-pinned Vosk archive into a bounded private
+  cache file without buffering the archive in process memory;
   the browser loads that archive as a Blob URL and runs Vosk locally. If the
   local model cannot be prepared and Web Speech exists, the hook falls back to
   Web Speech with a visible notice.
