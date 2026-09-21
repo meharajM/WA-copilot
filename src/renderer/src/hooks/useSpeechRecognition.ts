@@ -423,6 +423,7 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
                 await startVisualization()
 
             } catch (e: any) {
+                let startError = e
                 setIsFirstSetup(false)
                 if (!shouldListenRef.current) return
                 // Browser Vosk is optional: retain Web Speech fallback when model
@@ -436,13 +437,13 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
                         addLog({ eventType: 'STATE_CHANGE', sessionId, component: 'useSpeechRecognition', details: { metadata: { state: 'listening_started', method: 'web_speech_fallback' } } })
                         return
                     } catch (fallbackError: any) {
-                        e = fallbackError
+                        startError = fallbackError
                     }
                 }
-                console.error('[Speech] Start failed:', e)
-                setError(`Setup failed: ${e?.message || String(e)}`)
+                console.error('[Speech] Start failed:', startError)
+                setError(`Setup failed: ${startError?.message || String(startError)}`)
                 setIsListening(false)
-                addLog({ eventType: 'ERROR', sessionId, component: 'useSpeechRecognition', details: { error: e?.message || String(e) } })
+                addLog({ eventType: 'ERROR', sessionId, component: 'useSpeechRecognition', details: { error: startError?.message || String(startError) } })
             } finally {
                 if (shouldListenRef.current) setIsInitializing(false)
             }
