@@ -563,7 +563,11 @@ class AgentdServer {
       logger,
       allowMessage: message => this.allowsWhatsAppExtensionMessage(message),
       allowOutbound: message => message?.kind === 'media'
-        ? this.allowsWhatsAppExtensionMedia({ to: message.to, ...(message.media || {}) })
+        ? this.allowsWhatsAppExtensionMedia({
+          to: message.to,
+          ...(message.media || {}),
+          bytes: typeof message.media?.dataBase64 === 'string' ? Buffer.from(message.media.dataBase64, 'base64') : null,
+        })
         : this.allowsWhatsAppExtensionOutbound(message),
       onMessage: message => this.ingestWhatsAppExtensionMessage(message),
     })

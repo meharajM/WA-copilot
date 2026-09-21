@@ -29,6 +29,12 @@ function loadContentScript({ chatLabel = '+1 (555) 010-0200', composerAvailable 
       return true
     },
   }
+  const sendButton = {
+    click() {
+      mediaInput.files = []
+      events.push({ type: 'send-click' })
+    },
+  }
   const header = {
     textContent: chatLabel,
     getAttribute(name) { return name === 'title' ? chatLabel : null },
@@ -38,6 +44,9 @@ function loadContentScript({ chatLabel = '+1 (555) 010-0200', composerAvailable 
     visibilityState: 'visible',
     querySelector(selector) {
       if (selector === '[data-testid="conversation-info-header-chat-title"]') return header
+      if (selector === 'button[data-testid="send"]' || selector === 'button[aria-label="Send"]' || selector === '[data-testid="send"]') {
+        return mediaInputAvailable ? sendButton : null
+      }
       if (selector.includes('contenteditable')) return composerAvailable ? input : null
       return null
     },

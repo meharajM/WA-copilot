@@ -35,6 +35,12 @@ function mediaInput() {
   return inputs.find(input => input && (input.offsetParent !== null || input.getClientRects?.().length)) || inputs[0] || null
 }
 
+function mediaSendButton() {
+  return document.querySelector('button[data-testid="send"]')
+    || document.querySelector('button[aria-label="Send"]')
+    || document.querySelector('[data-testid="send"]')
+}
+
 function wait(milliseconds) { return new Promise(resolve => setTimeout(resolve, milliseconds)) }
 
 async function sendOutbound(command) {
@@ -86,6 +92,22 @@ async function sendMediaOutbound(command) {
     return { success: false, error: 'media_input_rejected' }
   }
   await wait(500)
+  if (typeof media.caption === 'string' && media.caption.trim()) {
+    const captionInput = composer()
+    if (!captionInput) return { success: false, error: 'media_caption_unavailable' }
+    captionInput.focus()
+    let inserted = false
+    try { inserted = document.execCommand('insertText', false, media.caption) } catch {}
+    if (!inserted) {
+      captionInput.textContent = media.caption
+      captionInput.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: media.caption }))
+    }
+  }
+  const sendButton = mediaSendButton()
+  if (!sendButton || typeof sendButton.click !== 'function') return { success: false, error: 'media_send_control_unavailable' }
+  sendButton.click()
+  await wait(750)
+  if (input.files && input.files.length > 0) return { success: false, error: 'media_send_not_acknowledged' }
   return { success: true, providerMessageId: `web:${command.id}` }
 }
 
