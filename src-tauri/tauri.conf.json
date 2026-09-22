@@ -18,6 +18,7 @@
         "url": "tauri.html",
         "width": 1000,
         "height": 760,
+        "visible": false,
         "minWidth": 800,
         "minHeight": 600
       }

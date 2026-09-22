@@ -37,6 +37,9 @@ describe('browser-first UI boundary', () => {
     expect(host).not.toContain('ChatView')
     expect(host).toContain('Native capabilities')
     expect(host).toContain('Open browser workspace')
+    expect(host).toContain('Start background agent')
+    expect(host).toContain('Stop background agent')
+    expect(host).toContain('Keep running in background')
     expect(host).toContain('Open agentd data folder')
     expect(host).toContain('Product UI runs in the browser')
     expect(host).toContain('Confirm chat history')
@@ -90,6 +93,10 @@ describe('browser-first UI boundary', () => {
     const handler = native.slice(native.indexOf('.invoke_handler('), native.indexOf('.setup('))
 
     expect(handler).toContain('agentd_health')
+    expect(handler).toContain('agentd_start')
+    expect(handler).toContain('agentd_stop')
+    expect(handler).toContain('background_policy')
+    expect(handler).toContain('set_background_policy')
     expect(handler).toContain('agentd_pairing_code')
     expect(handler).toContain('credential_set')
     expect(handler).toContain('credential_exists')
@@ -107,6 +114,18 @@ describe('browser-first UI boundary', () => {
     expect(handler).toContain('chat_history_rollback')
     expect(handler).toContain('credential_continuity_preview')
     expect(handler).not.toMatch(/get_llm_settings|save_llm_settings|get_whatsapp_settings|save_whatsapp_settings|provider_test|chat_generate|chat_load_sessions|chat_create_session|chat_append_message/)
+  })
+
+  it('launches browser workspace from the app icon while keeping native recovery available', () => {
+    const native = readNativeSource('main.rs')
+    const config = readFileSync(resolve(process.cwd(), 'src-tauri/tauri.conf.json'), 'utf8')
+    expect(config).toContain('"visible": false')
+    expect(native).toContain('open_browser_workspace_for_app(app.handle())')
+    expect(native).toContain('Open browser workspace')
+    expect(native).toContain('Keep running in background')
+    expect(native).toContain('Start background agent')
+    expect(native).toContain('Stop background agent')
+    expect(native).toContain('let _ = window.destroy()')
   })
 
   it('does not route product hooks through a Tauri chat client', () => {

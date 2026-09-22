@@ -10,6 +10,10 @@ describe('tauri native bridge', () => {
     expect(Object.values(TAURI_COMMANDS)).toEqual([
       'app_version',
       'agentd_health',
+      'agentd_start',
+      'agentd_stop',
+      'background_policy',
+      'set_background_policy',
       'agentd_origin',
       'agentd_pairing_code',
       'open_browser_workspace',
@@ -43,6 +47,8 @@ describe('tauri native bridge', () => {
       if (command === TAURI_COMMANDS.openBrowserWorkspace) return null
       if (command === TAURI_COMMANDS.openAgentdDataFolder) return null
       if (command === TAURI_COMMANDS.agentdHealth) return { status: 'ready', version: 'agentd protocol v1', paused: false, queueDepth: 2, events: 4 }
+      if (command === TAURI_COMMANDS.backgroundPolicy) return { keepRunning: true }
+      if (command === TAURI_COMMANDS.setBackgroundPolicy) return { keepRunning: true }
       if (command === TAURI_COMMANDS.credentialSet) return { success: true }
       if (command === TAURI_COMMANDS.credentialExists) return { success: true, exists: true }
       if (command === TAURI_COMMANDS.credentialDelete) return { success: true }
@@ -56,6 +62,10 @@ describe('tauri native bridge', () => {
     await expect(bridge.openBrowserWorkspace()).resolves.toEqual({ success: true })
     await expect(bridge.openAgentdDataFolder()).resolves.toEqual({ success: true })
     await expect(bridge.health()).resolves.toMatchObject({ status: 'ready', paused: false, queueDepth: 2, events: 4 })
+    await expect(bridge.backgroundPolicy()).resolves.toEqual({ keepRunning: true })
+    await expect(bridge.setBackgroundPolicy(true)).resolves.toEqual({ keepRunning: true })
+    await expect(bridge.agentdStart()).resolves.toEqual({ success: true })
+    await expect(bridge.agentdStop()).resolves.toEqual({ success: true })
     await expect(bridge.setCredential('openai_api_key', 'secret')).resolves.toEqual({ success: true })
     await expect(bridge.setCredential('whatsapp_cloud_access_token', 'cloud-secret')).resolves.toEqual({ success: true })
     await expect(bridge.hasCredential('whatsapp_cloud_access_token')).resolves.toEqual({ success: true, exists: true })
@@ -65,6 +75,7 @@ describe('tauri native bridge', () => {
     expect(invoke).toHaveBeenCalledWith(TAURI_COMMANDS.credentialSet, { key: 'openai_api_key', value: 'secret' })
     expect(invoke).toHaveBeenCalledWith(TAURI_COMMANDS.openBrowserWorkspace, undefined)
     expect(invoke).toHaveBeenCalledWith(TAURI_COMMANDS.openAgentdDataFolder, undefined)
+    expect(invoke).toHaveBeenCalledWith(TAURI_COMMANDS.setBackgroundPolicy, { keepRunning: true })
     expect(invoke).not.toHaveBeenCalledWith(expect.stringMatching(/get.*credential|credential.*read/i), expect.anything())
   })
 
@@ -95,6 +106,7 @@ describe('tauri native bridge', () => {
     await expect(bridge.health()).resolves.toMatchObject({ status: 'unavailable', error: 'agentd is stopped or unavailable' })
     await expect(bridge.setCredential('openai_api_key', '')).resolves.toMatchObject({ success: false })
     await expect(bridge.hasCredential('openai_api_key')).resolves.toMatchObject({ success: false, exists: false })
+    await expect(bridge.backgroundPolicy()).rejects.toThrow('Invalid native background policy response')
   })
 
   it('rejects non-loopback browser workspace origins', async () => {

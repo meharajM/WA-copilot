@@ -50,6 +50,16 @@ Required before upload:
 
 Set `WIN_CSC_LINK` and `WIN_CSC_KEY_PASSWORD` for the public certificate. Production Windows builds use electron-builder's `forceCodeSigning` option and fail if signing credentials are unavailable.
 
+The browser-first Tauri companion now launches the product workspace in the
+default browser from the installed app icon, keeps the native diagnostics
+window hidden, and exposes tray/diagnostics controls for **Keep running in
+background**, **Start background agent**, and **Stop background agent**. The
+default is to keep `agentd` alive when the browser tab or native window closes;
+stopping processing is an explicit owner action. These lifecycle controls are
+covered by source-level and hosted unsigned-package checks, but signed
+real-user logon, upgrade/downgrade, rollback, and data-preservation evidence
+remain required before release.
+
 ## External QA Gate
 
 Before publishing a candidate, record evidence for:

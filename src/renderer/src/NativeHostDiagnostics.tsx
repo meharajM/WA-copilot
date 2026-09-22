@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { CredentialKey, NativeHealth } from '../../shared/native-bridge'
-import { tauriNativeBridge, type NativeChatHistoryCutover, type NativeContinuityPreview, type NativeCredentialContinuityPreview, type NativeServiceStatus, type NativeSettingsPersonaCutover } from './lib/tauri-native-bridge'
+import { tauriNativeBridge, type NativeBackgroundPolicy, type NativeChatHistoryCutover, type NativeContinuityPreview, type NativeCredentialContinuityPreview, type NativeServiceStatus, type NativeSettingsPersonaCutover } from './lib/tauri-native-bridge'
 
 const CREDENTIALS: Array<{ key: CredentialKey; label: string }> = [
   { key: 'openai_api_key', label: 'OpenAI key' },
@@ -25,6 +25,7 @@ export default function NativeHostDiagnostics() {
   const [pairingCode, setPairingCode] = useState<string | null>(null)
   const [health, setHealth] = useState<NativeHealth>({ status: 'unavailable', error: 'Checking agentd…' })
   const [service, setService] = useState<NativeServiceStatus | null>(null)
+  const [backgroundPolicy, setBackgroundPolicy] = useState<NativeBackgroundPolicy | null>(null)
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
   const [credential, setCredential] = useState<CredentialKey>('openai_api_key')
   const [credentialValue, setCredentialValue] = useState('')
@@ -43,6 +44,11 @@ export default function NativeHostDiagnostics() {
     catch (reason) { setHealth({ status: 'unavailable', error: messageFrom(reason, 'Native host unavailable') }) }
   }
 
+  const refreshBackgroundPolicy = async () => {
+    try { setBackgroundPolicy(await tauriNativeBridge.backgroundPolicy()) }
+    catch (reason) { setBackgroundPolicy(null); setError(messageFrom(reason, 'Background policy unavailable')) }
+  }
+
   const refreshService = async () => {
     try { setService(await tauriNativeBridge.serviceStatus()) }
     catch (reason) { setService({ supported: true, installed: false, running: false, taskName: 'AICA Native Companion', message: messageFrom(reason, 'Windows service status unavailable') }) }
@@ -53,7 +59,40 @@ export default function NativeHostDiagnostics() {
     void tauriNativeBridge.agentdOrigin().then((origin) => setAgentdOrigin(`${origin}/tauri.html`)).catch(() => setAgentdOrigin(null))
     void refresh()
     void refreshService()
+    void refreshBackgroundPolicy()
   }, [])
+
+  const startAgent = async () => {
+    setBusy('agent-start'); setError(null); setNotice(null)
+    try {
+      const result = await tauriNativeBridge.agentdStart()
+      if (!result.success) throw new Error(result.error || 'Background agent could not start')
+      await refresh()
+      setNotice('Background processing started. You can close the browser UI and customer work will continue.')
+    } catch (reason) { setError(messageFrom(reason, 'Background agent could not start')) }
+    finally { setBusy(null) }
+  }
+
+  const stopAgent = async () => {
+    if (!window.confirm('Stop background customer processing? The browser workspace will become unavailable until you start the agent again.')) return
+    setBusy('agent-stop'); setError(null); setNotice(null)
+    try {
+      const result = await tauriNativeBridge.agentdStop()
+      if (!result.success) throw new Error(result.error || 'Background agent could not stop')
+      await refresh()
+      setNotice('Background processing stopped. Start it again before opening the browser workspace.')
+    } catch (reason) { setError(messageFrom(reason, 'Background agent could not stop')) }
+    finally { setBusy(null) }
+  }
+
+  const toggleBackgroundPolicy = async (keepRunning: boolean) => {
+    setBusy('background-policy'); setError(null); setNotice(null)
+    try {
+      setBackgroundPolicy(await tauriNativeBridge.setBackgroundPolicy(keepRunning))
+      setNotice(keepRunning ? 'Background mode enabled. Closing the UI will not stop customer processing.' : 'Background mode disabled. Use Stop background agent to end processing explicitly.')
+    } catch (reason) { setError(messageFrom(reason, 'Could not save background mode')) }
+    finally { setBusy(null) }
+  }
 
   const installService = async () => {
     setBusy('service-install'); setError(null); setNotice(null)
@@ -269,32 +308,45 @@ export default function NativeHostDiagnostics() {
           {pairingCode && <p className="pilot-pairing-code" aria-live="polite"><span>Browser pairing code</span><strong>{pairingCode}</strong></p>}
         </article>
         <article className="pilot-panel">
-          <div className="pilot-panel-heading"><div><p className="pilot-label">02 / Windows lifecycle</p><h2>Sign-in service</h2></div><span className="pilot-index">USER SERVICE</span></div>
+          <div className="pilot-panel-heading"><div><p className="pilot-label">02 / background lifecycle</p><h2>Keep processing when UI closes</h2></div><span className="pilot-index">OWNER CONTROL</span></div>
+          <p className="pilot-copy">The browser is only the user interface. Keep the local agent running to continue resolving customer queries after closing the tab or native window.</p>
+          <div className="pilot-actions">
+            <button type="button" className="pilot-button pilot-button-primary" onClick={() => void startAgent()} disabled={busy !== null}>{busy === 'agent-start' ? 'Starting…' : 'Start background agent'}</button>
+            <button type="button" className="pilot-button" onClick={() => void stopAgent()} disabled={busy !== null || !healthy}>{busy === 'agent-stop' ? 'Stopping…' : 'Stop background agent'}</button>
+          </div>
+          <label className="pilot-toggle-row">
+            <input type="checkbox" checked={backgroundPolicy?.keepRunning ?? true} onChange={(event) => void toggleBackgroundPolicy(event.target.checked)} disabled={busy !== null || backgroundPolicy === null} />
+            <span><strong>Keep running in background</strong><small>{backgroundPolicy?.keepRunning === false ? 'Closing native diagnostics stops the companion; browser-tab close never stops agentd.' : 'Recommended for customer support; closing the browser or native window does not stop processing.'}</small></span>
+          </label>
+          <p className="pilot-health-readout" role="status">{healthy ? 'Background agent is ready' : 'Background agent is stopped or unavailable'}</p>
+        </article>
+        <article className="pilot-panel">
+          <div className="pilot-panel-heading"><div><p className="pilot-label">03 / Windows lifecycle</p><h2>Sign-in service</h2></div><span className="pilot-index">USER SERVICE</span></div>
           <p className="pilot-copy">Register the lightweight native companion for this Windows user. It starts the local agentd service at sign-in, keeps the browser workspace independent, and retries after a companion failure.</p>
           <p className="pilot-health-readout" role="status">{service?.message || 'Checking Windows service registration…'}</p>
           {service?.supported && <div className="pilot-actions"><button type="button" className="pilot-button pilot-button-primary" onClick={() => void installService()} disabled={busy !== null}>{busy === 'service-install' ? 'Registering…' : service.installed ? 'Re-register service' : 'Install sign-in service'}</button>{service.installed && <button type="button" className="pilot-button" onClick={() => void uninstallService()} disabled={busy !== null}>{busy === 'service-uninstall' ? 'Removing…' : 'Remove sign-in service'}</button>}<span className="pilot-key-state" role="status">{service.installed ? (service.running ? 'Registered · running' : 'Registered') : 'Not registered'}</span></div>}
         </article>
         <article className="pilot-panel">
-          <div className="pilot-panel-heading"><div><p className="pilot-label">03 / file access</p><h2>Owner-selected paths</h2></div><span className="pilot-index">OS PICKER</span></div>
+          <div className="pilot-panel-heading"><div><p className="pilot-label">04 / file access</p><h2>Owner-selected paths</h2></div><span className="pilot-index">OS PICKER</span></div>
           <p className="pilot-copy">Choose a path for an owner-approved native workflow. Product uploads use the browser picker; arbitrary filesystem access is not exposed.</p>
           <div className="pilot-actions"><button type="button" className="pilot-button pilot-button-primary" onClick={() => void choose('file')} disabled={busy !== null}>{busy === 'file' ? 'Opening…' : 'Choose file'}</button><button type="button" className="pilot-button" onClick={() => void choose('folder')} disabled={busy !== null}>{busy === 'folder' ? 'Opening…' : 'Choose folder'}</button></div>
           <p className="pilot-path" aria-live="polite">{selectedPath || 'No path selected yet'}</p>
         </article>
         <article className="pilot-panel">
-          <div className="pilot-panel-heading"><div><p className="pilot-label">04 / credential store</p><h2>Presence only</h2></div><span className="pilot-index">OS STORE</span></div>
+          <div className="pilot-panel-heading"><div><p className="pilot-label">05 / credential store</p><h2>Presence only</h2></div><span className="pilot-index">OS STORE</span></div>
           <p className="pilot-copy">Check presence or re-enter a credential after Electron migration. Values go directly to agentd's OS store and are cleared from this form after success.</p>
           <div className="pilot-form-row"><label htmlFor="native-credential">Credential</label><select id="native-credential" value={credential} onChange={(event) => { setCredential(event.target.value as CredentialKey); setCredentialState('unknown'); setCredentialValue('') }} disabled={busy !== null}>{CREDENTIALS.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}</select></div>
           <div className="pilot-form-row"><label htmlFor="native-credential-value">Value</label><input id="native-credential-value" type="password" autoComplete="new-password" value={credentialValue} onChange={(event) => setCredentialValue(event.target.value)} disabled={busy !== null} placeholder="Enter to reauthenticate" /></div>
           <div className="pilot-actions"><button type="button" className="pilot-button pilot-button-primary" onClick={() => void checkCredential()} disabled={busy !== null}>{busy === 'credential' ? 'Checking…' : 'Check presence'}</button><button type="button" className="pilot-button" onClick={() => void reauthenticateCredential()} disabled={busy !== null || !credentialValue}>{busy === 'credential-save' ? 'Saving…' : 'Store securely'}</button><span className="pilot-key-state" role="status">{credentialState === 'present' ? 'Stored' : credentialState === 'missing' ? 'Not stored' : 'Not checked'}</span></div>
         </article>
         <article className="pilot-panel">
-          <div className="pilot-panel-heading"><div><p className="pilot-label">05 / continuity</p><h2>Stage Electron data</h2></div><span className="pilot-index">OWNER ACTION</span></div>
+          <div className="pilot-panel-heading"><div><p className="pilot-label">06 / continuity</p><h2>Stage Electron data</h2></div><span className="pilot-index">OWNER ACTION</span></div>
           <p className="pilot-copy">Preview and stage only allowlisted, non-secret stores. Live cutovers require separate owner confirmation; credentials require separate reauthentication.</p>
           <div className="pilot-actions"><button type="button" className="pilot-button pilot-button-primary" onClick={() => void previewContinuity()} disabled={busy !== null}>{busy === 'continuity-preview' ? 'Validating…' : 'Preview Electron data'}</button></div>
           {continuityPreview && <div className="pilot-continuity" aria-live="polite"><p>{continuityPreview.entries.map(entry => `${entry.id} (${entry.byteSize} bytes)`).join(' · ')}</p><p className="pilot-copy">Review this list before staging. Credentials and OAuth migration remain deferred. Chat history and settings/persona cutovers run independently.</p><div className="pilot-actions"><button type="button" className="pilot-button pilot-button-primary" onClick={() => void stageContinuity()} disabled={busy !== null || Boolean(migrationId)}>{busy === 'continuity-import' ? 'Staging…' : 'Stage validated data'}</button>{migrationId && !settingsPersonaCutover && <button type="button" className="pilot-button" onClick={() => void confirmSettingsPersona()} disabled={busy !== null}>{busy === 'settings-persona-confirm' ? 'Confirming…' : 'Confirm settings/persona'}</button>}{migrationId && (!chatHistoryCutover || (chatHistoryCutover.state === 'confirmed' && !chatHistoryCutover.confirmationToken && chatHistoryCutover.requiresReconfirmation)) && <button type="button" className="pilot-button" onClick={() => void confirmChatHistory()} disabled={busy !== null}>{busy === 'chat-history-confirm' ? 'Confirming…' : chatHistoryCutover ? 'Confirm chat history again' : 'Confirm chat history'}</button>}{migrationId && !settingsPersonaCutover?.backupSha256 && !chatHistoryCutover?.backupSha256 && <button type="button" className="pilot-button" onClick={() => void rollbackContinuity()} disabled={busy !== null}>{busy === 'continuity-rollback' ? 'Rolling back…' : 'Rollback staging'}</button>}</div>{settingsPersonaCutover && <div className="pilot-actions"><span className="pilot-key-state" role="status">Settings/persona: {settingsPersonaCutover.state}</span>{settingsPersonaCutover.confirmationToken && <button type="button" className="pilot-button pilot-button-primary" onClick={() => void applySettingsPersona()} disabled={busy !== null}>{busy === 'settings-persona-apply' ? 'Applying…' : 'Apply metadata cutover'}</button>}{settingsPersonaCutover.state === 'applied' && <button type="button" className="pilot-button" onClick={() => void rollbackSettingsPersona()} disabled={busy !== null}>{busy === 'settings-persona-rollback' ? 'Rolling back…' : 'Rollback metadata'}</button>}</div>}{chatHistoryCutover && <div className="pilot-actions"><span className="pilot-key-state" role="status">Chat history: {chatHistoryCutover.state}</span>{chatHistoryCutover.confirmationToken && <button type="button" className="pilot-button pilot-button-primary" onClick={() => void applyChatHistory()} disabled={busy !== null}>{busy === 'chat-history-apply' ? 'Applying…' : 'Apply chat history'}</button>}{chatHistoryCutover.backupSha256 && chatHistoryCutover.state !== 'rolled-back' && <button type="button" className="pilot-button" onClick={() => void rollbackChatHistory()} disabled={busy !== null}>{busy === 'chat-history-rollback' ? 'Rolling back…' : 'Rollback chat history'}</button>}<button type="button" className="pilot-button" onClick={() => void refreshChatHistoryStatus()} disabled={busy !== null}>{busy === 'chat-history-status' ? 'Refreshing…' : 'Refresh chat-history status'}</button></div>}</div>}
         </article>
         <article className="pilot-panel">
-          <div className="pilot-panel-heading"><div><p className="pilot-label">06 / credential continuity</p><h2>Reauthentication only</h2></div><span className="pilot-index">NO SECRET READ</span></div>
+          <div className="pilot-panel-heading"><div><p className="pilot-label">07 / credential continuity</p><h2>Reauthentication only</h2></div><span className="pilot-index">NO SECRET READ</span></div>
           <p className="pilot-copy">Electron safe-storage values cannot be transferred safely. Review which credentials need to be entered again through the browser's secure agentd flow; no values are shown or copied.</p>
           <div className="pilot-actions"><button type="button" className="pilot-button pilot-button-primary" onClick={() => void previewCredentialContinuity()} disabled={busy !== null}>{busy === 'credential-continuity-preview' ? 'Inspecting…' : 'Review credentials needing reauthentication'}</button></div>
           {credentialContinuityPreview && <div className="pilot-continuity" aria-live="polite"><p className="pilot-key-state" role="status">Reauthentication required · values excluded</p>{credentialContinuityPreview.stores.map(store => <p key={store.id} className="pilot-copy">{store.id}: {store.entries.length ? store.entries.map(entry => `${entry.key}${entry.scope === 'user' ? ' (user-scoped)' : ''}${entry.supported ? '' : ' (unsupported)'}`).join(' · ') : 'No recognized credentials'}</p>)}</div>}

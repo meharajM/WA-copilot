@@ -11,6 +11,10 @@ import {
 export const TAURI_COMMANDS = {
   appVersion: 'app_version',
   agentdHealth: 'agentd_health',
+  agentdStart: 'agentd_start',
+  agentdStop: 'agentd_stop',
+  backgroundPolicy: 'background_policy',
+  setBackgroundPolicy: 'set_background_policy',
   agentdOrigin: 'agentd_origin',
   agentdPairingCode: 'agentd_pairing_code',
   openBrowserWorkspace: 'open_browser_workspace',
@@ -241,6 +245,10 @@ export interface NativeServiceStatus {
   message: string | null
 }
 
+export interface NativeBackgroundPolicy {
+  keepRunning: boolean
+}
+
 const readContinuityPreview = (value: unknown): NativeContinuityPreview => {
   if (!isRecord(value) || typeof value.previewId !== 'string' || typeof value.createdAt !== 'number'
     || value.source !== 'electron' || value.target !== 'agentd-staging' || value.secretsExcluded !== true
@@ -306,12 +314,23 @@ const readServiceStatus = (value: unknown): NativeServiceStatus => {
   return value as unknown as NativeServiceStatus
 }
 
+const readBackgroundPolicy = (value: unknown): NativeBackgroundPolicy => {
+  if (!isRecord(value) || typeof value.keepRunning !== 'boolean') {
+    throw new Error('Invalid native background policy response')
+  }
+  return { keepRunning: value.keepRunning }
+}
+
 export const createTauriNativeBridge = (
   dependencies: TauriBridgeDependencies = defaultDependencies,
 ): NativeBridge & {
   appVersion: () => Promise<string>
   agentdOrigin: () => Promise<string>
   agentdPairingCode: () => Promise<string>
+  agentdStart: () => Promise<NativeResult>
+  agentdStop: () => Promise<NativeResult>
+  backgroundPolicy: () => Promise<NativeBackgroundPolicy>
+  setBackgroundPolicy: (keepRunning: boolean) => Promise<NativeBackgroundPolicy>
   openBrowserWorkspace: () => Promise<NativeResult>
   openAgentdDataFolder: () => Promise<NativeResult>
   serviceStatus: () => Promise<NativeServiceStatus>
@@ -347,6 +366,32 @@ export const createTauriNativeBridge = (
       return { status: 'unavailable', error: errorText(error instanceof Error ? error.message : error, 'agentd is stopped or unavailable') }
     }
   }
+
+  const agentdStart = async (): Promise<NativeResult> => {
+    try {
+      await invoke<unknown>(TAURI_COMMANDS.agentdStart)
+      return { success: true }
+    } catch (error) {
+      return failed(error instanceof Error ? error.message : error, 'Could not start the background agent')
+    }
+  }
+
+  const agentdStop = async (): Promise<NativeResult> => {
+    try {
+      await invoke<unknown>(TAURI_COMMANDS.agentdStop)
+      return { success: true }
+    } catch (error) {
+      return failed(error instanceof Error ? error.message : error, 'Could not stop the background agent')
+    }
+  }
+
+  const backgroundPolicy = async (): Promise<NativeBackgroundPolicy> => (
+    readBackgroundPolicy(await invoke<unknown>(TAURI_COMMANDS.backgroundPolicy))
+  )
+
+  const setBackgroundPolicy = async (keepRunning: boolean): Promise<NativeBackgroundPolicy> => (
+    readBackgroundPolicy(await invoke<unknown>(TAURI_COMMANDS.setBackgroundPolicy, { keepRunning }))
+  )
 
   const agentdOrigin = async (): Promise<string> => {
     const value = await invoke<unknown>(TAURI_COMMANDS.agentdOrigin)
@@ -463,6 +508,10 @@ export const createTauriNativeBridge = (
   return {
     runtime: 'tauri',
     health,
+    agentdStart,
+    agentdStop,
+    backgroundPolicy,
+    setBackgroundPolicy,
     selectFile,
     selectFolder,
     setCredential,

@@ -2,6 +2,7 @@
 
 mod agentd_api;
 
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -29,7 +30,7 @@ use agentd_api::{
 };
 use serde::{Deserialize, Serialize};
 use tauri::{
-    menu::{MenuBuilder, MenuItemBuilder},
+    menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder},
     AppHandle, Manager, Runtime, State, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
 use tauri_plugin_dialog::DialogExt;
@@ -53,7 +54,80 @@ const WINDOWS_COMPANION_TASK_NAME: &str = "AICA Native Companion";
 
 struct AgentdProcess {
     stop: Arc<AtomicBool>,
+    commands: Sender<AgentdCommand>,
     supervisor: Mutex<Option<JoinHandle<()>>>,
+}
+
+enum AgentdCommand {
+    Start(Sender<Result<(), String>>),
+    Stop(Sender<Result<(), String>>),
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BackgroundPolicy {
+    keep_running: bool,
+}
+
+impl Default for BackgroundPolicy {
+    fn default() -> Self {
+        Self { keep_running: true }
+    }
+}
+
+struct BackgroundPolicyState {
+    path: PathBuf,
+    value: Mutex<BackgroundPolicy>,
+}
+
+impl BackgroundPolicyState {
+    fn load(path: PathBuf) -> Self {
+        let value = fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default();
+        Self {
+            path,
+            value: Mutex::new(value),
+        }
+    }
+
+    fn get(&self) -> BackgroundPolicy {
+        self.value
+            .lock()
+            .expect("background policy lock poisoned")
+            .clone()
+    }
+
+    fn set(&self, keep_running: bool) -> Result<BackgroundPolicy, String> {
+        let value = BackgroundPolicy { keep_running };
+        let bytes = serde_json::to_vec_pretty(&value)
+            .map_err(|_| "Could not encode background policy".to_string())?;
+        fs::create_dir_all(
+            self.path
+                .parent()
+                .ok_or_else(|| "Background policy path unavailable".to_string())?,
+        )
+        .map_err(|_| "Could not create native data directory".to_string())?;
+        let temp = self.path.with_extension("tmp");
+        fs::write(&temp, bytes).map_err(|_| "Could not save background policy".to_string())?;
+        if fs::rename(&temp, &self.path).is_err() {
+            // Windows cannot replace an existing file with `rename`. Remove
+            // only the exact policy target, then commit the already-written
+            // bounded temporary file.
+            if self.path.exists() {
+                fs::remove_file(&self.path)
+                    .map_err(|_| "Could not commit background policy".to_string())?;
+                fs::rename(&temp, &self.path)
+                    .map_err(|_| "Could not commit background policy".to_string())?;
+            } else {
+                let _ = fs::remove_file(&temp);
+                return Err("Could not commit background policy".to_string());
+            }
+        }
+        *self.value.lock().expect("background policy lock poisoned") = value.clone();
+        Ok(value)
+    }
 }
 
 impl Drop for AgentdProcess {
@@ -100,6 +174,43 @@ fn app_version() -> &'static str {
 #[tauri::command]
 async fn agentd_health(client: State<'_, AgentdClient>) -> Result<NativeHealth, String> {
     Ok(client.health().await)
+}
+
+fn send_agentd_command(
+    process: &AgentdProcess,
+    command: impl FnOnce(Sender<Result<(), String>>) -> AgentdCommand,
+) -> Result<(), String> {
+    let (reply, receiver) = mpsc::channel();
+    process
+        .commands
+        .send(command(reply))
+        .map_err(|_| "Native agent supervisor unavailable".to_string())?;
+    receiver
+        .recv_timeout(Duration::from_secs(5))
+        .map_err(|_| "Native agent operation timed out".to_string())?
+}
+
+#[tauri::command]
+fn agentd_start(process: State<'_, AgentdProcess>) -> Result<(), String> {
+    send_agentd_command(&process, AgentdCommand::Start)
+}
+
+#[tauri::command]
+fn agentd_stop(process: State<'_, AgentdProcess>) -> Result<(), String> {
+    send_agentd_command(&process, AgentdCommand::Stop)
+}
+
+#[tauri::command]
+fn background_policy(policy: State<'_, BackgroundPolicyState>) -> BackgroundPolicy {
+    policy.get()
+}
+
+#[tauri::command]
+fn set_background_policy(
+    policy: State<'_, BackgroundPolicyState>,
+    keep_running: bool,
+) -> Result<BackgroundPolicy, String> {
+    policy.set(keep_running)
 }
 
 #[tauri::command]
@@ -755,6 +866,9 @@ fn service_cli_action() -> Option<ServiceCliAction> {
 }
 
 fn request_quit<R: Runtime>(app: &AppHandle<R>) {
+    if let Some(process) = app.try_state::<AgentdProcess>() {
+        let _ = send_agentd_command(&process, AgentdCommand::Stop);
+    }
     app.state::<Arc<AtomicBool>>().store(true, Ordering::SeqCst);
     app.exit(0);
 }
@@ -762,19 +876,42 @@ fn request_quit<R: Runtime>(app: &AppHandle<R>) {
 fn create_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let open = MenuItemBuilder::with_id("open", "Open native diagnostics").build(app)?;
     let browser = MenuItemBuilder::with_id("browser", "Open browser workspace").build(app)?;
+    let start = MenuItemBuilder::with_id("start-agent", "Start background agent").build(app)?;
+    let stop = MenuItemBuilder::with_id("stop-agent", "Stop background agent").build(app)?;
+    let keep_running = CheckMenuItemBuilder::with_id("keep-running", "Keep running in background")
+        .checked(app.state::<BackgroundPolicyState>().get().keep_running)
+        .build(app)?;
     let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
     let menu = MenuBuilder::new(app)
-        .items(&[&browser, &open, &quit])
+        .items(&[&browser, &open, &start, &stop, &keep_running, &quit])
         .build()?;
     let icon = tauri::image::Image::new_owned(vec![46, 120, 220, 255].repeat(16 * 16), 16, 16);
     tauri::tray::TrayIconBuilder::with_id("aica-tray")
         .icon(icon)
         .menu(&menu)
-        .on_menu_event(|app, event| match event.id().as_ref() {
+        .on_menu_event(move |app, event| match event.id().as_ref() {
             "open" => open_main_window(app),
             "browser" => {
                 if let Err(error) = open_browser_workspace_for_app(app) {
                     eprintln!("[aica] browser workspace unavailable: {error}");
+                }
+            }
+            "start-agent" => {
+                if let Some(process) = app.try_state::<AgentdProcess>() {
+                    let _ = send_agentd_command(&process, AgentdCommand::Start);
+                }
+            }
+            "stop-agent" => {
+                if let Some(process) = app.try_state::<AgentdProcess>() {
+                    let _ = send_agentd_command(&process, AgentdCommand::Stop);
+                }
+            }
+            "keep-running" => {
+                if let Some(policy) = app.try_state::<BackgroundPolicyState>() {
+                    let next = !policy.get().keep_running;
+                    if policy.set(next).is_ok() {
+                        let _ = keep_running.set_checked(next);
+                    }
                 }
             }
             "quit" => request_quit(app),
@@ -859,6 +996,42 @@ fn spawn_agentd<R: Runtime>(app: &AppHandle<R>, data_dir: &PathBuf) -> Result<Ch
         .map_err(|_| "Packaged agentd runtime could not start".to_string())
 }
 
+/// Stop a live agentd instance even when this companion attached to a service
+/// started by an earlier companion. `origin()` performs the descriptor
+/// ownership/identity validation before the PID is used.
+fn stop_attached_agentd(client: &AgentdClient) -> Result<(), String> {
+    let data_dir = client
+        .data_directory()
+        .map_err(|_| "Agentd data directory unavailable".to_string())?;
+    let _ = client
+        .origin()
+        .map_err(|_| "Agentd is not running".to_string())?;
+    let bytes = fs::read(data_dir.join("agentd.runtime.json"))
+        .map_err(|_| "Agentd descriptor unavailable".to_string())?;
+    let pid = serde_json::from_slice::<serde_json::Value>(&bytes)
+        .ok()
+        .and_then(|value| value.get("pid").and_then(serde_json::Value::as_u64))
+        .filter(|pid| *pid > 1 && *pid <= u32::MAX as u64)
+        .ok_or_else(|| "Agentd descriptor has no valid process id".to_string())?
+        as u32;
+    if pid == std::process::id() {
+        return Err("Refusing to stop the native companion".into());
+    }
+    #[cfg(windows)]
+    let status = Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .status();
+    #[cfg(unix)]
+    let status = Command::new("kill")
+        .args(["-TERM", &pid.to_string()])
+        .status();
+    status
+        .map_err(|_| "Could not stop agentd".to_string())?
+        .success()
+        .then_some(())
+        .ok_or_else(|| "Could not stop agentd".to_string())
+}
+
 fn should_spawn_agentd(client: &AgentdClient) -> bool {
     client.origin().is_err()
 }
@@ -868,6 +1041,7 @@ fn supervise_agentd<R: Runtime + 'static>(
     data_dir: PathBuf,
     initial_child: Option<Child>,
     stop: Arc<AtomicBool>,
+    commands: Receiver<AgentdCommand>,
 ) -> JoinHandle<()> {
     thread::Builder::new()
         .name("aica-agentd-supervisor".into())
@@ -875,8 +1049,49 @@ fn supervise_agentd<R: Runtime + 'static>(
             let client = AgentdClient::with_data_dir(data_dir.clone());
             let mut child = initial_child;
             let mut restart_after = Instant::now();
+            let mut enabled = true;
 
             while !stop.load(Ordering::SeqCst) {
+                while let Ok(command) = commands.try_recv() {
+                    match command {
+                        AgentdCommand::Start(reply) => {
+                            enabled = true;
+                            if child.is_none() && should_spawn_agentd(&client) {
+                                match spawn_agentd(&app, &data_dir) {
+                                    Ok(next) => {
+                                        child = Some(next);
+                                        restart_after = Instant::now() + AGENTD_RESTART_BACKOFF;
+                                    }
+                                    Err(error) => {
+                                        let _ = reply.send(Err(error));
+                                        continue;
+                                    }
+                                }
+                            }
+                            let _ = reply.send(Ok(()));
+                        }
+                        AgentdCommand::Stop(reply) => {
+                            enabled = false;
+                            if let Some(mut process) = child.take() {
+                                let result = process
+                                    .kill()
+                                    .and_then(|_| process.wait())
+                                    .map_err(|error| format!("Could not stop agentd: {error}"));
+                                let _ = reply.send(result.map(|_| ()));
+                            } else {
+                                let _ =
+                                    reply.send(stop_attached_agentd(&client).or_else(|error| {
+                                        // A missing descriptor means the service is already stopped.
+                                        if !should_spawn_agentd(&client) {
+                                            Err(error)
+                                        } else {
+                                            Ok(())
+                                        }
+                                    }));
+                            }
+                        }
+                    }
+                }
                 if let Some(process) = child.as_mut() {
                     match process.try_wait() {
                         Ok(None) => {
@@ -903,7 +1118,7 @@ fn supervise_agentd<R: Runtime + 'static>(
                 // A separate companion/service may have claimed the runtime
                 // between the child exit and this check. Never start another
                 // writer while its private descriptor still validates.
-                if !should_spawn_agentd(&client) {
+                if !enabled || !should_spawn_agentd(&client) {
                     thread::sleep(AGENTD_SUPERVISION_POLL);
                     continue;
                 }
@@ -935,6 +1150,10 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             app_version,
             agentd_health,
+            agentd_start,
+            agentd_stop,
+            background_policy,
+            set_background_policy,
             agentd_origin,
             agentd_pairing_code,
             open_browser_workspace,
@@ -1004,20 +1223,51 @@ fn main() {
             } else {
                 None
             };
-            let supervisor =
-                supervise_agentd(app.handle().clone(), data_dir.clone(), child, stop.clone());
+            let (commands, command_receiver) = mpsc::channel();
+            let supervisor = supervise_agentd(
+                app.handle().clone(),
+                data_dir.clone(),
+                child,
+                stop.clone(),
+                command_receiver,
+            );
             app.manage(AgentdProcess {
                 stop: stop.clone(),
+                commands,
                 supervisor: Mutex::new(Some(supervisor)),
             });
             app.manage(client);
+            app.manage(BackgroundPolicyState::load(
+                data_dir.join("background-policy.json"),
+            ));
             create_tray(app.handle())?;
-            if std::env::args_os()
+            let background = std::env::args_os()
                 .skip(1)
-                .any(|argument| argument == "--background")
-            {
+                .any(|argument| argument == "--background");
+            if background {
                 if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
                     let _ = window.hide();
+                }
+            } else {
+                if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+                    let _ = window.hide();
+                }
+                // Give the supervisor a short bounded window to publish its
+                // descriptor before handing the user to the browser.
+                let mut opened = false;
+                for _ in 0..20 {
+                    if open_browser_workspace_for_app(app.handle()).is_ok() {
+                        opened = true;
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(100));
+                }
+                if !opened {
+                    // Keep a recovery surface if the default browser could
+                    // not be launched or the loopback daemon was unavailable.
+                    if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+                        let _ = window.show();
+                    }
                 }
             }
             Ok(())
@@ -1026,7 +1276,16 @@ fn main() {
             if window.label() == MAIN_WINDOW_LABEL {
                 if let WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
-                    let _ = window.destroy();
+                    let keep_running = window
+                        .app_handle()
+                        .try_state::<BackgroundPolicyState>()
+                        .map(|policy| policy.get().keep_running)
+                        .unwrap_or(true);
+                    if keep_running {
+                        let _ = window.destroy();
+                    } else {
+                        request_quit(&window.app_handle());
+                    }
                 }
             }
         });
@@ -1074,6 +1333,32 @@ mod tests {
         assert!(browser_workspace_url("https://example.test").is_err());
         assert!(browser_workspace_url("http://127.0.0.1:0").is_err());
         assert!(browser_workspace_url("http://127.0.0.1:4141/evil").is_err());
+    }
+
+    #[test]
+    fn background_policy_defaults_to_keep_running_and_round_trips() {
+        let default_policy = BackgroundPolicy::default();
+        assert!(default_policy.keep_running);
+        let encoded = serde_json::to_string(&BackgroundPolicy {
+            keep_running: false,
+        })
+        .unwrap();
+        assert_eq!(encoded, r#"{"keepRunning":false}"#);
+        let decoded: BackgroundPolicy = serde_json::from_str(&encoded).unwrap();
+        assert!(!decoded.keep_running);
+    }
+
+    #[test]
+    fn background_policy_loads_default_and_persists_atomically() {
+        let root = std::env::temp_dir().join(format!("aica-policy-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let path = root.join("nested").join("background-policy.json");
+        let policy = BackgroundPolicyState::load(path.clone());
+        assert!(policy.get().keep_running);
+        assert!(!policy.set(false).unwrap().keep_running);
+        assert!(policy.set(true).unwrap().keep_running);
+        assert!(BackgroundPolicyState::load(path).get().keep_running);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
