@@ -12,6 +12,8 @@ description: Verifies the app against the current behavior contract in docs/app-
 3. Select the impacted areas instead of testing randomly.
 4. Compare observed behavior to `docs/app-behavior.md`, not to memory or older manuals.
 
+Default runtime boundary: browser workspace in Windows Edge/Chrome. Do not launch `/Applications/AIConsumerAgent.app`, a packaged Electron binary, or an Electron dev window for browser UX validation. Use Tauri only to validate native-host capabilities; it must not be used as a second product workspace.
+
 ## Workflow
 
 ### 1. Establish scope
@@ -23,7 +25,8 @@ description: Verifies the app against the current behavior contract in docs/app-
 ### 2. Run preflight
 
 - Stop if `typecheck`, `test:unit`, `test:integration`, or `build` fail.
-- Confirm whether you are testing the installed app or the local build artifact.
+- Confirm whether you are testing the browser bundle served by `agentd`, the Tauri native diagnostics surface, or the Electron transition client.
+- For browser QA, require `dist/tauri.html`, a live loopback `agentd`, and the visible pairing flow before checking product screens.
 
 ### 3. Verify by contract
 
@@ -40,6 +43,7 @@ description: Verifies the app against the current behavior contract in docs/app-
 ### 4. Prioritized area checklist
 
 - `Startup`: dependency gate, first render, shell loads
+- `Browser boundary`: daemon readiness, pairing, reload/session continuity, no native/product-window duplication
 - `Navigation`: sidebar, settings shell, command palette
 - `Chat`: session creation, per-session isolation, attachments, voice if touched
 - `WhatsApp`: connection, gating toggles, inbound handling, escalation, follow-up
@@ -60,5 +64,6 @@ description: Verifies the app against the current behavior contract in docs/app-
 
 - Do not mark a test passed because it "seems fine".
 - Do not use old PDF/manual wording as authority when it conflicts with `docs/app-behavior.md`.
-- Prefer real UI verification for behavior changes, not test-suite output alone.
+- Prefer real Edge/Chrome UI verification for browser behavior changes, not test-suite output alone.
+- Do not report an Electron/macOS walkthrough as browser evidence.
 - If behavior changed intentionally, update `docs/app-behavior.md` in the same workstream.

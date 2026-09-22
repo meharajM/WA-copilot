@@ -1,6 +1,6 @@
 # App Behavior
 
-Last updated: 2026-09-20
+Last updated: 2026-09-22
 
 ## Purpose
 
@@ -8,7 +8,8 @@ This document is the source of truth for manual QA and skill-driven verification
 
 Audience:
 
-- testers validating packaged builds and local installs
+- testers validating the browser workspace in Windows Edge/Chrome
+- owners validating the Tauri companion's native-only capabilities
 - developers changing runtime behavior, prompts, policies, or channel controls
 
 Use this document to answer:
@@ -58,11 +59,20 @@ Before manual testing:
 - `npm run test:unit`
 - `npm run test:integration`
 - `npm run build`
+- `npm run build:tauri:web`
 
-For packaged-app testing, also verify one of:
+For browser manual testing:
+
+- Start the native companion/service or an isolated `agentd` with the built `dist/tauri.html` UI root.
+- Open the reported loopback URL in Edge or Chrome.
+- Pair with the owner code shown by the companion. Do not paste real credentials or provider secrets into a test page.
+
+For transition-client testing only, optionally verify one of:
 
 - `/Applications/AIConsumerAgent.app`
 - `dist/mac-arm64/AIConsumerAgent.app`
+
+The installed Electron app is not evidence for browser UX, Windows browser behavior, or Tauri native-boundary behavior.
 
 Repository validation note:
 
@@ -581,6 +591,21 @@ Pass evidence:
 - The LLM provider selector includes `browser`. In Edge/Chrome it is an explicit WebGPU mode backed by the existing WebLLM worker/cache; remote providers remain agentd-owned. Tauri still renders no product settings UI, and Electron keeps its existing local path during transition.
 - Electron resolution-audit helper text and the agentd browser audit both use the documented 10-minute inactivity threshold.
 
+## Latest browser manual QA record (2026-09-22)
+
+Environment: browser bundle from `npm run build:tauri:web`, served by an isolated local `agentd`, opened in the Codex in-app Chromium browser at a loopback `/tauri.html` URL. Pairing used a synthetic six-digit owner code; no real provider credentials or personal files were entered.
+
+Results:
+
+- **Pass — startup and pairing:** the page showed `Pair this browser`, accepted the owner code, and mounted the browser workspace. No Electron dependency-install modal or second product window appeared.
+- **Pass — session continuity:** reload retained the authenticated browser session; the product shell returned without re-pairing. The automated browser E2E covers this same assertion.
+- **Pass — navigation:** Command Center, All Chats, Brain View, Lead Directory, Email Drafts, Settings, Email Channel, AI Model Connection, Web Automation, Audit Logs, and System Info rendered without a browser renderer error.
+- **Pass — empty-state chat:** All Chats showed `Start a conversation` and a working composer instead of repeating the dashboard.
+- **Pass — controlled provider failure:** submitting a non-sensitive smoke message persisted the user message and returned `Error: Provider unavailable` because no LLM credential was configured. The composer remained usable and the error had retry/correction actions; this is a setup limitation, not a browser crash.
+- **Pass — browser-safe defaults:** a fresh workspace showed zero seeded sessions, zero indexed sources, zero autonomy, no active WhatsApp connection, and no email drafts.
+
+Not tested in this pass: real WhatsApp/Gmail/Meta/X delivery, WebGPU model download, microphone permission, file upload/conversion, signed Windows install/upgrade, and Tauri keychain/service actions. Those require explicit owner/provider or Windows-host evidence.
+
 ## QA Reporting Format
 
 For every manual test run, capture:
@@ -588,7 +613,7 @@ For every manual test run, capture:
 - build and test preflight result
 - runtime boundary used (`Edge`/`Chrome` browser workspace, Tauri native diagnostics, or Electron transition client)
 - Windows host/packaging evidence when claiming Windows readiness (native-host tests, staged-resource verification, bundle, signing/install smoke, and resource measurements are separate gates). The staged-resource gate checks the target-specific agentd runtime and keyring helper, agentd entrypoint/dependencies including the compiled `better-sqlite3` native binding, and browser `tauri.html` plus JavaScript/CSS assets before bundling; it does not claim signing, installation, upgrade, or Windows Credential Manager runtime evidence.
-- app build or install path used
+- browser URL/agentd mode or native artifact path used
 - exact feature area tested
 - expected behavior from this document
 - observed behavior
