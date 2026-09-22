@@ -266,6 +266,7 @@ describe('browser-first UI boundary', () => {
     expect(emailSettings).toContain('runs authenticated generation and confidence policy')
     expect(emailSettings).toContain('disabled={!canEnableChannel}')
     expect(emailSettings).toContain('Run Test Connection before enabling.')
+    expect(emailSettings).toContain('A successful probe is only valid for the values that were tested')
     expect(drafts).toContain('gated IMAP/Gmail polling')
     expect(drafts).toContain('Safe operator-selected PDF, image, and text attachments')
     expect(drafts).toContain('dispatchBrowserDeliveryStatus')

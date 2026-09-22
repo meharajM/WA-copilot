@@ -172,6 +172,13 @@ export function EmailSettingsPanel() {
     }
   }, [])
 
+  // A successful probe is only valid for the values that were tested. Any
+  // mailbox/provider edit invalidates it so a stale success cannot unlock a
+  // different transport configuration.
+  useEffect(() => {
+    if (testState.status === 'success') setTestState({ status: 'idle' })
+  }, [localProvider, localGmailAuthMode, localEmail, localAccountName, localUserName, localPassword, localImapHost, localSmtpHost, localImapPort, localSmtpPort])
+
   const applyProvider = (provider: EmailProvider) => {
     setLocalProvider(provider)
     if (provider === 'gmail-api') {
