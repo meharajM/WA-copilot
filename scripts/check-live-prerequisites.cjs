@@ -114,6 +114,10 @@ if (transport === 'cloud') {
     console.log('WhatsApp Cloud relay: AICA_RELAY_ORIGIN must use HTTPS (or explicitly allow localhost HTTP)')
   } else {
     console.log(`WhatsApp Cloud relay: configured for ${relayBusiness}`)
+    // A syntactically valid public origin is not enough for Cloud ingress:
+    // fail readiness when the relay cannot answer its unauthenticated health
+    // route. The probe never sends business or credential material.
+    probeHealth('WhatsApp Cloud relay', relayOrigin)
   }
 }
 

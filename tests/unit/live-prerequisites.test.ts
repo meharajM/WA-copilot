@@ -65,6 +65,44 @@ describe('live prerequisite preflight', () => {
     expect(result.stdout).toContain('WhatsApp Cloud relay: AICA_RELAY_ORIGIN must use HTTPS')
   })
 
+  it('probes the configured Cloud relay health route before declaring readiness', async () => {
+    const requests: string[] = []
+    const server = createServer((request, response) => {
+      requests.push(`${request.method} ${request.url}`)
+      response.writeHead(request.url === '/healthz' ? 200 : 404, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({ ok: true }))
+    })
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('Unable to allocate test port')
+    try {
+      const script = path.resolve(process.cwd(), 'scripts/check-live-prerequisites.cjs')
+      const result = await new Promise<{ status: number | null; stdout: string }>((resolve, reject) => {
+        const child = spawn(process.execPath, [script], {
+          env: {
+            PATH: process.env.PATH,
+            WHATSAPP_TRANSPORT: 'cloud',
+            AICA_RELAY_ORIGIN: `http://127.0.0.1:${address.port}`,
+            AICA_RELAY_BUSINESS_ID: 'business-1',
+            AICA_RELAY_ALLOW_INSECURE_LOCALHOST: 'true',
+            OPENROUTER_API_KEY: 'replace_with_your_openrouter_api_key',
+            OPENROUTER_MODEL: 'replace_with_model',
+          },
+        })
+        let stdout = ''
+        child.stdout.on('data', chunk => { stdout += String(chunk) })
+        child.once('error', reject)
+        child.once('close', status => resolve({ status, stdout }))
+      })
+      expect(result.status).not.toBe(0)
+      expect(requests).toEqual(['GET /healthz'])
+      expect(result.stdout).toContain('WhatsApp Cloud relay: configured for business-1')
+      expect(result.stdout).toContain('WhatsApp Cloud relay: ready')
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()))
+    }
+  })
+
   it('requires IMAP/SMTP fields for selected app-password email transport', () => {
     const script = path.resolve(process.cwd(), 'scripts/check-live-prerequisites.cjs')
     const result = spawnSync(process.execPath, [script], {
