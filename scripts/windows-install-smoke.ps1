@@ -31,8 +31,14 @@ function Invoke-ServiceAction([string]$Executable, [string]$Action, [string]$Smo
   try {
     $process = Start-Process -FilePath $Executable -ArgumentList $Action -Wait -PassThru `
       -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
-    $stdout = if (Test-Path -LiteralPath $stdoutPath) { (Get-Content -LiteralPath $stdoutPath -Raw).Trim() } else { '' }
-    $stderr = if (Test-Path -LiteralPath $stderrPath) { (Get-Content -LiteralPath $stderrPath -Raw).Trim() } else { '' }
+    $stdout = if (Test-Path -LiteralPath $stdoutPath) {
+      $raw = Get-Content -LiteralPath $stdoutPath -Raw
+      if ($null -eq $raw) { '' } else { $raw.Trim() }
+    } else { '' }
+    $stderr = if (Test-Path -LiteralPath $stderrPath) {
+      $raw = Get-Content -LiteralPath $stderrPath -Raw
+      if ($null -eq $raw) { '' } else { $raw.Trim() }
+    } else { '' }
     return [pscustomobject]@{ ExitCode = $process.ExitCode; Stdout = $stdout; Stderr = $stderr }
   }
   finally {
