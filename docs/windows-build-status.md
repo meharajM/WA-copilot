@@ -10,6 +10,22 @@ Date: 2026-09-21
 
 ## Windows runner result
 
+### Latest exact-head evidence
+
+Commit `e07605a574a12f70c36906fde33759e6eb3ad483` passed the exact-head
+[Windows package workflow](https://github.com/meharajM/WA-copilot/actions/runs/35719685091)
+and [full Windows workflow](https://github.com/meharajM/WA-copilot/actions/runs/35719685056),
+with [Pages deployment](https://github.com/meharajM/WA-copilot/actions/runs/35719676989)
+also green. The packaged smoke recorded `health.ok: true`, successful native
+service enrollment/query/removal, native-companion close survival, bounded
+idle resource usage, reinstall data preservation, and clean uninstall. The
+workflow also passed the Windows migration-reader, Credential Manager,
+staged-resource, native-host, bundle, and installer-artifact checks.
+
+This is hosted unsigned-package evidence. It does not close signed
+real-user logon/upgrade/downgrade/rollback, four-state GPU/VRAM/latency
+measurements, live provider/Web connector validation, or Electron retirement.
+
 This build ran on macOS arm64. The repository intentionally rejects cross-target preparation for the Windows Credential Manager helper and migration-reader sidecars:
 
 ```text
