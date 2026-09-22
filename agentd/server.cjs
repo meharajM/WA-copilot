@@ -18,7 +18,6 @@ const { EmailInboundWorker, pollMailbox } = require('./email-inbound-worker.cjs'
 const { MAX_SCANNED_EMAIL_ATTACHMENT_BYTES, scanEmailAttachment } = require('./email-attachment-safety.cjs')
 const { McpWorker, MCP_LIFECYCLE } = require('./mcp-worker.cjs')
 const { SpeechModelStore } = require('./speech-model.cjs')
-const { PublicRelayClient } = require('./public-relay-client.cjs')
 
 const SESSION_TTL_MS = 15 * 60 * 1000
 const PAIRING_TTL_MS = 5 * 60 * 1000
