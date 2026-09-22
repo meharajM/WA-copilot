@@ -25,6 +25,7 @@
         "typecheck:renderer": "tsc --noEmit -p tsconfig.renderer.json",
         "check:runtime": "node scripts/check-runtime-compat.cjs",
         "check:live-prereqs": "node scripts/check-live-prerequisites.cjs",
+        "check:live-evidence": "node scripts/validate-live-evidence.mjs",
         "lint": "eslint src/",
         "lint:fix": "eslint src/ --fix",
         "test": "vitest run",
