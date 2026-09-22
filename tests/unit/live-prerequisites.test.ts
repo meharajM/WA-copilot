@@ -103,6 +103,29 @@ describe('live prerequisite preflight', () => {
     }
   })
 
+  it('fails closed when the configured Cloud relay health route is unreachable', async () => {
+    const server = createServer()
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('Unable to allocate test port')
+    await new Promise<void>(resolve => server.close(() => resolve()))
+    const script = path.resolve(process.cwd(), 'scripts/check-live-prerequisites.cjs')
+    const result = spawnSync(process.execPath, [script], {
+      env: {
+        PATH: process.env.PATH,
+        WHATSAPP_TRANSPORT: 'cloud',
+        AICA_RELAY_ORIGIN: `http://127.0.0.1:${address.port}`,
+        AICA_RELAY_BUSINESS_ID: 'business-1',
+        AICA_RELAY_ALLOW_INSECURE_LOCALHOST: 'true',
+        OPENROUTER_API_KEY: 'replace_with_your_openrouter_api_key',
+        OPENROUTER_MODEL: 'replace_with_model',
+      },
+      encoding: 'utf8'
+    })
+    expect(result.status).not.toBe(0)
+    expect(result.stdout).toContain('WhatsApp Cloud relay: health check failed or endpoint unreachable')
+  })
+
   it('requires IMAP/SMTP fields for selected app-password email transport', () => {
     const script = path.resolve(process.cwd(), 'scripts/check-live-prerequisites.cjs')
     const result = spawnSync(process.execPath, [script], {
