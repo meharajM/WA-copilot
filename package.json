@@ -26,6 +26,7 @@
         "check:runtime": "node scripts/check-runtime-compat.cjs",
         "check:live-prereqs": "node scripts/check-live-prerequisites.cjs",
         "check:live-evidence": "node scripts/validate-live-evidence.mjs",
+        "check:windows-resource-evidence": "node --test tests/unit/windows-resource-evidence.test.cjs",
         "lint": "eslint src/",
         "lint:fix": "eslint src/ --fix",
         "test": "vitest run",
