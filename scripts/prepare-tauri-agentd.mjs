@@ -36,6 +36,7 @@ if (requestedTarget && requestedTarget !== hostTriple) {
 await rm(stageRoot, { recursive: true, force: true })
 await mkdir(join(stageRoot, 'node_modules'), { recursive: true })
 await cp(join(projectRoot, 'agentd', 'server.cjs'), join(stageRoot, 'server.cjs'))
+await cp(join(projectRoot, 'agentd', 'public-relay-client.cjs'), join(stageRoot, 'public-relay-client.cjs'))
 await cp(join(projectRoot, 'agentd', 'keyring-credential-store.cjs'), join(stageRoot, 'keyring-credential-store.cjs'))
 await cp(join(projectRoot, 'agentd', 'gmail-oauth.cjs'), join(stageRoot, 'gmail-oauth.cjs'))
 await cp(join(projectRoot, 'agentd', 'gmail-api.cjs'), join(stageRoot, 'gmail-api.cjs'))

@@ -17,6 +17,7 @@ async function fixture() {
     'aica-migration-reader.exe',
     'agentd-http/index.cjs',
     'agentd-http/server.cjs',
+    'agentd-http/public-relay-client.cjs',
     'agentd-http/continuity-migration.cjs',
     'agentd-http/email-mime.cjs',
     'agentd-http/email-attachment-safety.cjs',

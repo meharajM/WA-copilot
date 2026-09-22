@@ -56,6 +56,7 @@ test('Windows sidecar preparation preserves executable extensions', () => {
   assert.match(preparation, /email-inbound-worker\.cjs/)
   assert.match(preparation, /mcp-worker\.cjs/)
   assert.match(preparation, /speech-model\.cjs/)
+  assert.match(preparation, /public-relay-client\.cjs/)
   assert.match(preparation, /@whiskeysockets\/baileys/)
   assert.match(preparation, /@modelcontextprotocol\/sdk/)
   assert.match(preparation, /optionalDependencies/)
@@ -81,6 +82,8 @@ test('packaged runner owns agentd startup and does not accept renderer-selected 
   assert.match(runner, /process\.env\.AICA_AGENTD_DATA_DIR/)
   assert.match(runner, /process\.env\.AICA_AGENTD_KEYRING_HELPER/)
   assert.match(runner, /process\.env\.AICA_AGENTD_UI_ROOT/)
+  assert.match(runner, /PublicRelayClient/)
+  assert.match(runner, /relay_agent_secret/)
   assert.doesNotMatch(runner, /process\.argv\.slice/)
 })
 

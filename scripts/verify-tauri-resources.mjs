@@ -68,6 +68,7 @@ export async function verifyTauriResources({
     migrationReader,
     join(sidecar, 'agentd-http', 'index.cjs'),
     join(sidecar, 'agentd-http', 'server.cjs'),
+    join(sidecar, 'agentd-http', 'public-relay-client.cjs'),
     join(sidecar, 'agentd-http', 'continuity-migration.cjs'),
     join(sidecar, 'agentd-http', 'email-mime.cjs'),
     join(sidecar, 'agentd-http', 'email-attachment-safety.cjs'),
