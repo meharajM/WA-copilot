@@ -54,6 +54,7 @@ Optional:
 - `npm run test:agentd:speech` - bounded speech-model cache/download tests (streaming, size, URL and digest gates).
 - `npm run test` - full suite with live tests auto-skipped unless enabled.
 - `npm run test:live` - live suite only (requires valid OpenRouter env vars).
+- `npm run check:live-prereqs` - secret-safe readiness preflight; loads `.env.test.local`, `.env.test`, then `.env`, reports the selected transport and required variable names without printing values, and requires an extension token for `WHATSAPP_TRANSPORT=web`.
 - `npm run test:robust` - unit + integration + live.
 - `npm run test:e2e` - deterministic Electron UI smoke test.
 - `npm run test:playwright` - same Electron UI smoke test, driven by Playwright.
