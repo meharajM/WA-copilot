@@ -7,6 +7,7 @@ const { pathToFileURL } = require('node:url')
 
 const script = path.resolve(__dirname, '../../scripts/verify-tauri-windows-bundle.mjs')
 const installSmoke = path.resolve(__dirname, '../../scripts/windows-install-smoke.ps1')
+const upgradeSmoke = path.resolve(__dirname, '../../scripts/windows-upgrade-smoke.ps1')
 
 async function fixture() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aica-tauri-bundle-'))
@@ -55,4 +56,16 @@ test('Windows install smoke measures the complete native idle resource footprint
   assert.match(source, /NSIS reinstall removed the user-data sentinel/)
   assert.match(source, /agentd stopped when the native companion exited/)
   assert.match(source, /agentd health was not ok=true after native companion exit/)
+})
+
+test('Windows upgrade smoke preserves user data across upgrade and downgrade', async () => {
+  const source = await fs.readFile(upgradeSmoke, 'utf8')
+  assert.match(source, /PreviousInstallerPath/)
+  assert.match(source, /CurrentInstallerPath/)
+  assert.match(source, /Current upgrade/)
+  assert.match(source, /Previous downgrade/)
+  assert.match(source, /upgradedAndDowngraded = \$true/)
+  assert.match(source, /userDataPreserved = \$true/)
+  assert.match(source, /Upgrade removed the user-data sentinel/)
+  assert.match(source, /Downgrade removed the user-data sentinel/)
 })
