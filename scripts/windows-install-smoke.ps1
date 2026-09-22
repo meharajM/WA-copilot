@@ -247,3 +247,7 @@ finally {
   if (Test-Path -LiteralPath $startupLog) { Remove-Item -LiteralPath $startupLog -Force -ErrorAction SilentlyContinue }
   if (Test-Path -LiteralPath $dataSentinel) { Remove-Item -LiteralPath $dataSentinel -Force -ErrorAction SilentlyContinue }
 }
+
+# Expected negative schtasks queries are part of this smoke. Do not leak their
+# process status as the script result after all assertions have passed.
+exit 0
