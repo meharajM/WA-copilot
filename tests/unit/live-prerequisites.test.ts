@@ -1,4 +1,5 @@
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
+import { createServer } from 'node:http'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 
@@ -109,6 +110,44 @@ describe('live prerequisite preflight', () => {
     expect(result.status).not.toBe(0)
     expect(result.stdout).toContain('agentd endpoint: invalid AICA_AGENTD_ORIGIN/AICA_AGENTD_ENDPOINT')
     expect(result.stdout).not.toContain('secret-agentd-endpoint')
+  })
+
+  it('probes the Web extension health route without printing its bearer token', async () => {
+    const requests: string[] = []
+    const server = createServer((request, response) => {
+      requests.push(`${request.method} ${request.url}`)
+      expect(request.headers.authorization).toBe(`Bearer ${'w'.repeat(32)}`)
+      response.writeHead(request.url === '/health' ? 200 : 404, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({ status: 'connected' }))
+    })
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('Unable to allocate test port')
+    try {
+      const script = path.resolve(process.cwd(), 'scripts/check-live-prerequisites.cjs')
+      const result = await new Promise<{ status: number | null; stdout: string }>((resolve, reject) => {
+        const child = spawn(process.execPath, [script], {
+          env: {
+            PATH: process.env.PATH,
+            WHATSAPP_TRANSPORT: 'web',
+            AICA_EXTENSION_BRIDGE_TOKEN: 'w'.repeat(32),
+            AICA_EXTENSION_BRIDGE_HEALTH_URL: `http://127.0.0.1:${address.port}`,
+            OPENROUTER_API_KEY: 'replace_with_your_openrouter_api_key',
+            OPENROUTER_MODEL: 'replace_with_model',
+          },
+        })
+        let stdout = ''
+        child.stdout.on('data', chunk => { stdout += String(chunk) })
+        child.once('error', reject)
+        child.once('close', status => resolve({ status, stdout }))
+      })
+      expect(result.status).not.toBe(0)
+      expect(requests).toEqual(['GET /health'])
+      expect(result.stdout).toContain('WhatsApp Web session probe: ready')
+      expect(result.stdout).not.toContain('w'.repeat(32))
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()))
+    }
   })
 
 })

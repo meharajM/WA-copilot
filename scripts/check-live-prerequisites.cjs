@@ -37,8 +37,8 @@ function valueOf(variables) {
   return variables.map(variable => process.env[variable]).find((_, index) => configured(variables[index])) || ''
 }
 
-function probeHealth(label, origin, headers = {}) {
-  const health = new URL('/healthz', origin)
+function probeHealth(label, origin, headers = {}, pathName = '/healthz') {
+  const health = new URL(pathName, origin)
   void fetch(health, { headers, signal: AbortSignal.timeout(2_000) })
     .then(response => {
       if (!response.ok) {
@@ -94,7 +94,7 @@ if (transport === 'web') {
       const url = new URL(webHealth)
       if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('unsupported protocol')
       console.log(`WhatsApp Web session probe: configured (${url.origin})`)
-      if (configured('AICA_EXTENSION_BRIDGE_TOKEN')) probeHealth('WhatsApp Web session probe', url.origin, { Authorization: `Bearer ${process.env.AICA_EXTENSION_BRIDGE_TOKEN}` })
+      if (configured('AICA_EXTENSION_BRIDGE_TOKEN')) probeHealth('WhatsApp Web session probe', url.origin, { Authorization: `Bearer ${process.env.AICA_EXTENSION_BRIDGE_TOKEN}` }, '/health')
     } catch {
       missing += 1
       console.log('WhatsApp Web session probe: invalid AICA_EXTENSION_BRIDGE_HEALTH_URL/AICA_EXTENSION_BRIDGE_ORIGIN')
