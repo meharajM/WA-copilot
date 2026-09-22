@@ -12,6 +12,12 @@ const path = require('node:path')
 
 const repoRoot = path.resolve(__dirname, '..')
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm'
+const electronRebuild = path.join(
+  repoRoot,
+  'node_modules',
+  '.bin',
+  process.platform === 'win32' ? 'electron-rebuild.cmd' : 'electron-rebuild',
+)
 const electronVersion = require('electron/package.json').version
 
 function run(command, args) {
@@ -22,15 +28,14 @@ function run(command, args) {
 
 let exitCode = 0
 try {
-  run(npm, [
-    'rebuild',
-    'better-sqlite3',
-    '--runtime=electron',
-    `--target=${electronVersion}`,
-    '--dist-url=https://electronjs.org/headers',
+  // npm 11 no longer forwards the legacy --runtime/--target flags reliably
+  // to node-gyp. Use the installed Electron rebuild CLI so the native module
+  // is actually compiled for Electron's ABI before the smoke starts.
+  run(electronRebuild, [
+    '--version', electronVersion,
+    '--which-module', 'better-sqlite3',
     '--build-from-source',
-    '--no-audit',
-    '--no-fund',
+    '--force',
   ])
   run(process.execPath, [path.join(repoRoot, 'tests/e2e/electron-smoke.cjs')])
 } catch (error) {
