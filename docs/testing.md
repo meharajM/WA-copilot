@@ -54,7 +54,7 @@ Optional:
 - `npm run test:agentd:speech` - bounded speech-model cache/download tests (streaming, size, URL and digest gates).
 - `npm run test` - full suite with live tests auto-skipped unless enabled.
 - `npm run test:live` - live suite only (requires valid OpenRouter env vars).
-- `npm run check:live-prereqs` - secret-safe readiness preflight; loads `.env.test.local`, `.env.test`, then `.env`, reports the selected transport and required variable names without printing values, requires an extension token for `WHATSAPP_TRANSPORT=web`, and requires an HTTPS relay origin/business for `WHATSAPP_TRANSPORT=cloud`.
+- `npm run check:live-prereqs` - secret-safe readiness preflight; loads `.env.test.local`, `.env.test`, then `.env`, reports the selected transport and required variable names without printing values, requires an extension token for `WHATSAPP_TRANSPORT=web`, and requires an HTTPS relay origin/business for `WHATSAPP_TRANSPORT=cloud`. Set `AICA_EMAIL_PROVIDER=imap-smtp` (plus `AICA_EMAIL_*`/`EMAIL_*` mailbox fields) or `AICA_EMAIL_PROVIDER=gmail-api` with `AICA_EMAIL_AUTH_MODE=google-oauth` to validate the applicable email configuration. Set `AICA_AGENTD_ORIGIN` or `AICA_AGENTD_ENDPOINT` to validate and probe the agentd `/healthz` endpoint; set `AICA_EXTENSION_BRIDGE_HEALTH_URL` to probe a configured Web bridge session. These checks prove local configuration/readiness only; mailbox login, browser session evidence, provider ownership, relay reachability, and delivery evidence remain live gates.
 - `npm run test:relay` - public relay signature, durable-before-ack, polling/lease, acknowledgement, TTL expiry and no-send-path tests.
 - `npm run test:robust` - unit + integration + live.
 - `npm run test:e2e` - deterministic Electron UI smoke test.

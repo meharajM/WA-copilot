@@ -63,4 +63,52 @@ describe('live prerequisite preflight', () => {
     expect(result.status).not.toBe(0)
     expect(result.stdout).toContain('WhatsApp Cloud relay: AICA_RELAY_ORIGIN must use HTTPS')
   })
+
+  it('requires IMAP/SMTP fields for selected app-password email transport', () => {
+    const script = path.resolve(process.cwd(), 'scripts/check-live-prerequisites.cjs')
+    const result = spawnSync(process.execPath, [script], {
+      env: {
+        PATH: process.env.PATH,
+        AICA_EMAIL_PROVIDER: 'imap-smtp',
+        OPENROUTER_API_KEY: 'replace_with_your_openrouter_api_key',
+        OPENROUTER_MODEL: 'replace_with_model',
+      },
+      encoding: 'utf8'
+    })
+    expect(result.status).not.toBe(0)
+    expect(result.stdout).toContain('Email IMAP/SMTP transport: missing address, imapHost, imapPort, smtpHost, smtpPort, password')
+  })
+
+  it('requires OAuth client configuration for selected Gmail OAuth transport', () => {
+    const script = path.resolve(process.cwd(), 'scripts/check-live-prerequisites.cjs')
+    const result = spawnSync(process.execPath, [script], {
+      env: {
+        PATH: process.env.PATH,
+        AICA_EMAIL_PROVIDER: 'gmail-api',
+        AICA_EMAIL_AUTH_MODE: 'google-oauth',
+        OPENROUTER_API_KEY: 'replace_with_your_openrouter_api_key',
+        OPENROUTER_MODEL: 'replace_with_model',
+      },
+      encoding: 'utf8'
+    })
+    expect(result.status).not.toBe(0)
+    expect(result.stdout).toContain('Gmail OAuth transport: missing GMAIL_OAUTH_CLIENT_ID, GMAIL_OAUTH_CLIENT_SECRET')
+  })
+
+  it('rejects an invalid configured agentd endpoint without exposing values', () => {
+    const script = path.resolve(process.cwd(), 'scripts/check-live-prerequisites.cjs')
+    const result = spawnSync(process.execPath, [script], {
+      env: {
+        PATH: process.env.PATH,
+        AICA_AGENTD_ORIGIN: 'javascript:secret-agentd-endpoint',
+        OPENROUTER_API_KEY: 'replace_with_your_openrouter_api_key',
+        OPENROUTER_MODEL: 'replace_with_model',
+      },
+      encoding: 'utf8'
+    })
+    expect(result.status).not.toBe(0)
+    expect(result.stdout).toContain('agentd endpoint: invalid AICA_AGENTD_ORIGIN/AICA_AGENTD_ENDPOINT')
+    expect(result.stdout).not.toContain('secret-agentd-endpoint')
+  })
+
 })

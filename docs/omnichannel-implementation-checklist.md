@@ -10,7 +10,7 @@ The bounded local WhatsApp backend gate is now implemented: browser text/caption
 
 ### September 22 readiness amendment
 
-`npm run check:live-prereqs` now loads the same local env-file precedence as the live test runner, accepts the repository's OpenRouter live-test pair (`OPENROUTER_API_KEY` + `OPENROUTER_MODEL`) as an LLM configuration, and requires an extension bridge token when `WHATSAPP_TRANSPORT=web`. This improves fail-closed readiness reporting; it does not substitute for provider ownership, secure-store, live Web/mailbox, signing, or real-profile evidence.
+`npm run check:live-prereqs` now loads the same local env-file precedence as the live test runner, accepts the repository's OpenRouter live-test pair (`OPENROUTER_API_KEY` + `OPENROUTER_MODEL`) as an LLM configuration, requires an extension bridge token when `WHATSAPP_TRANSPORT=web`, requires an HTTPS relay origin/business when `WHATSAPP_TRANSPORT=cloud`, validates selected IMAP/SMTP or Gmail OAuth configuration, and probes `/healthz` when an agentd or Web bridge endpoint is configured. This improves fail-closed readiness reporting; it does not substitute for provider ownership, secure-store, live Web/mailbox, signing, relay reachability, or real-profile evidence.
 
 ### September 15 delivery-model amendment
 
