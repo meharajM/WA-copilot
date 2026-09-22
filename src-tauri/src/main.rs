@@ -602,7 +602,6 @@ fn windows_service_status() -> Result<NativeServiceStatus, String> {
         task,
         OsStr::new("/FO"),
         OsStr::new("LIST"),
-        OsStr::new("/NH"),
     ])?;
     if !output.status.success() {
         return Ok(NativeServiceStatus {
@@ -690,7 +689,6 @@ fn install_windows_service(app: &AppHandle) -> Result<NativeServiceStatus, Strin
             task_name,
             OsStr::new("/FO"),
             OsStr::new("LIST"),
-            OsStr::new("/NH"),
         ])
         .map_err(|error| format!("Windows service registration not visible: {error}"))?;
         return Err(format!(

@@ -18,7 +18,7 @@ function Assert-Condition([bool]$Condition, [string]$Message) {
 function Invoke-TaskQuery([string]$TaskName) {
   $schtasks = Join-Path $env:SystemRoot 'System32\schtasks.exe'
   Assert-Condition (Test-Path -LiteralPath $schtasks -PathType Leaf) 'Windows Task Scheduler CLI was not found'
-  $output = @(& $schtasks /Query /TN $TaskName /FO LIST /NH 2>$null)
+  $output = @(& $schtasks /Query /TN $TaskName /FO LIST 2>$null)
   return [pscustomobject]@{
     ExitCode = $LASTEXITCODE
     Output = $output -join "`n"
