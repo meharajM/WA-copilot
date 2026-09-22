@@ -1,5 +1,21 @@
+const fs = require('node:fs')
+const path = require('node:path')
+
+// Keep this preflight aligned with tests/utils/liveEnv.ts. Shell-provided
+// values win; local env files are loaded only to make the check match the
+// live-test runner without ever printing secret values.
+try {
+  const { config } = require('dotenv')
+  for (const file of ['.env.test.local', '.env.test', '.env']) {
+    const fullPath = path.resolve(process.cwd(), file)
+    if (fs.existsSync(fullPath)) config({ path: fullPath, override: false })
+  }
+} catch {
+  // dotenv is a development dependency; an installed production bundle can
+  // still run the check using process-provided variables.
+}
+
 const groups = [
-  ['LLM', ['GOOGLE_API_KEY']],
   ['Escalation', ['AICA_ESCALATION_CONTACT']],
   ['Gmail OAuth', ['GMAIL_OAUTH_CLIENT_ID', 'GMAIL_OAUTH_CLIENT_SECRET']],
   ['Meta', ['META_ACCESS_TOKEN', 'META_ACCOUNT_ID']],
@@ -19,6 +35,18 @@ for (const [name, variables] of groups) {
   else console.log(`${name}: configured (${variables.length} variables present)`)
 }
 
+const llmOptions = [
+  { label: 'OpenRouter', variables: ['OPENROUTER_API_KEY', 'OPENROUTER_MODEL'] },
+  { label: 'Google Gemini', variables: ['GOOGLE_API_KEY'] },
+]
+const configuredLlm = llmOptions.find(option => option.variables.every(configured))
+if (configuredLlm) {
+  console.log(`LLM: configured (${configuredLlm.label})`)
+} else {
+  missing += 1
+  console.log('LLM: missing OPENROUTER_API_KEY + OPENROUTER_MODEL or GOOGLE_API_KEY')
+}
+
 if (!['true', '1', 'yes'].includes(String(process.env.AICA_LLM_DATA_POLICY_APPROVED || '').trim().toLowerCase())) {
   missing += 1
   console.log('LLM data policy: not approved (AICA_LLM_DATA_POLICY_APPROVED)')
@@ -26,5 +54,13 @@ if (!['true', '1', 'yes'].includes(String(process.env.AICA_LLM_DATA_POLICY_APPRO
 
 const transport = String(process.env.WHATSAPP_TRANSPORT || '').trim() || 'baileys/default'
 console.log(`WhatsApp transport selection: ${transport}`)
+if (transport === 'web') {
+  if (!configured('AICA_EXTENSION_BRIDGE_TOKEN')) {
+    missing += 1
+    console.log('WhatsApp Web bridge: missing AICA_EXTENSION_BRIDGE_TOKEN')
+  } else {
+    console.log('WhatsApp Web bridge: configured')
+  }
+}
 console.log('Cloud/Web/Gmail secure-store credentials and provider dashboard permissions require live owner verification.')
 if (missing) process.exitCode = 1
