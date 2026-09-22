@@ -142,6 +142,11 @@ export function EmailSettingsPanel() {
   const canGoLive = readyForAuth && readyForVerify
   const transportVerified = testState.status === 'success' || (config.enabled && connectionState.status === 'connected')
   const isVerified = transportVerified
+  // Enabling the browser channel is a production-affecting action. Keep the
+  // UI aligned with agentd's transport/credential gates: users can always
+  // disable an existing channel, but must complete a successful probe before
+  // enabling it for the first time or after a failed/reloaded setup.
+  const canEnableChannel = config.enabled || isVerified
 
   useEffect(() => {
     setLocalProvider(config.provider)
@@ -702,9 +707,15 @@ export function EmailSettingsPanel() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm text-[var(--color-text-primary)] font-medium">Enable Email Channel</p>
-              <p className="text-xs text-[var(--color-text-dim)]">{browserRuntime ? 'Starts bounded daemon IMAP polling for app-password mode or Gmail API polling after Google Sign-In; each path has separate TLS, credential, and enable gates.' : 'Turns on background email processing'}</p>
+              <p className="text-xs text-[var(--color-text-dim)]">{browserRuntime ? 'Starts bounded daemon IMAP polling for app-password mode or Gmail API polling after Google Sign-In; each path has separate TLS, credential, and enable gates.' : 'Turns on background email processing'}{!config.enabled && !isVerified ? ' Run Test Connection before enabling.' : ''}</p>
             </div>
-            <button onClick={() => setEnabled(!config.enabled)} className={config.enabled ? 'text-green-400' : 'text-[var(--color-text-muted)]'}>
+            <button
+              onClick={() => setEnabled(!config.enabled)}
+              disabled={!canEnableChannel}
+              title={!canEnableChannel ? 'Run Test Connection before enabling the email channel' : undefined}
+              aria-label={config.enabled ? 'Disable email channel' : 'Enable email channel'}
+              className={`${config.enabled ? 'text-green-400' : 'text-[var(--color-text-muted)]'} disabled:opacity-40 disabled:cursor-not-allowed`}
+            >
               {config.enabled ? <ToggleRight size={28} /> : <ToggleLeft size={28} />}
             </button>
           </div>

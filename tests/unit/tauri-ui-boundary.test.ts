@@ -264,6 +264,8 @@ describe('browser-first UI boundary', () => {
     expect(readSource('stores/emailStore.ts')).toContain('flushEmailSettingsPersistence')
     expect(readSource('hooks/useEmailBridge.ts')).toContain('await flushEmailSettingsPersistence()')
     expect(emailSettings).toContain('runs authenticated generation and confidence policy')
+    expect(emailSettings).toContain('disabled={!canEnableChannel}')
+    expect(emailSettings).toContain('Run Test Connection before enabling.')
     expect(drafts).toContain('gated IMAP/Gmail polling')
     expect(drafts).toContain('Safe operator-selected PDF, image, and text attachments')
     expect(drafts).toContain('dispatchBrowserDeliveryStatus')
