@@ -25,6 +25,21 @@ function Invoke-TaskQuery([string]$TaskName) {
   }
 }
 
+function Invoke-ServiceAction([string]$Executable, [string]$Action, [string]$SmokeId) {
+  $stdoutPath = Join-Path $env:RUNNER_TEMP "aica-service-$SmokeId-$Action-out.log"
+  $stderrPath = Join-Path $env:RUNNER_TEMP "aica-service-$SmokeId-$Action-err.log"
+  try {
+    $process = Start-Process -FilePath $Executable -ArgumentList $Action -Wait -PassThru `
+      -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+    $stdout = if (Test-Path -LiteralPath $stdoutPath) { (Get-Content -LiteralPath $stdoutPath -Raw).Trim() } else { '' }
+    $stderr = if (Test-Path -LiteralPath $stderrPath) { (Get-Content -LiteralPath $stderrPath -Raw).Trim() } else { '' }
+    return [pscustomobject]@{ ExitCode = $process.ExitCode; Stdout = $stdout; Stderr = $stderr }
+  }
+  finally {
+    Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
+  }
+}
+
 $installer = [System.IO.Path]::GetFullPath($InstallerPath)
 Assert-Condition (Test-Path -LiteralPath $installer -PathType Leaf) "NSIS installer not found: $installer"
 
@@ -60,16 +75,16 @@ try {
   $taskName = 'AICA Native Companion'
   $initialTask = Invoke-TaskQuery $taskName
   Assert-Condition ($initialTask.ExitCode -ne 0) "Refusing to overwrite pre-existing Task Scheduler entry: $taskName"
-  $statusAction = Start-Process -FilePath $binary.FullName -ArgumentList '--service-status' -Wait -PassThru
-  Assert-Condition ($statusAction.ExitCode -eq 0) "Packaged service-status action failed with exit code $($statusAction.ExitCode)"
-  $registerAction = Start-Process -FilePath $binary.FullName -ArgumentList '--register-service' -Wait -PassThru
-  Assert-Condition ($registerAction.ExitCode -eq 0) "Packaged service registration failed with exit code $($registerAction.ExitCode)"
+  $statusAction = Invoke-ServiceAction $binary.FullName '--service-status' $smokeId
+  Assert-Condition ($statusAction.ExitCode -eq 0) "Packaged service-status action failed with exit code $($statusAction.ExitCode): $($statusAction.Stderr)"
+  $registerAction = Invoke-ServiceAction $binary.FullName '--register-service' $smokeId
+  Assert-Condition ($registerAction.ExitCode -eq 0) "Packaged service registration failed with exit code $($registerAction.ExitCode): $($registerAction.Stderr)"
   $serviceRegistered = $true
   $registeredTask = Invoke-TaskQuery $taskName
-  Assert-Condition ($registeredTask.ExitCode -eq 0) 'Registered native companion task was not queryable'
+  Assert-Condition ($registeredTask.ExitCode -eq 0) "Registered native companion task was not queryable (service output: $($registerAction.Stdout); error: $($registerAction.Stderr); query: $($registeredTask.Output))"
   Assert-Condition ($registeredTask.Output -match [regex]::Escape($taskName)) 'Task Scheduler query returned an unexpected task'
-  $unregisterAction = Start-Process -FilePath $binary.FullName -ArgumentList '--unregister-service' -Wait -PassThru
-  Assert-Condition ($unregisterAction.ExitCode -eq 0) "Packaged service removal failed with exit code $($unregisterAction.ExitCode)"
+  $unregisterAction = Invoke-ServiceAction $binary.FullName '--unregister-service' $smokeId
+  Assert-Condition ($unregisterAction.ExitCode -eq 0) "Packaged service removal failed with exit code $($unregisterAction.ExitCode): $($unregisterAction.Stderr)"
   $serviceRegistered = $false
   $removedTask = Invoke-TaskQuery $taskName
   Assert-Condition ($removedTask.ExitCode -ne 0) 'Native companion task remained after explicit cleanup'
@@ -214,7 +229,7 @@ try {
 finally {
   Remove-Item Env:AICA_AGENTD_STARTUP_LOG -ErrorAction SilentlyContinue
   if ($serviceRegistered -and $null -ne $binary -and (Test-Path -LiteralPath $binary.FullName -PathType Leaf)) {
-    $cleanup = Start-Process -FilePath $binary.FullName -ArgumentList '--unregister-service' -Wait -PassThru
+    $cleanup = Invoke-ServiceAction $binary.FullName '--unregister-service' $smokeId
     if ($cleanup.ExitCode -ne 0) {
       $schtasks = Join-Path $env:SystemRoot 'System32\schtasks.exe'
       & $schtasks /Delete /TN 'AICA Native Companion' /F 2>$null | Out-Null

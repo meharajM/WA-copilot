@@ -953,16 +953,18 @@ fn main() {
                             serde_json::to_string(&status)
                                 .map_err(|_| "Could not encode service status")?
                         );
-                        stop.store(true, Ordering::SeqCst);
-                        app.handle().exit(0);
+                        // These maintenance actions intentionally never enter
+                        // the UI event loop or start agentd. Exit directly so
+                        // callers (including the Windows installer smoke) get
+                        // the actual operation result instead of a deferred
+                        // event-loop exit code.
+                        std::process::exit(0);
                     }
                     Err(error) => {
                         eprintln!("[aica] native service action failed: {error}");
-                        stop.store(true, Ordering::SeqCst);
-                        app.handle().exit(1);
+                        std::process::exit(1);
                     }
                 }
-                return Ok(());
             }
 
             let data_dir = app
