@@ -10,6 +10,7 @@ const cargoToml = fs.readFileSync(path.join(root, 'src-tauri/Cargo.toml'), 'utf8
 const rust = fs.readFileSync(path.join(root, 'src-tauri/src/main.rs'), 'utf8')
 const agentdApi = fs.readFileSync(path.join(root, 'src-tauri/src/agentd_api.rs'), 'utf8')
 const runner = fs.readFileSync(path.join(root, 'scripts/tauri-agentd-runner.cjs'), 'utf8')
+const windowsInstallSmoke = fs.readFileSync(path.join(root, 'scripts/windows-install-smoke.ps1'), 'utf8')
 const windowsWorkflow = fs.readFileSync(path.join(root, '.github/workflows/tauri-windows.yml'), 'utf8')
 
 test('Tauri package declares fixed agentd runtime, entrypoint, and keyring helper resources', () => {
@@ -35,6 +36,17 @@ test('Tauri package declares fixed agentd runtime, entrypoint, and keyring helpe
 test('native package versions match the browser package version for upgrade semantics', () => {
   assert.equal(config.version, packageJson.version)
   assert.match(cargoToml, new RegExp(`^version = "${packageJson.version.replaceAll('.', '\\.') }"$`, 'm'))
+})
+
+test('packaged companion exposes safe Windows service enrollment actions', () => {
+  assert.match(rust, /--register-service/)
+  assert.match(rust, /--unregister-service/)
+  assert.match(rust, /--service-status/)
+  assert.match(rust, /Explicit service actions must not start agentd or open the UI/)
+  assert.match(windowsInstallSmoke, /--register-service/)
+  assert.match(windowsInstallSmoke, /--unregister-service/)
+  assert.match(windowsInstallSmoke, /Refusing to overwrite pre-existing Task Scheduler entry/)
+  assert.match(windowsInstallSmoke, /--background/)
 })
 
 test('Tauri dev stages sidecars before Cargo watch starts', () => {

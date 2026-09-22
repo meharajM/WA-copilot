@@ -709,6 +709,24 @@ fn service_uninstall() -> Result<NativeServiceStatus, String> {
     uninstall_windows_service()
 }
 
+#[derive(Clone, Copy)]
+enum ServiceCliAction {
+    Register,
+    Unregister,
+    Status,
+}
+
+fn service_cli_action() -> Option<ServiceCliAction> {
+    std::env::args_os()
+        .skip(1)
+        .find_map(|argument| match argument.to_str() {
+            Some("--register-service") => Some(ServiceCliAction::Register),
+            Some("--unregister-service") => Some(ServiceCliAction::Unregister),
+            Some("--service-status") => Some(ServiceCliAction::Status),
+            _ => None,
+        })
+}
+
 fn request_quit<R: Runtime>(app: &AppHandle<R>) {
     app.state::<Arc<AtomicBool>>().store(true, Ordering::SeqCst);
     app.exit(0);
@@ -916,6 +934,37 @@ fn main() {
             select_folder
         ])
         .setup(|app| {
+            let stop = Arc::new(AtomicBool::new(false));
+            app.manage(stop.clone());
+
+            // Explicit service actions must not start agentd or open the UI.
+            // Normal launches, including --background, keep their existing
+            // lifecycle and supervision behavior.
+            if let Some(action) = service_cli_action() {
+                let result = match action {
+                    ServiceCliAction::Register => install_windows_service(app.handle()),
+                    ServiceCliAction::Unregister => uninstall_windows_service(),
+                    ServiceCliAction::Status => native_service_status(),
+                };
+                match result {
+                    Ok(status) => {
+                        println!(
+                            "{}",
+                            serde_json::to_string(&status)
+                                .map_err(|_| "Could not encode service status")?
+                        );
+                        stop.store(true, Ordering::SeqCst);
+                        app.handle().exit(0);
+                    }
+                    Err(error) => {
+                        eprintln!("[aica] native service action failed: {error}");
+                        stop.store(true, Ordering::SeqCst);
+                        app.handle().exit(1);
+                    }
+                }
+                return Ok(());
+            }
+
             let data_dir = app
                 .path()
                 .app_data_dir()
@@ -926,7 +975,6 @@ fn main() {
             } else {
                 None
             };
-            let stop = Arc::new(AtomicBool::new(false));
             let supervisor =
                 supervise_agentd(app.handle().clone(), data_dir.clone(), child, stop.clone());
             app.manage(AgentdProcess {
@@ -934,7 +982,6 @@ fn main() {
                 supervisor: Mutex::new(Some(supervisor)),
             });
             app.manage(client);
-            app.manage(stop);
             create_tray(app.handle())?;
             if std::env::args_os()
                 .skip(1)

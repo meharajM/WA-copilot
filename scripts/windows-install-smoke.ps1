@@ -15,6 +15,16 @@ function Assert-Condition([bool]$Condition, [string]$Message) {
   }
 }
 
+function Invoke-TaskQuery([string]$TaskName) {
+  $schtasks = Join-Path $env:SystemRoot 'System32\schtasks.exe'
+  Assert-Condition (Test-Path -LiteralPath $schtasks -PathType Leaf) 'Windows Task Scheduler CLI was not found'
+  $output = @(& $schtasks /Query /TN $TaskName /FO LIST /NH 2>$null)
+  return [pscustomobject]@{
+    ExitCode = $LASTEXITCODE
+    Output = $output -join "`n"
+  }
+}
+
 $installer = [System.IO.Path]::GetFullPath($InstallerPath)
 Assert-Condition (Test-Path -LiteralPath $installer -PathType Leaf) "NSIS installer not found: $installer"
 
@@ -29,6 +39,8 @@ $null = New-Item -ItemType Directory -Force -Path $installRoot
 
 $companion = $null
 $agentdPids = @()
+$binary = $null
+$serviceRegistered = $false
 $dataSentinel = Join-Path (Join-Path $env:LOCALAPPDATA 'com.aica.tauri-pilot') "install-smoke-$smokeId.txt"
 $reinstallDataPreserved = $false
 
@@ -41,6 +53,26 @@ try {
 
   $binary = Get-ChildItem -LiteralPath $installRoot -Filter 'aica-tauri-pilot.exe' -File -Recurse | Select-Object -First 1
   Assert-Condition ($null -ne $binary) "Installed native companion executable was not found under $installRoot"
+
+  # Exercise explicit service enrollment through the packaged companion. The
+  # task name is fixed by the product contract, so refuse to overwrite an
+  # existing user task in a shared runner. Cleanup runs in finally below.
+  $taskName = 'AICA Native Companion'
+  $initialTask = Invoke-TaskQuery $taskName
+  Assert-Condition ($initialTask.ExitCode -ne 0) "Refusing to overwrite pre-existing Task Scheduler entry: $taskName"
+  $statusAction = Start-Process -FilePath $binary.FullName -ArgumentList '--service-status' -Wait -PassThru
+  Assert-Condition ($statusAction.ExitCode -eq 0) "Packaged service-status action failed with exit code $($statusAction.ExitCode)"
+  $registerAction = Start-Process -FilePath $binary.FullName -ArgumentList '--register-service' -Wait -PassThru
+  Assert-Condition ($registerAction.ExitCode -eq 0) "Packaged service registration failed with exit code $($registerAction.ExitCode)"
+  $serviceRegistered = $true
+  $registeredTask = Invoke-TaskQuery $taskName
+  Assert-Condition ($registeredTask.ExitCode -eq 0) 'Registered native companion task was not queryable'
+  Assert-Condition ($registeredTask.Output -match [regex]::Escape($taskName)) 'Task Scheduler query returned an unexpected task'
+  $unregisterAction = Start-Process -FilePath $binary.FullName -ArgumentList '--unregister-service' -Wait -PassThru
+  Assert-Condition ($unregisterAction.ExitCode -eq 0) "Packaged service removal failed with exit code $($unregisterAction.ExitCode)"
+  $serviceRegistered = $false
+  $removedTask = Invoke-TaskQuery $taskName
+  Assert-Condition ($removedTask.ExitCode -ne 0) 'Native companion task remained after explicit cleanup'
 
   $env:AICA_AGENTD_STARTUP_LOG = $startupLog
   $companion = Start-Process -FilePath $binary.FullName -ArgumentList '--background' -PassThru
@@ -181,6 +213,13 @@ try {
 }
 finally {
   Remove-Item Env:AICA_AGENTD_STARTUP_LOG -ErrorAction SilentlyContinue
+  if ($serviceRegistered -and $null -ne $binary -and (Test-Path -LiteralPath $binary.FullName -PathType Leaf)) {
+    $cleanup = Start-Process -FilePath $binary.FullName -ArgumentList '--unregister-service' -Wait -PassThru
+    if ($cleanup.ExitCode -ne 0) {
+      $schtasks = Join-Path $env:SystemRoot 'System32\schtasks.exe'
+      & $schtasks /Delete /TN 'AICA Native Companion' /F 2>$null | Out-Null
+    }
+  }
   if ($null -ne $companion -and -not $companion.HasExited) { Stop-Process -Id $companion.Id -Force -ErrorAction SilentlyContinue }
   foreach ($agentdPid in $agentdPids) { Stop-Process -Id $agentdPid -Force -ErrorAction SilentlyContinue }
   if (Test-Path -LiteralPath $installRoot) { Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue }
