@@ -6,6 +6,7 @@ const os = require('node:os')
 const path = require('node:path')
 const test = require('node:test')
 const { PublicRelay } = require('../../relay/public-relay.cjs')
+const { PublicRelayClient } = require('../../agentd/public-relay-client.cjs')
 
 function request(origin, method, pathname, body, headers = {}) {
   return new Promise((resolve, reject) => {
@@ -85,4 +86,26 @@ test('public relay expires queued events and rejects insecure production configu
   const missingTls = new PublicRelay({ dbPath: path.join(os.tmpdir(), `aica-relay-tls-${Date.now()}.db`), businessSecrets: { 'business-1:provider': { providerSecret, agentSecret } }, requireTls: true })
   await assert.rejects(() => missingTls.start(), /TLS key and certificate required/)
   missingTls.db.close()
+})
+
+test('agentd relay client commits locally before acknowledging leased events', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aica-relay-client-'))
+  const providerSecret = 'p'.repeat(32)
+  const agentSecret = 'a'.repeat(32)
+  const relay = new PublicRelay({ dbPath: path.join(root, 'relay.db'), businessSecrets: { 'business-1:provider': { providerSecret, agentSecret } } })
+  const { origin } = await relay.start()
+  try {
+    const body = JSON.stringify({ event_id: 'client-event-1', account_id: 'account-1', message: 'hello' })
+    assert.equal((await request(origin, 'POST', '/v1/webhooks/business-1/provider', body, { 'x-aica-signature': signature(providerSecret, body) })).status, 202)
+    const committed = []
+    const client = new PublicRelayClient({ origin, businessId: 'business-1', provider: 'provider', agentSecret, allowInsecureLocalhost: true, onEvent: async event => { committed.push(event); return 'agentd-commit-1' } })
+    assert.equal(await client.pollOnce(), 1)
+    assert.equal(committed.length, 1)
+    assert.equal(committed[0].body.toString('utf8'), body)
+    assert.equal((await request(origin, 'GET', '/v1/agents/business-1/events?provider=provider', undefined, { authorization: `Bearer ${agentSecret}` })).body.events.length, 0)
+    await client.stop()
+  } finally {
+    await relay.stop()
+    fs.rmSync(root, { recursive: true, force: true })
+  }
 })

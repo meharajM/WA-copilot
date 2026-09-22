@@ -10,6 +10,7 @@
 - `POST /v1/agents/{business}/events/{id}/ack` requires the lease token. Acknowledgement is expected only after the agent has committed the event locally; the relay then removes the raw body while retaining bounded audit metadata.
 - Pending or leased events expire after 24 hours by default. Expired events are not returned to an agent.
 - There is no outbound-send route. The relay cannot become an autonomous agent or provider credential holder.
+- `scripts/agentd.cjs` can enable the client with `AICA_RELAY_ORIGIN`, `AICA_RELAY_BUSINESS_ID` and `AICA_RELAY_PROVIDER`; it reads `relay_agent_secret` only from the OS credential store, commits supported WhatsApp Cloud text events into `agentd`, then acknowledges the lease.
 - TLS is supported through `AICA_RELAY_TLS_KEY_PATH` and `AICA_RELAY_TLS_CERT_PATH`; production startup should set `AICA_RELAY_REQUIRE_TLS=true` and terminate on missing certificates.
 
 ## Local run

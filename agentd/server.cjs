@@ -18,6 +18,7 @@ const { EmailInboundWorker, pollMailbox } = require('./email-inbound-worker.cjs'
 const { MAX_SCANNED_EMAIL_ATTACHMENT_BYTES, scanEmailAttachment } = require('./email-attachment-safety.cjs')
 const { McpWorker, MCP_LIFECYCLE } = require('./mcp-worker.cjs')
 const { SpeechModelStore } = require('./speech-model.cjs')
+const { PublicRelayClient } = require('./public-relay-client.cjs')
 
 const SESSION_TTL_MS = 15 * 60 * 1000
 const PAIRING_TTL_MS = 5 * 60 * 1000
@@ -523,7 +524,7 @@ function whatsappInactivityProviderEventId(sessionId, messageId) {
 }
 
 class AgentdServer {
-  constructor({ dataDir, secret, uiRoot = null, logger = console, pairingCode = null, credentials = null, providerFetch = fetch, speechFetch = fetch, speechModelStore = null, emailProbe = probeEmailTransport, emailSend = sendTextEmail, emailPoll = undefined, gmailPoll: configuredGmailPoll = undefined, whatsappService = null, whatsappExtensionBridge = null, mcpWorker = null } = {}) {
+  constructor({ dataDir, secret, uiRoot = null, logger = console, pairingCode = null, credentials = null, providerFetch = fetch, speechFetch = fetch, speechModelStore = null, emailProbe = probeEmailTransport, emailSend = sendTextEmail, emailPoll = undefined, gmailPoll: configuredGmailPoll = undefined, whatsappService = null, whatsappExtensionBridge = null, mcpWorker = null, relayClient = null } = {}) {
     if (!secret || typeof secret !== 'string' || secret.length < 32) throw new Error('A per-install bearer secret of at least 32 characters is required')
     this.dataDir = resolveDataDir(dataDir)
     this.whatsappMediaDir = path.join(this.dataDir, 'whatsapp-media')
@@ -539,6 +540,7 @@ class AgentdServer {
     this.emailPoll = emailPoll
     this.gmailPoll = configuredGmailPoll
     this.emailInboundWorker = null
+    this.publicRelayClient = relayClient
     this.whatsappInactivityTimer = null
     this.whatsappInactivityAuditRunning = false
     this.whatsappInactivityAuditPromise = null
@@ -902,6 +904,7 @@ class AgentdServer {
         this.logger.warn?.('[agentd] WhatsApp Web extension bridge failed to start', { error: error instanceof Error ? error.message : 'unknown error' })
       }
       this.startEmailInboundPolling()
+      this.publicRelayClient?.start()
       this.startWhatsAppInactivityAudit()
       this.logger.log(`[agentd] listening at ${this.origin}`)
       return { origin: this.origin, pairingExpiresAt: this.pairingExpiresAt }
@@ -1008,6 +1011,7 @@ class AgentdServer {
 
   async stop() {
     this.stopEmailInboundPolling()
+    await this.publicRelayClient?.stop()
     await this.stopWhatsAppInactivityAudit()
     try { await this.mcpWorker?.closeAll() } catch {}
     try { await this.whatsappExtensionBridge?.stop() } catch {}
@@ -4343,6 +4347,38 @@ class AgentdServer {
     if (existing) return json(res, 200, { accepted: true, duplicate: true, id: existing.id })
     const result = this.db.prepare('INSERT INTO inbound_events(channel,provider_event_id,conversation_id,payload,status,created_at) VALUES (?,?,?,?,?,?)').run(body.channel, body.providerEventId, body.conversationId, payload, 'draft', Date.now())
     return json(res, 202, { accepted: true, duplicate: false, id: result.lastInsertRowid })
+  }
+
+  ingestRelayEvent(event) {
+    if (!event || event.provider !== 'whatsapp-cloud' || !Buffer.isBuffer(event.body)) throw new Error('Unsupported relay provider event')
+    let payload
+    try { payload = JSON.parse(event.body.toString('utf8')) } catch { throw new Error('Relay provider event is not JSON') }
+    const entries = Array.isArray(payload?.entry) ? payload.entry : []
+    let accepted = 0
+    for (const entry of entries) {
+      const changes = Array.isArray(entry?.changes) ? entry.changes : []
+      for (const change of changes) {
+        const value = change?.value
+        const messages = Array.isArray(value?.messages) ? value.messages : []
+        for (const message of messages) {
+          if (typeof message?.id !== 'string' || typeof message?.from !== 'string' || !message.from.trim()) continue
+          const textBody = typeof message.text?.body === 'string' ? message.text.body : ''
+          this.ingestWhatsAppServiceMessage({
+            providerEventId: `cloud:${message.id}`,
+            conversationId: message.from,
+            from: message.from,
+            to: typeof value?.metadata?.display_phone_number === 'string' ? value.metadata.display_phone_number : '',
+            content: textBody,
+            timestamp: Number.isFinite(Number(message.timestamp)) ? Number(message.timestamp) * 1000 : Date.now(),
+            type: message.type || 'text',
+            isFromMe: false,
+          })
+          accepted += 1
+        }
+      }
+    }
+    if (accepted === 0) this.logger.log?.('[agentd] relay event contained no inbound customer messages')
+    return `agentd-relay:${event.id}`
   }
 
   ingestWhatsAppServiceMessage(message) {

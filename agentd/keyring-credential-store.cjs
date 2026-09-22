@@ -15,7 +15,7 @@ const ALLOWED_CREDENTIAL_KEYS = new Set([
   'whatsapp_cloud_app_secret',
   'whatsapp_cloud_verify_token',
 ])
-const INTERNAL_CREDENTIAL_KEYS = new Set(['gmail_oauth_refresh_token'])
+const INTERNAL_CREDENTIAL_KEYS = new Set(['gmail_oauth_refresh_token', 'relay_agent_secret'])
 
 function isAllowedCredentialKey(key) {
   if (ALLOWED_CREDENTIAL_KEYS.has(key) || INTERNAL_CREDENTIAL_KEYS.has(key)) return true
