@@ -682,7 +682,26 @@ fn install_windows_service(app: &AppHandle) -> Result<NativeServiceStatus, Strin
         }
         thread::sleep(Duration::from_millis(100));
     }
-    windows_service_status()
+    let status = windows_service_status()?;
+    if !status.installed {
+        let query = run_schtasks(&[
+            OsStr::new("/Query"),
+            OsStr::new("/TN"),
+            task_name,
+            OsStr::new("/FO"),
+            OsStr::new("LIST"),
+            OsStr::new("/NH"),
+        ])
+        .map_err(|error| format!("Windows service registration not visible: {error}"))?;
+        return Err(format!(
+            "Windows service registration not visible after create (create stdout: {}; create stderr: {}; query stdout: {}; query stderr: {})",
+            String::from_utf8_lossy(&output.stdout).trim(),
+            String::from_utf8_lossy(&output.stderr).trim(),
+            String::from_utf8_lossy(&query.stdout).trim(),
+            String::from_utf8_lossy(&query.stderr).trim(),
+        ));
+    }
+    Ok(status)
 }
 
 #[cfg(not(windows))]
