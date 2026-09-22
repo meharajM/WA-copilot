@@ -47,6 +47,9 @@ test('packaged companion exposes safe Windows service enrollment actions', () =>
   assert.match(windowsInstallSmoke, /--unregister-service/)
   assert.match(windowsInstallSmoke, /Refusing to overwrite pre-existing Task Scheduler entry/)
   assert.match(windowsInstallSmoke, /--background/)
+  assert.match(windowsInstallSmoke, /\/Query \/TN \$TaskName \/FO LIST 2>\$null/)
+  assert.doesNotMatch(windowsInstallSmoke, /\/FO LIST \/NH/)
+  assert.match(windowsInstallSmoke, /exit 0/)
 })
 
 test('Tauri dev stages sidecars before Cargo watch starts', () => {
