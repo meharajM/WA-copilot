@@ -2,6 +2,8 @@
 
 This guide covers the current browser-first native-host release candidate. The installed app supplies the local native supervisor and OS integrations; users do their work in a normal browser tab.
 
+Live public walkthrough: [aica-browser-first-guide](https://meharajm.github.io/aica-browser-first-guide/).
+
 > **Release status:** this is an unsigned release candidate. The macOS artifact is Apple Silicon (`arm64`). Windows packaging is `x64`. Production signing, notarization, live provider validation, and real-user upgrade/rollback evidence remain open gates in [`docs/release-readiness.md`](release-readiness.md).
 
 ## Download
@@ -72,4 +74,3 @@ Choose one installer for your platform:
 ## What this release does not claim
 
 This release demonstrates the browser-first UI boundary, native OS/keychain access, background lifecycle controls, and package smoke tests. It does **not** claim 100% migration completion or production-ready provider auto-reply. See [`docs/release-readiness.md`](release-readiness.md) for the remaining gates and [`docs/testing.md`](testing.md) for repeatable checks.
-
