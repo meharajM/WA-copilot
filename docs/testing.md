@@ -55,6 +55,7 @@ Optional:
 - `npm run test` - full suite with live tests auto-skipped unless enabled.
 - `npm run test:live` - live suite only (requires valid OpenRouter env vars).
 - `npm run check:live-prereqs` - secret-safe readiness preflight; loads `.env.test.local`, `.env.test`, then `.env`, reports the selected transport and required variable names without printing values, and requires an extension token for `WHATSAPP_TRANSPORT=web`.
+- `npm run test:relay` - public relay signature, durable-before-ack, polling/lease, acknowledgement, TTL expiry and no-send-path tests.
 - `npm run test:robust` - unit + integration + live.
 - `npm run test:e2e` - deterministic Electron UI smoke test.
 - `npm run test:playwright` - same Electron UI smoke test, driven by Playwright.

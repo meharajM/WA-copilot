@@ -79,7 +79,7 @@ Status: desktop pilot / draft release. This document describes the current imple
 - Observe-only, Draft and Auto-reply modes. Auto-reply requires explicit response permission and host policy approval.
 - RAG/memory evidence, confidence/grounding checks, sensitive/account-specific escalation, opt-out handling, service-window/template checks and AI identity disclosure.
 - Owner-visible queue, channel, health, metrics, drafts, delivery history, unresolved sends, notifications and emergency pause controls.
-- Customer connection onboarding is documented in `docs/customer-connection-onboarding.md`; the production OAuth connection service and HTTPS webhook relay remain deployment work.
+- Customer connection onboarding is documented in `docs/customer-connection-onboarding.md`; the HTTPS webhook relay protocol is shipped in `relay/public-relay.cjs` and tested, while production OAuth connection service, deployment and live callback evidence remain open.
 
 ## Guarantees and limits
 
@@ -90,7 +90,7 @@ Status: desktop pilot / draft release. This document describes the current imple
 - Pause All and conversation takeover stop new dispatch and abort in-flight model generation where supported.
 - Customer messages cannot authorize arbitrary shell commands, unrestricted filesystem access or raw browser evaluation.
 - The desktop worker stops when the owner machine is powered off or the application is explicitly quit. No hosted worker or automatic failover is included.
-- Localhost webhook listeners are for controlled development/pilot use. Production webhooks require a separately operated authenticated HTTPS relay.
+- Localhost webhook listeners are for controlled development/pilot use. Production webhooks require the separately operated authenticated HTTPS relay described in `docs/public-relay.md`.
 - Provider availability, account eligibility, message delivery, policy approval, response quality and cost thresholds are not guaranteed by this release.
 
 ## Required before production auto-reply
