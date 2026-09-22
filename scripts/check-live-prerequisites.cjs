@@ -62,5 +62,18 @@ if (transport === 'web') {
     console.log('WhatsApp Web bridge: configured')
   }
 }
+if (transport === 'cloud') {
+  const relayOrigin = String(process.env.AICA_RELAY_ORIGIN || '').trim()
+  const relayBusiness = String(process.env.AICA_RELAY_BUSINESS_ID || '').trim()
+  if (!configured('AICA_RELAY_ORIGIN') || !configured('AICA_RELAY_BUSINESS_ID')) {
+    missing += 1
+    console.log('WhatsApp Cloud relay: missing AICA_RELAY_ORIGIN + AICA_RELAY_BUSINESS_ID')
+  } else if (!/^https:\/\//i.test(relayOrigin) && !(String(process.env.AICA_RELAY_ALLOW_INSECURE_LOCALHOST || '').toLowerCase() === 'true' && /^http:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?$/i.test(relayOrigin))) {
+    missing += 1
+    console.log('WhatsApp Cloud relay: AICA_RELAY_ORIGIN must use HTTPS (or explicitly allow localhost HTTP)')
+  } else {
+    console.log(`WhatsApp Cloud relay: configured for ${relayBusiness}`)
+  }
+}
 console.log('Cloud/Web/Gmail secure-store credentials and provider dashboard permissions require live owner verification.')
 if (missing) process.exitCode = 1

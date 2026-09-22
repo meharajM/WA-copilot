@@ -46,4 +46,21 @@ describe('live prerequisite preflight', () => {
     expect(result.status).not.toBe(0)
     expect(result.stdout).toContain('WhatsApp Web bridge: missing AICA_EXTENSION_BRIDGE_TOKEN')
   })
+
+  it('requires an HTTPS relay boundary when WhatsApp Cloud transport is selected', () => {
+    const script = path.resolve(process.cwd(), 'scripts/check-live-prerequisites.cjs')
+    const result = spawnSync(process.execPath, [script], {
+      env: {
+        PATH: process.env.PATH,
+        WHATSAPP_TRANSPORT: 'cloud',
+        OPENROUTER_API_KEY: 'replace_with_your_openrouter_api_key',
+        OPENROUTER_MODEL: 'replace_with_model',
+        AICA_RELAY_BUSINESS_ID: 'business-1',
+        AICA_RELAY_ORIGIN: 'http://public.example.test',
+      },
+      encoding: 'utf8'
+    })
+    expect(result.status).not.toBe(0)
+    expect(result.stdout).toContain('WhatsApp Cloud relay: AICA_RELAY_ORIGIN must use HTTPS')
+  })
 })
