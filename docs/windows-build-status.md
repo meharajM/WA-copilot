@@ -42,7 +42,10 @@ The public repository also includes a manual **Tauri Windows package** workflow.
 
 The Windows workflows also run `scripts/windows-install-smoke.ps1` against the
 generated NSIS installer. The smoke installs into an isolated runner directory,
-launches the native companion in background mode, checks the descriptor-advertised
+uses the packaged companion's explicit `--service-status`,
+`--register-service`, and `--unregister-service` actions to query and clean up
+the per-user Task Scheduler enrollment, refuses to overwrite a pre-existing
+task, then launches the native companion in background mode, checks the descriptor-advertised
 loopback `agentd` `/healthz` endpoint, samples the complete idle companion + agentd
 resident set and CPU footprint for five seconds, stops the companion and verifies
 that the independently supervised `agentd` health endpoint remains available,
@@ -51,3 +54,61 @@ sentinel survives, then silently uninstalls the package. This closes unsigned
 install/health/companion-lifecycle/uninstall and reinstall-preservation behavior;
 certificate signing, version-to-version upgrade/downgrade and real-user profile
 rollback remain release gates.
+
+The enrollment actions are maintenance/installer operations, not a second UI:
+
+```powershell
+& "$installRoot\aica-tauri-pilot.exe" --service-status
+& "$installRoot\aica-tauri-pilot.exe" --register-service
+& "$installRoot\aica-tauri-pilot.exe" --unregister-service
+```
+
+They exit after the requested Task Scheduler operation and do not start
+`agentd`, open a window, or change normal `--background` startup behavior.
+
+## Whole-process resource evidence
+
+The install smoke is an automated idle guard for the native companion and
+`agentd`; it is not evidence for browser UI or local-model resource use. Windows
+resource evidence for the release gate must include the whole process tree,
+including Node and any local-model child. Use
+`scripts/windows-resource-evidence.ps1` on the same Windows host for each of the
+four required states:
+
+```powershell
+pwsh -File scripts/windows-resource-evidence.ps1 `
+  -RootProcessId 1234 -UiState open -ModelState unloaded `
+  -SampleSeconds 30 -OutputPath evidence/ui-open-model-unloaded.json
+
+pwsh -File scripts/windows-resource-evidence.ps1 `
+  -RootProcessId 1234 -UiState open -ModelState loaded `
+  -AdditionalProcessId 3456,5678 -SampleSeconds 30 `
+  -OutputPath evidence/ui-open-model-loaded.json
+
+pwsh -File scripts/windows-resource-evidence.ps1 `
+  -RootProcessId 9012 -UiState closed -ModelState unloaded `
+  -SampleSeconds 30 -OutputPath evidence/ui-closed-model-unloaded.json
+
+pwsh -File scripts/windows-resource-evidence.ps1 `
+  -RootProcessId 9012 -UiState closed -ModelState loaded `
+  -AdditionalProcessId 5678 -SampleSeconds 30 `
+  -OutputPath evidence/ui-closed-model-loaded.json
+```
+
+Replace the example process IDs with the `agentd`/native-companion root, the
+browser UI root when it is open (the `3456` example), and, when it is not already
+a descendant, the local-model process (the `5678` example). The operator must
+actually open/close the browser UI and load/unload the model before each run;
+the script records those labels but cannot verify them. It emits bounded,
+redaction-safe JSON containing process names/PIDs, sample timestamps, aggregate
+resident set, normalized average CPU, OS version and sampling metadata. It does
+not impose invented limits or turn one machine's measurement into a product
+claim. Its bounded output is limited to 128 tracked processes and 151 samples;
+the sampling interval is timing metadata, not application latency. GPU/VRAM
+counters and end-to-end interaction latency are intentionally separate manual
+evidence requirements because Windows counter availability and local-model
+instrumentation vary by hardware/runtime. Store those redacted measurements
+with the same run identifier, along with the machine class, app/model versions
+and approved RSS/CPU/GPU/VRAM/latency budgets, then compare all four records on
+the same host against the Electron baseline before closing the resource gate.
+Do not commit raw process command lines, account paths or model prompts.
