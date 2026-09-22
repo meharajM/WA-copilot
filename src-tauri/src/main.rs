@@ -672,6 +672,16 @@ fn install_windows_service(app: &AppHandle) -> Result<NativeServiceStatus, Strin
     if !output.status.success() {
         return Err("Windows service registration failed".into());
     }
+    // Task Scheduler can acknowledge `/Create` before `/Query` observes the
+    // new user task on hosted Windows runners. Bounded retry keeps the action
+    // truthful without hiding a real registration failure.
+    for _ in 0..20 {
+        let status = windows_service_status()?;
+        if status.installed {
+            return Ok(status);
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
     windows_service_status()
 }
 
