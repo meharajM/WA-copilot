@@ -18,7 +18,7 @@ import type {
   WhatsAppSettings,
   EmailSettings,
 } from '../../../shared/native-bridge'
-import { readGeneration, readMessage, readSession } from './tauri-chat-client'
+import { readGeneration, readSession } from './tauri-chat-client'
 
 /** Keep browser knowledge imports below agentd's JSON/content limit before reading them into memory. */
 export const MAX_BROWSER_KNOWLEDGE_CONTENT_BYTES = 512 * 1024
@@ -36,11 +36,8 @@ export async function readBrowserKnowledgeFile(file: File): Promise<{ content: s
   return { content, size: file.size, fileType: file.type || 'text/plain' }
 }
 
-/** Read a bounded binary file without exposing a native path to the browser. */
-export async function readBrowserKnowledgeBinaryFile(file: File): Promise<{ dataBase64: string; size: number; fileType: string }> {
-  if (file.size > MAX_BROWSER_KNOWLEDGE_FILE_BYTES) {
-    throw new Error('Browser knowledge files must be 16 MB or smaller')
-  }
+const readBrowserBinaryFile = async (file: File, maximumBytes: number, tooLargeMessage: string): Promise<{ dataBase64: string; size: number; fileType: string }> => {
+  if (file.size > maximumBytes) throw new Error(tooLargeMessage)
   const bytes = new Uint8Array(await file.arrayBuffer())
   let binary = ''
   const chunkSize = 0x8000
@@ -50,15 +47,13 @@ export async function readBrowserKnowledgeBinaryFile(file: File): Promise<{ data
   return { dataBase64: btoa(binary), size: file.size, fileType: file.type || 'application/octet-stream' }
 }
 
+/** Read a bounded binary file without exposing a native path to the browser. */
+export async function readBrowserKnowledgeBinaryFile(file: File): Promise<{ dataBase64: string; size: number; fileType: string }> {
+  return readBrowserBinaryFile(file, MAX_BROWSER_KNOWLEDGE_FILE_BYTES, 'Browser knowledge files must be 16 MB or smaller')
+}
+
 export async function readBrowserWhatsAppMediaFile(file: File): Promise<{ dataBase64: string; size: number; fileType: string }> {
-  if (file.size > MAX_BROWSER_WHATSAPP_MEDIA_BYTES) throw new Error('WhatsApp media files must be 8 MB or smaller')
-  const bytes = new Uint8Array(await file.arrayBuffer())
-  let binary = ''
-  const chunkSize = 0x8000
-  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
-    binary += String.fromCharCode(...bytes.subarray(offset, Math.min(offset + chunkSize, bytes.length)))
-  }
-  return { dataBase64: btoa(binary), size: file.size, fileType: file.type || 'application/octet-stream' }
+  return readBrowserBinaryFile(file, MAX_BROWSER_WHATSAPP_MEDIA_BYTES, 'WhatsApp media files must be 8 MB or smaller')
 }
 
 export class BrowserAgentdError extends Error {
@@ -240,8 +235,6 @@ export interface BrowserWhatsAppInboundMedia {
   mediaUrl: string
   dataUrl?: string
 }
-
-type Json = Record<string, unknown> | unknown[]
 
 const isRecord = (value: unknown): value is Record<string, unknown> => (
   typeof value === 'object' && value !== null && !Array.isArray(value)

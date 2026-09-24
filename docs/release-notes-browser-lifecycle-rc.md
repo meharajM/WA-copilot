@@ -16,4 +16,3 @@ This public candidate packages the browser-first native companion from the `code
 These artifacts are unsigned. The macOS bundle is ad-hoc/linker-signed and not notarized; Windows signing is not configured. Production auto-reply and full migration remain gated by provider validation, signing/notarization, upgrade/rollback, backup/restore, and real-user evidence. See [`docs/release-readiness.md`](release-readiness.md).
 
 Use the candidate for controlled QA only. Verify `SHA256SUMS` before installing.
-

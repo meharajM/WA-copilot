@@ -88,6 +88,35 @@ test('public relay expires queued events and rejects insecure production configu
   missingTls.db.close()
 })
 
+test('public relay redelivers a lease that expires before local acknowledgement', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aica-relay-lease-'))
+  const providerSecret = 'p'.repeat(32)
+  const agentSecret = 'a'.repeat(32)
+  let now = 1_700_000_000_000
+  const relay = new PublicRelay({
+    dbPath: path.join(root, 'relay.db'),
+    clock: () => now,
+    ttlMs: 1_000,
+    leaseMs: 100,
+    businessSecrets: { 'business-1:provider': { providerSecret, agentSecret } },
+  })
+  const { origin } = await relay.start()
+  try {
+    const body = JSON.stringify({ event_id: 'lease-1', account_id: 'account-1' })
+    assert.equal((await request(origin, 'POST', '/v1/webhooks/business-1/provider', body, { 'x-aica-signature': signature(providerSecret, body) })).status, 202)
+    const first = (await request(origin, 'GET', '/v1/agents/business-1/events?provider=provider', undefined, { authorization: `Bearer ${agentSecret}` })).body.events[0]
+    now += 101
+    assert.equal(relay.sweep(), 1)
+    const second = (await request(origin, 'GET', '/v1/agents/business-1/events?provider=provider', undefined, { authorization: `Bearer ${agentSecret}` })).body.events[0]
+    assert.equal(second.id, first.id)
+    assert.notEqual(second.leaseToken, first.leaseToken)
+    assert.equal(Buffer.from(second.body, 'base64').toString('utf8'), body)
+  } finally {
+    await relay.stop()
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('agentd relay client commits locally before acknowledging leased events', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aica-relay-client-'))
   const providerSecret = 'p'.repeat(32)

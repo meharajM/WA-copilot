@@ -116,12 +116,19 @@ class PublicRelay {
   }
 
   sweep(now = this.clock()) {
-    const result = this.db.prepare(`
+    const requeueExpiredLeases = this.db.prepare(`
+      UPDATE relay_events
+      SET status = 'pending', lease_token = NULL, lease_expires_at = NULL
+      WHERE status = 'leased' AND lease_expires_at <= @now AND expires_at > @now
+    `)
+    const expireEvents = this.db.prepare(`
       UPDATE relay_events
       SET status = 'expired', body = NULL, lease_token = NULL, lease_expires_at = NULL
-      WHERE status IN ('pending', 'leased') AND (expires_at <= @now OR (status = 'leased' AND lease_expires_at <= @now))
-    `).run({ now })
-    return result.changes
+      WHERE status IN ('pending', 'leased') AND expires_at <= @now
+    `)
+    return this.db.transaction(() => (
+      requeueExpiredLeases.run({ now }).changes + expireEvents.run({ now }).changes
+    ))()
   }
 
   readBody(req) {
