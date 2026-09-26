@@ -138,3 +138,31 @@ test('agentd relay client commits locally before acknowledging leased events', a
     fs.rmSync(root, { recursive: true, force: true })
   }
 })
+
+test('public relay polls only the requested provider', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aica-relay-provider-isolation-'))
+  const secrets = {
+    providerSecret: 'p'.repeat(32),
+    agentSecret: 'a'.repeat(32),
+    otherProviderSecret: 'q'.repeat(32),
+    otherAgentSecret: 'b'.repeat(32),
+  }
+  const relay = new PublicRelay({
+    dbPath: path.join(root, 'relay.db'),
+    businessSecrets: {
+      'business-1:provider-a': { providerSecret: secrets.providerSecret, agentSecret: secrets.agentSecret },
+      'business-1:provider-b': { providerSecret: secrets.otherProviderSecret, agentSecret: secrets.otherAgentSecret },
+    },
+  })
+  const { origin } = await relay.start()
+  try {
+    const body = JSON.stringify({ event_id: 'provider-b-event', account_id: 'account-1' })
+    assert.equal((await request(origin, 'POST', '/v1/webhooks/business-1/provider-b', body, { 'x-aica-signature': signature(secrets.otherProviderSecret, body) })).status, 202)
+    const response = await request(origin, 'GET', '/v1/agents/business-1/events?provider=provider-a', undefined, { authorization: `Bearer ${secrets.agentSecret}` })
+    assert.deepEqual(response.body.events, [])
+    assert.equal((await request(origin, 'GET', '/v1/agents/business-1/events', undefined, { authorization: `Bearer ${secrets.agentSecret}` })).status, 400)
+  } finally {
+    await relay.stop()
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})

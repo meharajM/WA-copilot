@@ -201,8 +201,9 @@ class PublicRelay {
   poll(req, res, businessId, searchParams) {
     let credentials
     try { safeSegment(businessId, 'business id') } catch (error) { return text(res, 400, error.message) }
-    const provider = searchParams.get('provider') || null
-    const configured = provider ? this.secretFor(businessId, provider) : [...this.businessSecrets.entries()].find(([key]) => key.startsWith(`${businessId}:`))?.[1]
+    const provider = searchParams.get('provider')
+    if (!provider) return text(res, 400, 'Provider is required')
+    const configured = this.secretFor(businessId, provider)
     if (!configured || !this.authAgent(req, configured)) return text(res, 401, 'Agent authentication required')
     const limit = Math.max(1, Math.min(MAX_LIMIT, Number(searchParams.get('limit') || 20)))
     const afterId = Math.max(0, Number(searchParams.get('after') || 0))
@@ -210,7 +211,7 @@ class PublicRelay {
     this.sweep(now)
     const leaseToken = crypto.randomBytes(24).toString('base64url')
     const rows = this.db.transaction(() => {
-      const pending = this.db.prepare(`SELECT id, provider, account_id, provider_event_id, body, content_type, received_at, expires_at FROM relay_events WHERE business_id = ? AND status = 'pending' AND id > ? AND expires_at > ? ORDER BY id LIMIT ?`).all(businessId, afterId, now, limit)
+      const pending = this.db.prepare(`SELECT id, provider, account_id, provider_event_id, body, content_type, received_at, expires_at FROM relay_events WHERE business_id = ? AND provider = ? AND status = 'pending' AND id > ? AND expires_at > ? ORDER BY id LIMIT ?`).all(businessId, provider, afterId, now, limit)
       if (pending.length > 0) this.db.prepare(`UPDATE relay_events SET status = 'leased', lease_token = ?, lease_expires_at = ? WHERE id IN (${pending.map(() => '?').join(',')})`).run(leaseToken, now + this.leaseMs, ...pending.map(row => row.id))
       return pending
     })()

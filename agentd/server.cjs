@@ -4350,6 +4350,7 @@ class AgentdServer {
 
   ingestRelayEvent(event) {
     if (!event || event.provider !== 'whatsapp-cloud' || !Buffer.isBuffer(event.body)) throw new Error('Unsupported relay provider event')
+    if (!this.allowsWhatsAppCloudRelayMessage()) return `agentd-relay:${event.id}`
     let payload
     try { payload = JSON.parse(event.body.toString('utf8')) } catch { throw new Error('Relay provider event is not JSON') }
     const entries = Array.isArray(payload?.entry) ? payload.entry : []
@@ -4457,6 +4458,16 @@ class AgentdServer {
     try { ui = parseWhatsAppUiSettings(JSON.parse(this.getState('whatsapp_ui_settings', 'null'))) } catch {}
     const selectedTransport = transport || WHATSAPP_SETTINGS_DEFAULTS
     return selectedTransport.whatsapp_transport === 'baileys'
+      && (ui?.whatsappEnabled === true || ui?.businessBotMode === true)
+  }
+
+  allowsWhatsAppCloudRelayMessage() {
+    if (this.migrationHold) return false
+    let transport = null
+    let ui = null
+    try { transport = parseWhatsAppSettings(JSON.parse(this.getState('whatsapp_settings', 'null'))) } catch {}
+    try { ui = parseWhatsAppUiSettings(JSON.parse(this.getState('whatsapp_ui_settings', 'null'))) } catch {}
+    return transport?.whatsapp_transport === 'cloud'
       && (ui?.whatsappEnabled === true || ui?.businessBotMode === true)
   }
 

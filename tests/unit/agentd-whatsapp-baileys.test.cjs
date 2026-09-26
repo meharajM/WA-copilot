@@ -315,6 +315,26 @@ test('agentd Baileys provider ingress is dropped unless a WhatsApp mode is enabl
   }
 })
 
+test('agentd Cloud relay ingress is dropped unless a WhatsApp mode is enabled', async () => {
+  const dataDir = makeTempDir('aica-agentd-whatsapp-cloud-ingress-gate-')
+  const server = new AgentdServer({ dataDir, secret: 'r'.repeat(32), logger: { log() {}, warn() {} } })
+  const payload = JSON.stringify({ entry: [{ changes: [{ value: { messages: [{ id: 'cloud-1', from: '919888888888', type: 'text', text: { body: 'Inbound' } }] } }] }] })
+  const countInbound = () => server.db.prepare("SELECT COUNT(*) AS count FROM inbound_events WHERE channel = 'whatsapp'").get().count
+  try {
+    await server.start()
+    server.setState('whatsapp_settings', JSON.stringify({ whatsapp_transport: 'cloud', whatsapp_cloud_phone_number_id: '1234567890', whatsapp_cloud_api_version: 'v23.0' }))
+    server.ingestRelayEvent({ id: 1, provider: 'whatsapp-cloud', body: Buffer.from(payload) })
+    assert.equal(countInbound(), 0)
+
+    server.setState('whatsapp_ui_settings', JSON.stringify({ whatsappEnabled: true, businessBotMode: false, targetPhoneNumber: null }))
+    server.ingestRelayEvent({ id: 2, provider: 'whatsapp-cloud', body: Buffer.from(payload.replace('cloud-1', 'cloud-2')) })
+    assert.equal(countInbound(), 1)
+  } finally {
+    await server.stop()
+    fs.rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
 test('browser WhatsApp Cloud media uploads then sends through the authenticated Graph route', async () => {
   const dataDir = makeTempDir('aica-agentd-whatsapp-cloud-media-')
   const calls = []
