@@ -1,9 +1,15 @@
 const net = require('node:net')
 const tls = require('node:tls')
 
-const MAX_MESSAGE_BYTES = 128 * 1024
-const MAX_RESPONSE_BYTES = 256 * 1024
+// IMAP literals are bounded before parsing. The parser keeps text bodies small
+// while allowing a few modest, scan-able MIME parts to reach the daemon.
+const MAX_MESSAGE_BYTES = 2 * 1024 * 1024
+const MAX_TEXT_BODY_BYTES = 128 * 1024
+const MAX_RESPONSE_BYTES = 3 * 1024 * 1024
 const MAX_HEADER_BYTES = 32 * 1024
+const MAX_ATTACHMENT_BYTES = 512 * 1024
+const MAX_TOTAL_ATTACHMENT_BYTES = 1024 * 1024
+const MAX_ATTACHMENTS = 5
 
 function imapQuote(value) {
   if (typeof value !== 'string' || value.length > 1024 || /[\u0000\r\n]/.test(value)) throw new Error('Invalid IMAP credential')
@@ -127,36 +133,146 @@ function connect(host, port, secure) {
     : net.connect({ host, port })
 }
 
-function decodeQuotedPrintable(value) {
-  return value.replace(/=([0-9A-Fa-f]{2})/g, (_, hex) => String.fromCharCode(Number.parseInt(hex, 16))).replace(/=\r?\n/g, '')
-}
-
-function parseTextMessage(raw) {
-  if (!Buffer.isBuffer(raw) || raw.length > MAX_MESSAGE_BYTES) throw new Error('Email message too large')
-  const separator = raw.indexOf(Buffer.from('\r\n\r\n'))
-  const alt = separator < 0 ? raw.indexOf(Buffer.from('\n\n')) : separator
-  if (alt < 0 || alt > MAX_HEADER_BYTES) throw new Error('Email headers are malformed')
-  const split = separator >= 0 ? 4 : 2
-  const headerText = raw.subarray(0, alt).toString('utf8')
-  const bodyBytes = raw.subarray(alt + split)
+function splitHeaders(raw) {
+  const crlf = raw.indexOf(Buffer.from('\r\n\r\n'))
+  const lf = raw.indexOf(Buffer.from('\n\n'))
+  const separator = crlf >= 0 ? crlf : lf
+  if (separator < 0 || separator > MAX_HEADER_BYTES) throw new Error('Email headers are malformed')
+  const split = crlf >= 0 ? 4 : 2
+  const headerText = raw.subarray(0, separator).toString('utf8')
   const unfolded = headerText.replace(/\r?\n[ \t]+/g, ' ')
   const headers = new Map()
   for (const line of unfolded.split(/\r?\n/)) {
     const index = line.indexOf(':')
     if (index <= 0) throw new Error('Email header is malformed')
-    const name = line.slice(0, index).toLowerCase()
+    const name = line.slice(0, index).trim().toLowerCase()
     const value = line.slice(index + 1).trim()
-    if (value.length > 8192) throw new Error('Email header is too large')
+    if (!/^[a-z0-9-]+$/.test(name) || value.length > 8192) throw new Error('Email header is malformed')
     if (!headers.has(name)) headers.set(name, value)
   }
-  const type = (headers.get('content-type') || 'text/plain').split(';', 1)[0].trim().toLowerCase()
-  if (type !== 'text/plain') throw new Error('Only text/plain email is supported')
-  const transfer = (headers.get('content-transfer-encoding') || '7bit').trim().toLowerCase()
-  let body
-  if (['7bit', '8bit', 'binary'].includes(transfer)) body = bodyBytes.toString('utf8')
-  else if (transfer === 'quoted-printable') body = decodeQuotedPrintable(bodyBytes.toString('utf8'))
-  else throw new Error('Unsupported email transfer encoding')
-  if (Buffer.byteLength(body, 'utf8') > MAX_MESSAGE_BYTES || /\u0000/.test(body)) throw new Error('Email body is invalid')
+  return { headers, body: raw.subarray(separator + split) }
+}
+
+function headerParameters(value) {
+  const parts = String(value || '').split(';')
+  const type = (parts.shift() || '').trim().toLowerCase()
+  const parameters = new Map()
+  for (const rawPart of parts) {
+    const index = rawPart.indexOf('=')
+    if (index <= 0) continue
+    const name = rawPart.slice(0, index).trim().toLowerCase()
+    let parameter = rawPart.slice(index + 1).trim()
+    if (parameter.startsWith('"') && parameter.endsWith('"')) parameter = parameter.slice(1, -1).replace(/\\([\\"])/g, '$1')
+    parameters.set(name, parameter)
+  }
+  for (const [name, value] of [...parameters]) {
+    if (!name.endsWith('*')) continue
+    try {
+      const encoded = value.replace(/^[^']*''/, '')
+      parameters.set(name.slice(0, -1), decodeURIComponent(encoded))
+    } catch { parameters.delete(name) }
+  }
+  return { type, parameters }
+}
+
+function safeFilename(value, fallback) {
+  const normalized = String(value || '').replace(/[\u0000\r\n\\/]/g, '_').trim().slice(0, 256)
+  return normalized || fallback
+}
+
+function decodeQuotedPrintableBytes(value) {
+  const text = value.toString('utf8')
+  const output = []
+  for (let index = 0; index < text.length; index += 1) {
+    if (text[index] === '=' && /[0-9a-fA-F]{2}/.test(text.slice(index + 1, index + 3))) {
+      output.push(Number.parseInt(text.slice(index + 1, index + 3), 16)); index += 2
+    } else if (text[index] === '=' && (text[index + 1] === '\n' || (text[index + 1] === '\r' && text[index + 2] === '\n'))) {
+      index += text[index + 1] === '\r' ? 2 : 1
+    } else {
+      const byte = Buffer.from(text[index], 'utf8'); for (const value of byte) output.push(value)
+    }
+  }
+  return Buffer.from(output)
+}
+
+function decodeTransfer(body, transfer) {
+  const encoding = String(transfer || '7bit').trim().toLowerCase()
+  if (['7bit', '8bit', 'binary'].includes(encoding)) return Buffer.from(body)
+  if (encoding === 'quoted-printable') return decodeQuotedPrintableBytes(body)
+  if (encoding === 'base64') {
+    const encoded = body.toString('ascii').replace(/[\t\r\n ]/g, '')
+    if (!encoded || !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded) || encoded.length % 4 === 1) throw new Error('Invalid base64 email part')
+    const decoded = Buffer.from(encoded, 'base64')
+    if (decoded.toString('base64') !== encoded) throw new Error('Invalid base64 email part')
+    return decoded
+  }
+  throw new Error('Unsupported email transfer encoding')
+}
+
+function splitMultipart(body, boundary) {
+  if (!boundary || boundary.length > 200 || /[\r\n]/.test(boundary)) throw new Error('Email MIME boundary is invalid')
+  const marker = Buffer.from(`--${boundary}`)
+  const parts = []
+  let cursor = body.indexOf(marker)
+  while (cursor >= 0) {
+    const after = cursor + marker.length
+    if (body[after] === 0x2d && body[after + 1] === 0x2d) break
+    const start = body[after] === 0x0d && body[after + 1] === 0x0a ? after + 2 : body[after] === 0x0a ? after + 1 : -1
+    if (start < 0) throw new Error('Email MIME boundary is malformed')
+    const next = body.indexOf(marker, start)
+    if (next < 0) throw new Error('Email MIME boundary is incomplete')
+    let end = next
+    if (body[end - 2] === 0x0d && body[end - 1] === 0x0a) end -= 2
+    else if (body[end - 1] === 0x0a) end -= 1
+    parts.push(body.subarray(start, end))
+    cursor = next
+  }
+  if (!parts.length) throw new Error('Email MIME body is empty')
+  return parts
+}
+
+function parseTextMessage(raw) {
+  if (!Buffer.isBuffer(raw) || raw.length > MAX_MESSAGE_BYTES) throw new Error('Email message too large')
+  const root = splitHeaders(raw)
+  const attachments = []
+  const attachmentState = { nextId: 1, totalBytes: 0 }
+  let textBody = null
+
+  const visit = (headers, body, depth) => {
+    if (depth > 4) throw new Error('Email MIME nesting is too deep')
+    const contentType = headerParameters(headers.get('content-type') || 'text/plain')
+    const disposition = headerParameters(headers.get('content-disposition') || '')
+    if (contentType.type.startsWith('multipart/')) {
+      for (const part of splitMultipart(body, contentType.parameters.get('boundary'))) {
+        const parsed = splitHeaders(part)
+        visit(parsed.headers, parsed.body, depth + 1)
+      }
+      return
+    }
+    const filename = contentType.parameters.get('filename') || contentType.parameters.get('name') || disposition.parameters.get('filename') || disposition.parameters.get('name')
+    const decoded = decodeTransfer(body, headers.get('content-transfer-encoding'))
+    const isAttachment = Boolean(filename) || disposition.type === 'attachment'
+    if (isAttachment) {
+      if (attachments.length >= MAX_ATTACHMENTS) throw new Error('Too many email attachments')
+      const id = `imap-${attachmentState.nextId++}`
+      const metadata = { id, name: safeFilename(filename, `attachment-${attachments.length + 1}`), mimeType: contentType.type || 'application/octet-stream', size: decoded.length }
+      // Preserve metadata for larger parts but only retain bytes within the
+      // daemon's small-media budget. The server will scan retained bytes.
+      if (decoded.length <= MAX_ATTACHMENT_BYTES && attachmentState.totalBytes + decoded.length <= MAX_TOTAL_ATTACHMENT_BYTES) {
+        metadata.bytes = decoded
+        attachmentState.totalBytes += decoded.length
+      }
+      attachments.push(metadata)
+      return
+    }
+    if (contentType.type === 'text/plain' && textBody === null) {
+      if (decoded.length > MAX_TEXT_BODY_BYTES || decoded.includes(0)) throw new Error('Email body is invalid')
+      textBody = decoded.toString('utf8')
+    }
+  }
+  visit(root.headers, root.body, 0)
+  if (textBody === null) throw new Error('Only text/plain email is supported')
+  const headers = root.headers
   const from = headers.get('from') || ''
   const to = headers.get('to') || ''
   const timestamp = Date.parse(headers.get('date') || '')
@@ -164,12 +280,13 @@ function parseTextMessage(raw) {
     from: from.slice(0, 320),
     to: to.slice(0, 320),
     subject: (headers.get('subject') || '').slice(0, 998),
-    body,
+    body: textBody,
     bodyType: 'text',
     timestamp: Number.isFinite(timestamp) && timestamp >= 0 ? timestamp : Date.now(),
     ...(headers.get('message-id') ? { messageId: headers.get('message-id').slice(0, 998) } : {}),
     ...(headers.get('in-reply-to') ? { inReplyTo: headers.get('in-reply-to').slice(0, 998) } : {}),
     ...(headers.get('references') ? { references: headers.get('references').slice(0, 8192) } : {}),
+    ...(attachments.length ? { attachments } : {}),
   }
 }
 

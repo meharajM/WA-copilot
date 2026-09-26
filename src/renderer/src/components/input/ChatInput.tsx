@@ -18,7 +18,7 @@ import { useFileDragDrop } from '../../hooks/useFileDragDrop'
 import { useLogStore } from '../../stores/logStore'
 import { useChatStore } from '../../stores/chatStore'
 import { useWhatsAppStore } from '../../stores/whatsappStore'
-import electron from '../../lib/electron'
+import electron, { isElectron } from '../../lib/electron'
 import { isTauriRuntime } from '../../lib/tauri-native-bridge'
 import { getBrowserAgentdClient, readBrowserWhatsAppMediaFile } from '../../lib/browser-agentd-client'
 
@@ -156,6 +156,11 @@ export function ChatInput({ onSubmit, disabled = false, onAbort }: ChatInputProp
 
   // Derive workspace from file path if none is set
   const maybeSetWorkspaceFromFiles = useCallback((files: File[]) => {
+    // Browser File objects must never seed a native workspace path. Some
+    // browser wrappers expose a non-standard `path` property; persisting it
+    // would leak a host path into agentd and imply filesystem capability the
+    // browser runtime does not have.
+    if (!isElectron()) return
     if (workspacePath) return // Already set
     const firstFile = files[0]
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

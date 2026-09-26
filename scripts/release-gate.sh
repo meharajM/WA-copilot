@@ -30,7 +30,12 @@ npm run typecheck
 npm run typecheck:renderer
 npm run test:unit
 npm run test:integration
+npm run test:agentd:speech
+npm run test:relay
+npm run check:windows-resource-evidence
+node --test tests/unit/tauri-agentd-packaging.test.cjs
 npm run test:e2e
+npm run test:e2e:browser
 npm run build
 
 echo "Release gate passed for v${VERSION}."

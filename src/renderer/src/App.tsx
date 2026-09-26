@@ -1,17 +1,21 @@
-import React, { useState, useEffect } from "react";
+import React, { lazy, Suspense, useState, useEffect } from "react";
 
-import { ChatView } from "./components/ChatView";
-import { SettingsPanel } from "./components/SettingsPanel";
-import { FileChangeReview } from "./components/FileChangeReview";
 import { CommandPalette } from "./components/CommandPalette";
 import { Sidebar, ViewMode } from "./components/Sidebar";
-import { KnowledgeBrowser } from "./components/chat/KnowledgeBrowser";
-import { LeadDirectory } from "./components/chat/LeadDirectory";
 import { Header } from "./components/Header";
-import { WhatsAppConnectionDialog } from "./components/WhatsAppConnectionDialog";
-import { EmptyState } from "./components/chat/EmptyState";
-import { ChatInput } from "./components/input/ChatInput";
-import { DraftApprovalPanel } from "./components/email/DraftApprovalPanel";
+
+// Keep the browser's first render small. Feature panels retain their existing
+// behavior, but load only when the user opens that surface; this matters on
+// Windows where browser RAM should remain available for a local model.
+const ChatView = lazy(() => import("./components/ChatView").then(({ ChatView: view }) => ({ default: view })))
+const SettingsPanel = lazy(() => import("./components/SettingsPanel").then(({ SettingsPanel: panel }) => ({ default: panel })))
+const FileChangeReview = lazy(() => import("./components/FileChangeReview").then(({ FileChangeReview: review }) => ({ default: review })))
+const KnowledgeBrowser = lazy(() => import("./components/chat/KnowledgeBrowser").then(({ KnowledgeBrowser: browser }) => ({ default: browser })))
+const LeadDirectory = lazy(() => import("./components/chat/LeadDirectory").then(({ LeadDirectory: directory }) => ({ default: directory })))
+const WhatsAppConnectionDialog = lazy(() => import("./components/WhatsAppConnectionDialog").then(({ WhatsAppConnectionDialog: dialog }) => ({ default: dialog })))
+const EmptyState = lazy(() => import("./components/chat/EmptyState").then(({ EmptyState: state }) => ({ default: state })))
+const ChatInput = lazy(() => import("./components/input/ChatInput").then(({ ChatInput: input }) => ({ default: input })))
+const DraftApprovalPanel = lazy(() => import("./components/email/DraftApprovalPanel").then(({ DraftApprovalPanel: panel }) => ({ default: panel })))
 
 import { useResolutionAudit } from './hooks/useResolutionAudit'
 import { useChatStore } from "./stores/chatStore";
@@ -62,7 +66,7 @@ function App() {
       case 'brain':
         return <KnowledgeBrowser />
       case 'leads':
-        return <LeadDirectory />
+        return <LeadDirectory onOpenChat={() => setCurrentView('chat')} />
       case 'drafts':
         return (
           <div className="flex-1 overflow-y-auto p-10 bg-[var(--color-bg-dark)]">
@@ -128,7 +132,9 @@ function App() {
           />
 
           <main className="flex-1 flex flex-col overflow-hidden min-w-0">
-            {renderContent()}
+            <Suspense fallback={<div className="flex-1 grid place-items-center text-sm text-white/50">Loading workspace…</div>}>
+              {renderContent()}
+            </Suspense>
           </main>
         </div>
 

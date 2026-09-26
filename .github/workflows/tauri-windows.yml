@@ -48,16 +48,6 @@ jobs:
         # must compile its native binding on the Windows runner.
         run: npm ci --no-audit --no-fund
 
-      - name: Typecheck browser renderer
-        run: npm run typecheck:renderer
-
-      - name: Run browser and agentd tests
-        shell: pwsh
-        run: |
-          npx vitest run tests/unit --exclude tests/unit/email-channel-service.test.ts
-          $cjsTests = @(Get-ChildItem -Path tests/unit -Filter '*.test.cjs' | Select-Object -ExpandProperty FullName)
-          node --test $cjsTests
-
       - name: Build browser bundle for native host tests
         # The Tauri build script embeds ../dist even for `cargo test`, so
         # prepare the browser-first product assets before compiling Rust.
@@ -65,6 +55,35 @@ jobs:
 
       - name: Prepare Windows migration reader
         run: npm run prepare:agentd:migration-reader
+
+      - name: Typecheck browser renderer
+        run: npm run typecheck:renderer
+
+      - name: Run browser and agentd tests
+        shell: pwsh
+        env:
+          # The Windows daemon uses the packaged no-reparse reader whenever
+          # O_NOFOLLOW is unavailable. Point the cross-platform CJS suite at
+          # the staged executable so continuity tests exercise the same native
+          # boundary as the shipped Tauri host.
+          AICA_AGENTD_MIGRATION_READER: ${{ github.workspace }}\src-tauri\sidecar\aica-migration-reader.exe
+        run: |
+          npx vitest run tests/unit --exclude tests/unit/email-channel-service.test.ts
+          $nativeRuntimeSmokes = @('windows-keyring-runtime.test.cjs', 'windows-migration-reader-runtime.test.cjs')
+          $cjsTests = @(Get-ChildItem -Path tests/unit -Filter '*.test.cjs' |
+            Where-Object { $nativeRuntimeSmokes -notcontains $_.Name } |
+            Select-Object -ExpandProperty FullName)
+          # Keep native-daemon fixtures isolated on the Windows runner. The
+          # suite owns many temporary SQLite servers and the default parallel
+          # file workers can starve or prolong cleanup on Windows.
+          foreach ($testFile in $cjsTests) {
+            Write-Host "Running $testFile"
+            node --test --test-concurrency=1 $testFile
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - name: Run Windows migration reader reparse smoke
+        run: node --test tests/unit/windows-migration-reader-runtime.test.cjs
 
       - name: Prepare Windows keyring helper
         run: npm run prepare:agentd:keyring-helper
@@ -83,6 +102,16 @@ jobs:
 
       - name: Build signed-input Windows bundle
         run: npm run build:tauri:win
+
+      - name: Verify Windows installer artifacts
+        run: node scripts/verify-tauri-windows-bundle.mjs --bundle-root src-tauri/target/x86_64-pc-windows-msvc/release/bundle
+
+      - name: Smoke-test NSIS install, agentd health, and uninstall
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem -Path src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis -Filter '*.exe' -File | Select-Object -First 1
+          if (-not $installer) { throw 'NSIS installer not found' }
+          ./scripts/windows-install-smoke.ps1 -InstallerPath $installer.FullName
 
       - name: Upload unsigned Windows artifacts
         uses: actions/upload-artifact@v4

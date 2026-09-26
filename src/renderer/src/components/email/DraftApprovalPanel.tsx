@@ -57,6 +57,15 @@ const fileToDraftAttachment = async (file: File) => {
   };
 };
 
+const dispatchBrowserDeliveryStatus = (status: 'sent' | 'failed', subject: string, error?: string) => {
+  const text = status === 'sent'
+    ? `Email delivered: ${subject || '(No subject)'}`
+    : `Email delivery failed: ${subject || '(No subject)'}${error ? ` — ${error}` : ''}`
+  window.dispatchEvent(new CustomEvent('app:submit-message', {
+    detail: { content: `📨 ${text}`, system: true },
+  }))
+}
+
 export function DraftApprovalPanel() {
   const { drafts, approveDraft, rejectDraft, markDraftSent, markDraftFailed, updateDraftText, updateDraftAttachments, removeDraft, cleanupOldDrafts } = useDraftStore();
   const browserRuntime = !isElectron();
@@ -93,9 +102,13 @@ export function DraftApprovalPanel() {
       try {
         await getBrowserAgentdClient().updateEmailDraft(draftId, { status: 'approved' });
         const sent = await getBrowserAgentdClient().sendEmailDraft(draftId);
-        if (sent.status === 'sent') markDraftSent(draftId);
-      } catch {
+        if (sent.status === 'sent') {
+          markDraftSent(draftId);
+          dispatchBrowserDeliveryStatus('sent', draft.originalSubject || '');
+        }
+      } catch (error) {
         markDraftFailed(draftId);
+        dispatchBrowserDeliveryStatus('failed', draft.originalSubject || '', error instanceof Error ? error.message : undefined);
       }
       return;
     }

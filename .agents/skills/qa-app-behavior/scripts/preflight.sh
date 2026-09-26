@@ -18,15 +18,15 @@ npm run test:integration
 echo "[preflight] npm run build"
 npm run build
 
-echo "[preflight] app artifact check"
-if [[ -d "/Applications/AIConsumerAgent.app" ]]; then
-  echo "[preflight] installed app found: /Applications/AIConsumerAgent.app"
-elif [[ -d "dist/mac-arm64/AIConsumerAgent.app" ]]; then
-  echo "[preflight] local build found: dist/mac-arm64/AIConsumerAgent.app"
+if node -e "const p=require('./package.json'); process.exit(p.scripts?.['build:tauri:web'] ? 0 : 1)"; then
+  echo "[preflight] npm run build:tauri:web"
+  npm run build:tauri:web
+  test -f "dist/tauri.html"
+  echo "[preflight] browser bundle found: dist/tauri.html"
 elif [[ -d "out" ]]; then
-  echo "[preflight] renderer/main build output found: out"
+  echo "[preflight] browser build script unavailable; legacy renderer output found: out"
 else
-  echo "[preflight] no install or build artifact found"
+  echo "[preflight] no browser build output found"
   exit 1
 fi
 

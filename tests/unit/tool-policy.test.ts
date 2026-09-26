@@ -105,6 +105,25 @@ describe("tool side-effect policy", () => {
     expect(policy.action).toBe("allow");
   });
 
+  it("fails closed for synthetic browser workspaces instead of forwarding a native fs path", async () => {
+    window.electron = undefined;
+    ;(window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = undefined;
+
+    const result = await executeToolCall("fs_read_file", {
+      workspacePath: "browser://workspace/Support",
+      path: "browser://workspace/Support/notes.md",
+    });
+
+    expect(result.result).toBeNull();
+    expect(result.error).toContain("Native filesystem tools are unavailable");
+
+    const unscopedResult = await executeToolCall("fs_read_file", {
+      path: "browser://workspace/Support/notes.md",
+    });
+    expect(unscopedResult.result).toBeNull();
+    expect(unscopedResult.error).toContain("Native filesystem tools are unavailable");
+  });
+
   it("blocks customer-facing WhatsApp sends when both WhatsApp send modes are disabled", () => {
     useWhatsAppStore.setState({
       connectionState: {

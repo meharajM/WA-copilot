@@ -107,6 +107,24 @@ test('agentd chat messages are idempotent and reject conflicting retries', async
   fs.rmSync(dataDir, { recursive: true, force: true })
 })
 
+test('agentd persists bounded execution-plan metadata for browser recovery', async () => {
+  const dataDir = makeTempDir('aica-agentd-chat-plan-')
+  const secret = 'p'.repeat(32)
+  const server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
+  const { origin } = await server.start()
+  const bearer = { authorization: `Bearer ${secret}` }
+  assert.equal((await request(origin, 'POST', '/api/v1/sessions', { id: 'plan-session' }, bearer)).status, 201)
+  const plan = { goal: 'Recover browser work', steps: [{ id: 1, description: 'Continue', status: 'active' }] }
+  const saved = await request(origin, 'POST', '/api/v1/sessions/plan-session/messages', { id: 'plan-1', role: 'system', content: 'Execution plan checkpoint', metadata: { executionPlan: plan } }, bearer)
+  assert.equal(saved.status, 201)
+  assert.deepEqual(saved.body.message.metadata.executionPlan, plan)
+  const loaded = await request(origin, 'GET', '/api/v1/sessions/plan-session', undefined, bearer)
+  assert.deepEqual(loaded.body.messages[0].metadata.executionPlan, plan)
+  assert.equal((await request(origin, 'POST', '/api/v1/sessions/plan-session/messages', { id: 'bad', role: 'system', content: 'x', metadata: { executionPlan: { goal: 'x', steps: [{ id: 1, description: 'x', status: 'invalid' }] } } }, bearer)).status, 400)
+  await server.stop()
+  fs.rmSync(dataDir, { recursive: true, force: true })
+})
+
 test('agentd upgrades legacy chat session tables without losing existing sessions', async () => {
   const dataDir = makeTempDir('aica-agentd-chat-legacy-')
   const legacy = new Database(path.join(dataDir, 'agentd.db'))

@@ -84,14 +84,22 @@ const ingestBrowserInboundEmail = async (event: BrowserEmailInboundEvent): Promi
       contentType: attachment.mimeType || 'application/octet-stream',
       size: attachment.size || 0,
     }
-    // Gmail image bytes stay bounded and enter the model only after agentd's
-    // authenticated scan. IMAP metadata remains available without guessing a
-    // provider-specific retrieval protocol.
-    if (payload.sourceId && metadata.contentType.startsWith('image/') && metadata.size > 0 && metadata.size <= 256 * 1024) {
+    // Small scanned images can enter generation for both transports. Gmail
+    // uses its provider attachment API; IMAP uses the daemon's private media
+    // route keyed by the durable provider event. Larger/unsupported files
+    // remain metadata-only and are still available to operators.
+    if (metadata.contentType.startsWith('image/') && metadata.size > 0 && metadata.size <= 256 * 1024) {
       try {
-        const result = await client.retrieveGmailAttachment(payload.sourceId, attachment.id, { mimeType: metadata.contentType, name: metadata.filename })
-        if (result.scan.safe && result.bytes && result.bytes.length === metadata.size) {
-          return { ...metadata, dataUrl: bytesToDataUrl(result.bytes, metadata.contentType) }
+        if (payload.sourceId) {
+          const result = await client.retrieveGmailAttachment(payload.sourceId, attachment.id, { mimeType: metadata.contentType, name: metadata.filename })
+          if (result.scan.safe && result.bytes && result.bytes.length === metadata.size) {
+            return { ...metadata, dataUrl: bytesToDataUrl(result.bytes, metadata.contentType) }
+          }
+        } else {
+          const result = await client.getEmailInboundAttachment(event.providerEventId, attachment.id)
+          if (result.mimeType === metadata.contentType && result.bytes.length === metadata.size) {
+            return { ...metadata, dataUrl: bytesToDataUrl(result.bytes, metadata.contentType) }
+          }
         }
       } catch { /* metadata-only fallback */ }
     }

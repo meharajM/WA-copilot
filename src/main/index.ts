@@ -86,7 +86,10 @@ function createWindow(): void {
 
     mainWindow.on('ready-to-show', () => {
         mainWindow.show()
-        if (is.dev) {
+        // Keep the automated Electron smoke viewport stable. The devtools
+        // dock changes the content width and hides the responsive sidebar,
+        // which makes the test exercise a different UI than a real window.
+        if (is.dev && process.env.NODE_ENV !== 'test' && !process.env.WA_COPILOT_E2E_MAIN) {
             mainWindow.webContents.openDevTools()
         }
     })

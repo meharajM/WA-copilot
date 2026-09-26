@@ -175,10 +175,15 @@ mod tests {
     #[test]
     fn request_requires_absolute_bounded_path_and_size() {
         assert!(parse_args(&["relative".into()]).is_err());
-        assert!(parse_args(&["/tmp/file".into(), "0".into()]).is_err());
-        assert!(parse_args(&["/tmp/file".into(), (DEFAULT_MAX_BYTES + 1).to_string()]).is_err());
+        let absolute_path = if cfg!(windows) {
+            r"C:\aica\migration.json"
+        } else {
+            "/tmp/file"
+        };
+        assert!(parse_args(&[absolute_path.into(), "0".into()]).is_err());
+        assert!(parse_args(&[absolute_path.into(), (DEFAULT_MAX_BYTES + 1).to_string()]).is_err());
         assert_eq!(
-            parse_args(&["/tmp/file".into()]).unwrap().1,
+            parse_args(&[absolute_path.into()]).unwrap().1,
             DEFAULT_MAX_BYTES
         );
     }

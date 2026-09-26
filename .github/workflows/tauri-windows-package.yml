@@ -1,0 +1,87 @@
+name: Tauri Windows package
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/tauri-windows-package.yml'
+      - 'agentd/**'
+      - 'scripts/**'
+      - 'src-tauri/**'
+      - 'src/renderer/**'
+      - 'src/shared/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'vite.tauri.config.ts'
+  workflow_dispatch:
+
+concurrency:
+  group: tauri-windows-package-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install JavaScript dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Build browser bundle
+        run: npm run build:tauri:web
+
+      - name: Prepare Windows migration reader
+        run: npm run prepare:agentd:migration-reader
+
+      - name: Run Windows migration reader reparse smoke
+        run: node --test tests/unit/windows-migration-reader-runtime.test.cjs
+
+      - name: Prepare Windows keyring helper
+        run: npm run prepare:agentd:keyring-helper
+
+      - name: Run Windows Credential Manager runtime smoke
+        run: node --test tests/unit/windows-keyring-runtime.test.cjs
+
+      - name: Prepare Windows agentd sidecar
+        run: npm run prepare:tauri:agentd
+
+      - name: Verify staged Tauri resources
+        run: node scripts/verify-tauri-resources.mjs --platform win32 --target-triple x86_64-pc-windows-msvc --sidecar-root src-tauri/sidecar --ui-root dist
+
+      - name: Build Windows bundle
+        run: npm run build:tauri:win
+
+      - name: Verify Windows installer artifacts
+        run: node scripts/verify-tauri-windows-bundle.mjs --bundle-root src-tauri/target/x86_64-pc-windows-msvc/release/bundle
+
+      - name: Smoke-test NSIS install, agentd health, and uninstall
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem -Path src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis -Filter '*.exe' -File | Select-Object -First 1
+          if (-not $installer) { throw 'NSIS installer not found' }
+          ./scripts/windows-install-smoke.ps1 -InstallerPath $installer.FullName
+
+      - name: Upload unsigned Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: aica-tauri-windows-package-${{ github.sha }}
+          if-no-files-found: error
+          path: |
+            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi

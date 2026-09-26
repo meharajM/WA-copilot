@@ -5,6 +5,18 @@ customer content, or unredacted personal data. A checklist item is complete
 only after the owner fills the applicable fields and links a redacted log,
 screenshot, provider event ID, billing export, or signed review decision.
 
+For machine validation, keep a redacted JSON companion for each completed run
+and run `npm run check:live-evidence -- path/to/evidence.json`. The validator
+requires all twelve safety scenarios, non-empty evidence references, explicit
+redaction confirmation, and reviewer sign-off. A valid record proves only that
+the evidence is complete and redacted; it does not prove provider ownership,
+deployment, billing, signing, or delivery beyond the evidence links supplied.
+Use stable scenario names: `inbound-customer-message`,
+`duplicate-webhook-event`, `owner-takeover-echo`, `opt-out-opt-in`,
+`inside-response-window`, `outside-response-window`, `media-attachment`,
+`token-expiry-revocation`, `rate-limit-429`, `provider-5xx-timeout`,
+`restart-recovery`, and `pause-all`.
+
 ## Run metadata
 
 - Run ID:

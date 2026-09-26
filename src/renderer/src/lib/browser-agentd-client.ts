@@ -18,7 +18,7 @@ import type {
   WhatsAppSettings,
   EmailSettings,
 } from '../../../shared/native-bridge'
-import { readGeneration, readMessage, readSession } from './tauri-chat-client'
+import { readGeneration, readSession } from './tauri-chat-client'
 
 /** Keep browser knowledge imports below agentd's JSON/content limit before reading them into memory. */
 export const MAX_BROWSER_KNOWLEDGE_CONTENT_BYTES = 512 * 1024
@@ -36,11 +36,8 @@ export async function readBrowserKnowledgeFile(file: File): Promise<{ content: s
   return { content, size: file.size, fileType: file.type || 'text/plain' }
 }
 
-/** Read a bounded binary file without exposing a native path to the browser. */
-export async function readBrowserKnowledgeBinaryFile(file: File): Promise<{ dataBase64: string; size: number; fileType: string }> {
-  if (file.size > MAX_BROWSER_KNOWLEDGE_FILE_BYTES) {
-    throw new Error('Browser knowledge files must be 16 MB or smaller')
-  }
+const readBrowserBinaryFile = async (file: File, maximumBytes: number, tooLargeMessage: string): Promise<{ dataBase64: string; size: number; fileType: string }> => {
+  if (file.size > maximumBytes) throw new Error(tooLargeMessage)
   const bytes = new Uint8Array(await file.arrayBuffer())
   let binary = ''
   const chunkSize = 0x8000
@@ -50,15 +47,13 @@ export async function readBrowserKnowledgeBinaryFile(file: File): Promise<{ data
   return { dataBase64: btoa(binary), size: file.size, fileType: file.type || 'application/octet-stream' }
 }
 
+/** Read a bounded binary file without exposing a native path to the browser. */
+export async function readBrowserKnowledgeBinaryFile(file: File): Promise<{ dataBase64: string; size: number; fileType: string }> {
+  return readBrowserBinaryFile(file, MAX_BROWSER_KNOWLEDGE_FILE_BYTES, 'Browser knowledge files must be 16 MB or smaller')
+}
+
 export async function readBrowserWhatsAppMediaFile(file: File): Promise<{ dataBase64: string; size: number; fileType: string }> {
-  if (file.size > MAX_BROWSER_WHATSAPP_MEDIA_BYTES) throw new Error('WhatsApp media files must be 8 MB or smaller')
-  const bytes = new Uint8Array(await file.arrayBuffer())
-  let binary = ''
-  const chunkSize = 0x8000
-  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
-    binary += String.fromCharCode(...bytes.subarray(offset, Math.min(offset + chunkSize, bytes.length)))
-  }
-  return { dataBase64: btoa(binary), size: file.size, fileType: file.type || 'application/octet-stream' }
+  return readBrowserBinaryFile(file, MAX_BROWSER_WHATSAPP_MEDIA_BYTES, 'WhatsApp media files must be 8 MB or smaller')
 }
 
 export class BrowserAgentdError extends Error {
@@ -108,6 +103,14 @@ export interface BrowserEmailAttachmentScan {
 export interface BrowserEmailAttachmentResult {
   scan: BrowserEmailAttachmentScan
   bytes?: Uint8Array
+}
+
+export interface BrowserEmailInboundAttachmentResult {
+  fileName: string
+  mimeType: string
+  size: number
+  bytes: Uint8Array
+  scan: BrowserEmailAttachmentScan
 }
 
 export interface BrowserGmailOAuthStatus {
@@ -204,6 +207,7 @@ export interface BrowserEmailDraft {
   references?: string
   accountName?: string
   attachments?: BrowserEmailDraftAttachment[]
+  providerMessageId?: string
   policyDecision: {
     action: 'send' | 'draft' | 'escalate'
     confidence: number
@@ -231,8 +235,6 @@ export interface BrowserWhatsAppInboundMedia {
   mediaUrl: string
   dataUrl?: string
 }
-
-type Json = Record<string, unknown> | unknown[]
 
 const isRecord = (value: unknown): value is Record<string, unknown> => (
   typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -272,11 +274,30 @@ const readNativeHealth = (value: unknown): NativeHealth => {
   if (!isRecord(value) || (value.runtime !== 'agentd' && typeof value.runtime !== 'undefined')) {
     throw new Error('Invalid agentd status response')
   }
+  if (value.recoveryMode !== undefined && typeof value.recoveryMode !== 'boolean') throw new Error('Invalid agentd recovery status response')
+  if (value.recoveryReason !== undefined && value.recoveryReason !== null && typeof value.recoveryReason !== 'string') throw new Error('Invalid agentd recovery status response')
+  if (value.extension !== undefined) {
+    if (!isRecord(value.extension)
+      || !['disabled', 'connecting', 'connected', 'error'].includes(value.extension.status as string)
+      || typeof value.extension.port !== 'number' || !Number.isSafeInteger(value.extension.port) || value.extension.port < 1024 || value.extension.port > 65_535
+      || (value.extension.lastStatus !== null && typeof value.extension.lastStatus !== 'string')
+      || (value.extension.error !== null && typeof value.extension.error !== 'string')) throw new Error('Invalid agentd extension status response')
+  }
   return {
     status: 'ready',
     ...(typeof value.paused === 'boolean' ? { paused: value.paused } : {}),
+    ...(typeof value.recoveryMode === 'boolean' ? { recoveryMode: value.recoveryMode } : {}),
+    ...(value.recoveryReason === null || typeof value.recoveryReason === 'string' ? { recoveryReason: value.recoveryReason as string | null } : {}),
     ...(typeof value.queueDepth === 'number' ? { queueDepth: value.queueDepth } : {}),
     ...(typeof value.events === 'number' ? { events: value.events } : {}),
+    ...(isRecord(value.extension) ? {
+      extension: {
+        status: value.extension.status as NonNullable<NativeHealth['extension']>['status'],
+        port: value.extension.port as number,
+        lastStatus: value.extension.lastStatus as string | null,
+        error: value.extension.error as string | null,
+      },
+    } : {}),
   }
 }
 
@@ -336,7 +357,7 @@ const readMcpServers = (value: unknown): { servers: BrowserMcpServer[]; executio
 const readContinuityStatus = (value: unknown): BrowserContinuityStatus => {
   if (!isRecord(value) || value.version !== 1 || value.runtime !== 'agentd' || !isRecord(value.migration)
     || value.migration.source !== 'electron' || value.migration.target !== 'agentd'
-    || value.migration.state !== 'native-owner-action-required' || value.migration.secretsExcluded !== true
+    || !['native-owner-action-required', 'in-progress', 'recovery-required', 'migrated'].includes(value.migration.state as string) || value.migration.secretsExcluded !== true
     || typeof value.migration.note !== 'string' || !Array.isArray(value.stores) || !isRecord(value.data) || !Array.isArray(value.credentials)) {
     throw new Error('Invalid agentd continuity status response')
   }
@@ -346,7 +367,7 @@ const readContinuityStatus = (value: unknown): BrowserContinuityStatus => {
       || !['electron', 'agentd'].includes(store.source as string)
       || typeof store.target !== 'string' || !['json', 'sqlite'].includes(store.format as string)
       || typeof store.schemaVersion !== 'string' || typeof store.requiresReauthentication !== 'boolean'
-      || !['pending', 'active'].includes(store.state as string)) throw new Error('Invalid agentd continuity status response')
+      || !['pending', 'active', 'in-progress', 'needs-recovery'].includes(store.state as string)) throw new Error('Invalid agentd continuity status response')
     return store
   })
   const dataKeys = ['sessions', 'messages', 'knowledgeDocuments', 'inboundEvents', 'drafts']
@@ -464,6 +485,7 @@ const readEmailDraft = (value: unknown): BrowserEmailDraft => {
     || (value.inReplyTo !== undefined && typeof value.inReplyTo !== 'string')
     || (value.references !== undefined && typeof value.references !== 'string')
     || (value.accountName !== undefined && typeof value.accountName !== 'string')
+    || (value.providerMessageId !== undefined && (typeof value.providerMessageId !== 'string' || !value.providerMessageId || value.providerMessageId.length > 1024 || value.providerMessageId.includes('\u0000') || /[\r\n]/.test(value.providerMessageId)))
     || !Number.isSafeInteger(value.createdAt)
     || !['pending_review', 'approved', 'rejected', 'escalated', 'sent', 'failed'].includes(value.status as string)
     || !isRecord(value.policyDecision)
@@ -582,6 +604,7 @@ export interface BrowserDraft {
   sendStatus?: 'pending' | 'sent' | 'failed'
   providerMessageId?: string
   sendError?: string
+  sendCancellationRequested?: boolean
   sendAttempts?: number
 }
 
@@ -591,11 +614,26 @@ export interface BrowserDraftSendResult {
   draft: BrowserDraft
 }
 
+export interface BrowserApprovedTemplate {
+  name: string
+  languageCode: string
+  category: string
+}
+
 export interface BrowserWhatsAppDraftResult {
   accepted: boolean
   duplicate: boolean
   paused: boolean
   draftId?: number
+}
+
+export interface BrowserWhatsAppPolicyDecision {
+  action: 'send' | 'draft' | 'escalate'
+  rationale: string
+  grounding: 'grounded' | 'not_grounded' | 'unavailable'
+  confidence?: number
+  sensitiveTopic?: boolean
+  evidence?: Array<{ fileName: string; rank?: number }>
 }
 
 export interface BrowserAutonomyMetrics {
@@ -611,7 +649,7 @@ export interface BrowserAutonomyMetrics {
   deliveryUnknown: number
   draftApprovalRate: number
   averageDraftEditingTimeMs: number
-  estimatedCostPerResolvedConversation: number
+  estimatedCostPerResolvedConversation: number | null
   reviewedDecisions: number
   reviewAccuracy: number
   escalationPrecision: number
@@ -621,13 +659,67 @@ export interface BrowserAutonomyMetrics {
   averageRecoveryTimeMs: number
 }
 
+export interface BrowserAutonomyUsageDay {
+  day: string
+  llmCalls: number
+  outboundMessages: number
+  estimatedCost: number
+}
+
+export interface BrowserAutonomyChannelUsage {
+  channel: string
+  amount: number
+}
+
+export type BrowserDecisionReviewLabel = 'correct' | 'incorrect' | 'unnecessary_escalation' | 'missed_escalation'
+
+export interface BrowserDecisionEvidence {
+  inboundId: string
+  jid: string
+  createdAt: number
+  decision: {
+    grounding: 'grounded' | 'not_grounded' | 'unavailable'
+    reason: string
+    confidence?: number
+    escalated?: boolean
+    sensitiveTopic?: boolean
+    evidence?: Array<{ fileName: string; filePath?: string; rank?: number }>
+  }
+  label?: BrowserDecisionReviewLabel
+  notes?: string
+  reviewedAt?: number
+}
+
+export interface BrowserEmailDeliveryEvent {
+  providerMessageId: string
+  channel: 'email'
+  status: 'sent' | 'failed'
+  eventAt: number
+  inboundId: string
+}
+
+export interface BrowserAutonomyNotification {
+  id: number
+  kind: 'failure' | 'budget' | 'recovery' | 'escalation_sla_overdue'
+  details: string
+  createdAt: number
+}
+
+export interface BrowserAutonomyTakeover {
+  jid: string
+  source: string
+  startedAt: number
+  revision: number
+  outcome?: 'resolved_agent' | 'resolved_human' | 'escalated' | 'closed_unresolved' | 'open'
+}
+
 export interface BrowserContinuityStatus {
   version: 1
   runtime: 'agentd'
   migration: {
     source: 'electron'
     target: 'agentd'
-    state: 'native-owner-action-required'
+    state: 'native-owner-action-required' | 'in-progress' | 'recovery-required' | 'migrated'
     secretsExcluded: true
     note: string
   }
@@ -638,7 +730,7 @@ export interface BrowserContinuityStatus {
     format: 'json' | 'sqlite'
     schemaVersion: string
     requiresReauthentication: boolean
-    state: 'pending' | 'active'
+    state: 'pending' | 'active' | 'in-progress' | 'needs-recovery'
   }>
   data: {
     sessions: number
@@ -662,6 +754,11 @@ export interface BrowserKnowledgeDocument {
 export interface BrowserKnowledgeResult extends BrowserKnowledgeDocument {
   content: string
   rank?: number
+}
+
+export interface BrowserKnowledgeContent {
+  document: BrowserKnowledgeDocument
+  content: string
 }
 
 export interface BrowserIntelligenceLog {
@@ -727,6 +824,7 @@ export interface BrowserAgentdClient extends ChatClient {
   disconnectWhatsApp(clearAuth?: boolean): Promise<BrowserWhatsAppConnectionState>
   setWhatsAppTarget(phoneNumber: string): Promise<{ success: boolean; error?: string; handshakeCode?: string }>
   sendWhatsAppText(to: string, text: string): Promise<BrowserWhatsAppSendResult>
+  sendWhatsAppPresence(to: string, state: 'unavailable' | 'available' | 'composing' | 'recording' | 'paused'): Promise<{ success: true }>
   sendWhatsAppMedia(to: string, media: { fileName: string; mimeType: string; size: number; dataBase64: string; type: 'image' | 'video' | 'audio' | 'document'; caption?: string }): Promise<BrowserWhatsAppSendResult>
   getOllamaSettings(): Promise<BrowserOllamaSettings>
   saveOllamaSettings(settings: BrowserOllamaSettings): Promise<BrowserOllamaSettings>
@@ -735,7 +833,9 @@ export interface BrowserAgentdClient extends ChatClient {
   saveEmailSettings(settings: EmailSettings): Promise<EmailSettings>
   testEmail(): Promise<BrowserEmailTestResult>
   listEmailAttachments(limit?: number): Promise<BrowserEmailAttachment[]>
+  listEmailDeliveryHistory(limit?: number): Promise<BrowserEmailDeliveryEvent[]>
   retrieveGmailAttachment(messageId: string, attachmentId: string, metadata?: { mimeType?: string; name?: string }): Promise<BrowserEmailAttachmentResult>
+  getEmailInboundAttachment(providerEventId: string, attachmentId: string): Promise<BrowserEmailInboundAttachmentResult>
   getGmailOAuthStatus(): Promise<BrowserGmailOAuthStatus>
   startGmailOAuth(): Promise<{ authorizationUrl: string; expiresAt: number }>
   signOutGmailOAuth(): Promise<void>
@@ -750,7 +850,7 @@ export interface BrowserAgentdClient extends ChatClient {
   deleteEmailDraft(id: string): Promise<void>
   listWhatsAppInbound(afterId?: number, limit?: number): Promise<{ events: BrowserWhatsAppInboundEvent[]; nextAfterId: number }>
   getWhatsAppInboundMedia(providerEventId: string): Promise<BrowserWhatsAppInboundMedia>
-  createWhatsAppDraft(event: { providerEventId: string; conversationId: string; payload: Record<string, unknown>; draftText: string }): Promise<BrowserWhatsAppDraftResult>
+  createWhatsAppDraft(event: { providerEventId: string; conversationId: string; payload: Record<string, unknown>; draftText: string; policyDecision?: BrowserWhatsAppPolicyDecision }): Promise<BrowserWhatsAppDraftResult>
   getPersonaSettings(): Promise<PersonaSettings>
   savePersonaSettings(settings: PersonaSettings): Promise<PersonaSettings>
   getProductPreferences(): Promise<ProductPreferences>
@@ -766,7 +866,24 @@ export interface BrowserAgentdClient extends ChatClient {
   quarantineWhatsAppDraft(id: number): Promise<BrowserDraft>
   cancelWhatsAppDraft(id: number): Promise<BrowserDraft>
   getAutonomyMetrics(days?: number): Promise<BrowserAutonomyMetrics>
+  enterRecoveryMode(reason?: string): Promise<{ recoveryMode: boolean; paused: boolean; reason: string | null }>
+  clearRecoveryMode(): Promise<{ recoveryMode: boolean; paused: boolean; reason: string | null }>
+  getAutonomyUsageHistory(days?: number): Promise<BrowserAutonomyUsageDay[]>
+  getAutonomyChannelUsage(days?: number): Promise<BrowserAutonomyChannelUsage[]>
+  listDecisionEvidence(limit?: number): Promise<BrowserDecisionEvidence[]>
+  reviewDecision(inboundId: string, label: BrowserDecisionReviewLabel, notes?: string): Promise<{ reviewed: boolean; inboundId: string; label: BrowserDecisionReviewLabel }>
+  listAutonomyNotifications(limit?: number): Promise<BrowserAutonomyNotification[]>
+  ackAutonomyNotification(id: number): Promise<{ acknowledged: boolean }>
+  listAutonomyTakeovers(): Promise<BrowserAutonomyTakeover[]>
+  pauseConversation(jid: string): Promise<BrowserAutonomyTakeover>
+  resumeConversation(jid: string): Promise<BrowserAutonomyTakeover>
+  recordConversationOutcome(jid: string, revision: number, outcome: BrowserAutonomyTakeover['outcome'], evidence: string): Promise<{ conversationId: string; revision: number; outcome: NonNullable<BrowserAutonomyTakeover['outcome']>; recordedAt: number }>
+  sendApprovedTemplate(inboundId: string, name: string, languageCode: string, parameters?: string[]): Promise<BrowserDraftSendResult>
+  listApprovedTemplates(): Promise<BrowserApprovedTemplate[]>
+  registerApprovedTemplate(template: BrowserApprovedTemplate): Promise<BrowserApprovedTemplate[]>
+  revokeApprovedTemplate(name: string, languageCode: string): Promise<BrowserApprovedTemplate[]>
   listKnowledge(limit?: number): Promise<BrowserKnowledgeDocument[]>
+  getKnowledgeContent(id: number): Promise<BrowserKnowledgeContent>
   ingestKnowledge(input: { fileName: string; filePath: string; fileType: string; content: string; size: number }): Promise<BrowserKnowledgeDocument>
   convertKnowledge(input: { fileName: string; fileType: string; dataBase64: string; size: number }): Promise<BrowserKnowledgeDocument>
   deleteKnowledge(id: number): Promise<boolean>
@@ -965,7 +1082,7 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
   const appendMessage = async (sessionId: string, message: ChatMessage): Promise<void> => {
     await request(`/api/v1/sessions/${encodeURIComponent(sessionId)}/messages`, {
       method: 'POST',
-      body: JSON.stringify({ id: message.id, role: message.role, content: message.content, ...(message.attachments ? { attachments: message.attachments } : {}) }),
+      body: JSON.stringify({ id: message.id, role: message.role, content: message.content, ...(message.attachments ? { attachments: message.attachments } : {}), ...(message.metadata ? { metadata: message.metadata } : {}) }),
     }, true)
   }
 
@@ -1094,13 +1211,19 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     if (!isRecord(value) || value.success !== true || typeof value.providerMessageId !== 'string' || !value.providerMessageId) throw new Error('Invalid WhatsApp send response')
     return { providerMessageId: value.providerMessageId }
   }
+  const sendWhatsAppPresence = async (to: string, state: 'unavailable' | 'available' | 'composing' | 'recording' | 'paused'): Promise<{ success: true }> => {
+    if (!to.trim() || !['unavailable', 'available', 'composing', 'recording', 'paused'].includes(state)) throw new Error('WhatsApp recipient and presence state are required')
+    const value = await request<unknown>('/api/v1/whatsapp/presence', { method: 'POST', body: JSON.stringify({ to, state }) }, true)
+    if (!isRecord(value) || value.success !== true) throw new Error('Invalid WhatsApp presence response')
+    return { success: true }
+  }
   const sendWhatsAppMedia = async (to: string, media: { fileName: string; mimeType: string; size: number; dataBase64: string; type: 'image' | 'video' | 'audio' | 'document'; caption?: string }): Promise<BrowserWhatsAppSendResult> => {
     if (!to.trim() || !media.fileName.trim() || !media.mimeType.trim() || !media.dataBase64 || media.size < 1) throw new Error('WhatsApp recipient and media are required')
     const value = await request<unknown>('/api/v1/whatsapp/media', { method: 'POST', body: JSON.stringify({ to, ...media, caption: media.caption || '' }) }, true)
     if (!isRecord(value) || value.success !== true || typeof value.providerMessageId !== 'string' || !value.providerMessageId) throw new Error('Invalid WhatsApp media send response')
     return { providerMessageId: value.providerMessageId }
   }
-  const createWhatsAppDraft = async (event: { providerEventId: string; conversationId: string; payload: Record<string, unknown>; draftText: string }): Promise<BrowserWhatsAppDraftResult> => {
+  const createWhatsAppDraft = async (event: { providerEventId: string; conversationId: string; payload: Record<string, unknown>; draftText: string; policyDecision?: BrowserWhatsAppPolicyDecision }): Promise<BrowserWhatsAppDraftResult> => {
     const value = await request<unknown>('/api/v1/whatsapp/events', {
       method: 'POST',
       body: JSON.stringify({ channel: 'whatsapp', ...event }),
@@ -1161,6 +1284,19 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     if (!isRecord(value) || !Array.isArray(value.attachments)) throw new Error('Invalid agentd email attachment list response')
     return value.attachments.map(readEmailAttachmentMetadata)
   }
+  const listEmailDeliveryHistory = async (limit = 50): Promise<BrowserEmailDeliveryEvent[]> => {
+    const boundedLimit = Number.isSafeInteger(limit) ? Math.min(Math.max(limit, 1), 100) : 50
+    const value = await request<unknown>(`/api/v1/email/delivery-history?limit=${boundedLimit}`)
+    if (!isRecord(value) || !Array.isArray(value.events)) throw new Error('Invalid agentd email delivery history response')
+    return value.events.map((item) => {
+      if (!isRecord(item)
+        || typeof item.providerMessageId !== 'string' || !item.providerMessageId || item.providerMessageId.length > 1024 || item.providerMessageId.includes('\u0000') || /[\r\n]/.test(item.providerMessageId)
+        || item.channel !== 'email' || !['sent', 'failed'].includes(item.status as string)
+        || !Number.isSafeInteger(item.eventAt) || (item.eventAt as number) < 0
+        || typeof item.inboundId !== 'string') throw new Error('Invalid agentd email delivery event')
+      return item as unknown as BrowserEmailDeliveryEvent
+    })
+  }
   const retrieveGmailAttachment = async (messageId: string, attachmentId: string, metadata: { mimeType?: string; name?: string } = {}): Promise<BrowserEmailAttachmentResult> => {
     if (!/^[A-Za-z0-9_-]{1,256}$/.test(messageId) || !/^[A-Za-z0-9_-]{1,256}$/.test(attachmentId)) throw new Error('Invalid Gmail attachment identity')
     if (metadata.mimeType !== undefined && (typeof metadata.mimeType !== 'string' || metadata.mimeType.length > 128)) throw new Error('Invalid Gmail attachment MIME type')
@@ -1176,6 +1312,30 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     const bytes = new Uint8Array(binary.length)
     for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
     return { scan, bytes }
+  }
+  const getEmailInboundAttachment = async (providerEventId: string, attachmentId: string): Promise<BrowserEmailInboundAttachmentResult> => {
+    if (typeof providerEventId !== 'string' || !/^[A-Za-z0-9_.:@-]{1,300}$/.test(providerEventId) || !/^[A-Za-z0-9_-]{1,256}$/.test(attachmentId)) throw new Error('Invalid email attachment identity')
+    const response = await requestResponse(`/api/v1/email/inbound/media/${encodeURIComponent(providerEventId)}/${encodeURIComponent(attachmentId)}`)
+    if (!response.ok) {
+      const body = await readJson(response)
+      throw new BrowserAgentdError(isRecord(body) ? errorText(body.error, 'Email attachment unavailable') : 'Email attachment unavailable', response.status || 500)
+    }
+    const mimeType = (response.headers.get('content-type') || 'application/octet-stream').split(';', 1)[0].trim().toLowerCase()
+    if (!/^(?:image|application|text)\/[A-Za-z0-9.+-]+$/.test(mimeType)) throw new Error('Invalid email attachment MIME type')
+    const lengthHeader = response.headers.get('content-length')
+    const size = lengthHeader && /^\d+$/.test(lengthHeader) ? Number(lengthHeader) : NaN
+    if (!Number.isSafeInteger(size) || size < 1 || size > 512 * 1024) throw new Error('Invalid email attachment size')
+    const bytes = new Uint8Array(await response.arrayBuffer())
+    if (bytes.length !== size) throw new Error('Email attachment size changed')
+    const disposition = response.headers.get('content-disposition') || ''
+    const filenameMatch = /filename="([^"]{1,256})"/i.exec(disposition)
+    const fileName = (filenameMatch?.[1] || attachmentId).replace(/[\0\r\n\\/]/g, '_')
+    const sha256 = response.headers.get('x-aica-sha256') || ''
+    const detectedType = response.headers.get('x-aica-detected-type') || ''
+    const reason = response.headers.get('x-aica-scan-reason') || ''
+    if (response.headers.get('x-aica-scan-safe') !== 'true' || !/^[a-f0-9]{64}$/.test(sha256) || !['pdf', 'png', 'jpeg', 'text', 'unknown'].includes(detectedType) || !reason) throw new Error('Invalid email attachment scan headers')
+    const scan: BrowserEmailAttachmentScan = { safe: true, reason, size, sha256, detectedType: detectedType as BrowserEmailAttachmentScan['detectedType'] }
+    return { fileName, mimeType, size, bytes, scan }
   }
   const ingestEmailInbound = async (event: { providerEventId: string; conversationId: string; payload: BrowserEmailInboundEvent['payload'] }) => {
     const value = await request<unknown>('/api/v1/email/inbound', { method: 'POST', body: JSON.stringify(event) }, true)
@@ -1317,6 +1477,15 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     if (!isRecord(value) || typeof value.paused !== 'boolean') throw new Error('Invalid agentd resume response')
     return { paused: value.paused }
   }
+  const readRecoveryResponse = (value: unknown): { recoveryMode: boolean; paused: boolean; reason: string | null } => {
+    if (!isRecord(value) || typeof value.recoveryMode !== 'boolean' || typeof value.paused !== 'boolean' || (value.reason !== null && typeof value.reason !== 'string')) throw new Error('Invalid agentd recovery response')
+    return { recoveryMode: value.recoveryMode, paused: value.paused, reason: value.reason as string | null }
+  }
+  const enterRecoveryMode = async (reason = 'operator_requested') => {
+    if (typeof reason !== 'string' || reason.length > 256) throw new Error('Invalid recovery reason')
+    return readRecoveryResponse(await request('/api/v1/autonomy/recovery/enter', { method: 'POST', body: JSON.stringify({ reason }) }, true))
+  }
+  const clearRecoveryMode = async () => readRecoveryResponse(await request('/api/v1/autonomy/recovery/clear', { method: 'POST', body: '{}' }, true))
   const readDraft = (value: unknown): BrowserDraft => {
     if (!isRecord(value)
       || !Number.isSafeInteger(value.id)
@@ -1330,6 +1499,7 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
       || (value.sendStatus !== undefined && !['pending', 'sent', 'failed'].includes(value.sendStatus as string))
       || (value.providerMessageId !== undefined && typeof value.providerMessageId !== 'string')
       || (value.sendError !== undefined && typeof value.sendError !== 'string')
+      || (value.sendCancellationRequested !== undefined && typeof value.sendCancellationRequested !== 'boolean')
       || (value.sendAttempts !== undefined && (!Number.isSafeInteger(value.sendAttempts) || (value.sendAttempts as number) < 0))) throw new Error('Invalid agentd draft response')
     return value as unknown as BrowserDraft
   }
@@ -1366,9 +1536,137 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
   const cancelWhatsAppDraft = async (id: number): Promise<BrowserDraft> => disposeWhatsAppDraft(id, 'cancel')
   const getAutonomyMetrics = async (days = 14): Promise<BrowserAutonomyMetrics> => {
     const value = await request<unknown>(`/api/v1/autonomy/metrics?days=${encodeURIComponent(String(Math.max(1, Math.min(90, Math.trunc(days)))))}`)
-    const fields = ['inbound', 'sent', 'escalated', 'drafts', 'failed', 'averageDecisionLatencyMs', 'llmCalls', 'averageLlmLatencyMs', 'groundedDecisionRate', 'deliveryUnknown', 'draftApprovalRate', 'averageDraftEditingTimeMs', 'estimatedCostPerResolvedConversation', 'reviewedDecisions', 'reviewAccuracy', 'escalationPrecision', 'unnecessaryEscalations', 'missedEscalations', 'recoveryDrills', 'averageRecoveryTimeMs']
-    if (!isRecord(value) || fields.some((field) => typeof value[field] !== 'number' || !Number.isFinite(value[field] as number))) throw new Error('Invalid agentd autonomy metrics response')
+    const fields = ['inbound', 'sent', 'escalated', 'drafts', 'failed', 'averageDecisionLatencyMs', 'llmCalls', 'averageLlmLatencyMs', 'groundedDecisionRate', 'deliveryUnknown', 'draftApprovalRate', 'averageDraftEditingTimeMs', 'reviewedDecisions', 'reviewAccuracy', 'escalationPrecision', 'unnecessaryEscalations', 'missedEscalations', 'recoveryDrills', 'averageRecoveryTimeMs']
+    if (!isRecord(value) || fields.some((field) => typeof value[field] !== 'number' || !Number.isFinite(value[field] as number))
+      || (value.estimatedCostPerResolvedConversation !== null && (typeof value.estimatedCostPerResolvedConversation !== 'number' || !Number.isFinite(value.estimatedCostPerResolvedConversation)))) throw new Error('Invalid agentd autonomy metrics response')
     return value as unknown as BrowserAutonomyMetrics
+  }
+  const getAutonomyUsageHistory = async (days = 30): Promise<BrowserAutonomyUsageDay[]> => {
+    const boundedDays = Number.isSafeInteger(days) ? Math.min(Math.max(days, 1), 90) : 30
+    const value = await request<unknown>(`/api/v1/autonomy/usage-history?days=${boundedDays}`)
+    if (!isRecord(value) || !Array.isArray(value.days)) throw new Error('Invalid agentd autonomy usage response')
+    return value.days.map((item) => {
+      if (!isRecord(item) || typeof item.day !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(item.day)
+        || typeof item.llmCalls !== 'number' || !Number.isSafeInteger(item.llmCalls) || item.llmCalls < 0
+        || typeof item.outboundMessages !== 'number' || !Number.isSafeInteger(item.outboundMessages) || item.outboundMessages < 0
+        || typeof item.estimatedCost !== 'number' || !Number.isFinite(item.estimatedCost) || item.estimatedCost < 0) throw new Error('Invalid agentd autonomy usage day')
+      return item as unknown as BrowserAutonomyUsageDay
+    })
+  }
+  const getAutonomyChannelUsage = async (days = 1): Promise<BrowserAutonomyChannelUsage[]> => {
+    const boundedDays = Number.isSafeInteger(days) ? Math.min(Math.max(days, 1), 90) : 1
+    const value = await request<unknown>(`/api/v1/autonomy/channel-usage?days=${boundedDays}`)
+    if (!isRecord(value) || !Array.isArray(value.channels)) throw new Error('Invalid agentd autonomy channel usage response')
+    return value.channels.map((item) => {
+      if (!isRecord(item) || typeof item.channel !== 'string' || !item.channel || item.channel.length > 32
+        || typeof item.amount !== 'number' || !Number.isSafeInteger(item.amount) || item.amount < 0) throw new Error('Invalid agentd autonomy channel usage item')
+      return item as unknown as BrowserAutonomyChannelUsage
+    })
+  }
+  const readDecisionEvidence = (value: unknown): BrowserDecisionEvidence => {
+    if (!isRecord(value) || typeof value.inboundId !== 'string' || !/^(?:draft_[A-Za-z0-9_-]{1,120}|whatsapp_draft_[1-9]\d{0,18})$/.test(value.inboundId)
+      || typeof value.jid !== 'string' || value.jid.length > 320 || typeof value.createdAt !== 'number' || !Number.isSafeInteger(value.createdAt) || value.createdAt < 0
+      || !isRecord(value.decision) || !['grounded', 'not_grounded', 'unavailable'].includes(value.decision.grounding as string)
+      || typeof value.decision.reason !== 'string' || value.decision.reason.length > 4096
+      || (value.decision.confidence !== undefined && (typeof value.decision.confidence !== 'number' || !Number.isFinite(value.decision.confidence) || value.decision.confidence < 0 || value.decision.confidence > 1))
+      || (value.decision.evidence !== undefined && (!Array.isArray(value.decision.evidence) || value.decision.evidence.some(item => !isRecord(item) || typeof item.fileName !== 'string' || (item.filePath !== undefined && typeof item.filePath !== 'string') || (item.rank !== undefined && typeof item.rank !== 'number'))))
+      || (value.label !== undefined && !['correct', 'incorrect', 'unnecessary_escalation', 'missed_escalation'].includes(value.label as string))
+      || (value.notes !== undefined && typeof value.notes !== 'string')
+      || (value.reviewedAt !== undefined && (!Number.isSafeInteger(value.reviewedAt) || (value.reviewedAt as number) < 0))) throw new Error('Invalid agentd decision evidence response')
+    return value as unknown as BrowserDecisionEvidence
+  }
+  const listDecisionEvidence = async (limit = 20): Promise<BrowserDecisionEvidence[]> => {
+    const boundedLimit = Number.isSafeInteger(limit) ? Math.min(Math.max(limit, 1), 50) : 20
+    const value = await request<unknown>(`/api/v1/autonomy/decision-evidence?limit=${boundedLimit}`)
+    if (!isRecord(value) || !Array.isArray(value.evidence)) throw new Error('Invalid agentd decision evidence list response')
+    return value.evidence.map(readDecisionEvidence)
+  }
+  const reviewDecision = async (inboundId: string, label: BrowserDecisionReviewLabel, notes = ''): Promise<{ reviewed: boolean; inboundId: string; label: BrowserDecisionReviewLabel }> => {
+    if (!/^(?:draft_[A-Za-z0-9_-]{1,120}|whatsapp_draft_[1-9]\d{0,18})$/.test(inboundId) || !['correct', 'incorrect', 'unnecessary_escalation', 'missed_escalation'].includes(label)) throw new Error('Invalid decision review')
+    if (typeof notes !== 'string' || notes.length > 2000) throw new Error('Invalid decision review notes')
+    const value = await request<unknown>(`/api/v1/autonomy/decision-evidence/${encodeURIComponent(inboundId)}/review`, { method: 'POST', body: JSON.stringify({ label, ...(notes ? { notes } : {}) }) }, true)
+    if (!isRecord(value) || value.reviewed !== true || value.inboundId !== inboundId || value.label !== label) throw new Error('Invalid agentd decision review response')
+    return { reviewed: true, inboundId, label }
+  }
+  const readAutonomyNotification = (value: unknown): BrowserAutonomyNotification => {
+    if (!isRecord(value)
+      || !Number.isSafeInteger(value.id) || (value.id as number) < 1
+      || !['failure', 'budget', 'recovery', 'escalation_sla_overdue'].includes(value.kind as string)
+      || typeof value.details !== 'string' || value.details.length > 4096
+      || !Number.isSafeInteger(value.createdAt) || (value.createdAt as number) < 0) throw new Error('Invalid agentd autonomy notification response')
+    return value as unknown as BrowserAutonomyNotification
+  }
+  const listAutonomyNotifications = async (limit = 50): Promise<BrowserAutonomyNotification[]> => {
+    const boundedLimit = Number.isSafeInteger(limit) ? Math.min(Math.max(limit, 1), 50) : 50
+    const value = await request<unknown>(`/api/v1/autonomy/notifications?limit=${boundedLimit}`)
+    if (!isRecord(value) || !Array.isArray(value.notifications)) throw new Error('Invalid agentd autonomy notification list response')
+    return value.notifications.map(readAutonomyNotification)
+  }
+  const ackAutonomyNotification = async (id: number): Promise<{ acknowledged: boolean }> => {
+    if (!Number.isSafeInteger(id) || id < 1) throw new Error('Invalid notification ID')
+    const value = await request<unknown>(`/api/v1/autonomy/notifications/${id}/ack`, { method: 'POST', body: '{}' }, true)
+    if (!isRecord(value) || typeof value.acknowledged !== 'boolean') throw new Error('Invalid agentd autonomy notification acknowledgement response')
+    return { acknowledged: value.acknowledged }
+  }
+  const readAutonomyTakeover = (value: unknown): BrowserAutonomyTakeover => {
+    if (!isRecord(value)
+      || typeof value.jid !== 'string' || !value.jid || value.jid.length > 512 || value.jid.includes('\0') || /[\r\n/]/.test(value.jid)
+      || typeof value.source !== 'string' || !value.source || value.source.length > 64
+      || !Number.isSafeInteger(value.startedAt) || (value.startedAt as number) < 0
+      || !Number.isSafeInteger(value.revision) || (value.revision as number) < 0
+      || (value.outcome !== undefined && !['resolved_agent', 'resolved_human', 'escalated', 'closed_unresolved', 'open'].includes(value.outcome as string))) throw new Error('Invalid agentd autonomy takeover response')
+    return {
+      jid: value.jid,
+      source: value.source,
+      startedAt: value.startedAt as number,
+      revision: value.revision as number,
+      ...(value.outcome ? { outcome: value.outcome as NonNullable<BrowserAutonomyTakeover['outcome']> } : {}),
+    }
+  }
+  const listAutonomyTakeovers = async (): Promise<BrowserAutonomyTakeover[]> => {
+    const value = await request<unknown>('/api/v1/autonomy/takeovers')
+    if (!isRecord(value) || !Array.isArray(value.takeovers)) throw new Error('Invalid agentd autonomy takeover list response')
+    return value.takeovers.map(readAutonomyTakeover)
+  }
+  const conversationControl = async (jid: string, action: 'pause' | 'resume'): Promise<BrowserAutonomyTakeover> => {
+    if (typeof jid !== 'string' || !jid || jid.length > 512 || jid.includes('\0') || /[\r\n/]/.test(jid)) throw new Error('Invalid conversation ID')
+    const value = await request<unknown>(`/api/v1/autonomy/conversations/${encodeURIComponent(jid)}/${action}`, { method: 'POST', body: '{}' }, true)
+    if (!isRecord(value) || value.conversationId !== jid || typeof value.active !== 'boolean' || typeof value.source !== 'string' || !Number.isSafeInteger(value.revision) || !Number.isSafeInteger(value.startedAt)) throw new Error('Invalid agentd conversation control response')
+    return { jid: value.conversationId, source: value.source, startedAt: value.startedAt as number, revision: value.revision as number, ...(typeof value.outcome === 'string' ? { outcome: value.outcome as NonNullable<BrowserAutonomyTakeover['outcome']> } : {}) }
+  }
+  const pauseConversation = async (jid: string): Promise<BrowserAutonomyTakeover> => conversationControl(jid, 'pause')
+  const resumeConversation = async (jid: string): Promise<BrowserAutonomyTakeover> => conversationControl(jid, 'resume')
+  const recordConversationOutcome = async (jid: string, revision: number, outcome: BrowserAutonomyTakeover['outcome'], evidence: string) => {
+    if (typeof jid !== 'string' || !jid || jid.length > 512 || jid.includes('\0') || /[\r\n/]/.test(jid) || !Number.isSafeInteger(revision) || revision < 0 || !outcome || !['resolved_agent', 'resolved_human', 'escalated', 'closed_unresolved', 'open'].includes(outcome) || typeof evidence !== 'string' || evidence.trim().length < 1 || evidence.length > 2000) throw new Error('Invalid conversation outcome')
+    const value = await request<unknown>(`/api/v1/autonomy/conversations/${encodeURIComponent(jid)}/outcome`, { method: 'POST', body: JSON.stringify({ revision, outcome, evidence }) }, true)
+    if (!isRecord(value) || value.conversationId !== jid || !Number.isSafeInteger(value.revision) || (value.revision as number) < 1 || value.outcome !== outcome || !Number.isSafeInteger(value.recordedAt)) throw new Error('Invalid agentd conversation outcome response')
+    return { conversationId: jid, revision: value.revision as number, outcome, recordedAt: value.recordedAt as number }
+  }
+  const readApprovedTemplate = (value: unknown): BrowserApprovedTemplate => {
+    if (!isRecord(value)
+      || typeof value.name !== 'string' || !/^[a-zA-Z0-9_.-]{1,100}$/.test(value.name)
+      || typeof value.languageCode !== 'string' || !/^[a-zA-Z0-9_-]{2,20}$/.test(value.languageCode)
+      || typeof value.category !== 'string' || !/^[a-zA-Z0-9_.-]{1,40}$/.test(value.category)) throw new Error('Invalid approved template response')
+    return { name: value.name, languageCode: value.languageCode, category: value.category }
+  }
+  const readApprovedTemplateList = (value: unknown): BrowserApprovedTemplate[] => {
+    if (!isRecord(value) || !Array.isArray(value.templates)) throw new Error('Invalid approved template list response')
+    return value.templates.map(readApprovedTemplate)
+  }
+  const listApprovedTemplates = async (): Promise<BrowserApprovedTemplate[]> => readApprovedTemplateList(await request('/api/v1/autonomy/templates'))
+  const registerApprovedTemplate = async (template: BrowserApprovedTemplate): Promise<BrowserApprovedTemplate[]> => {
+    readApprovedTemplate(template)
+    return readApprovedTemplateList(await request('/api/v1/autonomy/templates', { method: 'POST', body: JSON.stringify(template) }, true))
+  }
+  const revokeApprovedTemplate = async (name: string, languageCode: string): Promise<BrowserApprovedTemplate[]> => {
+    if (!/^[a-zA-Z0-9_.-]{1,100}$/.test(name) || !/^[a-zA-Z0-9_-]{2,20}$/.test(languageCode)) throw new Error('Invalid approved template')
+    return readApprovedTemplateList(await request(`/api/v1/autonomy/templates/${encodeURIComponent(name)}/${encodeURIComponent(languageCode)}`, { method: 'DELETE' }, true))
+  }
+  const sendApprovedTemplate = async (inboundId: string, name: string, languageCode: string, parameters: string[] = []): Promise<BrowserDraftSendResult> => {
+    if (!/^[\x21-\x7e]{1,300}$/.test(inboundId) || !/^[a-zA-Z0-9_.-]{1,100}$/.test(name) || !/^[a-zA-Z0-9_-]{2,20}$/.test(languageCode) || !Array.isArray(parameters) || parameters.length > 10 || parameters.some(value => typeof value !== 'string' || [...value].length > 500)) throw new Error('Invalid approved template request')
+    const value = await request<unknown>('/api/v1/whatsapp/templates/send', { method: 'POST', body: JSON.stringify({ providerEventId: inboundId, name, languageCode, ...(parameters.length ? { parameters } : {}) }) }, true)
+    if (!isRecord(value) || typeof value.providerMessageId !== 'string' || !value.providerMessageId || typeof value.duplicate !== 'boolean' || !value.draft) throw new Error('Invalid approved template send response')
+    return { providerMessageId: value.providerMessageId, duplicate: value.duplicate, draft: readDraft(value.draft) }
   }
   const readKnowledgeDocument = (value: unknown): BrowserKnowledgeDocument => {
     if (!isRecord(value) || !Number.isSafeInteger(value.id) || typeof value.file_path !== 'string' || typeof value.file_name !== 'string' || typeof value.created_at !== 'string') throw new Error('Invalid agentd knowledge document')
@@ -1385,6 +1683,12 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     const value = await request<unknown>(`/api/v1/knowledge?limit=${encodeURIComponent(String(limit))}`)
     if (!isRecord(value) || !Array.isArray(value.documents)) throw new Error('Invalid agentd knowledge response')
     return value.documents.map(readKnowledgeDocument)
+  }
+  const getKnowledgeContent = async (id: number): Promise<BrowserKnowledgeContent> => {
+    if (!Number.isSafeInteger(id) || id < 1) throw new Error('Invalid knowledge document ID')
+    const value = await request<unknown>(`/api/v1/knowledge/${encodeURIComponent(String(id))}/content`)
+    if (!isRecord(value) || typeof value.content !== 'string' || new TextEncoder().encode(value.content).byteLength > MAX_BROWSER_KNOWLEDGE_CONTENT_BYTES) throw new Error('Invalid agentd knowledge preview response')
+    return { document: readKnowledgeDocument(value.document), content: value.content }
   }
   const ingestKnowledge = async (input: { fileName: string; filePath: string; fileType: string; content: string; size: number }): Promise<BrowserKnowledgeDocument> => {
     const value = await request<unknown>('/api/v1/knowledge', { method: 'POST', body: JSON.stringify(input) }, true)
@@ -1484,6 +1788,7 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     disconnectWhatsApp,
     setWhatsAppTarget,
     sendWhatsAppText,
+    sendWhatsAppPresence,
     sendWhatsAppMedia,
     createWhatsAppDraft,
     getOllamaSettings,
@@ -1493,7 +1798,9 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     saveEmailSettings,
     testEmail,
     listEmailAttachments,
+    listEmailDeliveryHistory,
     retrieveGmailAttachment,
+    getEmailInboundAttachment,
     getGmailOAuthStatus,
     startGmailOAuth,
     signOutGmailOAuth,
@@ -1516,6 +1823,8 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     listAuditLogs,
     pauseAll,
     resumeAll,
+    enterRecoveryMode,
+    clearRecoveryMode,
     listDrafts,
     updateDraftStatus,
     sendWhatsAppDraft,
@@ -1523,7 +1832,22 @@ export function createBrowserAgentdClient(options: BrowserAgentdClientOptions = 
     quarantineWhatsAppDraft,
     cancelWhatsAppDraft,
     getAutonomyMetrics,
+    getAutonomyUsageHistory,
+    getAutonomyChannelUsage,
+    listDecisionEvidence,
+    reviewDecision,
+    listAutonomyNotifications,
+    ackAutonomyNotification,
+    listAutonomyTakeovers,
+    pauseConversation,
+    resumeConversation,
+    recordConversationOutcome,
+    sendApprovedTemplate,
+    listApprovedTemplates,
+    registerApprovedTemplate,
+    revokeApprovedTemplate,
     listKnowledge,
+    getKnowledgeContent,
     ingestKnowledge,
     convertKnowledge,
     deleteKnowledge,

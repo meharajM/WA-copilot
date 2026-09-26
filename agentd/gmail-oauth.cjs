@@ -225,10 +225,10 @@ class GmailOAuthService {
     return payload
   }
 
-  async sendText({ to, subject, body, inReplyTo = '', references = '', attachments } = {}) {
+  async sendText({ to, subject, body, messageId, inReplyTo = '', references = '', attachments } = {}) {
     let message
     try {
-      message = buildMimeMessage({ to, subject, body, inReplyTo, references, attachments })
+      message = buildMimeMessage({ to, subject, body, messageId, inReplyTo, references, attachments })
     } catch {
       throw new Error('Invalid Gmail message')
     }

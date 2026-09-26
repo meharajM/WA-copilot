@@ -39,7 +39,7 @@ import { useWhatsAppStore } from "../stores/whatsappStore";
 import { useEmailStore } from "../stores/emailStore";
 import { useDraftStore } from "../stores/draftStore";
 import electron from "../lib/electron";
-import { getBrowserAgentdClient } from "../lib/browser-agentd-client";
+import { getBrowserAgentdClient, type BrowserWhatsAppPolicyDecision } from "../lib/browser-agentd-client";
 import { isTauriRuntime } from "../lib/tauri-native-bridge";
 import { type LLMMessage } from "../lib/types";
 import { resolveWhatsAppTarget, setWhatsAppTyping, setWhatsAppPaused, getWhatsAppSystemPrompt, sendWhatsAppResponse, resolveWhatsAppMessageToLLM } from "../lib/whatsapp-integration";
@@ -432,11 +432,22 @@ export function useAgent(): UseAgentReturn {
                 const admitBrowserWhatsAppDraft = async (responseText: string): Promise<{ duplicate: boolean; sent: boolean }> => {
                     if (!options?.whatsappEvent) throw new Error('Browser WhatsApp event metadata is unavailable');
                     const client = getBrowserAgentdClient();
+                    const { businessBotMode } = useWhatsAppStore.getState();
+                    const policyDecision: BrowserWhatsAppPolicyDecision = {
+                        action: isWhatsAppEscalation(responseText) ? 'escalate' : businessBotMode ? 'send' : 'draft',
+                        grounding: 'unavailable',
+                        rationale: isWhatsAppEscalation(responseText)
+                            ? 'Response flagged for human escalation.'
+                            : businessBotMode
+                                ? 'Autonomous WhatsApp response admitted to the durable outbox.'
+                                : 'WhatsApp response admitted as an operator-review draft.',
+                    };
                     const draft = await client.createWhatsAppDraft({
                         providerEventId: options.whatsappEvent.providerEventId,
                         conversationId: options.whatsappEvent.conversationId,
                         payload: options.whatsappEvent.payload,
                         draftText: responseText,
+                        policyDecision,
                     });
                     if (!draft.accepted || draft.paused) throw new Error('Browser WhatsApp draft admission is paused');
                     if (draft.duplicate) {
@@ -446,7 +457,6 @@ export function useAgent(): UseAgentReturn {
                         });
                         return { duplicate: true, sent: false };
                     }
-                    const { businessBotMode } = useWhatsAppStore.getState();
                     if (businessBotMode && draft.draftId) {
                         // Autonomous browser replies still use the durable
                         // approval/outbox state machine. The explicit status
@@ -477,11 +487,19 @@ export function useAgent(): UseAgentReturn {
                 }): Promise<boolean> => {
                     if (!useBrowserWhatsAppFlow || !useWhatsAppStore.getState().businessBotMode) return false;
                     const client = getBrowserAgentdClient();
+                    const policyDecision: BrowserWhatsAppPolicyDecision = {
+                        action: input.payload.kind === 'admin_escalation' ? 'escalate' : 'send',
+                        grounding: 'unavailable',
+                        rationale: input.payload.kind === 'admin_escalation'
+                            ? 'Administrative escalation notification emitted for operator follow-up.'
+                            : 'Auxiliary WhatsApp notification admitted to the durable outbox.',
+                    };
                     const draft = await client.createWhatsAppDraft({
                         providerEventId: input.providerEventId,
                         conversationId: input.conversationId,
                         payload: input.payload,
                         draftText: input.text,
+                        policyDecision,
                     });
                     if (!draft.accepted || draft.paused || draft.duplicate || !draft.draftId) return false;
                     await client.updateDraftStatus(draft.draftId, 'approved');

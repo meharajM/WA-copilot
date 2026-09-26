@@ -12,18 +12,29 @@
  */
 
 import React from 'react'
-import { Trash2, CheckCircle } from 'lucide-react'
+import { Trash2, CheckCircle, MessageSquare } from 'lucide-react'
 import { useChatStore } from '../../stores/chatStore'
 import { useAutoScroll } from '../../hooks/useAutoScroll'
 import { JumpToBottom } from '../JumpToBottom'
 
 import { MessageBubble } from './MessageBubble'
-import { EmptyState } from './EmptyState'
 import { TypingIndicator } from './TypingIndicator'
 import { ProgressBanner } from './ProgressBanner'
 
 interface ChatViewProps {
   onClearChat?: () => void
+}
+
+function EmptyChatState() {
+  return (
+    <div className="flex-1 grid place-items-center p-8">
+      <div className="max-w-md text-center text-[var(--color-text-muted)]">
+        <MessageSquare className="mx-auto mb-4 h-10 w-10 text-[var(--color-primary)]/70" aria-hidden="true" />
+        <h2 className="text-lg font-semibold text-[var(--color-text-primary)]">Start a conversation</h2>
+        <p className="mt-2 text-sm">Select an active conversation from the sidebar or type a message below to create one.</p>
+      </div>
+    </div>
+  )
 }
 
 export function ChatView({ onClearChat }: ChatViewProps) {
@@ -97,7 +108,7 @@ export function ChatView({ onClearChat }: ChatViewProps) {
         className="flex-1 overflow-y-auto overflow-x-hidden p-6 space-y-4 min-w-0"
       >
         {messages.length === 0 ? (
-          <EmptyState />
+          <EmptyChatState />
         ) : (
           messages.map((message, index) => (
             <MessageBubble

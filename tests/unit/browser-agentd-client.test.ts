@@ -174,6 +174,39 @@ describe('browser agentd client', () => {
     })
   })
 
+  it('accepts durable migrated and recovery-required continuity states', async () => {
+    let recovery = false
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
+      if (url.endsWith('/api/v1/continuity/status')) return response({
+        version: 1,
+        runtime: 'agentd',
+        migration: {
+          source: 'electron', target: 'agentd', state: recovery ? 'recovery-required' : 'migrated', secretsExcluded: true,
+          note: recovery ? 'recovery required' : 'cutovers complete',
+        },
+        stores: [
+          { id: 'electron-settings', source: 'electron', target: 'settings.json', format: 'json', schemaVersion: 'electron.settings.v1', requiresReauthentication: true, state: recovery ? 'needs-recovery' : 'active' },
+          { id: 'electron-persona', source: 'electron', target: 'persona.json', format: 'json', schemaVersion: 'persona.v1', requiresReauthentication: false, state: recovery ? 'needs-recovery' : 'active' },
+          { id: 'electron-chat-history', source: 'electron', target: 'chat-history.db', format: 'sqlite', schemaVersion: 'chat-history.v1', requiresReauthentication: true, state: 'active' },
+          { id: 'agentd-state', source: 'agentd', target: 'agentd.db', format: 'sqlite', schemaVersion: 'agentd.v1', requiresReauthentication: true, state: 'active' },
+        ],
+        data: { sessions: 0, messages: 0, knowledgeDocuments: 0, inboundEvents: 0, drafts: 0 },
+        credentials: [],
+      })
+      return response({ success: true })
+    })
+    const client = createBrowserAgentdClient({ origin: 'http://127.0.0.1:4141', fetch: fetcher })
+    await client.pair('123456')
+    await expect(client.getContinuityStatus()).resolves.toMatchObject({ migration: { state: 'migrated' } })
+    recovery = true
+    await expect(client.getContinuityStatus()).resolves.toMatchObject({
+      migration: { state: 'recovery-required' },
+      stores: expect.arrayContaining([expect.objectContaining({ state: 'needs-recovery' })]),
+    })
+  })
+
   it('maps authenticated persona settings without using renderer secret storage', async () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
@@ -357,6 +390,36 @@ describe('browser agentd client', () => {
     expect(JSON.parse(String(retrieve.init?.body))).toEqual({ mimeType: 'application/pdf', name: 'guide.pdf' })
   })
 
+  it('maps bounded browser email delivery history through agentd', async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
+      if (url.includes('/api/v1/email/delivery-history?')) return response({ events: [{ providerMessageId: 'email:draft_email_1', channel: 'email', status: 'sent', eventAt: 10, inboundId: 'draft_email_1' }] })
+      return response({ success: true })
+    })
+    const client = createBrowserAgentdClient({ origin: 'http://127.0.0.1:4141', fetch: fetcher })
+    await client.pair('123456')
+    await expect(client.listEmailDeliveryHistory(10)).resolves.toEqual([{ providerMessageId: 'email:draft_email_1', channel: 'email', status: 'sent', eventAt: 10, inboundId: 'draft_email_1' }])
+  })
+
+  it('hydrates bounded IMAP inbound media through the authenticated daemon route', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = []
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      calls.push({ url, init })
+      if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
+      if (url.endsWith('/api/v1/email/inbound/media/imap%3Asupport%3A1/imap-1')) {
+        return new Response(Uint8Array.from([0x89, 0x50, 0x4e, 0x47]), { status: 200, headers: { 'content-type': 'image/png', 'content-length': '4', 'content-disposition': 'inline; filename="photo.png"', 'x-aica-scan-safe': 'true', 'x-aica-scan-reason': 'bounded_type_check_passed', 'x-aica-detected-type': 'png', 'x-aica-sha256': 'a'.repeat(64) } })
+      }
+      return response({ success: true })
+    })
+    const client = createBrowserAgentdClient({ origin: 'http://127.0.0.1:4141', fetch: fetcher })
+    await client.pair('123456')
+    await expect(client.getEmailInboundAttachment('imap:support:1', 'imap-1')).resolves.toMatchObject({ fileName: 'photo.png', mimeType: 'image/png', size: 4, bytes: Uint8Array.from([0x89, 0x50, 0x4e, 0x47]) })
+    const media = calls.find(call => call.url.includes('/api/v1/email/inbound/media/'))!
+    expect(new Headers(media.init?.headers).has('x-csrf-token')).toBe(false)
+  })
+
   it('persists browser email drafts through authenticated agentd routes', async () => {
     const draft = {
       id: 'draft_email_1', responseText: 'Reply', originalFrom: 'customer@example.test', originalSubject: 'Question', replyTo: 'customer@example.test',
@@ -448,10 +511,12 @@ describe('browser agentd client', () => {
     await client.pair('123456')
     await expect(client.createWhatsAppDraft({
       providerEventId: 'wa-event-12', conversationId: '15551234567@s.whatsapp.net', payload: { text: 'hello' }, draftText: 'review reply',
+      policyDecision: { action: 'draft', grounding: 'unavailable', rationale: 'Operator review' },
     })).resolves.toEqual({ accepted: true, duplicate: false, paused: false, draftId: 12 })
     const create = calls.find(call => call.url.endsWith('/api/v1/whatsapp/events'))!
     expect(JSON.parse(String(create.init?.body))).toEqual({
       channel: 'whatsapp', providerEventId: 'wa-event-12', conversationId: '15551234567@s.whatsapp.net', payload: { text: 'hello' }, draftText: 'review reply',
+      policyDecision: { action: 'draft', grounding: 'unavailable', rationale: 'Operator review' },
     })
     expect(new Headers(create.init?.headers).get('x-csrf-token')).toBe('csrf-token')
   })
@@ -514,6 +579,23 @@ describe('browser agentd client', () => {
     const send = calls.find(call => call.url.endsWith('/api/v1/whatsapp/messages'))!
     expect(JSON.parse(String(send.init?.body))).toEqual({ to: '+1 (415) 555-1212', text: 'hello' })
     expect(new Headers(send.init?.headers).get('x-csrf-token')).toBe('csrf-token')
+  })
+
+  it('sends browser WhatsApp presence through the authenticated agentd route', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = []
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      calls.push({ url, init })
+      if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
+      if (url.endsWith('/api/v1/whatsapp/presence')) return response({ success: true })
+      return response({ success: true })
+    })
+    const client = createBrowserAgentdClient({ origin: 'http://127.0.0.1:4141', fetch: fetcher })
+    await client.pair('123456')
+    await expect(client.sendWhatsAppPresence('+1 (415) 555-1212', 'composing')).resolves.toEqual({ success: true })
+    const presence = calls.find(call => call.url.endsWith('/api/v1/whatsapp/presence'))!
+    expect(JSON.parse(String(presence.init?.body))).toEqual({ to: '+1 (415) 555-1212', state: 'composing' })
+    expect(new Headers(presence.init?.headers).get('x-csrf-token')).toBe('csrf-token')
   })
 
   it('sends bounded browser WhatsApp media through the authenticated agentd route', async () => {
@@ -599,7 +681,7 @@ describe('browser agentd client', () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
       if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
-      if (url.endsWith('/api/v1/status')) return response({ runtime: 'agentd', paused: true, queueDepth: 2, events: 1 })
+      if (url.endsWith('/api/v1/status')) return response({ runtime: 'agentd', paused: true, recoveryMode: true, recoveryReason: 'owner review', queueDepth: 2, events: 1, extension: { status: 'connected', port: 8790, lastStatus: 'connected', error: null } })
       if (url.endsWith('/api/v1/pause-all')) return response({ paused: true, actor: 'browser' })
       if (url.endsWith('/api/v1/resume-all')) return response({ paused: false, actor: 'browser' })
       if (url.includes('/api/v1/drafts?')) return response({ drafts: [{ id: 7, channel: 'whatsapp', providerEventId: 'evt-7', conversationId: 'customer-7', responseText: 'draft reply', status: 'draft', createdAt: 10, updatedAt: 20 }] })
@@ -608,7 +690,7 @@ describe('browser agentd client', () => {
     })
     const client = createBrowserAgentdClient({ origin: 'http://127.0.0.1:4141', fetch: fetcher })
     await client.pair('123456')
-    await expect(client.status()).resolves.toMatchObject({ paused: true, queueDepth: 2 })
+    await expect(client.status()).resolves.toMatchObject({ paused: true, recoveryMode: true, recoveryReason: 'owner review', queueDepth: 2, extension: { status: 'connected', port: 8790 } })
     await expect(client.resumeAll()).resolves.toEqual({ paused: false })
     await expect(client.listDrafts()).resolves.toMatchObject([{ providerEventId: 'evt-7', status: 'draft' }])
     await expect(client.updateDraftStatus(7, 'approved')).resolves.toMatchObject({ id: 7, status: 'approved' })
@@ -620,12 +702,101 @@ describe('browser agentd client', () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
       if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
-      if (url.includes('/api/v1/autonomy/metrics')) return response({ inbound: 2, sent: 1, escalated: 0, drafts: 1, failed: 0, averageDecisionLatencyMs: 0, llmCalls: 3, averageLlmLatencyMs: 0, groundedDecisionRate: 0, deliveryUnknown: 0, draftApprovalRate: 0.5, averageDraftEditingTimeMs: 0, estimatedCostPerResolvedConversation: 0, reviewedDecisions: 0, reviewAccuracy: 0, escalationPrecision: 0, unnecessaryEscalations: 0, missedEscalations: 0, recoveryDrills: 0, averageRecoveryTimeMs: 0 })
+      if (url.includes('/api/v1/autonomy/metrics')) return response({ inbound: 2, sent: 1, escalated: 0, drafts: 1, failed: 0, averageDecisionLatencyMs: 0, llmCalls: 3, averageLlmLatencyMs: 0, groundedDecisionRate: 0, deliveryUnknown: 0, draftApprovalRate: 0.5, averageDraftEditingTimeMs: 0, estimatedCostPerResolvedConversation: null, reviewedDecisions: 0, reviewAccuracy: 0, escalationPrecision: 0, unnecessaryEscalations: 0, missedEscalations: 0, recoveryDrills: 0, averageRecoveryTimeMs: 0 })
       return response({ success: true })
     })
     const client = createBrowserAgentdClient({ origin: 'http://127.0.0.1:4141', fetch: fetcher })
     await client.pair('123456')
-    await expect(client.getAutonomyMetrics(14)).resolves.toMatchObject({ inbound: 2, sent: 1, drafts: 1, llmCalls: 3 })
+    await expect(client.getAutonomyMetrics(14)).resolves.toMatchObject({ inbound: 2, sent: 1, drafts: 1, llmCalls: 3, estimatedCostPerResolvedConversation: null })
+  })
+
+  it('reads durable browser autonomy usage history and channel counts from agentd', async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
+      if (url.includes('/api/v1/autonomy/usage-history')) return response({ days: [{ day: '2026-09-20', llmCalls: 2, outboundMessages: 1, estimatedCost: 0 }] })
+      if (url.includes('/api/v1/autonomy/channel-usage')) return response({ channels: [{ channel: 'whatsapp', amount: 1 }] })
+      return response({ success: true })
+    })
+    const client = createBrowserAgentdClient({ origin: 'http://127.0.0.1:4141', fetch: fetcher })
+    await client.pair('123456')
+    await expect(client.getAutonomyUsageHistory(14)).resolves.toEqual([{ day: '2026-09-20', llmCalls: 2, outboundMessages: 1, estimatedCost: 0 }])
+    await expect(client.getAutonomyChannelUsage(1)).resolves.toEqual([{ channel: 'whatsapp', amount: 1 }])
+  })
+
+  it('maps browser recovery holds through authenticated agentd', async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
+      if (url.endsWith('/api/v1/autonomy/recovery/enter')) return response({ recoveryMode: true, paused: true, reason: 'owner review' })
+      if (url.endsWith('/api/v1/autonomy/recovery/clear')) return response({ recoveryMode: false, paused: true, reason: null })
+      return response({ success: true })
+    })
+    const client = createBrowserAgentdClient({ origin: 'http://127.0.0.1:4141', fetch: fetcher })
+    await client.pair('123456')
+    await expect(client.enterRecoveryMode('owner review')).resolves.toEqual({ recoveryMode: true, paused: true, reason: 'owner review' })
+    await expect(client.clearRecoveryMode()).resolves.toEqual({ recoveryMode: false, paused: true, reason: null })
+  })
+
+  it('maps browser decision evidence and quality reviews through agentd', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = []
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      calls.push({ url, init })
+      if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
+      if (url.includes('/api/v1/autonomy/decision-evidence?')) return response({ evidence: [{ inboundId: 'whatsapp_draft_12', jid: '15551234567@s.whatsapp.net', createdAt: 10, decision: { grounding: 'unavailable', reason: 'Operator review', escalated: false, evidence: [] } }] })
+      if (url.endsWith('/review')) return response({ reviewed: true, inboundId: 'whatsapp_draft_12', label: 'correct' })
+      return response({ success: true })
+    })
+    const client = createBrowserAgentdClient({ origin: 'http://127.0.0.1:4141', fetch: fetcher })
+    await client.pair('123456')
+    await expect(client.listDecisionEvidence(10)).resolves.toMatchObject([{ inboundId: 'whatsapp_draft_12', decision: { reason: 'Operator review', grounding: 'unavailable' } }])
+    await expect(client.reviewDecision('whatsapp_draft_12', 'correct', 'verified')).resolves.toEqual({ reviewed: true, inboundId: 'whatsapp_draft_12', label: 'correct' })
+    const review = calls.find(call => call.url.endsWith('/review'))!
+    expect(new Headers(review.init?.headers).get('x-csrf-token')).toBe('csrf-token')
+    expect(JSON.parse(String(review.init?.body))).toEqual({ label: 'correct', notes: 'verified' })
+  })
+
+  it('maps durable browser autonomy notifications and acknowledgement through agentd', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = []
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      calls.push({ url, init })
+      if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
+      if (url.includes('/api/v1/autonomy/notifications?')) return response({ notifications: [{ id: 9, kind: 'failure', details: '{"channel":"email"}', createdAt: 10 }] })
+      if (url.endsWith('/api/v1/autonomy/notifications/9/ack')) return response({ acknowledged: true })
+      return response({ success: true })
+    })
+    const client = createBrowserAgentdClient({ origin: 'http://127.0.0.1:4141', fetch: fetcher })
+    await client.pair('123456')
+    await expect(client.listAutonomyNotifications(5)).resolves.toEqual([{ id: 9, kind: 'failure', details: '{"channel":"email"}', createdAt: 10 }])
+    await expect(client.ackAutonomyNotification(9)).resolves.toEqual({ acknowledged: true })
+    const ack = calls.find(call => call.url.endsWith('/api/v1/autonomy/notifications/9/ack'))!
+    expect(new Headers(ack.init?.headers).get('x-csrf-token')).toBe('csrf-token')
+  })
+
+  it('maps browser approved-template registry and send routes with CSRF protection', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = []
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      calls.push({ url, init })
+      if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
+      if (url.endsWith('/api/v1/autonomy/templates') && init?.method === 'POST') return response({ templates: [{ name: 'support_followup', languageCode: 'en_US', category: 'utility' }] })
+      if (url.endsWith('/api/v1/autonomy/templates')) return response({ templates: [{ name: 'support_followup', languageCode: 'en_US', category: 'utility' }] })
+      if (url.endsWith('/api/v1/autonomy/templates/support_followup/en_US')) return response({ templates: [] })
+      if (url.endsWith('/api/v1/whatsapp/templates/send')) return response({ success: true, duplicate: false, providerMessageId: 'wamid.template-1', draft: { id: 7, channel: 'whatsapp', providerEventId: 'evt-7', conversationId: '14155551212@s.whatsapp.net', responseText: 'draft reply', status: 'sent', createdAt: 10, updatedAt: 30, sendStatus: 'sent', providerMessageId: 'wamid.template-1', sendAttempts: 1 } })
+      return response({ success: true })
+    })
+    const client = createBrowserAgentdClient({ origin: 'http://127.0.0.1:4141', fetch: fetcher })
+    await client.pair('123456')
+    await expect(client.listApprovedTemplates()).resolves.toEqual([{ name: 'support_followup', languageCode: 'en_US', category: 'utility' }])
+    await expect(client.registerApprovedTemplate({ name: 'support_followup', languageCode: 'en_US', category: 'utility' })).resolves.toHaveLength(1)
+    await expect(client.sendApprovedTemplate('evt-7', 'support_followup', 'en_US', ['Alex'])).resolves.toMatchObject({ providerMessageId: 'wamid.template-1', draft: { status: 'sent' } })
+    await expect(client.revokeApprovedTemplate('support_followup', 'en_US')).resolves.toEqual([])
+    const mutationCalls = calls.filter(call => call.init?.method && call.init.method !== 'GET' && !call.url.endsWith('/api/v1/pair'))
+    expect(mutationCalls.every(call => new Headers(call.init?.headers).get('x-csrf-token') === 'csrf-token')).toBe(true)
+    const send = calls.find(call => call.url.endsWith('/api/v1/whatsapp/templates/send'))!
+    expect(JSON.parse(String(send.init?.body))).toEqual({ providerEventId: 'evt-7', name: 'support_followup', languageCode: 'en_US', parameters: ['Alex'] })
   })
 
   it('maps browser knowledge and intelligence routes without Electron fallbacks', async () => {
@@ -633,6 +804,7 @@ describe('browser agentd client', () => {
       const url = String(input)
       if (url.endsWith('/api/v1/pair')) return response({ csrfToken: 'csrf-token', expiresAt: Date.now() + 60_000 })
       if (url.includes('/api/v1/knowledge/search')) return response({ results: [{ id: 1, file_path: 'browser://knowledge/faq.md', file_name: 'faq.md', created_at: '2026-01-01T00:00:00.000Z', content: 'refunds are allowed', rank: -1 }] })
+      if (url.endsWith('/api/v1/knowledge/1/content')) return response({ document: { id: 1, file_path: 'browser://knowledge/faq.md', file_name: 'faq.md', created_at: '2026-01-01T00:00:00.000Z' }, content: 'refunds are allowed' })
       if (url.endsWith('/api/v1/knowledge') && init?.method === 'POST') return response({ success: true, document: { id: 2, file_path: 'browser://knowledge/new.md', file_name: 'new.md', created_at: '2026-01-01T00:00:00.000Z' } })
       if (url.endsWith('/api/v1/knowledge/convert')) return response({ success: true, document: { id: 3, file_path: 'browser://knowledge/guide.pdf', file_name: 'guide.pdf', file_type: 'text/markdown', size: 3, created_at: '2026-01-01T00:00:00.000Z' } })
       if (url.includes('/api/v1/knowledge?')) return response({ documents: [{ id: 1, file_path: 'browser://knowledge/faq.md', file_name: 'faq.md', file_type: 'text/markdown', size: 20, created_at: '2026-01-01T00:00:00.000Z' }] })
@@ -643,6 +815,7 @@ describe('browser agentd client', () => {
     const client = createBrowserAgentdClient({ origin: 'http://127.0.0.1:4141', fetch: fetcher })
     await client.pair('123456')
     await expect(client.listKnowledge()).resolves.toMatchObject([{ file_name: 'faq.md' }])
+    await expect(client.getKnowledgeContent(1)).resolves.toMatchObject({ document: { file_name: 'faq.md' }, content: 'refunds are allowed' })
     await expect(client.searchKnowledge('refunds')).resolves.toMatchObject([{ content: 'refunds are allowed' }])
     await expect(client.ingestKnowledge({ fileName: 'new.md', filePath: 'browser://knowledge/new.md', fileType: 'text/markdown', content: 'new', size: 3 })).resolves.toMatchObject({ file_name: 'new.md' })
     await expect(client.convertKnowledge({ fileName: 'guide.pdf', fileType: 'application/pdf', dataBase64: 'AQID', size: 3 })).resolves.toMatchObject({ file_name: 'guide.pdf', file_type: 'text/markdown' })

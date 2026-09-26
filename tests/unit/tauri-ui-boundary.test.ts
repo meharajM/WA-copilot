@@ -17,6 +17,18 @@ describe('browser-first UI boundary', () => {
     expect(entry).not.toMatch(/workspace\s*=|location\.(search|hash)/)
   })
 
+  it('opens the selected Lead Directory session in the chat view', () => {
+    const app = readSource('App.tsx')
+    const leads = readSource('components/chat/LeadDirectory.tsx')
+
+    expect(app).toContain("<LeadDirectory onOpenChat={() => setCurrentView('chat')} />")
+    expect(leads).toContain('onOpenChat?: () => void')
+    expect(leads).toContain('setActiveSession(id)')
+    expect(leads).toContain('onOpenChat?.()')
+    expect(leads).toContain('role="button"')
+    expect(leads).toContain("event.key === 'Enter' || event.key === ' '")
+  })
+
   it('keeps the native host free of product workspace imports', () => {
     const host = readSource('NativeHostDiagnostics.tsx')
 
@@ -25,6 +37,9 @@ describe('browser-first UI boundary', () => {
     expect(host).not.toContain('ChatView')
     expect(host).toContain('Native capabilities')
     expect(host).toContain('Open browser workspace')
+    expect(host).toContain('Start background agent')
+    expect(host).toContain('Stop background agent')
+    expect(host).toContain('Keep running in background')
     expect(host).toContain('Open agentd data folder')
     expect(host).toContain('Product UI runs in the browser')
     expect(host).toContain('Confirm chat history')
@@ -32,6 +47,9 @@ describe('browser-first UI boundary', () => {
     expect(host).toContain('Refresh chat-history status')
     expect(host).toContain('Rollback chat history')
     expect(host).toContain('Review credentials needing reauthentication')
+    expect(host).toContain('Store securely')
+    expect(host).toContain('tauriNativeBridge.setCredential(credential, credentialValue)')
+    expect(host).toContain("setCredentialValue('')")
     expect(host).toContain('values excluded')
     expect(host).toContain('Install sign-in service')
     expect(host).toContain('Remove sign-in service')
@@ -75,6 +93,10 @@ describe('browser-first UI boundary', () => {
     const handler = native.slice(native.indexOf('.invoke_handler('), native.indexOf('.setup('))
 
     expect(handler).toContain('agentd_health')
+    expect(handler).toContain('agentd_start')
+    expect(handler).toContain('agentd_stop')
+    expect(handler).toContain('background_policy')
+    expect(handler).toContain('set_background_policy')
     expect(handler).toContain('agentd_pairing_code')
     expect(handler).toContain('credential_set')
     expect(handler).toContain('credential_exists')
@@ -94,6 +116,18 @@ describe('browser-first UI boundary', () => {
     expect(handler).not.toMatch(/get_llm_settings|save_llm_settings|get_whatsapp_settings|save_whatsapp_settings|provider_test|chat_generate|chat_load_sessions|chat_create_session|chat_append_message/)
   })
 
+  it('launches browser workspace from the app icon while keeping native recovery available', () => {
+    const native = readNativeSource('main.rs')
+    const config = readFileSync(resolve(process.cwd(), 'src-tauri/tauri.conf.json'), 'utf8')
+    expect(config).toContain('"visible": false')
+    expect(native).toContain('open_browser_workspace_for_app(app.handle())')
+    expect(native).toContain('Open browser workspace')
+    expect(native).toContain('Keep running in background')
+    expect(native).toContain('Start background agent')
+    expect(native).toContain('Stop background agent')
+    expect(native).toContain('let _ = window.destroy()')
+  })
+
   it('does not route product hooks through a Tauri chat client', () => {
     const agent = readSource('hooks/useAgent.ts')
     const storage = readSource('stores/chatStore.ts')
@@ -103,6 +137,15 @@ describe('browser-first UI boundary', () => {
     expect(agent).toContain('!isTauriRuntime()')
     expect(agent).toContain('...(daemonAttachments?.length ? { attachments: daemonAttachments } : {})')
     expect(storage).toContain('The Tauri native companion does not mount the product workspace')
+  })
+
+  it('never derives a browser workspace from a non-standard File.path value', () => {
+    const input = readSource('components/input/ChatInput.tsx')
+    const guard = input.indexOf('if (!isElectron()) return')
+    const nativePath = input.indexOf('getPathForFile(firstFile)')
+
+    expect(guard).toBeGreaterThan(-1)
+    expect(nativePath).toBeGreaterThan(guard)
   })
 
   it('keeps browser email auto-reply inside the authenticated agentd policy path', () => {
@@ -131,6 +174,24 @@ describe('browser-first UI boundary', () => {
     expect(bridge.indexOf('onComplete: completion')).toBeLessThan(bridge.indexOf('acknowledgeEmailInbound'))
   })
 
+  it('describes browser audit storage without claiming a native file path', () => {
+    const settings = readSource('components/SettingsPanel.tsx')
+
+    expect(settings).toContain("browserRuntime ? 'Agentd audit logging' : 'Corporate Logging Enabled'")
+    expect(settings).toContain('Audit events are redacted before they are stored in agentd local SQLite state')
+    expect(settings).toContain('the browser never receives the database path')
+    expect(settings).toContain("browserRuntime ? 'Audit storage' : 'Local Log Path'")
+  })
+
+  it('does not present configured default models as discovered browser models', () => {
+    const providers = readSource('components/settings/llm/LLMProviderSettings.tsx')
+
+    expect(providers).toContain('models: ollama.success ? (ollama.models || [ollamaSettings.model]) : []')
+    expect(providers).toContain('models: openai.success && openai.exists ? [settings.openaiModel] : []')
+    expect(providers).toContain('models: gemini.success ? (gemini.models || [settings.geminiModel]) : []')
+    expect(providers).toContain('models: openrouter.success && openrouter.exists ? [settings.openrouterModel] : []')
+  })
+
   it('keeps browser WhatsApp inbound generation replay-safe and routes autonomous sends through the outbox', () => {
     const agent = readSource('hooks/useAgent.ts')
     const bridge = readSource('hooks/useWhatsAppBridge.ts')
@@ -138,6 +199,7 @@ describe('browser-first UI boundary', () => {
     const resolutionAudit = readSource('hooks/useResolutionAudit.ts')
 
     expect(agent).toContain('client.createWhatsAppDraft')
+    expect(agent).toContain('policyDecision')
     expect(agent).toContain("client.updateDraftStatus(draft.draftId, 'approved')")
     expect(agent).toContain('client.sendWhatsAppDraft(draft.draftId)')
     expect(agent).toContain('60s courtesy notification through the durable WhatsApp outbox')
@@ -182,9 +244,14 @@ describe('browser-first UI boundary', () => {
   it('does not expose Electron-only autonomy controls in the browser workspace', () => {
     const autonomy = readSource('components/AutonomyPanel.tsx')
 
-    expect(autonomy).toContain("!browserRuntime && webState")
+    expect(autonomy).toContain('browserRuntime ?')
+    expect(autonomy).toContain('Refresh bridge')
     expect(autonomy).toContain("!browserRuntime && <button")
-    expect(autonomy).not.toContain("browserRuntime ? electron.whatsapp.web")
+    expect(autonomy).not.toContain("browserRuntime ? electron.whatsapp.web.start")
+    expect(autonomy).toContain('(metrics.estimatedCostPerResolvedConversation ?? 0).toFixed(4)')
+    expect(autonomy).toContain('recordConversationOutcome')
+    expect(autonomy).toContain('Owner evidence')
+    expect(autonomy).toContain('Record outcome')
   })
 
   it('presents browser WhatsApp autonomous mode through the durable outbox', () => {
@@ -202,6 +269,9 @@ describe('browser-first UI boundary', () => {
     expect(autonomy).toContain('WhatsApp auto mode is controlled in Settings')
     expect(electronSource).toContain("mode: whatsappState.businessBotMode ? 'auto'")
     expect(electronSource).toContain('whatsapp.setBusinessBotMode(true)')
+    expect(autonomy).toContain('setTemplateError')
+    expect(autonomy).toContain('role="status"')
+    expect(autonomy).toContain('sendApprovedTemplate(draft.inboundId, name, languageCode)')
   })
 
   it('keeps browser email credentials transport-scoped and review-only', () => {
@@ -212,10 +282,23 @@ describe('browser-first UI boundary', () => {
     expect(emailSettings).toContain("client.setCredential('email_smtp_password', value)")
     expect(readSource('stores/emailStore.ts')).toContain('flushEmailSettingsPersistence')
     expect(readSource('hooks/useEmailBridge.ts')).toContain('await flushEmailSettingsPersistence()')
-    expect(emailSettings).toContain('does not generate or send automatic replies')
+    expect(emailSettings).toContain('runs authenticated generation and confidence policy')
+    expect(emailSettings).toContain('disabled={!canEnableChannel}')
+    expect(emailSettings).toContain('Run Test Connection before enabling.')
+    expect(emailSettings).toContain('A successful probe is only valid for the values that were tested')
     expect(drafts).toContain('gated IMAP/Gmail polling')
     expect(drafts).toContain('Safe operator-selected PDF, image, and text attachments')
+    expect(drafts).toContain('dispatchBrowserDeliveryStatus')
+    expect(drafts).toContain('Email delivered:')
     expect(drafts).not.toContain('IMAP polling, OAuth, attachments, and insecure SMTP remain unavailable.')
+  })
+
+  it('keeps generic browser WhatsApp tools on authenticated agentd or explicit fail-closed paths', () => {
+    const mcp = readSource('lib/mcp.ts')
+    expect(mcp).toContain("if (isBrowserProduct()) {")
+    expect(mcp).toContain("getBrowserAgentdClient().sendWhatsAppText(targetJid, content)")
+    expect(mcp).toContain('Browser WhatsApp media tools require the authenticated attachment route')
+    expect(mcp).toContain('Browser WhatsApp admin escalation is daemon-owned')
   })
 
   it('routes legacy WhatsApp wrapper calls through authenticated agentd in browsers', () => {
@@ -224,6 +307,15 @@ describe('browser-first UI boundary', () => {
     expect(electron).toContain('getBrowserAgentdClient().setWhatsAppTarget(phoneNumber)')
     expect(electron).toContain('getBrowserAgentdClient().sendWhatsAppText(to, content)')
     expect(electron).toContain('getBrowserAgentdClient().disconnectWhatsApp(clearAuth)')
+  })
+
+  it('routes legacy MCP wrapper calls through authenticated agentd in browsers', () => {
+    const electron = readSource('lib/electron.ts')
+    expect(electron).toContain('getBrowserAgentdClient().connectMcpServer(serverId)')
+    expect(electron).toContain('getBrowserAgentdClient().disconnectMcpServer(serverId)')
+    expect(electron).toContain('getBrowserAgentdClient().listMcpTools(serverId)')
+    expect(electron).toContain('getBrowserAgentdClient().callMcpTool(serverId, toolName, boundedArgs, requestId)')
+    expect(electron).toContain('getBrowserAgentdClient().cancelMcpTool(requestId)')
   })
 
   it('keeps browser autonomy state live without reviving Electron events', () => {
@@ -239,6 +331,63 @@ describe('browser-first UI boundary', () => {
     expect(electron.slice(onState, onDecision)).toContain('window.electron?.autonomy')
   })
 
+  it('routes browser owner notifications through authenticated agentd', () => {
+    const electron = readSource('lib/electron.ts')
+    expect(electron).toContain('getBrowserAgentdClient().listAutonomyNotifications()')
+    expect(electron).toContain('getBrowserAgentdClient().ackAutonomyNotification(id)')
+  })
+
+  it('derives browser unresolved and sent history from the durable agentd outbox', () => {
+    const electron = readSource('lib/electron.ts')
+    expect(electron).toContain("draft.sendStatus === 'pending' || draft.sendStatus === 'failed'")
+    expect(electron).toContain("draft.sendStatus === 'sent' && draft.providerMessageId")
+    expect(electron).toContain("channel: 'whatsapp'")
+  })
+
+  it('keeps browser failed outbox rows actionable without changing Electron delivery-unknown controls', () => {
+    const autonomy = readSource('components/AutonomyPanel.tsx')
+    expect(autonomy).toContain("browserRuntime && item.status === 'failed'")
+    expect(autonomy).toContain('electron.autonomy.cancelOutbound(item.inboundId)')
+    expect(autonomy).toContain("item.status === 'delivery-unknown'")
+  })
+
+  it('routes browser autonomy usage history through authenticated agentd', () => {
+    const electron = readSource('lib/electron.ts')
+    const client = readSource('lib/browser-agentd-client.ts')
+    expect(electron).toContain('getBrowserAgentdClient().getAutonomyUsageHistory(days)')
+    expect(electron).toContain('getBrowserAgentdClient().getAutonomyChannelUsage(days)')
+    expect(client).toContain('/api/v1/autonomy/usage-history?days=')
+    expect(client).toContain('/api/v1/autonomy/channel-usage?days=')
+  })
+
+  it('routes browser decision evidence and reviews through authenticated agentd', () => {
+    const electron = readSource('lib/electron.ts')
+    const client = readSource('lib/browser-agentd-client.ts')
+    expect(electron).toContain('getBrowserAgentdClient().listDecisionEvidence(limit)')
+    expect(electron).toContain('getBrowserAgentdClient().reviewDecision')
+    expect(client).toContain('/api/v1/autonomy/decision-evidence?limit=')
+    expect(client).toContain('/review')
+  })
+
+  it('routes browser delivery history across WhatsApp and Email through authenticated agentd', () => {
+    const electron = readSource('lib/electron.ts')
+    const client = readSource('lib/browser-agentd-client.ts')
+    expect(electron).toContain('getBrowserAgentdClient().listEmailDeliveryHistory(boundedLimit)')
+    expect(electron).toContain('getBrowserAgentdClient().listDrafts(boundedLimit)')
+    expect(client).toContain('/api/v1/email/delivery-history?limit=')
+  })
+
+  it('routes browser recovery holds through authenticated agentd', () => {
+    const electron = readSource('lib/electron.ts')
+    const client = readSource('lib/browser-agentd-client.ts')
+    expect(electron).toContain('getBrowserAgentdClient().enterRecoveryMode(reason)')
+    expect(electron).toContain('getBrowserAgentdClient().clearRecoveryMode()')
+    expect(electron).toContain('enterRecoveryMode(reason).then(browserAutonomyState)')
+    expect(electron).toContain('clearRecoveryMode().then(browserAutonomyState)')
+    expect(client).toContain('/api/v1/autonomy/recovery/enter')
+    expect(client).toContain('/api/v1/autonomy/recovery/clear')
+  })
+
   it('routes browser persona reads and writes through agentd', () => {
     const electron = readSource('lib/electron.ts')
     expect(electron).toContain('getBrowserAgentdClient().getPersonaSettings()')
@@ -251,6 +400,8 @@ describe('browser-first UI boundary', () => {
     expect(knowledge).toContain('bounded text and document files')
     expect(knowledge).toContain('convertKnowledge')
     expect(knowledge).toContain('readBrowserKnowledgeBinaryFile')
+    expect(knowledge).toContain('getKnowledgeContent')
+    expect(knowledge).toContain('native file paths are never exposed')
     expect(knowledge).not.toContain('Binary conversion is not available in the browser yet.')
     expect(knowledge).not.toContain('visual data')
     expect(knowledge).not.toContain('ToIndex documents, spreadsheets or images')
@@ -271,5 +422,14 @@ describe('browser-first UI boundary', () => {
     expect(dashboard).toContain('if (topicsLog.length === 0) return []')
     expect(dashboard).toContain('No analyzed sessions yet.')
     expect(dashboard).not.toContain('Math.max(metrics.messagesToday, 10)')
+  })
+
+  it('stops the active speech engine without crossing into the other runtime path', () => {
+    const speech = readSource('hooks/useSpeechRecognition.ts')
+    const stop = speech.slice(speech.indexOf('const stopListening'))
+
+    expect(stop).toContain('if (useVoskSpeech)')
+    expect(stop).toContain('recognitionRef.current.stop()')
+    expect(stop).toContain('stopVisualization()')
   })
 })

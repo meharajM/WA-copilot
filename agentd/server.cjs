@@ -11,11 +11,13 @@ const { isPublicCredentialKey } = require('./keyring-credential-store.cjs')
 const { GmailOAuthService } = require('./gmail-oauth.cjs')
 const { GmailInboundWorker, pollGmail } = require('./gmail-api.cjs')
 const { WhatsAppBaileysService, isSupportedMediaMime } = require('./whatsapp-baileys.cjs')
+const { WhatsAppExtensionBridge } = require('./whatsapp-extension-bridge.cjs')
 const continuityMigration = require('./continuity-migration.cjs')
 const { sendTextEmail } = require('./email-transport.cjs')
 const { EmailInboundWorker, pollMailbox } = require('./email-inbound-worker.cjs')
 const { MAX_SCANNED_EMAIL_ATTACHMENT_BYTES, scanEmailAttachment } = require('./email-attachment-safety.cjs')
 const { McpWorker, MCP_LIFECYCLE } = require('./mcp-worker.cjs')
+const { SpeechModelStore } = require('./speech-model.cjs')
 
 const SESSION_TTL_MS = 15 * 60 * 1000
 const PAIRING_TTL_MS = 5 * 60 * 1000
@@ -32,6 +34,7 @@ const MAX_EMAIL_INBOUND_BATCH = 50
 const MAX_EMAIL_DRAFT_BATCH = 100
 const MAX_EMAIL_DRAFT_BODY_BYTES = 15 * 1024 * 1024
 const MAX_EMAIL_DRAFT_TEXT_LENGTH = 32 * 1024
+const MAX_EMAIL_PROVIDER_MESSAGE_ID_LENGTH = 1024
 const MAX_EMAIL_DRAFT_ATTACHMENT_COUNT = 5
 const MAX_EMAIL_DRAFT_ATTACHMENT_TOTAL_BYTES = 10 * 1024 * 1024
 const MAX_EMAIL_DRAFT_ATTACHMENT_BASE64_LENGTH = Math.ceil(MAX_EMAIL_DRAFT_ATTACHMENT_TOTAL_BYTES * 4 / 3) + 64
@@ -39,13 +42,18 @@ const MAX_EMAIL_ATTACHMENT_COUNT = 20
 const MAX_EMAIL_ATTACHMENT_NAME_LENGTH = 256
 const MAX_EMAIL_ATTACHMENT_MIME_LENGTH = 128
 const MAX_EMAIL_ATTACHMENT_RESPONSE_BYTES = Math.ceil(MAX_SCANNED_EMAIL_ATTACHMENT_BYTES * 4 / 3) + 32 * 1024
+const MAX_EMAIL_INBOUND_MEDIA_BYTES = 512 * 1024
+const MAX_EMAIL_INBOUND_MEDIA_TOTAL_BYTES = 1024 * 1024
 const MAX_WHATSAPP_INBOUND_BATCH = 50
 const MAX_DRAFT_TEXT_LENGTH = 4096
+const WHATSAPP_TEMPLATE_SERVICE_WINDOW_MS = 24 * 60 * 60 * 1000
 const WHATSAPP_INACTIVITY_TIMEOUT_MS = 10 * 60 * 1000
 const WHATSAPP_INACTIVITY_SWEEP_MS = 60 * 1000
 const WHATSAPP_RESOLUTION_PROMPT = "It's been a while! Just checking in—did that resolve your inquiry? (Reply 'Yes' or 'No', or feel free to ask more questions!)"
 const OUTBOX_QUARANTINED_ERROR = 'Quarantined by operator'
 const OUTBOX_CANCELLED_ERROR = 'Cancelled by operator'
+const OUTBOX_CANCEL_REQUESTED_ERROR = 'Cancellation requested by operator'
+const AUTONOMY_NOTIFICATION_KINDS = Object.freeze(['failure', 'budget', 'recovery', 'escalation_sla_overdue'])
 const CONTINUITY_CREDENTIAL_KEYS = Object.freeze([
   'openai_api_key',
   'gemini_api_key',
@@ -97,6 +105,7 @@ const MAX_CHAT_REQUEST_BYTES = MAX_PROVIDER_REQUEST_BYTES + 64 * 1024
 const MAX_GENERATION_REQUEST_ID_LENGTH = 128
 const MAX_PROVIDER_CONTEXT_MESSAGES = 50
 const MAX_LOG_BYTES = 32 * 1024
+const MAX_AUTONOMY_NOTIFICATION_DETAILS = 4096
 const REQUEST_TIMEOUT_MS = 30 * 1000
 const HEADERS_TIMEOUT_MS = 10 * 1000
 const KEEP_ALIVE_TIMEOUT_MS = 5 * 1000
@@ -403,7 +412,7 @@ function readMigrationFile(filename, maxBytes = null) {
       const args = [filename]
       if (Number.isSafeInteger(maxBytes) && maxBytes >= 0) args.push(String(maxBytes))
       return execFileSync(reader, args, { stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: Number.isSafeInteger(maxBytes) && maxBytes >= 0 ? maxBytes + 1 : 64 * 1024 * 1024 + 1 })
-    } catch {
+    } catch (error) {
       if (error?.status === 3) throw Object.assign(new Error('Migration file is too large'), { statusCode: 413 })
       throw Object.assign(new Error('Migration file unavailable'), { statusCode: 409 })
     }
@@ -514,20 +523,23 @@ function whatsappInactivityProviderEventId(sessionId, messageId) {
 }
 
 class AgentdServer {
-  constructor({ dataDir, secret, uiRoot = null, logger = console, pairingCode = null, credentials = null, providerFetch = fetch, emailProbe = probeEmailTransport, emailSend = sendTextEmail, emailPoll = undefined, gmailPoll: configuredGmailPoll = undefined, whatsappService = null, mcpWorker = null } = {}) {
+  constructor({ dataDir, secret, uiRoot = null, logger = console, pairingCode = null, credentials = null, providerFetch = fetch, speechFetch = fetch, speechModelStore = null, emailProbe = probeEmailTransport, emailSend = sendTextEmail, emailPoll = undefined, gmailPoll: configuredGmailPoll = undefined, whatsappService = null, whatsappExtensionBridge = null, mcpWorker = null, relayClient = null } = {}) {
     if (!secret || typeof secret !== 'string' || secret.length < 32) throw new Error('A per-install bearer secret of at least 32 characters is required')
     this.dataDir = resolveDataDir(dataDir)
     this.whatsappMediaDir = path.join(this.dataDir, 'whatsapp-media')
+    this.emailMediaDir = path.join(this.dataDir, 'email-media')
     this.secret = secret
     this.uiRoot = uiRoot
     this.logger = logger
     this.credentials = credentials
     this.providerFetch = providerFetch
+    this.speechModels = speechModelStore || new SpeechModelStore(this.dataDir, { fetchImpl: speechFetch })
     this.emailProbe = emailProbe
     this.emailSend = emailSend
     this.emailPoll = emailPoll
     this.gmailPoll = configuredGmailPoll
     this.emailInboundWorker = null
+    this.publicRelayClient = relayClient
     this.whatsappInactivityTimer = null
     this.whatsappInactivityAuditRunning = false
     this.whatsappInactivityAuditPromise = null
@@ -539,7 +551,26 @@ class AgentdServer {
       onState: state => {
         if (this.db) this.setState('whatsapp_connection_state', JSON.stringify(state))
       },
-      onMessage: message => this.ingestWhatsAppServiceMessage(message),
+      // Keep provider ingress behind the same explicit UI gates as browser
+      // generation.  Without this boundary, a message received while both
+      // modes are off would remain queued and be processed when the user
+      // later enables a mode.
+      onMessage: message => {
+        if (!this.allowsWhatsAppServiceMessage()) return
+        this.ingestWhatsAppServiceMessage(message)
+      },
+    })
+    this.whatsappExtensionBridge = whatsappExtensionBridge || new WhatsAppExtensionBridge({
+      logger,
+      allowMessage: message => this.allowsWhatsAppExtensionMessage(message),
+      allowOutbound: message => message?.kind === 'media'
+        ? this.allowsWhatsAppExtensionMedia({
+          to: message.to,
+          ...(message.media || {}),
+          bytes: typeof message.media?.dataBase64 === 'string' ? Buffer.from(message.media.dataBase64, 'base64') : null,
+        })
+        : this.allowsWhatsAppExtensionOutbound(message),
+      onMessage: message => this.ingestWhatsAppExtensionMessage(message),
     })
     this.server = null
     this.db = null
@@ -570,6 +601,8 @@ class AgentdServer {
     fs.chmodSync(this.dataDir, 0o700)
     fs.mkdirSync(this.whatsappMediaDir, { recursive: true, mode: 0o700 })
     fs.chmodSync(this.whatsappMediaDir, 0o700)
+    fs.mkdirSync(this.emailMediaDir, { recursive: true, mode: 0o700 })
+    fs.chmodSync(this.emailMediaDir, 0o700)
     try {
       this.acquireRuntimeLock()
       this.db = new Database(path.join(this.dataDir, 'agentd.db'))
@@ -598,15 +631,36 @@ class AgentdServer {
           storage_name TEXT NOT NULL UNIQUE,
           created_at INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS email_media (
+          media_id TEXT PRIMARY KEY,
+          provider_event_id TEXT NOT NULL,
+          attachment_id TEXT NOT NULL,
+          file_name TEXT NOT NULL,
+          mime_type TEXT NOT NULL,
+          size INTEGER NOT NULL,
+          sha256 TEXT NOT NULL,
+          storage_name TEXT NOT NULL UNIQUE,
+          created_at INTEGER NOT NULL,
+          UNIQUE(provider_event_id, attachment_id)
+        );
         CREATE TABLE IF NOT EXISTS whatsapp_drafts (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           channel TEXT NOT NULL CHECK(channel = 'whatsapp'),
           provider_event_id TEXT NOT NULL UNIQUE,
           conversation_id TEXT NOT NULL,
           response_text TEXT NOT NULL,
+          policy_decision TEXT,
           status TEXT NOT NULL CHECK(status IN ('draft','approved','rejected','sent')) DEFAULT 'draft',
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS approved_templates (
+          name TEXT NOT NULL,
+          language_code TEXT NOT NULL,
+          category TEXT NOT NULL,
+          active INTEGER NOT NULL DEFAULT 1,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (name, language_code)
         );
         CREATE TABLE IF NOT EXISTS whatsapp_outbox (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -614,6 +668,7 @@ class AgentdServer {
           status TEXT NOT NULL CHECK(status IN ('pending','sent','failed')) DEFAULT 'pending',
           provider_message_id TEXT,
           error TEXT,
+          cancel_requested INTEGER NOT NULL DEFAULT 0,
           attempts INTEGER NOT NULL DEFAULT 0,
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL
@@ -669,6 +724,32 @@ class AgentdServer {
           timestamp TEXT NOT NULL,
           payload TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS autonomy_notifications (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          kind TEXT NOT NULL CHECK(kind IN ('failure','budget','recovery','escalation_sla_overdue')),
+          details TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'unread' CHECK(status IN ('unread','read')),
+          created_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS autonomy_notifications_unread_idx ON autonomy_notifications(status, created_at DESC);
+        CREATE TABLE IF NOT EXISTS autonomy_decision_reviews (
+          inbound_id TEXT PRIMARY KEY,
+          label TEXT NOT NULL CHECK(label IN ('correct','incorrect','unnecessary_escalation','missed_escalation')),
+          notes TEXT,
+          reviewed_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS autonomy_conversation_controls (
+          conversation_id TEXT PRIMARY KEY,
+          source TEXT NOT NULL,
+          active INTEGER NOT NULL DEFAULT 1,
+          revision INTEGER NOT NULL DEFAULT 0,
+          outcome TEXT CHECK(outcome IN ('resolved_agent','resolved_human','escalated','closed_unresolved','open')),
+          evidence TEXT,
+          started_at INTEGER NOT NULL,
+          ended_at INTEGER,
+          outcome_recorded_at INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS autonomy_conversation_controls_active_idx ON autonomy_conversation_controls(active, started_at DESC);
         CREATE TABLE IF NOT EXISTS settings_persona_cutovers (
           preview_id TEXT PRIMARY KEY,
           manifest TEXT NOT NULL,
@@ -778,7 +859,13 @@ class AgentdServer {
       if (!sessionColumns.some((column) => column.name === 'metadata')) this.db.exec('ALTER TABLE chat_sessions ADD COLUMN metadata TEXT')
       const chatCutoverColumns = this.db.prepare('PRAGMA table_info(chat_history_cutovers)').all()
       if (!chatCutoverColumns.some((column) => column.name === 'source_hash')) this.db.exec('ALTER TABLE chat_history_cutovers ADD COLUMN source_hash TEXT')
+      const whatsappDraftColumns = this.db.prepare('PRAGMA table_info(whatsapp_drafts)').all()
+      if (!whatsappDraftColumns.some((column) => column.name === 'policy_decision')) this.db.exec('ALTER TABLE whatsapp_drafts ADD COLUMN policy_decision TEXT')
+      const outboxColumns = this.db.prepare('PRAGMA table_info(whatsapp_outbox)').all()
+      if (!outboxColumns.some((column) => column.name === 'cancel_requested')) this.db.exec('ALTER TABLE whatsapp_outbox ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0')
       this.db.prepare('INSERT INTO agent_state(key,value,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO NOTHING').run('paused', 'false', Date.now())
+      this.db.prepare('INSERT INTO agent_state(key,value,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO NOTHING').run('recovery_mode', 'false', Date.now())
+      this.db.prepare('INSERT INTO agent_state(key,value,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO NOTHING').run('recovery_reason', '', Date.now())
       this.gmailOAuth.configureStateAccessors({
         get: key => this.getState(key, null),
         set: (key, value) => {
@@ -810,7 +897,13 @@ class AgentdServer {
       this.startedAt = Date.now()
       this.writePairingCode()
       this.writeRuntimeDescriptor()
+      try {
+        await this.whatsappExtensionBridge.start()
+      } catch (error) {
+        this.logger.warn?.('[agentd] WhatsApp Web extension bridge failed to start', { error: error instanceof Error ? error.message : 'unknown error' })
+      }
       this.startEmailInboundPolling()
+      this.publicRelayClient?.start()
       this.startWhatsAppInactivityAudit()
       this.logger.log(`[agentd] listening at ${this.origin}`)
       return { origin: this.origin, pairingExpiresAt: this.pairingExpiresAt }
@@ -917,8 +1010,10 @@ class AgentdServer {
 
   async stop() {
     this.stopEmailInboundPolling()
+    await this.publicRelayClient?.stop()
     await this.stopWhatsAppInactivityAudit()
     try { await this.mcpWorker?.closeAll() } catch {}
+    try { await this.whatsappExtensionBridge?.stop() } catch {}
     try { await this.whatsappBaileys?.disconnect(false) } catch {}
     if (this.server) await new Promise(resolve => this.server.close(() => resolve()))
     this.server = null
@@ -954,7 +1049,21 @@ class AgentdServer {
       const providerEventId = `${settings.provider === 'gmail-api' ? 'gmail' : 'imap'}:${settings.accountName}:${message.uid}`
       const from = message.payload.from || 'unknown'
       const messageId = message.payload.messageId || providerEventId
-      this.ingestEmailInbound({ providerEventId, conversationId: `email::${from}::${messageId}`, payload: message.payload })
+      const mediaAttachments = Array.isArray(message.payload.attachments)
+        ? message.payload.attachments.filter(attachment => Buffer.isBuffer(attachment?.bytes)).map(attachment => ({
+          id: attachment.id,
+          name: attachment.name,
+          mimeType: attachment.mimeType,
+          bytes: attachment.bytes,
+        }))
+        : []
+      const payload = {
+        ...message.payload,
+        ...(Array.isArray(message.payload.attachments)
+          ? { attachments: message.payload.attachments.map(({ bytes, ...metadata }) => metadata) }
+          : {}),
+      }
+      await this.ingestEmailInbound({ providerEventId, conversationId: `email::${from}::${messageId}`, payload }, mediaAttachments)
     }
     if (settings.provider === 'gmail-api' && settings.gmailAuthMode === 'google-oauth') {
       this.emailInboundWorker = new GmailInboundWorker({
@@ -1000,6 +1109,7 @@ class AgentdServer {
     const run = () => {
       const promise = this.auditWhatsAppInactivity().catch(error => {
         this.logger.log(`[agentd] WhatsApp inactivity audit failed: ${error?.message || 'unknown error'}`)
+        this.createAutonomyNotification('failure', { channel: 'whatsapp', operation: 'inactivity-audit', message: 'Inactivity audit failed' })
       })
       this.whatsappInactivityAuditPromise = promise
       void promise.then(() => {
@@ -1088,15 +1198,68 @@ class AgentdServer {
     }
   }
 
-  ingestEmailInbound(body) {
+  ingestEmailInbound(body, mediaAttachments = []) {
     if (this.migrationHold) throw Object.assign(new Error('Settings migration is committing'), { statusCode: 409 })
     if (!parseEmailInbound(body)) throw new Error('Invalid email inbound event')
     const payload = JSON.stringify(body.payload)
     if (Buffer.byteLength(payload, 'utf8') > MAX_EMAIL_INBOUND_BODY_BYTES) throw new Error('Email inbound payload too large')
     const existing = this.db.prepare('SELECT id FROM inbound_events WHERE channel = ? AND provider_event_id = ?').get('email', body.providerEventId)
     if (existing) return { accepted: true, duplicate: true, id: existing.id }
-    const result = this.db.prepare('INSERT INTO inbound_events(channel,provider_event_id,conversation_id,payload,status,created_at) VALUES (?,?,?,?,?,?)').run('email', body.providerEventId, body.conversationId, payload, 'queued', Date.now())
-    return { accepted: true, duplicate: false, id: result.lastInsertRowid }
+    if (!Array.isArray(mediaAttachments) || mediaAttachments.length > MAX_EMAIL_ATTACHMENT_COUNT) throw new Error('Invalid email media attachments')
+    const media = []
+    let totalBytes = 0
+    for (const attachment of mediaAttachments) {
+      const metadata = attachment && typeof attachment === 'object' ? { ...attachment } : null
+      if (metadata) delete metadata.bytes
+      if (!metadata || !parseEmailAttachmentMetadata(metadata) || !Buffer.isBuffer(attachment.bytes)) throw new Error('Invalid email media attachment')
+      const declared = Array.isArray(body.payload.attachments) ? body.payload.attachments.find(item => item && item.id === metadata.id) : null
+      const normalizedDeclared = declared ? parseEmailAttachmentMetadata(declared) : null
+      const normalizedMedia = parseEmailAttachmentMetadata(metadata)
+      if (!normalizedDeclared || !normalizedMedia || JSON.stringify(normalizedDeclared) !== JSON.stringify(normalizedMedia)) throw new Error('Email media attachment is not declared by the event')
+      if (attachment.bytes.length !== metadata.size || attachment.bytes.length > MAX_EMAIL_INBOUND_MEDIA_BYTES) throw new Error('Email media attachment is too large')
+      const scan = scanEmailAttachment({ bytes: attachment.bytes, mimeType: metadata.mimeType })
+      // Keep the normalized event even when a MIME part is unsupported or
+      // fails magic-byte validation; only safe bytes are admitted to storage.
+      // This prevents one untrusted attachment from wedging the UID cursor.
+      if (!scan.safe) continue
+      totalBytes += attachment.bytes.length
+      if (totalBytes > MAX_EMAIL_INBOUND_MEDIA_TOTAL_BYTES) continue
+      const mediaId = crypto.createHash('sha256').update(`email-media\0${body.providerEventId}\0${metadata.id}`).digest('hex')
+      const storageName = `${mediaId}.bin`
+      media.push({ mediaId, storageName, attachment: { ...metadata, bytes: attachment.bytes }, sha256: scan.sha256 })
+    }
+    const written = []
+    try {
+      for (const item of media) {
+        const filename = path.join(this.emailMediaDir, item.storageName)
+        if (!fs.existsSync(filename)) {
+          writePrivateBufferAtomically(filename, item.attachment.bytes)
+          written.push(filename)
+        } else {
+          const existingStat = fs.lstatSync(filename)
+          if (!existingStat.isFile() || existingStat.size !== item.attachment.bytes.length) throw new Error('Email media storage collision')
+          const existing = fs.readFileSync(filename)
+          if (crypto.createHash('sha256').update(existing).digest('hex') !== item.sha256) throw new Error('Email media storage collision')
+        }
+      }
+      const now = Date.now()
+      const result = this.db.transaction(() => {
+        const inserted = this.db.prepare('INSERT INTO inbound_events(channel,provider_event_id,conversation_id,payload,status,created_at) VALUES (?,?,?,?,?,?)').run('email', body.providerEventId, body.conversationId, payload, 'queued', now)
+        for (const item of media) {
+          this.db.prepare('INSERT INTO email_media(media_id,provider_event_id,attachment_id,file_name,mime_type,size,sha256,storage_name,created_at) VALUES (?,?,?,?,?,?,?,?,?)')
+            .run(item.mediaId, body.providerEventId, item.attachment.id, item.attachment.name || item.attachment.id, item.attachment.mimeType || 'application/octet-stream', item.attachment.bytes.length, item.sha256, item.storageName, now)
+        }
+        return inserted
+      })()
+      return { accepted: true, duplicate: false, id: result.lastInsertRowid }
+    } catch (error) {
+      for (const filename of written) try { fs.unlinkSync(filename) } catch {}
+      if (/UNIQUE|constraint/i.test(error.message || '')) {
+        const duplicate = this.db.prepare('SELECT id FROM inbound_events WHERE channel = ? AND provider_event_id = ?').get('email', body.providerEventId)
+        if (duplicate) return { accepted: true, duplicate: true, id: duplicate.id }
+      }
+      throw error
+    }
   }
 
   getState(key, fallback) {
@@ -1147,6 +1310,10 @@ class AgentdServer {
     }
     const credentialMatch = /^\/api\/v1\/credentials\/([^/]+)$/.exec(url.pathname)
     if (credentialMatch && ['GET', 'POST', 'DELETE'].includes(req.method)) return this.credential(req, res, credentialMatch[1])
+    const speechModelMatch = /^\/api\/v1\/speech\/models\/([A-Za-z0-9-]+)(?:\/(prepare|status))?$/.exec(url.pathname)
+    if (speechModelMatch && ((speechModelMatch[2] === 'prepare' && req.method === 'POST') || (speechModelMatch[2] === 'status' && req.method === 'GET') || (!speechModelMatch[2] && req.method === 'GET'))) {
+      return this.speechModel(req, res, speechModelMatch[1], speechModelMatch[2] || 'archive')
+    }
     if (url.pathname === '/api/v1/settings/llm' && ['GET', 'PUT'].includes(req.method)) return this.llmSettings(req, res)
     if (url.pathname === '/api/v1/settings/persona' && ['GET', 'PUT'].includes(req.method)) return this.personaSettings(req, res)
     if (url.pathname === '/api/v1/settings/preferences' && ['GET', 'PUT'].includes(req.method)) return this.productPreferences(req, res)
@@ -1162,11 +1329,22 @@ class AgentdServer {
     if (url.pathname === '/api/v1/whatsapp/connect' && req.method === 'POST') return this.whatsappConnect(req, res)
     if (url.pathname === '/api/v1/whatsapp/disconnect' && req.method === 'POST') return this.whatsappDisconnect(req, res)
     if (url.pathname === '/api/v1/whatsapp/target' && req.method === 'POST') return this.whatsappTarget(req, res)
+    if (url.pathname === '/api/v1/whatsapp/presence' && req.method === 'POST') return this.sendWhatsAppPresence(req, res)
     if (url.pathname === '/api/v1/email/test' && req.method === 'POST') return this.testEmail(req, res)
     if (url.pathname === '/api/v1/email/inbound/ack' && req.method === 'POST') return this.acknowledgeEmailInbound(req, res)
     if (url.pathname === '/api/v1/email/inbound/claim' && req.method === 'POST') return this.claimEmailInbound(req, res)
     if (url.pathname === '/api/v1/email/inbound' && ['GET', 'POST'].includes(req.method)) return this.emailInbound(req, res, url)
+    const emailInboundMediaMatch = /^\/api\/v1\/email\/inbound\/media\/([^/]+)\/([^/]+)$/.exec(url.pathname)
+    if (emailInboundMediaMatch && req.method === 'GET') {
+      let providerEventId; let attachmentId
+      try {
+        providerEventId = decodeURIComponent(emailInboundMediaMatch[1])
+        attachmentId = decodeURIComponent(emailInboundMediaMatch[2])
+      } catch { return json(res, 400, { error: 'Invalid email media identity' }) }
+      return this.emailInboundMedia(req, res, providerEventId, attachmentId)
+    }
     if (url.pathname === '/api/v1/email/attachments' && req.method === 'GET') return this.emailAttachments(req, res, url)
+    if (url.pathname === '/api/v1/email/delivery-history' && req.method === 'GET') return this.emailDeliveryHistory(req, res, url)
     const emailAttachmentMatch = /^\/api\/v1\/email\/attachments\/([^/]+)\/([^/]+)$/.exec(url.pathname)
     if (emailAttachmentMatch && req.method === 'POST') return this.retrieveGmailAttachmentRoute(req, res, decodeURIComponent(emailAttachmentMatch[1]), decodeURIComponent(emailAttachmentMatch[2]))
     if (url.pathname === '/api/v1/email/drafts' && ['GET', 'POST'].includes(req.method)) return this.emailDrafts(req, res, url)
@@ -1186,7 +1364,16 @@ class AgentdServer {
     if (providerTestMatch && req.method === 'POST') return this.testProvider(req, res, providerTestMatch[1])
     if (url.pathname === '/api/v1/status' && req.method === 'GET') {
       this.authorize(req)
-      return json(res, 200, { runtime: 'agentd', paused: this.getState('paused', 'true') === 'true', queueDepth: this.db.prepare("SELECT COUNT(*) AS count FROM inbound_events WHERE status IN ('queued','processing')").get().count, events: this.db.prepare('SELECT COUNT(*) AS count FROM inbound_events').get().count })
+      const recoveryMode = this.getState('recovery_mode', 'false') === 'true'
+      return json(res, 200, {
+        runtime: 'agentd',
+        paused: this.getState('paused', 'true') === 'true',
+        recoveryMode,
+        recoveryReason: recoveryMode ? this.getState('recovery_reason', '') || null : null,
+        extension: this.whatsappExtensionBridge?.getState?.() || { status: 'disabled', port: 8790, lastStatus: null, error: null },
+        queueDepth: this.db.prepare("SELECT COUNT(*) AS count FROM inbound_events WHERE status IN ('queued','processing')").get().count,
+        events: this.db.prepare('SELECT COUNT(*) AS count FROM inbound_events').get().count,
+      })
     }
     if (url.pathname === '/api/v1/system-info' && req.method === 'GET') return this.systemInfo(req, res)
     if (url.pathname === '/api/v1/mcp' && req.method === 'GET') {
@@ -1215,9 +1402,30 @@ class AgentdServer {
     if (url.pathname === '/api/v1/continuity/chat-history/rollback' && req.method === 'POST') return this.chatHistoryRollback(req, res)
     if (url.pathname === '/api/v1/continuity/chat-history/status' && req.method === 'GET') return this.chatHistoryStatus(req, res)
     if (url.pathname === '/api/v1/autonomy/metrics' && req.method === 'GET') return this.autonomyMetrics(req, res, url)
+    if (url.pathname === '/api/v1/autonomy/usage-history' && req.method === 'GET') return this.autonomyUsageHistory(req, res, url)
+    if (url.pathname === '/api/v1/autonomy/channel-usage' && req.method === 'GET') return this.autonomyChannelUsage(req, res, url)
+    if (url.pathname === '/api/v1/autonomy/decision-evidence' && req.method === 'GET') return this.autonomyDecisionEvidence(req, res, url)
+    const autonomyDecisionReviewMatch = /^\/api\/v1\/autonomy\/decision-evidence\/([^/]+)\/review$/.exec(url.pathname)
+    if (autonomyDecisionReviewMatch && req.method === 'POST') {
+      let inboundId
+      try { inboundId = decodeURIComponent(autonomyDecisionReviewMatch[1]) } catch { return json(res, 400, { error: 'Invalid decision ID' }) }
+      return this.reviewAutonomyDecision(req, res, inboundId)
+    }
+    if (url.pathname === '/api/v1/autonomy/notifications' && req.method === 'GET') return this.autonomyNotifications(req, res, url)
+    const autonomyNotificationAckMatch = /^\/api\/v1\/autonomy\/notifications\/(\d+)\/ack$/.exec(url.pathname)
+    if (autonomyNotificationAckMatch && req.method === 'POST') return this.ackAutonomyNotification(req, res, Number(autonomyNotificationAckMatch[1]))
+    if (url.pathname === '/api/v1/autonomy/templates' && ['GET', 'POST'].includes(req.method)) return this.autonomyTemplates(req, res)
+    const autonomyTemplateMatch = /^\/api\/v1\/autonomy\/templates\/([^/]+)\/([^/]+)$/.exec(url.pathname)
+    if (autonomyTemplateMatch && req.method === 'DELETE') {
+      let name; let languageCode
+      try { name = decodeURIComponent(autonomyTemplateMatch[1]); languageCode = decodeURIComponent(autonomyTemplateMatch[2]) } catch { return json(res, 400, { error: 'Invalid template identity' }) }
+      return this.revokeAutonomyTemplate(req, res, name, languageCode)
+    }
     if (url.pathname === '/api/v1/logs' && ['GET', 'POST'].includes(req.method)) return this.auditLogs(req, res, url)
     if (url.pathname === '/api/v1/knowledge/convert' && req.method === 'POST') return this.convertKnowledge(req, res)
     if (url.pathname === '/api/v1/knowledge' && ['GET', 'POST'].includes(req.method)) return this.knowledge(req, res, url)
+    const knowledgeContentMatch = /^\/api\/v1\/knowledge\/(\d+)\/content$/.exec(url.pathname)
+    if (knowledgeContentMatch && req.method === 'GET') return this.knowledgeContent(req, res, Number(knowledgeContentMatch[1]))
     const knowledgeMatch = /^\/api\/v1\/knowledge\/(\d+)$/.exec(url.pathname)
     if (knowledgeMatch && req.method === 'DELETE') return this.deleteKnowledge(req, res, Number(knowledgeMatch[1]))
     if (url.pathname === '/api/v1/knowledge/search' && req.method === 'GET') return this.searchKnowledge(req, res, url)
@@ -1246,6 +1454,7 @@ class AgentdServer {
     const draftRetryMatch = /^\/api\/v1\/whatsapp\/drafts\/(\d+)\/retry$/.exec(url.pathname)
     const draftQuarantineMatch = /^\/api\/v1\/whatsapp\/drafts\/(\d+)\/quarantine$/.exec(url.pathname)
     const draftCancelMatch = /^\/api\/v1\/whatsapp\/drafts\/(\d+)\/cancel$/.exec(url.pathname)
+    if (url.pathname === '/api/v1/whatsapp/templates/send' && req.method === 'POST') return this.sendApprovedTemplate(req, res)
     if (draftSendMatch && req.method === 'POST') return this.sendWhatsAppDraft(req, res, Number(draftSendMatch[1]))
     if (draftRetryMatch && req.method === 'POST') return this.retryWhatsAppDraft(req, res, Number(draftRetryMatch[1]))
     if (draftQuarantineMatch && req.method === 'POST') return this.dispositionWhatsAppDraft(req, res, Number(draftQuarantineMatch[1]), OUTBOX_QUARANTINED_ERROR)
@@ -1254,8 +1463,42 @@ class AgentdServer {
     if (draftMatch && ['PATCH', 'PUT'].includes(req.method)) return this.updateDraftStatus(req, res, Number(draftMatch[1]))
     if (url.pathname === '/api/v1/pause-all' && req.method === 'POST') return this.control(req, res, true)
     if (url.pathname === '/api/v1/resume-all' && req.method === 'POST') return this.control(req, res, false)
+    if (url.pathname === '/api/v1/autonomy/recovery/enter' && req.method === 'POST') return this.recoveryControl(req, res, true)
+    if (url.pathname === '/api/v1/autonomy/recovery/clear' && req.method === 'POST') return this.recoveryControl(req, res, false)
+    if (url.pathname === '/api/v1/autonomy/takeovers' && req.method === 'GET') return this.listAutonomyTakeovers(req, res)
+    const conversationControlMatch = /^\/api\/v1\/autonomy\/conversations\/([^/]+)\/(pause|resume|outcome)$/.exec(url.pathname)
+    if (conversationControlMatch && req.method === 'POST') {
+      let conversationId
+      try { conversationId = decodeURIComponent(conversationControlMatch[1]) } catch { return json(res, 400, { error: 'Invalid conversation ID' }) }
+      if (conversationControlMatch[2] === 'pause') return this.pauseAutonomyConversation(req, res, conversationId)
+      if (conversationControlMatch[2] === 'resume') return this.resumeAutonomyConversation(req, res, conversationId)
+      return this.recordAutonomyConversationOutcome(req, res, conversationId)
+    }
     if (this.uiRoot && req.method === 'GET' && !url.pathname.startsWith('/api/')) return this.serveUi(url.pathname, res)
     return json(res, 404, { error: 'Not found' })
+  }
+
+  async speechModel(req, res, modelId, action) {
+    this.authorize(req, { mutation: action === 'prepare' })
+    try {
+      if (action === 'status') return json(res, 200, await this.speechModels.status(modelId))
+      const model = await this.speechModels.ensure(modelId)
+      if (action === 'prepare') return json(res, 200, { modelId: model.id, locale: model.locale, name: model.name, size: model.size })
+      const stat = fs.lstatSync(model.path)
+      if (!stat.isFile() || stat.size !== model.size) return json(res, 503, { error: 'Speech model is unavailable' })
+      res.writeHead(200, {
+        'content-type': 'application/zip',
+        'content-length': String(stat.size),
+        'cache-control': 'private, no-store',
+        'x-content-digest': `sha-256=${model.sha256}`,
+      })
+      const stream = fs.createReadStream(model.path)
+      stream.on('error', () => res.destroy())
+      stream.pipe(res)
+    } catch (error) {
+      const status = Number.isSafeInteger(error?.statusCode) ? error.statusCode : 503
+      return json(res, status, { error: error instanceof Error ? error.message : 'Speech model unavailable' })
+    }
   }
 
   async credential(req, res, encodedKey) {
@@ -1372,6 +1615,29 @@ class AgentdServer {
   async continuityStatus(req, res) {
     this.authorize(req)
     const count = (table) => this.db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get().count
+    // Report the durable cutover state instead of leaving the browser on the
+    // initial "pending" view forever.  The native owner flow persists every
+    // transition in agentd.db, so this status remains correct after a daemon
+    // restart and cannot be spoofed by browser state.
+    const cutoverState = (scope) => {
+      const row = this.db.prepare('SELECT state FROM settings_persona_cutovers WHERE scope = ? ORDER BY updated_at DESC LIMIT 1').get(scope)
+        || this.db.prepare('SELECT state FROM chat_history_cutovers WHERE scope = ? ORDER BY updated_at DESC LIMIT 1').get(scope)
+      if (!row) return 'pending'
+      if (row.state === 'applied') return 'active'
+      if (row.state === 'needs-recovery') return 'needs-recovery'
+      if (row.state === 'applying') return 'in-progress'
+      return 'pending'
+    }
+    const settingsPersonaState = cutoverState(SETTINGS_PERSONA_SCOPE)
+    const chatHistoryState = cutoverState(CHAT_HISTORY_SCOPE)
+    const migrationStates = [settingsPersonaState, chatHistoryState]
+    const migrationState = migrationStates.includes('needs-recovery')
+      ? 'recovery-required'
+      : migrationStates.includes('in-progress')
+        ? 'in-progress'
+        : migrationStates.every(state => state === 'active')
+          ? 'migrated'
+          : 'native-owner-action-required'
     const credentials = []
     for (const key of CONTINUITY_CREDENTIAL_KEYS) {
       let present = false
@@ -1387,13 +1653,17 @@ class AgentdServer {
       migration: {
         source: 'electron',
         target: 'agentd',
-        state: 'native-owner-action-required',
+        state: migrationState,
         secretsExcluded: true,
-        note: 'Electron stores require an explicit owner-approved native migration; this read-only endpoint never reads or imports them.',
+        note: migrationState === 'migrated'
+          ? 'Allowlisted Electron data cutovers are complete; credentials remain OS-store entries and any missing values require owner reauthentication.'
+          : 'Electron stores require an explicit owner-approved native migration; this read-only endpoint never reads or imports them.',
       },
       stores: CONTINUITY_STORE_CONTRACT.map(store => ({
         ...store,
-        state: store.id === 'agentd-state' ? 'active' : 'pending',
+        state: store.id === 'agentd-state'
+          ? 'active'
+          : store.id === 'electron-chat-history' ? chatHistoryState : settingsPersonaState,
       })),
       data: {
         sessions: count('chat_sessions'),
@@ -1576,7 +1846,6 @@ class AgentdServer {
 
   readSettingsPersonaInput(preview) {
     if (!preview || !preview.manifest || !Array.isArray(preview.manifest.entries)) throw Object.assign(new Error('Migration preview expired'), { statusCode: 404 })
-    if (process.platform === 'win32' && fs.constants.O_NOFOLLOW === undefined) throw Object.assign(new Error('Settings migration requires trusted native no-reparse file access on Windows'), { statusCode: 503 })
     const entries = preview.manifest.entries
     const required = ['electron-settings', 'electron-persona']
     if (required.some(id => !entries.some(entry => entry.id === id))) throw Object.assign(new Error('Settings/persona stores are missing from preview'), { statusCode: 409 })
@@ -2415,13 +2684,56 @@ class AgentdServer {
         if (!parsed) continue
         attachments.push({
           inboundId: String(row.id),
-          messageId: typeof payload.id === 'string' ? payload.id : (typeof payload.messageId === 'string' ? payload.messageId : row.provider_event_id),
+          // Gmail needs its provider message ID for the OAuth attachment API;
+          // IMAP media is keyed by the daemon's safe provider-event ID.
+          messageId: (typeof payload.sourceId === 'string' || row.provider_event_id.startsWith('gmail:'))
+            ? (typeof payload.id === 'string' ? payload.id : (typeof payload.messageId === 'string' ? payload.messageId : row.provider_event_id))
+            : row.provider_event_id,
           ...parsed,
           receivedAt: row.created_at,
         })
       }
     }
     return json(res, 200, { attachments })
+  }
+
+  emailInboundMedia(req, res, providerEventId, attachmentId) {
+    this.authorize(req)
+    if (!validBoundedText(providerEventId, 300) || !/^[A-Za-z0-9_.:@-]{1,300}$/.test(providerEventId)
+      || !/^[A-Za-z0-9_-]{1,256}$/.test(attachmentId)) return json(res, 400, { error: 'Invalid email media identity' })
+    const row = this.db.prepare('SELECT file_name,mime_type,size,sha256,storage_name FROM email_media WHERE provider_event_id = ? AND attachment_id = ?').get(providerEventId, attachmentId)
+    if (!row) return json(res, 404, { error: 'Email media not found' })
+    if (!Number.isSafeInteger(row.size) || row.size < 0 || row.size > MAX_EMAIL_INBOUND_MEDIA_BYTES || !/^[a-f0-9]{64}$/.test(row.sha256) || !/^[a-f0-9]{64}\.bin$/.test(row.storage_name)) return json(res, 409, { error: 'Email media metadata is invalid' })
+    const filename = path.join(this.emailMediaDir, row.storage_name)
+    let handle
+    try {
+      const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0)
+      handle = fs.openSync(filename, flags)
+      const stat = fs.fstatSync(handle)
+      if (!stat.isFile() || stat.size !== row.size) return json(res, 409, { error: 'Email media integrity check failed' })
+      const bytes = fs.readFileSync(handle)
+      const digest = crypto.createHash('sha256').update(bytes).digest('hex')
+      if (digest !== row.sha256) return json(res, 409, { error: 'Email media integrity check failed' })
+      const scan = scanEmailAttachment({ bytes, mimeType: row.mime_type })
+      if (!scan.safe) return json(res, 409, { error: 'Email media safety check failed' })
+      res.writeHead(200, {
+        'content-type': row.mime_type || 'application/octet-stream',
+        'content-length': String(bytes.length),
+        'content-disposition': `inline; filename="${String(row.file_name || attachmentId).replace(/[\\"\r\n]/g, '_').slice(0, 256)}"`,
+        'cache-control': 'no-store',
+        'x-content-type-options': 'nosniff',
+        'x-aica-scan-safe': 'true',
+        'x-aica-scan-reason': scan.reason,
+        'x-aica-detected-type': scan.detectedType,
+        'x-aica-sha256': scan.sha256,
+      })
+      return res.end(bytes)
+    } catch (error) {
+      if (error?.code === 'ENOENT') return json(res, 404, { error: 'Email media not found' })
+      return json(res, 409, { error: 'Email media unavailable' })
+    } finally {
+      if (handle !== undefined) try { fs.closeSync(handle) } catch {}
+    }
   }
 
   async retrieveGmailAttachmentRoute(req, res, messageId, attachmentId) {
@@ -2528,6 +2840,7 @@ class AgentdServer {
     if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
     let body
     try { body = await readBody(req, MAX_EMAIL_DRAFT_BODY_BYTES) } catch (error) { return json(res, error.statusCode || 400, { error: error.message }) }
+    if (body && typeof body === 'object' && !Array.isArray(body) && Object.prototype.hasOwnProperty.call(body, 'providerMessageId')) return json(res, 400, { error: 'Provider delivery identity is daemon-owned' })
     const draft = parseEmailDraft(body)
     if (!draft) return json(res, 400, { error: 'Invalid email draft' })
     if (!['pending_review', 'approved', 'rejected', 'escalated'].includes(draft.status)) return json(res, 400, { error: 'Email delivery status is owned by the daemon transport' })
@@ -2537,6 +2850,23 @@ class AgentdServer {
       ON CONFLICT(id) DO UPDATE SET status = excluded.status, payload = excluded.payload, updated_at = excluded.updated_at`)
       .run(draft.id, draft.status, JSON.stringify(draft), draft.createdAt, now)
     return json(res, 200, draft)
+  }
+
+  emailDeliveryHistory(req, res, url) {
+    this.authorize(req)
+    const requestedLimit = Number.parseInt(url.searchParams.get('limit') || '50', 10)
+    const limit = Number.isSafeInteger(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 100) : 50
+    const rows = this.db.prepare("SELECT id,status,payload,updated_at AS eventAt FROM email_drafts WHERE status IN ('sent','failed') ORDER BY updated_at DESC LIMIT ?").all(limit)
+    return json(res, 200, {
+      events: rows.map(row => ({
+        // Provider IDs are correlation handles, not proof of final delivery.
+        providerMessageId: parseStoredEmailProviderMessageId(row.payload) || `email:${row.id}`,
+        channel: 'email',
+        status: row.status,
+        eventAt: row.eventAt,
+        inboundId: row.id,
+      })),
+    })
   }
 
   async emailDraft(req, res, id) {
@@ -2620,19 +2950,23 @@ class AgentdServer {
       return json(res, 409, { success: false, error: 'Email draft delivery is already in progress' })
     }
     const recipient = draft.replyTo || draft.originalFrom
+    const messageId = `<aica-${id}-${crypto.randomBytes(8).toString('hex')}@localhost>`
     try {
       this.assertMigrationOpen()
+      let providerMessageId
       if (gmailOAuthTransport) {
-        await this.gmailOAuth.sendText({
+        const gmailMessageId = await this.gmailOAuth.sendText({
           to: recipient,
           subject: draft.originalSubject ? (draft.originalSubject.startsWith('Re:') ? draft.originalSubject : `Re: ${draft.originalSubject}`) : '(no subject)',
           body: draft.responseText,
+          messageId,
           inReplyTo: draft.inReplyTo,
           references: draft.references,
           attachments: draft.attachments,
         })
+        if (typeof gmailMessageId === 'string' && gmailMessageId) providerMessageId = `gmail:${gmailMessageId}`
       } else {
-        await this.emailSend({
+        const smtpResult = await this.emailSend({
           host: settings.smtpHost,
           port: settings.smtpPort,
           secure: settings.smtpTls,
@@ -2642,12 +2976,15 @@ class AgentdServer {
           to: recipient,
           subject: draft.originalSubject ? (draft.originalSubject.startsWith('Re:') ? draft.originalSubject : `Re: ${draft.originalSubject}`) : '(no subject)',
           body: draft.responseText,
+          messageId,
           inReplyTo: draft.inReplyTo,
           references: draft.references,
           attachments: draft.attachments,
         })
+        const returnedMessageId = typeof smtpResult?.messageId === 'string' && smtpResult.messageId ? smtpResult.messageId : messageId
+        providerMessageId = `smtp:${returnedMessageId}`
       }
-      const sent = { ...draft, status: 'sent' }
+      const sent = { ...draft, status: 'sent', ...(providerMessageId ? { providerMessageId } : {}) }
       this.db.prepare('UPDATE email_drafts SET status = ?, payload = ?, updated_at = ? WHERE id = ? AND status = ?').run('sent', JSON.stringify(sent), Date.now(), id, 'approved')
       this.db.prepare('DELETE FROM email_delivery_locks WHERE draft_id = ?').run(id)
       return json(res, 200, { success: true, duplicate: false, draft: sent })
@@ -2655,6 +2992,7 @@ class AgentdServer {
       const failed = { ...draft, status: 'failed' }
       this.db.prepare('UPDATE email_drafts SET status = ?, payload = ?, updated_at = ? WHERE id = ? AND status = ?').run('failed', JSON.stringify(failed), Date.now(), id, 'approved')
       this.db.prepare('DELETE FROM email_delivery_locks WHERE draft_id = ?').run(id)
+      this.createAutonomyNotification('failure', { channel: 'email', operation: 'send', draftId: id, message: 'Email delivery failed' })
       return json(res, 502, { success: false, error: 'Email delivery failed over the configured secure SMTP transport' })
     } finally {
       releaseOperation()
@@ -2804,6 +3142,23 @@ class AgentdServer {
     this.authorize(req, { mutation: true })
     const result = this.db.prepare('DELETE FROM knowledge_documents WHERE id = ?').run(id)
     return json(res, 200, { success: true, deleted: result.changes > 0 })
+  }
+
+  async knowledgeContent(req, res, id) {
+    this.authorize(req)
+    if (!Number.isSafeInteger(id) || id < 1) return json(res, 400, { error: 'Invalid knowledge document ID' })
+    const row = this.db.prepare('SELECT id,file_path,file_name,file_type,size,created_at,content FROM knowledge_documents WHERE id = ?').get(id)
+    if (!row) return json(res, 404, { error: 'Knowledge document not found' })
+    // Content is already bounded at ingestion/conversion time. Keep the
+    // response contract explicit so a future schema change cannot accidentally
+    // turn this read-only preview into an unbounded file download.
+    if (typeof row.content !== 'string' || Buffer.byteLength(row.content, 'utf8') > MAX_KNOWLEDGE_CONTENT_LENGTH) {
+      return json(res, 409, { error: 'Knowledge preview is unavailable' })
+    }
+    return json(res, 200, {
+      document: this.knowledgeView(row),
+      content: row.content,
+    })
   }
 
   async searchKnowledge(req, res, url) {
@@ -3066,6 +3421,37 @@ class AgentdServer {
     return json(res, result.success ? 200 : 409, result)
   }
 
+  async sendWhatsAppPresence(req, res) {
+    this.authorize(req, { mutation: true })
+    if (this.migrationFence(req, res)) return
+    if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
+    const body = await readBody(req, 8 * 1024)
+    const keys = Object.keys(body || {}).sort()
+    if (!body || typeof body !== 'object' || Array.isArray(body)
+      || keys.length !== 2 || keys[0] !== 'state' || keys[1] !== 'to'
+      || typeof body.to !== 'string' || !body.to.trim() || body.to.length > 32
+      || typeof body.state !== 'string' || !['unavailable', 'available', 'composing', 'recording', 'paused'].includes(body.state)) {
+      return json(res, 400, { error: 'Invalid WhatsApp presence request' })
+    }
+    let storedSettings = null
+    try { storedSettings = JSON.parse(this.getState('whatsapp_settings', 'null')) } catch {}
+    const settings = parseWhatsAppSettings(storedSettings) || WHATSAPP_SETTINGS_DEFAULTS
+    if (settings.whatsapp_transport !== 'baileys') return json(res, 409, { error: 'WhatsApp presence is available only for the Baileys transport' })
+    let releaseOperation = null
+    try {
+      releaseOperation = this.beginActiveOperation()
+      if (!releaseOperation) return json(res, 409, { error: 'Settings migration is committing' })
+      this.assertMigrationOpen()
+      const result = await this.whatsappBaileys.sendPresence(body.to, body.state)
+      releaseOperation()
+      return json(res, 200, result)
+    } catch (error) {
+      releaseOperation?.()
+      const statusCode = Number.isInteger(error?.statusCode) ? error.statusCode : 502
+      return json(res, statusCode, { success: false, error: statusCode === 502 ? 'WhatsApp presence failed' : error.message })
+    }
+  }
+
   async ollamaSettings(req, res) {
     this.authorize(req, { mutation: req.method === 'PUT' })
     if (req.method === 'GET') {
@@ -3142,6 +3528,50 @@ class AgentdServer {
     }
   }
 
+  async sendWhatsAppCloudTemplate(to, name, languageCode, parameters = []) {
+    let storedSettings = null
+    try { storedSettings = JSON.parse(this.getState('whatsapp_settings', 'null')) } catch {}
+    const settings = parseWhatsAppSettings(storedSettings) || WHATSAPP_SETTINGS_DEFAULTS
+    if (settings.whatsapp_transport !== 'cloud') throw Object.assign(new Error('WhatsApp Cloud transport is not enabled'), { statusCode: 409 })
+    if (!/^\d{5,32}$/.test(settings.whatsapp_cloud_phone_number_id)
+      || !/^v\d+(?:\.\d+)?$/.test(settings.whatsapp_cloud_api_version)) {
+      throw Object.assign(new Error('WhatsApp Cloud transport is not configured'), { statusCode: 409 })
+    }
+    if (!/^\+?[0-9\s().-]{8,32}$/.test(String(to).trim())) throw Object.assign(new Error('Invalid WhatsApp recipient'), { statusCode: 400 })
+    const recipient = String(to).replace(/\D/g, '')
+    if (!/^\d{8,15}$/.test(recipient)) throw Object.assign(new Error('Invalid WhatsApp recipient'), { statusCode: 400 })
+    if (!/^[a-zA-Z0-9_.-]{1,100}$/.test(name) || !/^[a-zA-Z0-9_-]{2,20}$/.test(languageCode)) throw Object.assign(new Error('Invalid approved template'), { statusCode: 400 })
+    if (!Array.isArray(parameters) || parameters.length > 10 || parameters.some(value => typeof value !== 'string' || [...value].length > 500)) throw Object.assign(new Error('Invalid template parameters'), { statusCode: 400 })
+
+    let accessToken
+    try { accessToken = await this.credentials?.get('whatsapp_cloud_access_token') } catch {}
+    if (typeof accessToken !== 'string' || !accessToken) throw Object.assign(new Error('WhatsApp Cloud credentials are not configured'), { statusCode: 409 })
+
+    let response
+    try {
+      const template = {
+        name,
+        language: { code: languageCode },
+        ...(parameters.length ? { components: [{ type: 'body', parameters: parameters.map(text => ({ type: 'text', text })) }] } : {}),
+      }
+      response = await this.providerFetch(`https://graph.facebook.com/${settings.whatsapp_cloud_api_version}/${settings.whatsapp_cloud_phone_number_id}/messages`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messaging_product: 'whatsapp', to: recipient, type: 'template', template }),
+        redirect: 'manual',
+        signal: AbortSignal.timeout(10_000),
+      })
+      const payload = await readProviderResponse(response)
+      const providerMessageId = payload?.messages?.[0]?.id
+      if (!response.ok || typeof providerMessageId !== 'string' || !providerMessageId) throw new Error('WhatsApp Cloud template message failed')
+      return { providerMessageId }
+    } catch (error) {
+      try { await response?.body?.cancel() } catch {}
+      if (error?.statusCode) throw error
+      throw Object.assign(new Error('WhatsApp Cloud template message failed'), { statusCode: 502 })
+    }
+  }
+
   async sendWhatsAppCloudMedia(to, media) {
     let storedSettings = null
     try { storedSettings = JSON.parse(this.getState('whatsapp_settings', 'null')) } catch {}
@@ -3201,7 +3631,24 @@ class AgentdServer {
     const settings = parseWhatsAppSettings(storedSettings) || WHATSAPP_SETTINGS_DEFAULTS
     if (settings.whatsapp_transport === 'baileys') return this.whatsappBaileys.sendText(to, text)
     if (settings.whatsapp_transport === 'cloud') return this.sendWhatsAppCloudMessage(to, text)
-    throw Object.assign(new Error('WhatsApp Web transport is not available in browser mode'), { statusCode: 409 })
+    if (settings.whatsapp_transport === 'web') {
+      if (!this.allowsWhatsAppExtensionOutbound({ to, text })) {
+        throw Object.assign(new Error('WhatsApp Web outbound transport is not enabled'), { statusCode: 409 })
+      }
+      if (typeof this.whatsappExtensionBridge?.enqueueOutbound !== 'function') {
+        throw Object.assign(new Error('WhatsApp Web extension bridge is unavailable'), { statusCode: 503 })
+      }
+      return this.whatsappExtensionBridge.enqueueOutbound({ to, text })
+    }
+    throw Object.assign(new Error('WhatsApp transport is not configured'), { statusCode: 409 })
+  }
+
+  async sendWhatsAppConfiguredTemplate(to, name, languageCode, parameters = []) {
+    let storedSettings = null
+    try { storedSettings = JSON.parse(this.getState('whatsapp_settings', 'null')) } catch {}
+    const settings = parseWhatsAppSettings(storedSettings) || WHATSAPP_SETTINGS_DEFAULTS
+    if (settings.whatsapp_transport !== 'cloud') throw Object.assign(new Error('Approved templates require WhatsApp Cloud transport'), { statusCode: 409 })
+    return this.sendWhatsAppCloudTemplate(to, name, languageCode, parameters)
   }
 
   async sendWhatsAppConfiguredMedia(to, media) {
@@ -3210,7 +3657,27 @@ class AgentdServer {
     const settings = parseWhatsAppSettings(storedSettings) || WHATSAPP_SETTINGS_DEFAULTS
     if (settings.whatsapp_transport === 'baileys') return this.whatsappBaileys.sendMedia(to, media.bytes, media)
     if (settings.whatsapp_transport === 'cloud') return this.sendWhatsAppCloudMedia(to, media)
-    throw Object.assign(new Error('WhatsApp Web transport is not available in browser mode'), { statusCode: 409 })
+    if (settings.whatsapp_transport === 'web') {
+      if (!this.allowsWhatsAppExtensionMedia({ to, ...media })) {
+        throw Object.assign(new Error('WhatsApp Web media transport is not enabled'), { statusCode: 409 })
+      }
+      if (typeof this.whatsappExtensionBridge?.enqueueOutbound !== 'function') {
+        throw Object.assign(new Error('WhatsApp Web extension bridge is unavailable'), { statusCode: 503 })
+      }
+      return this.whatsappExtensionBridge.enqueueOutbound({
+        kind: 'media',
+        to,
+        media: {
+          type: media.type,
+          fileName: media.fileName,
+          mimeType: media.mimeType,
+          size: media.bytes.length,
+          dataBase64: media.bytes.toString('base64'),
+          caption: media.caption || '',
+        },
+      })
+    }
+    throw Object.assign(new Error('WhatsApp transport is not configured'), { statusCode: 409 })
   }
 
   async sendWhatsAppMessage(req, res) {
@@ -3363,7 +3830,7 @@ class AgentdServer {
       content: row.content,
       createdAt: row.created_at,
       ...(attachments ? { attachments } : {}),
-      ...(metadata ? metadata : {}),
+      ...(metadata ? { metadata } : {}),
     }
   }
 
@@ -3584,7 +4051,10 @@ class AgentdServer {
     if (!body || typeof body !== 'object' || Array.isArray(body)) return json(res, 400, { error: 'Invalid message' })
     const keys = Object.keys(body).sort()
     const attachments = this.parseChatAttachments(body.attachments)
-    if (keys.some(key => !['attachments', 'id', 'role', 'content'].includes(key)) || attachments === null || typeof body.role !== 'string' || !['user', 'assistant', 'system'].includes(body.role) || typeof body.content !== 'string' || (!body.content && attachments.length === 0) || body.content.length > MAX_CHAT_CONTENT_LENGTH || Buffer.byteLength(body.content, 'utf8') > MAX_CHAT_CONTENT_LENGTH) {
+    const metadata = body.metadata === undefined ? null : body.metadata
+    const executionPlan = metadata && typeof metadata === 'object' && !Array.isArray(metadata) ? metadata.executionPlan : undefined
+    const validPlan = executionPlan === undefined || (executionPlan && typeof executionPlan === 'object' && !Array.isArray(executionPlan) && typeof executionPlan.goal === 'string' && executionPlan.goal.length <= 4096 && Array.isArray(executionPlan.steps) && executionPlan.steps.length <= 150 && executionPlan.steps.every(step => step && typeof step === 'object' && Number.isSafeInteger(step.id) && typeof step.description === 'string' && step.description.length <= 4096 && ['pending', 'active', 'completed', 'failed'].includes(step.status)))
+    if (keys.some(key => !['attachments', 'id', 'role', 'content', 'metadata'].includes(key)) || attachments === null || (metadata !== null && (!metadata || typeof metadata !== 'object' || Array.isArray(metadata) || Object.keys(metadata).some(key => key !== 'executionPlan') || !validPlan || Buffer.byteLength(JSON.stringify(metadata), 'utf8') > 64 * 1024)) || typeof body.role !== 'string' || !['user', 'assistant', 'system'].includes(body.role) || typeof body.content !== 'string' || (!body.content && attachments.length === 0) || body.content.length > MAX_CHAT_CONTENT_LENGTH || Buffer.byteLength(body.content, 'utf8') > MAX_CHAT_CONTENT_LENGTH) {
       return json(res, 400, { error: 'Invalid message' })
     }
     const messageId = body.id === undefined ? crypto.randomUUID() : body.id
@@ -3595,12 +4065,12 @@ class AgentdServer {
       if (!session) return { missing: true }
       const existing = this.db.prepare('SELECT * FROM chat_messages WHERE session_id = ? AND message_id = ?').get(rawId, messageId)
       if (existing) {
-        if (existing.role !== body.role || existing.content !== body.content || (existing.attachments || null) !== (attachments.length ? JSON.stringify(attachments) : null)) return { conflict: true }
+        if (existing.role !== body.role || existing.content !== body.content || (existing.attachments || null) !== (attachments.length ? JSON.stringify(attachments) : null) || (existing.metadata || null) !== (metadata ? JSON.stringify(metadata) : null)) return { conflict: true }
         return { duplicate: true, row: existing }
       }
       const count = this.db.prepare('SELECT COUNT(*) AS count FROM chat_messages WHERE session_id = ?').get(rawId).count
       if (count >= MAX_CHAT_MESSAGES_PER_SESSION) return { full: true }
-      this.db.prepare('INSERT INTO chat_messages(session_id,message_id,role,content,attachments,created_at) VALUES (?,?,?,?,?,?)').run(rawId, messageId, body.role, body.content, attachments.length ? JSON.stringify(attachments) : null, now)
+      this.db.prepare('INSERT INTO chat_messages(session_id,message_id,role,content,attachments,metadata,created_at) VALUES (?,?,?,?,?,?,?)').run(rawId, messageId, body.role, body.content, attachments.length ? JSON.stringify(attachments) : null, metadata ? JSON.stringify(metadata) : null, now)
       this.db.prepare('UPDATE chat_sessions SET updated_at = ? WHERE id = ?').run(now, rawId)
       return { duplicate: false, row: this.db.prepare('SELECT * FROM chat_messages WHERE session_id = ? AND message_id = ?').get(rawId, messageId) }
     })()
@@ -3878,6 +4348,39 @@ class AgentdServer {
     return json(res, 202, { accepted: true, duplicate: false, id: result.lastInsertRowid })
   }
 
+  ingestRelayEvent(event) {
+    if (!event || event.provider !== 'whatsapp-cloud' || !Buffer.isBuffer(event.body)) throw new Error('Unsupported relay provider event')
+    if (!this.allowsWhatsAppCloudRelayMessage()) return `agentd-relay:${event.id}`
+    let payload
+    try { payload = JSON.parse(event.body.toString('utf8')) } catch { throw new Error('Relay provider event is not JSON') }
+    const entries = Array.isArray(payload?.entry) ? payload.entry : []
+    let accepted = 0
+    for (const entry of entries) {
+      const changes = Array.isArray(entry?.changes) ? entry.changes : []
+      for (const change of changes) {
+        const value = change?.value
+        const messages = Array.isArray(value?.messages) ? value.messages : []
+        for (const message of messages) {
+          if (typeof message?.id !== 'string' || typeof message?.from !== 'string' || !message.from.trim()) continue
+          const textBody = typeof message.text?.body === 'string' ? message.text.body : ''
+          this.ingestWhatsAppServiceMessage({
+            providerEventId: `cloud:${message.id}`,
+            conversationId: message.from,
+            from: message.from,
+            to: typeof value?.metadata?.display_phone_number === 'string' ? value.metadata.display_phone_number : '',
+            content: textBody,
+            timestamp: Number.isFinite(Number(message.timestamp)) ? Number(message.timestamp) * 1000 : Date.now(),
+            type: message.type || 'text',
+            isFromMe: false,
+          })
+          accepted += 1
+        }
+      }
+    }
+    if (accepted === 0) this.logger.log?.('[agentd] relay event contained no inbound customer messages')
+    return `agentd-relay:${event.id}`
+  }
+
   ingestWhatsAppServiceMessage(message) {
     if (this.migrationHold || !message || message.isFromMe === true || typeof message.providerEventId !== 'string' || !/^[\x21-\x7e]{1,300}$/.test(message.providerEventId) || typeof message.conversationId !== 'string' || !message.conversationId.trim()) return
     const media = message.media
@@ -3947,6 +4450,81 @@ class AgentdServer {
     }
   }
 
+  allowsWhatsAppServiceMessage() {
+    if (this.migrationHold) return false
+    let transport = null
+    let ui = null
+    try { transport = parseWhatsAppSettings(JSON.parse(this.getState('whatsapp_settings', 'null'))) } catch {}
+    try { ui = parseWhatsAppUiSettings(JSON.parse(this.getState('whatsapp_ui_settings', 'null'))) } catch {}
+    const selectedTransport = transport || WHATSAPP_SETTINGS_DEFAULTS
+    return selectedTransport.whatsapp_transport === 'baileys'
+      && (ui?.whatsappEnabled === true || ui?.businessBotMode === true)
+  }
+
+  allowsWhatsAppCloudRelayMessage() {
+    if (this.migrationHold) return false
+    let transport = null
+    let ui = null
+    try { transport = parseWhatsAppSettings(JSON.parse(this.getState('whatsapp_settings', 'null'))) } catch {}
+    try { ui = parseWhatsAppUiSettings(JSON.parse(this.getState('whatsapp_ui_settings', 'null'))) } catch {}
+    return transport?.whatsapp_transport === 'cloud'
+      && (ui?.whatsappEnabled === true || ui?.businessBotMode === true)
+  }
+
+  allowsWhatsAppExtensionMessage(message) {
+    if (this.migrationHold || !message || typeof message.from !== 'string' || !message.from.trim()) return false
+    let transport = null
+    let ui = null
+    try { transport = parseWhatsAppSettings(JSON.parse(this.getState('whatsapp_settings', 'null'))) } catch {}
+    try { ui = parseWhatsAppUiSettings(JSON.parse(this.getState('whatsapp_ui_settings', 'null'))) } catch {}
+    // Web ingress is opt-in and never piggybacks on the default Baileys path.
+    if (transport?.whatsapp_transport !== 'web' || ui?.whatsappEnabled !== true) return false
+    if (message.from.length > 256 || /[\0\r\n]/.test(message.from)) return false
+    if (typeof message.to === 'string' && message.to.length > 256) return false
+    return true
+  }
+
+  allowsWhatsAppExtensionOutbound(message) {
+    if (this.migrationHold || !message || typeof message.to !== 'string' || !message.to.trim() || typeof message.text !== 'string' || !message.text.trim()) return false
+    let transport = null
+    let ui = null
+    try { transport = parseWhatsAppSettings(JSON.parse(this.getState('whatsapp_settings', 'null'))) } catch {}
+    try { ui = parseWhatsAppUiSettings(JSON.parse(this.getState('whatsapp_ui_settings', 'null'))) } catch {}
+    if (transport?.whatsapp_transport !== 'web' || ui?.whatsappEnabled !== true) return false
+    if (message.to.length > 256 || /[\0\r\n]/.test(message.to) || message.text.length > MAX_DRAFT_TEXT_LENGTH) return false
+    return true
+  }
+
+  allowsWhatsAppExtensionMedia(media) {
+    if (this.migrationHold || !media || typeof media.to !== 'string' || !media.to.trim()) return false
+    let transport = null
+    let ui = null
+    try { transport = parseWhatsAppSettings(JSON.parse(this.getState('whatsapp_settings', 'null'))) } catch {}
+    try { ui = parseWhatsAppUiSettings(JSON.parse(this.getState('whatsapp_ui_settings', 'null'))) } catch {}
+    if (transport?.whatsapp_transport !== 'web' || ui?.whatsappEnabled !== true) return false
+    if (media.to.length > 256 || /[\0\r\n]/.test(media.to)) return false
+    if (!['image', 'video', 'audio', 'document'].includes(media.type)) return false
+    if (typeof media.fileName !== 'string' || !media.fileName.trim() || media.fileName.length > 256 || /[\0\r\n\\/]/.test(media.fileName)) return false
+    if (typeof media.mimeType !== 'string' || !isSupportedMediaMime(media.type, media.mimeType)) return false
+    if (!Buffer.isBuffer(media.bytes) || media.bytes.length < 1 || media.bytes.length > MAX_WHATSAPP_MEDIA_BYTES) return false
+    return typeof media.caption === 'string' && media.caption.length <= MAX_DRAFT_TEXT_LENGTH
+  }
+
+  ingestWhatsAppExtensionMessage(message) {
+    if (!this.allowsWhatsAppExtensionMessage(message)) return false
+    this.ingestWhatsAppServiceMessage({
+      providerEventId: `web:${message.id}`,
+      conversationId: message.from,
+      from: message.from,
+      to: message.to || '',
+      content: message.content,
+      timestamp: message.timestamp,
+      type: 'text',
+      isFromMe: false,
+    })
+    return true
+  }
+
   whatsappInboundMedia(req, res, providerEventId) {
     this.authorize(req)
     if (typeof providerEventId !== 'string' || !/^[\x21-\x7e]{1,300}$/.test(providerEventId)) return json(res, 400, { error: 'Invalid WhatsApp media identity' })
@@ -4007,6 +4585,8 @@ class AgentdServer {
     }
     const payload = body.payload === undefined ? {} : body.payload
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return json(res, 400, { error: 'Invalid WhatsApp payload' })
+    const policyDecision = parseWhatsAppPolicyDecision(body.policyDecision)
+    if (body.policyDecision !== undefined && !policyDecision) return json(res, 400, { error: 'Invalid WhatsApp policy decision' })
     let payloadJson
     try { payloadJson = JSON.stringify(redactPayload(payload)) } catch { return json(res, 400, { error: 'Invalid WhatsApp payload' }) }
     if (Buffer.byteLength(payloadJson, 'utf8') > MAX_WHATSAPP_PAYLOAD_BYTES) return json(res, 413, { error: 'WhatsApp payload too large' })
@@ -4015,11 +4595,13 @@ class AgentdServer {
     const now = Date.now()
     const transaction = this.db.transaction(() => {
       if (this.getState('paused', 'true') === 'true') return { paused: true }
+      const conversationControl = this.db.prepare('SELECT active FROM autonomy_conversation_controls WHERE conversation_id = ?').get(body.conversationId)
+      if (conversationControl?.active === 1) return { paused: true, conversationPaused: true }
       const event = this.db.prepare('INSERT INTO inbound_events(channel,provider_event_id,conversation_id,payload,status,created_at) VALUES (?,?,?,?,?,?) ON CONFLICT(channel,provider_event_id) DO NOTHING').run('whatsapp', body.providerEventId, body.conversationId, payloadJson, 'draft', now)
       const existingDraft = this.db.prepare('SELECT id FROM whatsapp_drafts WHERE provider_event_id = ?').get(body.providerEventId)
       if (existingDraft) return { duplicate: true, draftId: existingDraft.id }
       const existingEvent = this.db.prepare('SELECT id,conversation_id FROM inbound_events WHERE channel = ? AND provider_event_id = ?').get('whatsapp', body.providerEventId)
-      const draft = this.db.prepare('INSERT INTO whatsapp_drafts(channel,provider_event_id,conversation_id,response_text,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?)').run('whatsapp', body.providerEventId, existingEvent?.conversation_id || body.conversationId, responseText, 'draft', now, now)
+      const draft = this.db.prepare('INSERT INTO whatsapp_drafts(channel,provider_event_id,conversation_id,response_text,policy_decision,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)').run('whatsapp', body.providerEventId, existingEvent?.conversation_id || body.conversationId, responseText, policyDecision ? JSON.stringify(policyDecision) : null, 'draft', now, now)
       return { duplicate: event.changes === 0, draftId: draft.lastInsertRowid }
     })()
     if (transaction.paused) return json(res, 202, { accepted: false, paused: true, duplicate: false })
@@ -4028,7 +4610,7 @@ class AgentdServer {
 
   draftView(row) {
     if (!row) return null
-    const outbox = this.db.prepare('SELECT status,provider_message_id,error,attempts FROM whatsapp_outbox WHERE draft_id = ?').get(row.id)
+    const outbox = this.db.prepare('SELECT status,provider_message_id,error,cancel_requested,attempts FROM whatsapp_outbox WHERE draft_id = ?').get(row.id)
     return {
       id: row.id,
       channel: row.channel,
@@ -4041,7 +4623,7 @@ class AgentdServer {
       ...(outbox ? {
         sendStatus: outbox.status,
         ...(typeof outbox.provider_message_id === 'string' ? { providerMessageId: outbox.provider_message_id } : {}),
-        ...(typeof outbox.error === 'string' ? { sendError: outbox.error } : {}),
+        ...(outbox.cancel_requested ? { sendError: OUTBOX_CANCEL_REQUESTED_ERROR, sendCancellationRequested: true } : (typeof outbox.error === 'string' ? { sendError: outbox.error } : {})),
         sendAttempts: outbox.attempts,
       } : {}),
     }
@@ -4102,7 +4684,7 @@ class AgentdServer {
       if (existing?.status === 'sent' && existing.provider_message_id) {
         return { status: 200, body: { success: true, duplicate: true, providerMessageId: existing.provider_message_id, draft: this.draftView(draft) } }
       }
-      if (existing?.status === 'pending') return { status: 409, body: { error: 'WhatsApp send is already pending' } }
+      if (existing?.status === 'pending') return { status: 409, body: { error: existing.cancel_requested ? OUTBOX_CANCEL_REQUESTED_ERROR : 'WhatsApp send is already pending' } }
 
       const now = Date.now()
       const claimed = this.db.transaction(() => {
@@ -4122,24 +4704,115 @@ class AgentdServer {
       if (claimed.sent) return { status: 200, body: { success: true, duplicate: true, providerMessageId: claimed.sent.provider_message_id, draft: this.draftView(draft) } }
       if (claimed.pending) return { status: 409, body: { error: 'WhatsApp send is already pending' } }
 
+      const cancellation = this.db.prepare('SELECT cancel_requested FROM whatsapp_outbox WHERE draft_id = ?').get(id)
+      if (cancellation?.cancel_requested) {
+        this.db.prepare("UPDATE whatsapp_outbox SET status = 'failed', error = ?, cancel_requested = 0, updated_at = ? WHERE draft_id = ? AND status = 'pending'").run(OUTBOX_CANCELLED_ERROR, Date.now(), id)
+        return { status: 409, body: { success: false, error: OUTBOX_CANCELLED_ERROR, draft: this.draftView(this.db.prepare('SELECT * FROM whatsapp_drafts WHERE id = ?').get(id)) } }
+      }
+
       // Inbound conversation IDs may be stored as `+15551234567` or as a
       // WhatsApp JID. Strip only the known JID suffix; never guess a recipient.
       const recipient = draft.conversation_id.replace(/@s\.whatsapp\.net$/i, '')
       this.assertMigrationOpen()
       const { providerMessageId } = await this.sendWhatsAppConfiguredMessage(recipient, draft.response_text)
       this.db.transaction(() => {
-        this.db.prepare("UPDATE whatsapp_outbox SET status = 'sent', provider_message_id = ?, error = NULL, updated_at = ? WHERE draft_id = ?").run(providerMessageId, Date.now(), id)
+        this.db.prepare("UPDATE whatsapp_outbox SET status = 'sent', provider_message_id = ?, error = NULL, cancel_requested = 0, updated_at = ? WHERE draft_id = ?").run(providerMessageId, Date.now(), id)
         this.db.prepare("UPDATE whatsapp_drafts SET status = 'sent', updated_at = ? WHERE id = ? AND status = 'approved'").run(Date.now(), id)
       })()
       return { status: 200, body: { success: true, duplicate: false, providerMessageId, draft: this.draftView(this.db.prepare('SELECT * FROM whatsapp_drafts WHERE id = ?').get(id)) } }
     } catch (error) {
       const message = Number.isInteger(error?.statusCode) && error.statusCode !== 502 ? error.message : 'WhatsApp message failed'
-      this.db.prepare("UPDATE whatsapp_outbox SET status = 'failed', error = ?, updated_at = ? WHERE draft_id = ?").run(message, Date.now(), id)
+      const cancellation = this.db.prepare('SELECT cancel_requested FROM whatsapp_outbox WHERE draft_id = ?').get(id)
+      const finalMessage = cancellation?.cancel_requested ? OUTBOX_CANCELLED_ERROR : message
+      this.db.prepare("UPDATE whatsapp_outbox SET status = 'failed', error = ?, cancel_requested = 0, updated_at = ? WHERE draft_id = ?").run(finalMessage, Date.now(), id)
+      this.createAutonomyNotification('failure', { channel: 'whatsapp', operation: 'send', draftId: id, message: finalMessage })
+      const statusCode = Number.isInteger(error?.statusCode) ? error.statusCode : 502
+      return { status: statusCode, body: { success: false, error: finalMessage } }
+    } finally {
+      releaseOperation()
+    }
+  }
+
+  async performWhatsAppTemplateSend(providerEventId, name, languageCode, parameters = []) {
+    const releaseOperation = this.beginActiveOperation()
+    if (!releaseOperation) return { status: 409, body: { error: 'Settings migration is committing' } }
+    let draftId = null
+    try {
+      const draft = this.db.prepare('SELECT * FROM whatsapp_drafts WHERE provider_event_id = ?').get(providerEventId)
+      if (!draft) return { status: 404, body: { error: 'WhatsApp draft not found' } }
+      draftId = draft.id
+      if (!['approved', 'sent'].includes(draft.status)) return { status: 409, body: { error: 'Draft must be approved before sending a template' } }
+      const template = this.db.prepare('SELECT category FROM approved_templates WHERE name = ? AND language_code = ? AND active = 1').get(name, languageCode)
+      if (!template) return { status: 409, body: { error: 'Template is not active in the approved registry' } }
+      if (template.category !== 'utility') return { status: 409, body: { error: 'Only utility templates are allowed for customer support' } }
+      if (!Array.isArray(parameters) || parameters.length > 10 || parameters.some(value => typeof value !== 'string' || [...value].length > 500)) return { status: 400, body: { error: 'Invalid template parameters' } }
+      if (Date.now() - draft.created_at < WHATSAPP_TEMPLATE_SERVICE_WINDOW_MS) return { status: 409, body: { error: 'Use free-form response inside the WhatsApp service window' } }
+      if (this.db.prepare("SELECT 1 FROM inbound_events WHERE channel = 'whatsapp' AND conversation_id = ? AND created_at > ? AND provider_event_id <> ? LIMIT 1").get(draft.conversation_id, draft.created_at, draft.provider_event_id)) return { status: 409, body: { error: 'Template inbound is stale; review the latest customer message' } }
+
+      const existing = this.db.prepare('SELECT * FROM whatsapp_outbox WHERE draft_id = ?').get(draftId)
+      if (existing?.status === 'failed' && [OUTBOX_QUARANTINED_ERROR, OUTBOX_CANCELLED_ERROR].includes(existing.error)) return { status: 409, body: { error: `Draft outbox is ${existing.error.toLowerCase()}` } }
+      if (existing?.status === 'sent' && existing.provider_message_id) return { status: 200, body: { success: true, duplicate: true, providerMessageId: existing.provider_message_id, draft: this.draftView(draft) } }
+      if (existing?.status === 'pending') return { status: 409, body: { error: existing.cancel_requested ? OUTBOX_CANCEL_REQUESTED_ERROR : 'WhatsApp send is already pending' } }
+
+      const now = Date.now()
+      const claimed = this.db.transaction(() => {
+        const current = this.db.prepare('SELECT * FROM whatsapp_drafts WHERE id = ?').get(draftId)
+        if (!current) return { missing: true }
+        if (!['approved', 'sent'].includes(current.status)) return { invalid: true }
+        const prior = this.db.prepare('SELECT * FROM whatsapp_outbox WHERE draft_id = ?').get(draftId)
+        if (prior?.status === 'sent' && prior.provider_message_id) return { sent: prior }
+        if (prior?.status === 'pending') return { pending: true }
+        this.db.prepare(`INSERT INTO whatsapp_outbox(draft_id,status,attempts,created_at,updated_at)
+          VALUES (?,?,?,?,?)
+          ON CONFLICT(draft_id) DO UPDATE SET status = 'pending', error = NULL, attempts = whatsapp_outbox.attempts + 1, updated_at = excluded.updated_at`).run(draftId, 'pending', prior?.attempts ? prior.attempts + 1 : 1, now, now)
+        return { current }
+      })()
+      if (claimed.missing) return { status: 404, body: { error: 'WhatsApp draft not found' } }
+      if (claimed.invalid) return { status: 409, body: { error: 'Draft must be approved before sending a template' } }
+      if (claimed.sent) return { status: 200, body: { success: true, duplicate: true, providerMessageId: claimed.sent.provider_message_id, draft: this.draftView(draft) } }
+      if (claimed.pending) return { status: 409, body: { error: 'WhatsApp send is already pending' } }
+
+      const cancellation = this.db.prepare('SELECT cancel_requested FROM whatsapp_outbox WHERE draft_id = ?').get(draftId)
+      if (cancellation?.cancel_requested) {
+        this.db.prepare("UPDATE whatsapp_outbox SET status = 'failed', error = ?, cancel_requested = 0, updated_at = ? WHERE draft_id = ? AND status = 'pending'").run(OUTBOX_CANCELLED_ERROR, Date.now(), draftId)
+        return { status: 409, body: { success: false, error: OUTBOX_CANCELLED_ERROR, draft: this.draftView(this.db.prepare('SELECT * FROM whatsapp_drafts WHERE id = ?').get(draftId)) } }
+      }
+
+      const recipient = draft.conversation_id.replace(/@s\.whatsapp\.net$/i, '')
+      this.assertMigrationOpen()
+      const { providerMessageId } = await this.sendWhatsAppConfiguredTemplate(recipient, name, languageCode, parameters)
+      this.db.transaction(() => {
+        this.db.prepare("UPDATE whatsapp_outbox SET status = 'sent', provider_message_id = ?, error = NULL, cancel_requested = 0, updated_at = ? WHERE draft_id = ?").run(providerMessageId, Date.now(), draftId)
+        this.db.prepare("UPDATE whatsapp_drafts SET status = 'sent', updated_at = ? WHERE id = ? AND status = 'approved'").run(Date.now(), draftId)
+      })()
+      return { status: 200, body: { success: true, duplicate: false, providerMessageId, draft: this.draftView(this.db.prepare('SELECT * FROM whatsapp_drafts WHERE id = ?').get(draftId)) } }
+    } catch (error) {
+      const message = Number.isInteger(error?.statusCode) && error.statusCode !== 502 ? error.message : 'WhatsApp template message failed'
+      if (draftId !== null) {
+        this.db.prepare("UPDATE whatsapp_outbox SET status = 'failed', error = ?, cancel_requested = 0, updated_at = ? WHERE draft_id = ?").run(message, Date.now(), draftId)
+        this.createAutonomyNotification('failure', { channel: 'whatsapp', operation: 'template-send', draftId, message })
+      }
       const statusCode = Number.isInteger(error?.statusCode) ? error.statusCode : 502
       return { status: statusCode, body: { success: false, error: message } }
     } finally {
       releaseOperation()
     }
+  }
+
+  async sendApprovedTemplate(req, res) {
+    this.authorize(req, { mutation: true })
+    if (this.migrationFence(req, res)) return
+    if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
+    let body
+    try { body = await readBody(req, 16 * 1024) } catch (error) { return json(res, error.statusCode || 400, { error: error.message }) }
+    if (!body || typeof body !== 'object' || Array.isArray(body)
+      || Object.keys(body).some(key => !['providerEventId', 'name', 'languageCode', 'parameters'].includes(key))
+      || typeof body.providerEventId !== 'string' || !/^[\x21-\x7e]{1,300}$/.test(body.providerEventId)
+      || typeof body.name !== 'string' || !/^[a-zA-Z0-9_.-]{1,100}$/.test(body.name)
+      || typeof body.languageCode !== 'string' || !/^[a-zA-Z0-9_-]{2,20}$/.test(body.languageCode)
+      || (body.parameters !== undefined && (!Array.isArray(body.parameters) || body.parameters.length > 10 || body.parameters.some(value => typeof value !== 'string' || [...value].length > 500)))) return json(res, 400, { error: 'Invalid approved template request' })
+    const result = await this.performWhatsAppTemplateSend(body.providerEventId, body.name, body.languageCode, body.parameters || [])
+    return json(res, result.status, result.body)
   }
 
   async readEmptyDraftMutation(req, res, message) {
@@ -4189,7 +4862,14 @@ class AgentdServer {
     const outbox = this.db.prepare('SELECT status,error FROM whatsapp_outbox WHERE draft_id = ?').get(id)
     if (!outbox) return json(res, 409, { error: 'Draft has no outbound attempt to dispose' })
     if (outbox.status === 'sent') return json(res, 409, { error: 'Sent drafts cannot be disposed' })
-    if (outbox.status === 'pending') return json(res, 409, { error: 'Pending sends cannot be disposed while provider work is active' })
+    if (outbox.status === 'pending') {
+      if (disposition !== OUTBOX_CANCELLED_ERROR) return json(res, 409, { error: 'Pending sends cannot be quarantined while provider work is active' })
+      const updated = this.db.prepare(`UPDATE whatsapp_outbox
+        SET cancel_requested = 1, error = ?, updated_at = ?
+        WHERE draft_id = ? AND status = 'pending' AND cancel_requested = 0`).run(OUTBOX_CANCEL_REQUESTED_ERROR, Date.now(), id)
+      if (updated.changes === 0) return json(res, 409, { error: 'Draft outbox cancellation was already requested' })
+      return json(res, 202, this.draftView(this.db.prepare('SELECT * FROM whatsapp_drafts WHERE id = ?').get(id)))
+    }
     if (outbox.status !== 'failed') return json(res, 409, { error: 'Draft outbox is not disposable' })
     if (outbox.error === OUTBOX_QUARANTINED_ERROR || outbox.error === OUTBOX_CANCELLED_ERROR) {
       if (outbox.error !== disposition) return json(res, 409, { error: 'Draft outbox already has an operator disposition' })
@@ -4203,14 +4883,179 @@ class AgentdServer {
     return json(res, 200, this.draftView(this.db.prepare('SELECT * FROM whatsapp_drafts WHERE id = ?').get(id)))
   }
 
+  listAutonomyTakeovers(req, res) {
+    this.authorize(req)
+    const rows = this.db.prepare(`SELECT conversation_id AS jid, source, started_at AS startedAt, revision, outcome
+      FROM autonomy_conversation_controls WHERE active = 1 ORDER BY started_at DESC LIMIT 100`).all()
+    return json(res, 200, {
+      takeovers: rows.map(row => ({
+        jid: row.jid,
+        source: row.source,
+        startedAt: row.startedAt,
+        revision: row.revision,
+        ...(row.outcome ? { outcome: row.outcome } : {}),
+      })),
+    })
+  }
+
+  validateAutonomyConversationId(conversationId) {
+    return typeof conversationId === 'string'
+      && conversationId.length > 0
+      && conversationId.length <= MAX_CHAT_CONTACT_LENGTH
+      && /^[^\u0000\r\n/]+$/.test(conversationId)
+  }
+
+  async pauseAutonomyConversation(req, res, conversationId) {
+    this.authorize(req, { mutation: true })
+    if (this.migrationFence(req, res)) return
+    if (!this.validateAutonomyConversationId(conversationId)) return json(res, 400, { error: 'Invalid conversation ID' })
+    if (!await this.readEmptyDraftMutation(req, res, 'Conversation pause accepts no input')) return
+    const now = Date.now()
+    this.db.prepare(`INSERT INTO autonomy_conversation_controls(conversation_id,source,active,revision,started_at)
+      VALUES (?, 'browser_operator', 1, 0, ?)
+      ON CONFLICT(conversation_id) DO UPDATE SET active = 1, source = 'browser_operator', started_at = excluded.started_at, ended_at = NULL`).run(conversationId, now)
+    const row = this.db.prepare('SELECT conversation_id AS jid, source, active, revision, started_at AS startedAt, outcome FROM autonomy_conversation_controls WHERE conversation_id = ?').get(conversationId)
+    this.db.prepare('INSERT INTO operator_actions(action,created_at) VALUES (?,?)').run('pause_conversation', now)
+    return json(res, 200, { conversationId: row.jid, active: row.active === 1, source: row.source, revision: row.revision, startedAt: row.startedAt, ...(row.outcome ? { outcome: row.outcome } : {}) })
+  }
+
+  async resumeAutonomyConversation(req, res, conversationId) {
+    this.authorize(req, { mutation: true })
+    if (this.migrationFence(req, res)) return
+    if (!this.validateAutonomyConversationId(conversationId)) return json(res, 400, { error: 'Invalid conversation ID' })
+    if (!await this.readEmptyDraftMutation(req, res, 'Conversation resume accepts no input')) return
+    const now = Date.now()
+    const updated = this.db.prepare(`UPDATE autonomy_conversation_controls
+      SET active = 0, ended_at = ? WHERE conversation_id = ? AND active = 1`).run(now, conversationId)
+    if (updated.changes === 0) return json(res, 404, { error: 'Conversation takeover not found' })
+    this.db.prepare('INSERT INTO operator_actions(action,created_at) VALUES (?,?)').run('resume_conversation', now)
+    const row = this.db.prepare('SELECT conversation_id AS jid, source, active, revision, started_at AS startedAt, ended_at AS endedAt, outcome FROM autonomy_conversation_controls WHERE conversation_id = ?').get(conversationId)
+    return json(res, 200, { conversationId: row.jid, active: false, source: row.source, revision: row.revision, startedAt: row.startedAt, endedAt: row.endedAt, ...(row.outcome ? { outcome: row.outcome } : {}) })
+  }
+
+  async recordAutonomyConversationOutcome(req, res, conversationId) {
+    this.authorize(req, { mutation: true })
+    if (this.migrationFence(req, res)) return
+    if (!this.validateAutonomyConversationId(conversationId)) return json(res, 400, { error: 'Invalid conversation ID' })
+    if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
+    let body
+    try { body = await readBody(req, 16 * 1024) } catch (error) { return json(res, error.statusCode || 400, { error: error.message }) }
+    const allowed = ['revision', 'outcome', 'evidence']
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => !allowed.includes(key))
+      || !Number.isSafeInteger(body.revision) || body.revision < 0
+      || !['resolved_agent', 'resolved_human', 'escalated', 'closed_unresolved', 'open'].includes(body.outcome)
+      || typeof body.evidence !== 'string' || body.evidence.trim().length < 1 || body.evidence.length > 2000) {
+      return json(res, 400, { error: 'Invalid conversation outcome' })
+    }
+    const row = this.db.prepare('SELECT revision FROM autonomy_conversation_controls WHERE conversation_id = ?').get(conversationId)
+    if (!row) return json(res, 404, { error: 'Conversation takeover not found' })
+    if (row.revision !== body.revision) return json(res, 409, { error: 'Conversation outcome revision changed' })
+    const now = Date.now()
+    this.db.prepare(`UPDATE autonomy_conversation_controls
+      SET revision = ?, outcome = ?, evidence = ?, outcome_recorded_at = ?
+      WHERE conversation_id = ? AND revision = ?`).run(body.revision + 1, body.outcome, body.evidence.trim(), now, conversationId, body.revision)
+    this.db.prepare('INSERT INTO operator_actions(action,created_at) VALUES (?,?)').run('conversation_outcome', now)
+    return json(res, 200, { conversationId, revision: body.revision + 1, outcome: body.outcome, recordedAt: now })
+  }
+
   control(req, res, paused) {
     const actor = this.authorize(req, { mutation: true })
+    if (!paused && this.getState('recovery_mode', 'false') === 'true') return json(res, 409, { error: 'Recovery hold must be cleared before resume' })
     const now = Date.now()
     this.db.transaction(() => {
       this.setState('paused', String(paused))
       this.db.prepare('INSERT INTO operator_actions(action,created_at) VALUES (?,?)').run(paused ? 'pause_all' : 'resume_all', now)
     })()
     return json(res, 200, { paused, actor: actor.kind })
+  }
+
+  async recoveryControl(req, res, entering) {
+    const actor = this.authorize(req, { mutation: true })
+    let reason = entering ? 'operator_requested' : ''
+    if (entering) {
+      if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
+      let body
+      try { body = await readBody(req, 16 * 1024) } catch (error) { return json(res, error.statusCode || 400, { error: error.message }) }
+      if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => key !== 'reason') || (body.reason !== undefined && (typeof body.reason !== 'string' || body.reason.length > 256))) return json(res, 400, { error: 'Invalid recovery reason' })
+      if (typeof body.reason === 'string' && body.reason.trim()) reason = body.reason.trim()
+    } else if (req.headers['content-length'] && req.headers['content-length'] !== '0') {
+      if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
+      let body
+      try { body = await readBody(req, 16 * 1024) } catch (error) { return json(res, error.statusCode || 400, { error: error.message }) }
+      if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length > 0) return json(res, 400, { error: 'Recovery clear accepts no input' })
+    }
+    const now = Date.now()
+    this.db.transaction(() => {
+      this.setState('recovery_mode', entering ? 'true' : 'false')
+      this.setState('recovery_reason', entering ? reason : '')
+      if (entering) this.setState('paused', 'true')
+      this.db.prepare('INSERT INTO operator_actions(action,created_at) VALUES (?,?)').run(entering ? 'enter_recovery_mode' : 'clear_recovery_mode', now)
+    })()
+    if (entering) this.createAutonomyNotification('recovery', { reason })
+    return json(res, 200, { recoveryMode: entering, paused: true, reason: entering ? reason : null, actor: actor.kind })
+  }
+
+  createAutonomyNotification(kind, details) {
+    if (!this.db || !AUTONOMY_NOTIFICATION_KINDS.includes(kind)) return false
+    let serialized
+    try {
+      serialized = JSON.stringify(redactPayload(details && typeof details === 'object' ? details : { message: String(details || '') }))
+    } catch {
+      serialized = JSON.stringify({ message: 'Notification details unavailable' })
+    }
+    if (typeof serialized !== 'string') serialized = JSON.stringify({ message: 'Notification details unavailable' })
+    if (Buffer.byteLength(serialized, 'utf8') > MAX_AUTONOMY_NOTIFICATION_DETAILS) {
+      serialized = JSON.stringify({ message: 'Notification details truncated' })
+    }
+    this.db.prepare('INSERT INTO autonomy_notifications(kind,details,status,created_at) VALUES (?,?,?,?)').run(kind, serialized, 'unread', Date.now())
+    return true
+  }
+
+  autonomyNotifications(req, res, url) {
+    this.authorize(req)
+    const requestedLimit = Number.parseInt(url.searchParams.get('limit') || '50', 10)
+    const limit = Number.isSafeInteger(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 50) : 50
+    const notifications = this.db.prepare("SELECT id,kind,details,created_at AS createdAt FROM autonomy_notifications WHERE status = 'unread' ORDER BY created_at DESC, id DESC LIMIT ?").all(limit)
+    return json(res, 200, { notifications })
+  }
+
+  ackAutonomyNotification(req, res, id) {
+    this.authorize(req, { mutation: true })
+    if (!Number.isSafeInteger(id) || id < 1) return json(res, 400, { error: 'Invalid notification ID' })
+    const result = this.db.prepare("UPDATE autonomy_notifications SET status = 'read' WHERE id = ? AND status = 'unread'").run(id)
+    return json(res, 200, { acknowledged: result.changes === 1 })
+  }
+
+  listApprovedTemplates() {
+    return this.db.prepare('SELECT name, language_code AS languageCode, category FROM approved_templates WHERE active = 1 ORDER BY name, language_code').all()
+  }
+
+  async autonomyTemplates(req, res) {
+    if (req.method === 'GET') {
+      this.authorize(req)
+      return json(res, 200, { templates: this.listApprovedTemplates() })
+    }
+    this.authorize(req, { mutation: true })
+    if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
+    let body
+    try { body = await readBody(req, 8 * 1024) } catch (error) { return json(res, error.statusCode || 400, { error: error.message }) }
+    if (!body || typeof body !== 'object' || Array.isArray(body)
+      || Object.keys(body).some(key => !['name', 'languageCode', 'category'].includes(key))
+      || typeof body.name !== 'string' || !/^[a-zA-Z0-9_.-]{1,100}$/.test(body.name)
+      || typeof body.languageCode !== 'string' || !/^[a-zA-Z0-9_-]{2,20}$/.test(body.languageCode)
+      || typeof body.category !== 'string' || !/^[a-zA-Z0-9_.-]{1,40}$/.test(body.category)) return json(res, 400, { error: 'Invalid approved template' })
+    this.db.prepare(`INSERT INTO approved_templates(name,language_code,category,active,updated_at) VALUES (?,?,?,?,?)
+      ON CONFLICT(name,language_code) DO UPDATE SET category = excluded.category, active = 1, updated_at = excluded.updated_at`)
+      .run(body.name, body.languageCode, body.category, 1, Date.now())
+    return json(res, 200, { templates: this.listApprovedTemplates() })
+  }
+
+  async revokeAutonomyTemplate(req, res, name, languageCode) {
+    this.authorize(req, { mutation: true })
+    if (!req.readableEnded) await new Promise((resolve, reject) => { req.on('end', resolve); req.on('error', reject); req.resume() })
+    if (!/^[a-zA-Z0-9_.-]{1,100}$/.test(name) || !/^[a-zA-Z0-9_-]{2,20}$/.test(languageCode)) return json(res, 400, { error: 'Invalid approved template' })
+    this.db.prepare('UPDATE approved_templates SET active = 0, updated_at = ? WHERE name = ? AND language_code = ?').run(Date.now(), name, languageCode)
+    return json(res, 200, { templates: this.listApprovedTemplates() })
   }
 
   autonomyMetrics(req, res, url) {
@@ -4226,29 +5071,160 @@ class AgentdServer {
     const outboxByStatus = Object.fromEntries(outboxCounts.map((row) => [row.status, row.count]))
     const totalDrafts = Object.values(draftByStatus).reduce((sum, count) => sum + count, 0)
     const approvedDrafts = (draftByStatus.approved || 0) + (draftByStatus.sent || 0)
+    const reviewCounts = this.db.prepare('SELECT label,COUNT(*) AS count FROM autonomy_decision_reviews WHERE reviewed_at >= ? GROUP BY label').all(since)
+    const reviewByLabel = Object.fromEntries(reviewCounts.map((row) => [row.label, Number(row.count) || 0]))
+    const reviewedDecisions = Object.values(reviewByLabel).reduce((sum, count) => sum + count, 0)
+    const decisionRows = [
+      ...this.db.prepare('SELECT policy_decision AS policy FROM whatsapp_drafts WHERE created_at >= ? AND policy_decision IS NOT NULL').all(since),
+      ...this.db.prepare('SELECT payload AS policy FROM email_drafts WHERE created_at >= ?').all(since),
+    ]
+    let decisionCount = 0
+    let groundedDecisions = 0
+    let escalatedDecisions = 0
+    for (const row of decisionRows) {
+      try {
+        const raw = JSON.parse(row.policy)
+        const policy = raw?.policyDecision || raw
+        if (!policy || !['send', 'draft', 'escalate'].includes(policy.action)) continue
+        decisionCount += 1
+        if (policy.action === 'escalate') escalatedDecisions += 1
+        if (policy.grounding === 'grounded') groundedDecisions += 1
+      } catch {}
+    }
+    const recoveryActions = this.db.prepare("SELECT action,created_at AS createdAt FROM operator_actions WHERE action IN ('enter_recovery_mode','clear_recovery_mode') AND created_at >= ? ORDER BY created_at ASC, id ASC").all(since)
+    const recoveryStarts = []
+    const recoveryDurations = []
+    for (const action of recoveryActions) {
+      if (action.action === 'enter_recovery_mode') recoveryStarts.push(action.createdAt)
+      else if (recoveryStarts.length) recoveryDurations.push(Math.max(0, action.createdAt - recoveryStarts.shift()))
+    }
     return json(res, 200, {
       inbound,
       sent: outboxByStatus.sent || 0,
-      escalated: 0,
+      escalated: escalatedDecisions,
       drafts: (draftByStatus.draft || 0) + (draftByStatus.approved || 0),
       failed: outboxByStatus.failed || 0,
       averageDecisionLatencyMs: 0,
       llmCalls: generationCounts,
       averageLlmLatencyMs: 0,
-      groundedDecisionRate: 0,
+      groundedDecisionRate: decisionCount ? groundedDecisions / decisionCount : 0,
       deliveryUnknown: outboxByStatus.pending || 0,
       draftApprovalRate: totalDrafts ? approvedDrafts / totalDrafts : 0,
       averageDraftEditingTimeMs: 0,
       estimatedCostPerResolvedConversation: 0,
-      reviewedDecisions: 0,
-      reviewAccuracy: 0,
+      reviewedDecisions,
+      reviewAccuracy: reviewedDecisions ? (reviewByLabel.correct || 0) / reviewedDecisions : 0,
       escalationPrecision: 0,
-      unnecessaryEscalations: 0,
-      missedEscalations: 0,
-      recoveryDrills: 0,
-      averageRecoveryTimeMs: 0,
+      unnecessaryEscalations: reviewByLabel.unnecessary_escalation || 0,
+      missedEscalations: reviewByLabel.missed_escalation || 0,
+      recoveryDrills: recoveryDurations.length,
+      averageRecoveryTimeMs: recoveryDurations.length ? recoveryDurations.reduce((sum, value) => sum + value, 0) / recoveryDurations.length : 0,
       days,
     })
+  }
+
+  autonomyUsageHistory(req, res, url) {
+    this.authorize(req)
+    const requestedDays = Number.parseInt(url.searchParams.get('days') || '30', 10)
+    const days = Number.isSafeInteger(requestedDays) ? Math.min(Math.max(requestedDays, 1), 90) : 30
+    const since = Date.now() - days * 24 * 60 * 60 * 1000
+    const byDay = new Map()
+    const add = (rows, field) => {
+      for (const row of rows) {
+        const current = byDay.get(row.day) || { day: row.day, llmCalls: 0, outboundMessages: 0, estimatedCost: 0 }
+        current[field] += Number(row.amount) || 0
+        byDay.set(row.day, current)
+      }
+    }
+    add(this.db.prepare("SELECT date(created_at / 1000, 'unixepoch', 'localtime') AS day, COUNT(*) AS amount FROM chat_generations WHERE status = 'completed' AND created_at >= ? GROUP BY day").all(since), 'llmCalls')
+    add(this.db.prepare("SELECT date(updated_at / 1000, 'unixepoch', 'localtime') AS day, COUNT(*) AS amount FROM whatsapp_outbox WHERE status = 'sent' AND updated_at >= ? GROUP BY day").all(since), 'outboundMessages')
+    add(this.db.prepare("SELECT date(updated_at / 1000, 'unixepoch', 'localtime') AS day, COUNT(*) AS amount FROM email_drafts WHERE status = 'sent' AND updated_at >= ? GROUP BY day").all(since), 'outboundMessages')
+    return json(res, 200, { days: [...byDay.values()].sort((a, b) => b.day.localeCompare(a.day)) })
+  }
+
+  autonomyChannelUsage(req, res, url) {
+    this.authorize(req)
+    const requestedDays = Number.parseInt(url.searchParams.get('days') || '1', 10)
+    const days = Number.isSafeInteger(requestedDays) ? Math.min(Math.max(requestedDays, 1), 90) : 1
+    const since = Date.now() - days * 24 * 60 * 60 * 1000
+    const whatsapp = this.db.prepare("SELECT COUNT(*) AS amount FROM whatsapp_outbox WHERE status = 'sent' AND updated_at >= ?").get(since).amount
+    const email = this.db.prepare("SELECT COUNT(*) AS amount FROM email_drafts WHERE status = 'sent' AND updated_at >= ?").get(since).amount
+    return json(res, 200, { channels: [{ channel: 'whatsapp', amount: Number(whatsapp) || 0 }, { channel: 'email', amount: Number(email) || 0 }].filter(item => item.amount > 0) })
+  }
+
+  autonomyDecisionEvidence(req, res, url) {
+    this.authorize(req)
+    const requestedLimit = Number.parseInt(url.searchParams.get('limit') || '20', 10)
+    const limit = Number.isSafeInteger(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 50) : 20
+    const emailRows = this.db.prepare('SELECT id,payload FROM email_drafts ORDER BY updated_at DESC LIMIT ?').all(limit)
+    const emailEvidence = emailRows.flatMap(row => {
+      try {
+        const draft = JSON.parse(row.payload)
+        const policy = draft?.policyDecision
+        if (!draft || typeof draft.id !== 'string' || !policy || typeof policy !== 'object') return []
+        return [{
+          inboundId: draft.id,
+          jid: typeof draft.originalFrom === 'string' ? draft.originalFrom : 'unknown email sender',
+          createdAt: Number.isSafeInteger(draft.createdAt) ? draft.createdAt : 0,
+          decision: {
+            grounding: 'unavailable',
+            reason: typeof policy.rationale === 'string' ? policy.rationale : 'Email policy decision recorded',
+            confidence: typeof policy.confidence === 'number' ? policy.confidence : 0,
+            escalated: policy.action === 'escalate',
+            sensitiveTopic: policy.hasSensitiveTopic === true,
+            evidence: [],
+          },
+          ...(this.db.prepare('SELECT label,notes,reviewed_at AS reviewedAt FROM autonomy_decision_reviews WHERE inbound_id = ?').get(draft.id) || {}),
+        }]
+      } catch { return [] }
+    })
+    const whatsappRows = this.db.prepare('SELECT id,conversation_id,policy_decision,created_at AS createdAt FROM whatsapp_drafts ORDER BY updated_at DESC LIMIT ?').all(limit)
+    const whatsappEvidence = whatsappRows.flatMap(row => {
+      let policy = null
+      if (typeof row.policy_decision === 'string') {
+        try { policy = parseWhatsAppPolicyDecision(JSON.parse(row.policy_decision)) } catch { policy = null }
+      }
+      const decision = {
+        grounding: policy?.grounding || 'unavailable',
+        reason: policy?.rationale || 'WhatsApp policy decision was not persisted',
+        ...(typeof policy?.confidence === 'number' ? { confidence: policy.confidence } : {}),
+        ...(policy ? { escalated: policy.action === 'escalate' } : {}),
+        ...(typeof policy?.sensitiveTopic === 'boolean' ? { sensitiveTopic: policy.sensitiveTopic } : {}),
+        evidence: Array.isArray(policy?.evidence) ? policy.evidence : [],
+      }
+      return [{
+        inboundId: `whatsapp_draft_${row.id}`,
+        jid: row.conversation_id,
+        createdAt: row.createdAt,
+        decision,
+        ...(this.db.prepare('SELECT label,notes,reviewed_at AS reviewedAt FROM autonomy_decision_reviews WHERE inbound_id = ?').get(`whatsapp_draft_${row.id}`) || {}),
+      }]
+    })
+    const evidence = [...emailEvidence, ...whatsappEvidence]
+      .sort((left, right) => right.createdAt - left.createdAt)
+      .slice(0, limit)
+    return json(res, 200, { evidence })
+  }
+
+  async reviewAutonomyDecision(req, res, inboundId) {
+    this.authorize(req, { mutation: true })
+    if (!/^(?:draft_[A-Za-z0-9_-]{1,120}|whatsapp_draft_[1-9]\d{0,18})$/.test(inboundId)) return json(res, 400, { error: 'Invalid decision ID' })
+    if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'application/json required' })
+    let body
+    try { body = await readBody(req, 16 * 1024) } catch (error) { return json(res, error.statusCode || 400, { error: error.message }) }
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => !['label', 'notes'].includes(key))
+      || !['correct', 'incorrect', 'unnecessary_escalation', 'missed_escalation'].includes(body.label)
+      || (body.notes !== undefined && (typeof body.notes !== 'string' || body.notes.length > 2000))) return json(res, 400, { error: 'Invalid decision review' })
+    const whatsappMatch = /^whatsapp_draft_([1-9]\d{0,18})$/.exec(inboundId)
+    const emailDecision = this.db.prepare('SELECT 1 FROM email_drafts WHERE id = ?').get(inboundId)
+    const whatsappDecision = whatsappMatch && Number.isSafeInteger(Number(whatsappMatch[1]))
+      ? this.db.prepare('SELECT 1 FROM whatsapp_drafts WHERE id = ?').get(Number(whatsappMatch[1]))
+      : null
+    if (!emailDecision && !whatsappDecision) return json(res, 404, { error: 'Decision not found' })
+    this.db.prepare(`INSERT INTO autonomy_decision_reviews(inbound_id,label,notes,reviewed_at) VALUES (?,?,?,?)
+      ON CONFLICT(inbound_id) DO UPDATE SET label = excluded.label, notes = excluded.notes, reviewed_at = excluded.reviewed_at`)
+      .run(inboundId, body.label, body.notes || null, Date.now())
+    return json(res, 200, { reviewed: true, inboundId, label: body.label })
   }
 
   serveUi(requestPath, res) {
@@ -4403,6 +5379,37 @@ function parseWhatsAppSettings(value) {
   }
 }
 
+function parseWhatsAppPolicyDecision(value) {
+  if (value === undefined || value === null) return null
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const keys = Object.keys(value)
+  if (keys.some((key) => !['action', 'confidence', 'evidence', 'grounding', 'rationale', 'sensitiveTopic'].includes(key))) return null
+  if (!['send', 'draft', 'escalate'].includes(value.action)
+    || !validBoundedText(value.rationale, 4096, true)
+    || !['grounded', 'not_grounded', 'unavailable'].includes(value.grounding)
+    || (value.confidence !== undefined && (!Number.isFinite(value.confidence) || value.confidence < 0 || value.confidence > 1))
+    || (value.sensitiveTopic !== undefined && typeof value.sensitiveTopic !== 'boolean')
+    || (value.evidence !== undefined && (!Array.isArray(value.evidence) || value.evidence.length > 32 || value.evidence.some((item) => (
+      !item || typeof item !== 'object' || Array.isArray(item)
+      || Object.keys(item).some((key) => !['fileName', 'rank'].includes(key))
+      || !validBoundedText(item.fileName, 256)
+      || (item.rank !== undefined && (!Number.isSafeInteger(item.rank) || item.rank < 0 || item.rank > 100000))
+    ))))) return null
+  return {
+    action: value.action,
+    rationale: value.rationale,
+    grounding: value.grounding,
+    ...(value.confidence !== undefined ? { confidence: value.confidence } : {}),
+    ...(value.sensitiveTopic !== undefined ? { sensitiveTopic: value.sensitiveTopic } : {}),
+    ...(Array.isArray(value.evidence) ? {
+      evidence: value.evidence.map((item) => ({
+        fileName: item.fileName,
+        ...(item.rank !== undefined ? { rank: item.rank } : {}),
+      })),
+    } : {}),
+  }
+}
+
 function parseWhatsAppUiSettings(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   const keys = Object.keys(value).sort()
@@ -4495,7 +5502,7 @@ function parseEmailAttachmentMetadata(value) {
 
 function parseEmailDraft(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
-  const allowedKeys = ['accountName', 'attachments', 'createdAt', 'id', 'inReplyTo', 'originalFrom', 'originalSubject', 'policyDecision', 'references', 'replyTo', 'responseText', 'status']
+  const allowedKeys = ['accountName', 'attachments', 'createdAt', 'id', 'inReplyTo', 'originalFrom', 'originalSubject', 'policyDecision', 'providerMessageId', 'references', 'replyTo', 'responseText', 'status']
   if (Object.keys(value).some((key) => !allowedKeys.includes(key))) return null
   const policy = value.policyDecision
   if (!/^draft_[A-Za-z0-9_-]{1,120}$/.test(value.id || '')
@@ -4505,6 +5512,7 @@ function parseEmailDraft(value) {
     || !validBoundedText(value.replyTo, 320)
     || (value.inReplyTo !== undefined && !validBoundedText(value.inReplyTo, 998, true))
     || (value.references !== undefined && !validBoundedText(value.references, 8192, true))
+    || (value.providerMessageId !== undefined && !validEmailProviderMessageId(value.providerMessageId))
     || (value.accountName !== undefined && !validBoundedText(value.accountName, 128, true))
     || !Number.isSafeInteger(value.createdAt) || value.createdAt < 0
     || !EMAIL_DRAFT_STATUSES.includes(value.status)
@@ -4527,6 +5535,7 @@ function parseEmailDraft(value) {
     ...(value.inReplyTo !== undefined && value.inReplyTo ? { inReplyTo: value.inReplyTo } : {}),
     ...(value.references !== undefined && value.references ? { references: value.references } : {}),
     ...(value.accountName !== undefined && value.accountName ? { accountName: value.accountName } : {}),
+    ...(value.providerMessageId !== undefined && value.providerMessageId ? { providerMessageId: value.providerMessageId } : {}),
     ...(attachments.length ? { attachments } : {}),
     policyDecision: {
       action: policy.action,
@@ -4537,6 +5546,19 @@ function parseEmailDraft(value) {
     },
     createdAt: value.createdAt,
     status: value.status,
+  }
+}
+
+function validEmailProviderMessageId(value) {
+  return validBoundedText(value, MAX_EMAIL_PROVIDER_MESSAGE_ID_LENGTH) && !/[\u0000\r\n]/.test(value)
+}
+
+function parseStoredEmailProviderMessageId(payload) {
+  try {
+    const parsed = JSON.parse(payload)
+    return validEmailProviderMessageId(parsed?.providerMessageId) ? parsed.providerMessageId : null
+  } catch {
+    return null
   }
 }
 

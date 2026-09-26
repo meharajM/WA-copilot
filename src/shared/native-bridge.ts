@@ -25,8 +25,16 @@ export interface NativeHealth {
   version?: string
   error?: string
   paused?: boolean
+  recoveryMode?: boolean
+  recoveryReason?: string | null
   queueDepth?: number
   events?: number
+  extension?: {
+    status: 'disabled' | 'connecting' | 'connected' | 'error'
+    port: number
+    lastStatus: string | null
+    error: string | null
+  }
 }
 
 export type LlmProvider = 'auto' | 'openai' | 'openrouter' | 'ollama' | 'gemini' | 'browser'

@@ -37,7 +37,7 @@ import { EmailSettingsPanel } from './settings/EmailSettingsPanel'
 import { Mail } from 'lucide-react'
 import electron from '../lib/electron'
 import { isTauriRuntime } from '../lib/tauri-native-bridge'
-import { getBrowserAgentdClient, type BrowserSystemInfo } from '../lib/browser-agentd-client'
+import { getBrowserAgentdClient, type BrowserContinuityStatus, type BrowserSystemInfo } from '../lib/browser-agentd-client'
 import type { WhatsAppSettings } from '../../../shared/native-bridge'
 
 type SettingsSection = 'whatsapp' | 'email' | 'tools' | 'identity' | 'llm' | 'memory' | 'browser' | 'appearance' | 'logs' | 'about'
@@ -86,6 +86,7 @@ export function SettingsPanel({ onClose, initialSection = 'whatsapp' }: Settings
     const { openLogFolder, getLogPath, downloadAuditLog } = useLogStore()
     const [logPath, setLogPath] = useState<string>('')
     const [systemInfo, setSystemInfo] = useState<BrowserSystemInfo | null>(null)
+    const [continuityStatus, setContinuityStatus] = useState<BrowserContinuityStatus | null>(null)
 
     useEffect(() => {
         getLogPath().then(setLogPath)
@@ -94,9 +95,11 @@ export function SettingsPanel({ onClose, initialSection = 'whatsapp' }: Settings
     useEffect(() => {
         if (!nativeApi) {
             setSystemInfo(null)
+            setContinuityStatus(null)
             return
         }
         void nativeApi.getSystemInfo().then(setSystemInfo).catch(() => setSystemInfo(null))
+        void nativeApi.getContinuityStatus().then(setContinuityStatus).catch(() => setContinuityStatus(null))
     }, [nativeApi])
 
     useEffect(() => {
@@ -603,16 +606,19 @@ export function SettingsPanel({ onClose, initialSection = 'whatsapp' }: Settings
                                         <FileText className="text-blue-400" size={24} />
                                     </div>
                                     <div>
-                                        <h4 className="font-medium mb-1 text-[var(--color-text-primary)]">Corporate Logging Enabled</h4>
+                                        <h4 className="font-medium mb-1 text-[var(--color-text-primary)]">
+                                            {browserRuntime ? 'Agentd audit logging' : 'Corporate Logging Enabled'}
+                                        </h4>
                                         <p className="text-sm text-[var(--color-text-secondary)]">
-                                            All chat sessions, prompts, and tool executions are logged to the local file system for auditing purposes.
-                                            Logs are strictly append-only.
+                                            {browserRuntime
+                                                ? 'Audit events are redacted before they are stored in agentd local SQLite state. Download a redacted NDJSON export; the browser never receives the database path.'
+                                                : 'All chat sessions, prompts, and tool executions are logged to the local file system for auditing purposes. Logs are strictly append-only.'}
                                         </p>
                                     </div>
                                 </div>
 
                                 <div className="bg-[var(--color-surface)] rounded-lg p-4 mb-4">
-                                    <label className="text-[10px] uppercase font-bold text-[var(--color-text-dim)] mb-2 block">Local Log Path</label>
+                                    <label className="text-[10px] uppercase font-bold text-[var(--color-text-dim)] mb-2 block">{browserRuntime ? 'Audit storage' : 'Local Log Path'}</label>
                                     <code className="text-xs text-[var(--color-text-primary)] font-mono break-all block select-all">
                                         {logPath || 'Loading...'}
                                     </code>
@@ -694,6 +700,25 @@ export function SettingsPanel({ onClose, initialSection = 'whatsapp' }: Settings
                                     </div>
                                 </Card>
                             </div>
+
+                            {browserRuntime && <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-card-elevated)] p-4" role="status">
+                                <div className="flex items-start justify-between gap-4">
+                                    <div>
+                                        <p className="text-[10px] uppercase font-bold tracking-wider text-[var(--color-text-dim)]">Data continuity</p>
+                                        <p className="mt-1 text-sm font-medium text-[var(--color-text-primary)]">
+                                            {continuityStatus?.migration.state === 'migrated' ? 'Electron data cutover complete' : continuityStatus?.migration.state === 'recovery-required' ? 'Recovery action required' : continuityStatus?.migration.state === 'in-progress' ? 'Cutover in progress' : continuityStatus ? 'Owner migration action required' : 'Checking migration state…'}
+                                        </p>
+                                        <p className="mt-1 text-xs text-[var(--color-text-muted)]">Read-only status from local agentd. Secret values and native paths are never shown here.</p>
+                                    </div>
+                                    {continuityStatus && <span className={`rounded-full px-2 py-1 text-[10px] font-semibold ${continuityStatus.migration.state === 'migrated' ? 'bg-green-500/15 text-green-300' : continuityStatus.migration.state === 'recovery-required' ? 'bg-red-500/15 text-red-300' : 'bg-amber-500/15 text-amber-200'}`}>
+                                        {continuityStatus.migration.state}
+                                    </span>}
+                                </div>
+                                {continuityStatus && <div className="mt-3 flex flex-wrap gap-2 text-[10px] text-[var(--color-text-muted)]">
+                                    {continuityStatus.stores.filter(store => store.source === 'electron').map(store => <span key={store.id} className="rounded bg-[var(--color-surface)] px-2 py-1">{store.id.replace('electron-', '')}: {store.state}</span>)}
+                                    <span className="rounded bg-[var(--color-surface)] px-2 py-1">credentials present: {continuityStatus.credentials.filter(credential => credential.present).length}</span>
+                                </div>}
+                            </div>}
 
                             <SystemDependenciesSettings />
                         </div>

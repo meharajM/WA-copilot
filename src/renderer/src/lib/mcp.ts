@@ -213,6 +213,12 @@ export async function executeToolCall(
     // This blocks:  relative paths with no workspace context.
     const wsPath = args?.workspacePath as string | undefined;
     const targetPath = args?.path as string | undefined;
+    if (wsPath?.startsWith('browser://') || targetPath?.startsWith('browser://')) {
+      return {
+        result: null,
+        error: 'BROWSER WORKSPACE: Native filesystem tools are unavailable for a browser workspace reference. Use a browser file upload or an owner-approved native workflow.',
+      };
+    }
     const targetIsAbsolute =
       !!targetPath &&
       (targetPath.startsWith('/') || !!targetPath.match(/^[a-zA-Z]:[\\/]/));
@@ -288,6 +294,30 @@ export async function executeToolCall(
 
     // FALLBACK: Check if it's an internal WhatsApp tool
     if (toolName.startsWith('whatsapp_')) {
+      if (isBrowserProduct()) {
+        // Browser text sends use the authenticated agentd route directly. Do
+        // not route generic tools through the Electron-shaped facade: media
+        // tools carry native paths, and admin escalation is daemon-owned.
+        if (toolName === 'whatsapp_send_message') {
+          const targetJid = safeArgs?.to as string | undefined;
+          const content = safeArgs?.content as string | undefined;
+          if (!targetJid) return { result: null, error: "Missing 'to' parameter: Target WhatsApp number could not be resolved automatically." };
+          if (!content?.trim()) return { result: null, error: "Missing 'content' parameter." };
+          try {
+            await getBrowserAgentdClient().sendWhatsAppText(targetJid, content)
+            return { result: 'Message sent successfully.' }
+          } catch (error) {
+            return { result: null, error: `Browser WhatsApp send failed: ${error instanceof Error ? error.message : String(error)}` }
+          }
+        }
+        return {
+          result: null,
+          error: toolName === 'whatsapp_send_media'
+            ? 'Browser WhatsApp media tools require the authenticated attachment route; native file-path tool calls are unavailable.'
+            : 'Browser WhatsApp admin escalation is daemon-owned and is not exposed as a generic tool call.',
+        }
+      }
+
       logMcpRenderer("info", "Executing whatsapp tool via direct IPC fallback", { tool: toolName });
       try {
         const targetJid = safeArgs?.to as string | undefined;

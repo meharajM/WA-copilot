@@ -18,6 +18,9 @@ function fakeBaileys() {
         module.lastMessage = { jid, payload }
         return { key: { id: `sent-${jid}-${payload.text || payload.fileName || payload.image?.length || 'media' }` }, message: payload }
       }
+      socket.sendPresenceUpdate = async (state, jid) => {
+        module.lastPresence = { state, jid }
+      }
       socket.end = () => {}
       socket.logout = async () => {}
       module.socket = socket
@@ -58,6 +61,9 @@ test('agentd Baileys worker exposes bounded QR/state, text inbound, dedupe, and 
   assert.equal(service.getState().workerNumber, '919999999999')
   const sent = await service.sendText('+919888888888', 'Hello')
   assert.match(sent.providerMessageId, /^sent-919888888888@s\.whatsapp\.net-Hello$/)
+  assert.deepEqual(await service.sendPresence('+919888888888', 'composing'), { success: true })
+  assert.deepEqual(baileys.lastPresence, { state: 'composing', jid: '919888888888@s.whatsapp.net' })
+  await assert.rejects(() => service.sendPresence('+919888888888', 'invalid'), /Invalid WhatsApp presence state/)
   const media = await service.sendMedia('+919888888888', Buffer.from('png-bytes'), {
     type: 'image', fileName: 'receipt.png', mimeType: 'image/png', caption: 'Receipt',
   })
@@ -127,6 +133,7 @@ test('agentd browser WhatsApp routes use the daemon Baileys worker for connectio
     async disconnect(value) { calls.push(['disconnect', value]); return this.getState() },
     async setTargetPhoneNumber(value) { calls.push(['target', value]); return { success: true, handshakeCode: '123456' } },
     async sendText(to, text) { calls.push(['send', to, text]); return { providerMessageId: 'baileys-message-1' } },
+    async sendPresence(to, state) { calls.push(['presence', to, state]); return { success: true } },
     async sendMedia(to, bytes, media) { calls.push(['media', to, bytes.toString(), media.type, media.fileName]); return { providerMessageId: 'baileys-media-1' } },
   }
   const server = new AgentdServer({ dataDir, secret: 'w'.repeat(32), whatsappService: fakeService, logger: { log() {} } })
@@ -159,6 +166,10 @@ test('agentd browser WhatsApp routes use the daemon Baileys worker for connectio
     assert.equal((await request(origin, 'PUT', '/api/v1/settings/whatsapp', settings, auth)).status, 200)
     const sent = await request(origin, 'POST', '/api/v1/whatsapp/messages', { to: '+919888888888', text: 'Hello' }, auth)
     assert.deepEqual(sent.body, { success: true, providerMessageId: 'baileys-message-1' })
+    const presence = await request(origin, 'POST', '/api/v1/whatsapp/presence', { to: '+919888888888', state: 'composing' }, auth)
+    assert.deepEqual(presence.body, { success: true })
+    assert.deepEqual(calls.find(call => call[0] === 'presence'), ['presence', '+919888888888', 'composing'])
+    assert.equal((await request(origin, 'POST', '/api/v1/whatsapp/presence', { to: '+919888888888', state: 'invalid' }, auth)).status, 400)
     const media = await request(origin, 'POST', '/api/v1/whatsapp/media', {
       to: '+919888888888', type: 'image', fileName: 'receipt.png', mimeType: 'image/png', size: 3, dataBase64: 'AQID', caption: 'Receipt',
     }, auth)
@@ -217,6 +228,7 @@ test('agentd browser WhatsApp routes use the daemon Baileys worker for connectio
       ['connect', undefined],
       ['target', '+919888888888'],
       ['send', '+919888888888', 'Hello'],
+      ['presence', '+919888888888', 'composing'],
       ['media', '+919888888888', '\u0001\u0002\u0003', 'image', 'receipt.png'],
     ])
   } finally {
@@ -260,6 +272,63 @@ test('approved browser WhatsApp drafts use the selected Baileys outbox transport
     const duplicate = await request(origin, 'POST', `/api/v1/whatsapp/drafts/${draft.id}/send`, {}, auth)
     assert.equal(duplicate.body.duplicate, true)
     assert.deepEqual(calls, [['919888888888', 'approved local reply']])
+  } finally {
+    await server.stop()
+    fs.rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('agentd Baileys provider ingress is dropped unless a WhatsApp mode is enabled', async () => {
+  const dataDir = makeTempDir('aica-agentd-whatsapp-ingress-gate-')
+  const server = new AgentdServer({ dataDir, secret: 'g'.repeat(32), logger: { log() {}, warn() {} } })
+  const message = (providerEventId, content = 'Inbound') => ({
+    providerEventId,
+    conversationId: '919888888888@s.whatsapp.net',
+    from: '919888888888',
+    to: '919999999999',
+    content,
+    type: 'text',
+    timestamp: Date.now(),
+    isFromMe: false,
+  })
+  const countInbound = () => server.db.prepare("SELECT COUNT(*) AS count FROM inbound_events WHERE channel = 'whatsapp'").get().count
+  try {
+    await server.start()
+    await server.whatsappBaileys.onMessage(message('baileys:off'))
+    assert.equal(countInbound(), 0)
+
+    server.setState('whatsapp_ui_settings', JSON.stringify({ whatsappEnabled: false, businessBotMode: true, targetPhoneNumber: null }))
+    await server.whatsappBaileys.onMessage(message('baileys:auto'))
+    assert.equal(countInbound(), 1)
+
+    server.setState('whatsapp_ui_settings', JSON.stringify({ whatsappEnabled: false, businessBotMode: false, targetPhoneNumber: null }))
+    await server.whatsappBaileys.onMessage(message('baileys:disabled'))
+    assert.equal(countInbound(), 1)
+
+    server.setState('whatsapp_ui_settings', JSON.stringify({ whatsappEnabled: true, businessBotMode: false, targetPhoneNumber: null }))
+    server.setState('whatsapp_settings', JSON.stringify({ whatsapp_transport: 'cloud', whatsapp_cloud_phone_number_id: '', whatsapp_cloud_api_version: 'v23.0' }))
+    await server.whatsappBaileys.onMessage(message('baileys:wrong-transport'))
+    assert.equal(countInbound(), 1)
+  } finally {
+    await server.stop()
+    fs.rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('agentd Cloud relay ingress is dropped unless a WhatsApp mode is enabled', async () => {
+  const dataDir = makeTempDir('aica-agentd-whatsapp-cloud-ingress-gate-')
+  const server = new AgentdServer({ dataDir, secret: 'r'.repeat(32), logger: { log() {}, warn() {} } })
+  const payload = JSON.stringify({ entry: [{ changes: [{ value: { messages: [{ id: 'cloud-1', from: '919888888888', type: 'text', text: { body: 'Inbound' } }] } }] }] })
+  const countInbound = () => server.db.prepare("SELECT COUNT(*) AS count FROM inbound_events WHERE channel = 'whatsapp'").get().count
+  try {
+    await server.start()
+    server.setState('whatsapp_settings', JSON.stringify({ whatsapp_transport: 'cloud', whatsapp_cloud_phone_number_id: '1234567890', whatsapp_cloud_api_version: 'v23.0' }))
+    server.ingestRelayEvent({ id: 1, provider: 'whatsapp-cloud', body: Buffer.from(payload) })
+    assert.equal(countInbound(), 0)
+
+    server.setState('whatsapp_ui_settings', JSON.stringify({ whatsappEnabled: true, businessBotMode: false, targetPhoneNumber: null }))
+    server.ingestRelayEvent({ id: 2, provider: 'whatsapp-cloud', body: Buffer.from(payload.replace('cloud-1', 'cloud-2')) })
+    assert.equal(countInbound(), 1)
   } finally {
     await server.stop()
     fs.rmSync(dataDir, { recursive: true, force: true })

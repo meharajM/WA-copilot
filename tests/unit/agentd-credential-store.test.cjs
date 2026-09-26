@@ -19,6 +19,8 @@ test('keyring adapter sends secret values only over stdin and supports allowlist
     assert.equal(isAllowedCredentialKey('gmail_oauth_refresh_token'), true)
     assert.equal(isPublicCredentialKey('gmail_oauth_refresh_token'), false)
     assert.equal(isPublicCredentialKey('user_demo_gmail_oauth_refresh_token'), false)
+    assert.equal(isAllowedCredentialKey('relay_agent_secret'), true)
+    assert.equal(isPublicCredentialKey('relay_agent_secret'), false)
     assert.equal(isAllowedCredentialKey('arbitrary'), false)
     assert.equal(await store.exists('openai_api_key'), false)
     await store.set('openai_api_key', 'secret-not-in-args')

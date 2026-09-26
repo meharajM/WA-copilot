@@ -3,9 +3,18 @@ import { useChatStore } from '../../stores/chatStore'
 import { Users, Search, MessageCircle, Phone, Clock, Filter, ChevronRight, Mail, Hash, MessageSquare } from 'lucide-react'
 import { clsx } from 'clsx'
 
-export function LeadDirectory() {
+interface LeadDirectoryProps {
+    onOpenChat?: () => void
+}
+
+export function LeadDirectory({ onOpenChat }: LeadDirectoryProps) {
     const { sessions, setActiveSession } = useChatStore()
     const [search, setSearch] = useState('')
+
+    const openLead = (id: string) => {
+        setActiveSession(id)
+        onOpenChat?.()
+    }
 
     // Only show sessions linked to an omnichannel contact
     const leads = sessions.filter(s => !!s.contact_id || !!s.whatsapp_jid)
@@ -85,7 +94,15 @@ export function LeadDirectory() {
                             {filteredLeads.map((lead) => (
                                 <tr 
                                     key={lead.id}
-                                    onClick={() => setActiveSession(lead.id)}
+                                    onClick={() => openLead(lead.id)}
+                                    onKeyDown={(event) => {
+                                        if (event.key === 'Enter' || event.key === ' ') {
+                                            event.preventDefault()
+                                            openLead(lead.id)
+                                        }
+                                    }}
+                                    role="button"
+                                    tabIndex={0}
                                     className="group border-b border-white/5 hover:bg-white/[0.02] cursor-pointer transition-colors"
                                 >
                                     <td className="px-8 py-4">

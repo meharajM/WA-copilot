@@ -827,6 +827,10 @@ enum CredentialKey {
     Openai,
     Gemini,
     Openrouter,
+    EmailMcpPassword,
+    EmailImapPassword,
+    EmailSmtpPassword,
+    GmailOauthClientId,
     WhatsAppCloudAccessToken,
     WhatsAppCloudAppSecret,
     WhatsAppCloudVerifyToken,
@@ -838,6 +842,10 @@ impl CredentialKey {
             "openai_api_key" => Ok(Self::Openai),
             "gemini_api_key" => Ok(Self::Gemini),
             "openrouter_api_key" => Ok(Self::Openrouter),
+            "email_mcp_password" => Ok(Self::EmailMcpPassword),
+            "email_imap_password" => Ok(Self::EmailImapPassword),
+            "email_smtp_password" => Ok(Self::EmailSmtpPassword),
+            "gmail_oauth_client_id" => Ok(Self::GmailOauthClientId),
             "whatsapp_cloud_access_token" => Ok(Self::WhatsAppCloudAccessToken),
             "whatsapp_cloud_app_secret" => Ok(Self::WhatsAppCloudAppSecret),
             "whatsapp_cloud_verify_token" => Ok(Self::WhatsAppCloudVerifyToken),
@@ -850,6 +858,10 @@ impl CredentialKey {
             Self::Openai => "openai_api_key",
             Self::Gemini => "gemini_api_key",
             Self::Openrouter => "openrouter_api_key",
+            Self::EmailMcpPassword => "email_mcp_password",
+            Self::EmailImapPassword => "email_imap_password",
+            Self::EmailSmtpPassword => "email_smtp_password",
+            Self::GmailOauthClientId => "gmail_oauth_client_id",
             Self::WhatsAppCloudAccessToken => "whatsapp_cloud_access_token",
             Self::WhatsAppCloudAppSecret => "whatsapp_cloud_app_secret",
             Self::WhatsAppCloudVerifyToken => "whatsapp_cloud_verify_token",
@@ -1765,8 +1777,13 @@ mod tests {
         assert!(CredentialKey::parse("whatsapp_cloud_access_token").is_ok());
         assert!(CredentialKey::parse("whatsapp_cloud_app_secret").is_ok());
         assert!(CredentialKey::parse("whatsapp_cloud_verify_token").is_ok());
-        for later_slice_key in ["email_imap_password", "gmail_oauth_client_id"] {
-            assert!(CredentialKey::parse(later_slice_key).is_err());
+        for supported_key in [
+            "email_mcp_password",
+            "email_imap_password",
+            "email_smtp_password",
+            "gmail_oauth_client_id",
+        ] {
+            assert!(CredentialKey::parse(supported_key).is_ok());
         }
         assert!(CredentialKey::parse("arbitrary").is_err());
         assert!(Provider::parse("custom").is_err());

@@ -6,9 +6,11 @@ const test = require('node:test')
 const root = path.resolve(__dirname, '../..')
 const config = JSON.parse(fs.readFileSync(path.join(root, 'src-tauri/tauri.conf.json'), 'utf8'))
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
+const cargoToml = fs.readFileSync(path.join(root, 'src-tauri/Cargo.toml'), 'utf8')
 const rust = fs.readFileSync(path.join(root, 'src-tauri/src/main.rs'), 'utf8')
 const agentdApi = fs.readFileSync(path.join(root, 'src-tauri/src/agentd_api.rs'), 'utf8')
 const runner = fs.readFileSync(path.join(root, 'scripts/tauri-agentd-runner.cjs'), 'utf8')
+const windowsInstallSmoke = fs.readFileSync(path.join(root, 'scripts/windows-install-smoke.ps1'), 'utf8')
 const windowsWorkflow = fs.readFileSync(path.join(root, '.github/workflows/tauri-windows.yml'), 'utf8')
 
 test('Tauri package declares fixed agentd runtime, entrypoint, and keyring helper resources', () => {
@@ -31,9 +33,27 @@ test('Tauri package declares fixed agentd runtime, entrypoint, and keyring helpe
   assert.match(agentdApi, /let source_for_agentd = source_path\.to_path_buf\(\)/)
 })
 
+test('native package versions match the browser package version for upgrade semantics', () => {
+  assert.equal(config.version, packageJson.version)
+  assert.match(cargoToml, new RegExp(`^version = "${packageJson.version.replaceAll('.', '\\.') }"$`, 'm'))
+})
+
+test('packaged companion exposes safe Windows service enrollment actions', () => {
+  assert.match(rust, /--register-service/)
+  assert.match(rust, /--unregister-service/)
+  assert.match(rust, /--service-status/)
+  assert.match(rust, /Explicit service actions must not start agentd or open the UI/)
+  assert.match(windowsInstallSmoke, /--register-service/)
+  assert.match(windowsInstallSmoke, /--unregister-service/)
+  assert.match(windowsInstallSmoke, /Refusing to overwrite pre-existing Task Scheduler entry/)
+  assert.match(windowsInstallSmoke, /--background/)
+  assert.match(windowsInstallSmoke, /\/Query \/TN \$TaskName \/FO LIST 2>\$null/)
+  assert.doesNotMatch(windowsInstallSmoke, /\/FO LIST \/NH/)
+  assert.match(windowsInstallSmoke, /exit 0/)
+})
+
 test('Tauri dev stages sidecars before Cargo watch starts', () => {
   assert.match(packageJson.scripts['dev:tauri'], /prepare:agentd:keyring-helper.*prepare:agentd:migration-reader.*prepare:tauri:agentd.*tauri dev/)
-  assert.doesNotMatch(config.build.beforeDevCommand, /prepare:agentd|prepare:tauri:agentd/)
   assert.equal(config.build.beforeDevCommand, 'npm run dev:tauri:web')
   assert.match(config.build.beforeBuildCommand, /prepare:agentd:keyring-helper.*prepare:agentd:migration-reader.*prepare:tauri:agentd/)
 })
@@ -43,11 +63,15 @@ test('Windows sidecar preparation preserves executable extensions', () => {
   assert.match(preparation, /gmail-oauth\.cjs/)
   assert.match(preparation, /gmail-api\.cjs/)
   assert.match(preparation, /whatsapp-baileys\.cjs/)
+  assert.match(preparation, /whatsapp-extension-bridge\.cjs/)
   assert.match(preparation, /continuity-migration\.cjs/)
   assert.match(preparation, /email-mime\.cjs/)
+  assert.match(preparation, /email-attachment-safety\.cjs/)
   assert.match(preparation, /email-transport\.cjs/)
   assert.match(preparation, /email-inbound-worker\.cjs/)
   assert.match(preparation, /mcp-worker\.cjs/)
+  assert.match(preparation, /speech-model\.cjs/)
+  assert.match(preparation, /public-relay-client\.cjs/)
   assert.match(preparation, /@whiskeysockets\/baileys/)
   assert.match(preparation, /@modelcontextprotocol\/sdk/)
   assert.match(preparation, /optionalDependencies/)
@@ -73,6 +97,8 @@ test('packaged runner owns agentd startup and does not accept renderer-selected 
   assert.match(runner, /process\.env\.AICA_AGENTD_DATA_DIR/)
   assert.match(runner, /process\.env\.AICA_AGENTD_KEYRING_HELPER/)
   assert.match(runner, /process\.env\.AICA_AGENTD_UI_ROOT/)
+  assert.match(runner, /PublicRelayClient/)
+  assert.match(runner, /relay_agent_secret/)
   assert.doesNotMatch(runner, /process\.argv\.slice/)
 })
 
@@ -103,6 +129,17 @@ test('Windows CI verifies prepared sidecar and browser resources before packagin
   assert.ok(migrationReader < resourceGate, 'migration reader must be prepared before resource verification')
   assert.ok(sidecar < resourceGate, 'agentd sidecar must be prepared before resource verification')
   assert.ok(resourceGate < bundle, 'resource verification must run before packaging')
+})
+
+test('Windows CI verifies installer artifacts before upload', () => {
+  const bundle = windowsWorkflow.indexOf('npm run build:tauri:win')
+  const artifactGate = windowsWorkflow.indexOf('node scripts/verify-tauri-windows-bundle.mjs')
+  const upload = windowsWorkflow.indexOf('Upload unsigned Windows artifacts')
+  assert.notEqual(bundle, -1)
+  assert.notEqual(artifactGate, -1)
+  assert.notEqual(upload, -1)
+  assert.ok(bundle < artifactGate, 'installer artifacts must exist before verification')
+  assert.ok(artifactGate < upload, 'installer artifacts must pass verification before upload')
 })
 
 test('Windows CI runs Credential Manager runtime smoke after preparing the helper', () => {

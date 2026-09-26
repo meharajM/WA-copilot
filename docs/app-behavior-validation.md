@@ -1,6 +1,6 @@
 # App Behavior Validation
 
-Last updated: 2026-09-20
+Last updated: 2026-09-22
 
 ## Purpose
 
@@ -20,11 +20,17 @@ It should be treated as a shared contract for both testers and developers.
 
 The 2026-09-18 audit found and corrected browser Email drift: the contract now distinguishes daemon mailbox ingestion from browser review-session hydration, explicitly excludes automatic browser replies, and documents the transport-specific credential slots plus the legacy fallback.
 
-The follow-up runtime-boundary audit also corrected the launch contract: Edge/Chrome has an explicit agentd readiness/pairing state machine, while the Electron dependency modal is no longer described as a browser startup requirement. Gemini is covered by the browser agentd provider slice, and explicit on-device/WebGPU execution is now available in the browser without changing the Tauri native-only boundary. WhatsApp browser UI state now lives in authenticated agentd settings with a one-time legacy renderer migration; the autonomous flag is never persisted or restored, and browser ingress remains gated only by Response Permission. Windows native diagnostics now includes an owner-triggered, least-privilege per-user sign-in service registration with bounded failure restart settings; installer enrollment and packaged Windows evidence remain release gates.
+The follow-up runtime-boundary audit also corrected the launch contract: Edge/Chrome has an explicit agentd readiness/pairing state machine, while the Electron dependency modal is no longer described as a browser startup requirement. Gemini is covered by the browser agentd provider slice, and explicit on-device/WebGPU execution is now available in the browser without changing the Tauri native-only boundary. WhatsApp browser UI state now lives in authenticated agentd settings with a one-time legacy renderer migration; the autonomous flag is never persisted or restored, and browser ingress remains gated only by Response Permission. Windows native diagnostics now includes an owner-triggered, least-privilege per-user sign-in service registration with bounded failure restart settings. Windows package run [35528078107](https://github.com/meharajM/WA-copilot/actions/runs/35528078107) and full PR gate [35528078104](https://github.com/meharajM/WA-copilot/actions/runs/35528078104) passed staged resource verification, migration-reader reparse smoke, packaged Credential Manager round-trip smoke, native Rust host tests, Task Scheduler registration, and installer verification; signing, install/upgrade, and full parity evidence remain release gates.
 
 The 2026-09-20 WhatsApp follow-up audit moved inactivity resolution into agentd. Durable active sessions are swept every minute after ten minutes of silence; review mode creates one deterministic draft, Autonomous Bot Mode uses the existing approved outbox, and customer-last silence is logged once. Browser-side timers are disabled, so tab closure/reload cannot drop or duplicate follow-ups.
 
 The older support-doc drift identified by the first audit is now corrected in the checked-in HTML manuals, email progress note, and architecture overview. The code-first follow-up also corrected `docs/tester_flow.html`, which had incorrectly presented the legacy Electron flow, PDF ingestion, and Browser MCP/Playwright as browser capabilities. The browser MCP boundary is now a supervised agentd worker for approved external servers; internal/native command definitions remain fail-closed. Browser PDF/Office/document ingestion now uses the same supervised agentd boundary with bounded conversion output and explicit failure states. The native companion now supervises and restarts a child daemon that it started, while still preserving the independent daemon lifetime. Explicit Windows per-user service registration is implemented; installer enrollment, recovery after intentional user quit, and Windows release evidence remain implementation gates, not competing product-contract descriptions.
+
+The 2026-09-21 browser-storage hardening removed the last generic `electron.store` renderer-local fallback. Electron continues delegating to its native store; Edge/Chrome calls now return defaults or fail closed with an explicit agentd-owned-storage error, while product settings remain persisted through authenticated agentd routes. Focused boundary tests, 350 unit tests, renderer typecheck, and browser pairing/reload E2E passed after this change. The current release gate also runs the dedicated agentd speech-model suite, which covers streaming cache writes and integrity/size/allowlist failures. The Windows resource-gate fixture now includes the packaged `speech-model.cjs` sidecar required by that browser capability.
+
+The prior branch head `a1d42686` passed Windows full workflow [35638480401](https://github.com/meharajM/WA-copilot/actions/runs/35638480401) and package workflow [35638480307](https://github.com/meharajM/WA-copilot/actions/runs/35638480307). The current code head `b370a6d5` also passed the local release gate; its hosted Windows evidence is being rerun against the docs-tip `04955355` as package workflow [35651574371](https://github.com/meharajM/WA-copilot/actions/runs/35651574371) and full workflow [35651577850](https://github.com/meharajM/WA-copilot/actions/runs/35651577850). The artifacts remain unsigned; signing, real-profile continuity, hardware resource evidence and live provider/Web validation remain release gates.
+
+The 2026-09-21 real-user autonomy pass found and fixed two browser gaps. Approved-template controls were present in the shared panel but had no browser registry/send authority; authenticated agentd registry, Cloud template payloads, service-window/stale-inbound/utility-template gates, and durable idempotent outbox dispatch now back those controls. The same pass found that a rejected template send surfaced as an unhandled browser page error with no operator feedback; the panel now catches the rejection and renders a status message. A disposable Playwright flow paired the browser, opened Settings → Autonomous Supervisor, loaded an approved draft/template selector, clicked Send template with non-Cloud transport, showed the visible failure message, and produced no page errors. A DELETE-body socket-reset regression was also reproduced and fixed by consuming revoke requests before the next browser request.
 
 ## Validation Scope
 
@@ -69,6 +75,7 @@ The older support-doc drift identified by the first audit is now corrected in th
 - `npm run build`
 - `npm run lint` (0 errors; existing warnings only)
 - `node --test tests/unit/*.test.cjs` (103 passed, 2 Windows-only skips)
+- `node --test tests/unit/windows-keyring-runtime.test.cjs tests/unit/windows-migration-reader-runtime.test.cjs` on the Windows package runner (Credential Manager and reparse smokes passed)
 - `npm run typecheck:renderer`
 - `npm run build:tauri:web -- --emptyOutDir`
 - `cargo test --manifest-path src-tauri/Cargo.toml --locked` (19 passed)
@@ -77,6 +84,9 @@ The older support-doc drift identified by the first audit is now corrected in th
 - `npx vitest run tests/unit/whatsapp-browser-persistence.test.ts`
 - `node --test tests/unit/agentd-knowledge.test.cjs`
 - `node --test tests/unit/agentd.test.cjs tests/unit/agentd-chat-generations.test.cjs tests/unit/agentd-settings-persona.test.cjs`
+- `node --test tests/unit/agentd-whatsapp-drafts.test.cjs` (11 passed, including browser approved-template registry/send and revoke-request sequencing)
+- `npx vitest run tests/unit/browser-agentd-client.test.ts tests/unit/tauri-ui-boundary.test.ts` (focused browser client/UI boundary checks)
+- `npm run test:e2e:browser` (browser pairing/workspace/reload smoke)
 - `cargo test --manifest-path src-tauri/Cargo.toml --locked` also covers the native supervisor build and descriptor ownership guards; the supervisor restart loop is conservative and target-specific Windows runtime behavior still requires the Windows runner.
 - On Windows, the same Rust test binary additionally registers, queries, and removes a disposable current-user Task Scheduler definition; macOS/Linux runs validate XML escaping and the fixed native command boundary without claiming Windows runtime behavior.
 
@@ -487,3 +497,32 @@ The following docs were updated after this validation:
 - [docs/tester_install.html](/Users/meharaj/WA-copilot/docs/tester_install.html)
 - [docs/email-channel-progress.md](/Users/meharaj/WA-copilot/docs/email-channel-progress.md)
 - [architecture.md](/Users/meharaj/WA-copilot/architecture.md)
+
+## Browser workspace QA — 2026-09-21
+
+Runtime: local `agentd` against the built `dist/tauri.html`, opened in the
+browser workspace at a loopback URL. The first attempt used a reused daemon
+whose six-digit pairing code had expired; restarting an isolated daemon with a
+fresh code passed the same flow.
+
+Steps and observed results:
+
+1. Opened the unpaired workspace. The page showed **Pair this browser**, a
+   six-digit input, and a disabled **Pair browser** action until input was
+   valid.
+2. Entered the fresh owner code and paired. The browser mounted the product
+   dashboard, showed the local agentd status, and did not emit console errors.
+3. Opened the command palette with `Ctrl/Command+K`, selected **Settings**,
+   and verified the WhatsApp, Email, MCP, model, Knowledge Base, Web
+   Automation, Appearance, Audit Logs, and System Info sections.
+4. Confirmed browser-safe copy for Email, MCP, audit storage, memory, and
+   native dependency boundaries; no credential value or native path appeared.
+5. Navigated to Conversations, toggled the sidebar shortcut, and confirmed the
+   chat input, workspace/file picker, voice control, and send gate were visible.
+6. Checked the browser console after navigation; no warnings or errors were
+   reported.
+
+Result: startup, pairing, authenticated workspace mount, settings navigation,
+browser-only capability boundaries, and console cleanliness passed. Live
+provider sends, real Windows Credential Manager interaction, real microphone/model
+hardware behavior, and real-user profile continuity remain separate release gates.

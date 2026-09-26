@@ -51,12 +51,12 @@ const browserAutonomyState = async () => {
         responsePermission: whatsappState.whatsappEnabled,
         paused: status.paused !== false,
         emergencyPaused: false,
-        recoveryMode: false,
-        status: status.paused === false ? 'running' : 'paused',
+        recoveryMode: status.recoveryMode === true,
+        status: status.recoveryMode === true ? 'degraded' : status.paused === false ? 'running' : 'paused',
         queueDepth: status.queueDepth || 0,
         activeJob: null,
         lastProcessedMessage: null,
-        lastError: null,
+        lastError: status.recoveryMode === true ? status.recoveryReason || 'Recovery hold active' : null,
         escalations: 0,
         lastDeliveryStatus: null,
         lastProviderMessageId: null,
@@ -80,10 +80,33 @@ const browserAutonomyHealth = async () => {
         executionLocation: 'agentd',
         transport: 'authenticated loopback HTTP',
         channel: { status: 'agentd-outbox', error: null },
+        extension: status.extension,
         queues: { whatsapp: status.queueDepth || 0, email: 0, meta: 0 },
         leaseHeld: true,
         memory: { status: memoryBackend ? 'bounded' : 'unavailable', backend: memoryBackend },
         rag: { status: 'bounded-text', documents: knowledgeDocuments },
+    }
+}
+
+/**
+ * Browser Web transport is owned by the user's existing browser plus the
+ * authenticated agentd loopback bridge. Keep the legacy Electron connector
+ * state shape, but source browser status from the daemon so the UI never
+ * reports a misleading disconnected placeholder.
+ */
+const browserWhatsAppWebState = async () => {
+    try {
+        const extension = (await getBrowserAgentdClient().status()).extension
+        if (!extension) return { status: 'disconnected', error: 'agentd did not report the browser bridge' }
+        return {
+            status: extension.status,
+            error: extension.error,
+            lastStatus: extension.lastStatus,
+            port: extension.port,
+            profile: 'Manifest V3 extension on the user browser',
+        }
+    } catch (error) {
+        return { status: 'disconnected', error: error instanceof Error ? error.message : 'agentd unavailable' }
     }
 }
 
@@ -103,6 +126,18 @@ export const electron = {
         getVersion: async (): Promise<string> => {
             if (isElectron() && window.electron?.app) {
                 return await window.electron.app.getVersion()
+            }
+            if (isBrowserProduct()) {
+                try {
+                    // The browser shell has no package metadata API. Read the
+                    // version from the authenticated daemon so About/system
+                    // surfaces do not silently advertise a stale hardcoded
+                    // renderer fallback.
+                    return (await getBrowserAgentdClient().getSystemInfo()).productVersion
+                } catch {
+                    // Pairing/startup may not be ready yet; preserve the
+                    // existing neutral fallback until agentd is reachable.
+                }
             }
             return '0.1.0' // Fallback to package.json version
         },
@@ -139,12 +174,33 @@ export const electron = {
             if (isElectron() && window.electron?.mcp) {
                 return await window.electron.mcp.connect(serverConfig)
             }
+            if (isBrowserProduct()) {
+                if (!serverConfig || typeof serverConfig !== 'object' || Array.isArray(serverConfig)) {
+                    return { success: false, error: 'Invalid MCP server configuration' }
+                }
+                const serverId = (serverConfig as { id?: unknown }).id
+                if (typeof serverId !== 'string') return { success: false, error: 'Invalid MCP server ID' }
+                try {
+                    const server = await getBrowserAgentdClient().connectMcpServer(serverId)
+                    return { success: true, server }
+                } catch (error) {
+                    return { success: false, error: error instanceof Error ? error.message : String(error) }
+                }
+            }
             return { success: false, error: 'MCP server management is not available in browser mode' }
         },
 
         disconnect: async (serverId: string) => {
             if (isElectron() && window.electron?.mcp) {
                 return await window.electron.mcp.disconnect(serverId)
+            }
+            if (isBrowserProduct()) {
+                try {
+                    const server = await getBrowserAgentdClient().disconnectMcpServer(serverId)
+                    return { success: true, server }
+                } catch (error) {
+                    return { success: false, error: error instanceof Error ? error.message : String(error) }
+                }
             }
             return { success: false, error: 'MCP server management is not available in browser mode' }
         },
@@ -153,6 +209,14 @@ export const electron = {
             if (isElectron() && window.electron?.mcp) {
                 return await window.electron.mcp.listTools(serverId)
             }
+            if (isBrowserProduct()) {
+                try {
+                    const result = await getBrowserAgentdClient().listMcpTools(serverId)
+                    return { success: true, server: result.server, tools: result.tools }
+                } catch (error) {
+                    return { success: false, error: error instanceof Error ? error.message : String(error), tools: [] }
+                }
+            }
             return { success: false, error: 'MCP server management is not available in browser mode', tools: [] }
         },
 
@@ -160,30 +224,39 @@ export const electron = {
             if (isElectron() && window.electron?.mcp) {
                 return await window.electron.mcp.callTool(serverId, toolName, args, requestId)
             }
+            if (isBrowserProduct()) {
+                try {
+                    const boundedArgs = args && typeof args === 'object' && !Array.isArray(args) ? args as Record<string, unknown> : {}
+                    return await getBrowserAgentdClient().callMcpTool(serverId, toolName, boundedArgs, requestId)
+                } catch (error) {
+                    return { result: null, error: error instanceof Error ? error.message : String(error), ...(requestId ? { requestId } : {}) }
+                }
+            }
             return { success: false, error: 'MCP tool execution is not available in browser mode', result: null }
         },
         cancelTool: async (requestId: string) => {
             if (isElectron() && window.electron?.mcp) return await window.electron.mcp.cancelTool(requestId)
+            if (isBrowserProduct()) {
+                try {
+                    return { success: await getBrowserAgentdClient().cancelMcpTool(requestId) }
+                } catch (error) {
+                    return { success: false, error: error instanceof Error ? error.message : String(error) }
+                }
+            }
             return { success: false, error: 'Not supported in browser mode' }
         },
     },
 
-    // Storage with localStorage fallback
+    // Electron-only storage. Browser product preferences belong to the
+    // authenticated agentd settings routes; never silently create a second
+    // renderer-local authority when a legacy caller misses its browser branch.
     store: {
         get: async <T>(key: string, defaultValue?: T): Promise<T | undefined> => {
             if (isElectron() && window.electron?.store) {
                 const value = await window.electron.store.get(key)
                 return (value as T) ?? defaultValue
             }
-            // Browser fallback to localStorage
-            const stored = localStorage.getItem(key)
-            if (stored) {
-                try {
-                    return JSON.parse(stored) as T
-                } catch {
-                    return stored as unknown as T
-                }
-            }
+            if (isBrowserProduct()) return defaultValue
             return defaultValue
         },
 
@@ -191,17 +264,16 @@ export const electron = {
             if (isElectron() && window.electron?.store) {
                 return await window.electron.store.set(key, value)
             }
-            // Browser fallback
-            localStorage.setItem(key, JSON.stringify(value))
-            return true
+            if (isBrowserProduct()) throw new Error('Browser product storage is owned by authenticated agentd')
+            return false
         },
 
         delete: async (key: string): Promise<boolean> => {
             if (isElectron() && window.electron?.store) {
                 return await window.electron.store.delete(key)
             }
-            localStorage.removeItem(key)
-            return true
+            if (isBrowserProduct()) throw new Error('Browser product storage is owned by authenticated agentd')
+            return false
         },
     },
 
@@ -497,6 +569,9 @@ export const electron = {
             if (isElectron() && window.electron?.whatsapp) {
                 return window.electron.whatsapp.sendPresence(to, state)
             }
+            if (isBrowserProduct() && ['unavailable', 'available', 'composing', 'recording', 'paused'].includes(state)) {
+                return getBrowserAgentdClient().sendWhatsAppPresence(to, state as 'unavailable' | 'available' | 'composing' | 'recording' | 'paused')
+            }
             console.warn('[Browser] WhatsApp sendPresence not supported')
             return { success: false, error: 'Not supported in browser mode' }
         },
@@ -535,7 +610,11 @@ export const electron = {
             return { success: false, error: 'Not supported in browser mode' }
         },
         web: {
-            getState: async () => isElectron() && window.electron?.whatsapp?.web ? window.electron.whatsapp.web.getState() : { status: 'disconnected' },
+            getState: async () => {
+                if (isElectron() && window.electron?.whatsapp?.web) return window.electron.whatsapp.web.getState()
+                if (isBrowserProduct()) return browserWhatsAppWebState()
+                return { status: 'disconnected' }
+            },
             start: async () => isElectron() && window.electron?.whatsapp?.web ? window.electron.whatsapp.web.start() : { status: 'disconnected' },
             stop: async () => isElectron() && window.electron?.whatsapp?.web ? window.electron.whatsapp.web.stop() : { status: 'disconnected' },
             humanTakeover: async () => isElectron() && window.electron?.whatsapp?.web ? window.electron.whatsapp.web.humanTakeover() : { status: 'disconnected' },
@@ -561,12 +640,28 @@ export const electron = {
         stop: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.stop() : (isBrowserProduct() ? getBrowserAgentdClient().pauseAll().then(browserAutonomyState) : null),
         pause: async (emergency = false) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.pause(emergency) : (isBrowserProduct() ? getBrowserAgentdClient().pauseAll().then(browserAutonomyState) : null),
         resume: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.resume() : (isBrowserProduct() ? getBrowserAgentdClient().resumeAll().then(browserAutonomyState) : null),
-        enterRecoveryMode: async (reason?: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.enterRecoveryMode(reason) : null,
-        clearRecoveryMode: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.clearRecoveryMode() : null,
+        enterRecoveryMode: async (reason?: string) => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.enterRecoveryMode(reason)
+            if (isBrowserProduct()) return getBrowserAgentdClient().enterRecoveryMode(reason).then(browserAutonomyState)
+            return null
+        },
+        clearRecoveryMode: async () => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.clearRecoveryMode()
+            if (isBrowserProduct()) return getBrowserAgentdClient().clearRecoveryMode().then(browserAutonomyState)
+            return null
+        },
         stageBackup: async (backupPath: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.stageBackup(backupPath) : null,
         pruneRetention: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.pruneRetention() : null,
-        pauseConversation: async (jid: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.pauseConversation(jid) : null,
-        resumeConversation: async (jid: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.resumeConversation(jid) : null,
+        pauseConversation: async (jid: string) => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.pauseConversation(jid)
+            if (isBrowserProduct()) return getBrowserAgentdClient().pauseConversation(jid)
+            return null
+        },
+        resumeConversation: async (jid: string) => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.resumeConversation(jid)
+            if (isBrowserProduct()) return getBrowserAgentdClient().resumeConversation(jid)
+            return null
+        },
         retryDelivery: async (inboundId: string) => {
             if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.retryDelivery(inboundId)
             if (!isBrowserProduct()) return null
@@ -586,10 +681,47 @@ export const electron = {
             const draft = (await getBrowserAgentdClient().listDrafts(100)).find(item => item.providerEventId === inboundId)
             return draft ? getBrowserAgentdClient().cancelWhatsAppDraft(draft.id).then(() => browserAutonomyState()) : null
         },
-        listApprovedTemplates: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listApprovedTemplates() : [],
-        listTakeovers: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listTakeovers() : [],
-        listUnresolvedOutbound: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listUnresolvedOutbound() : [],
-        listDeliveryHistory: async (limit = 50) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listDeliveryHistory(limit) : [],
+        listApprovedTemplates: async () => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.listApprovedTemplates()
+            if (isBrowserProduct()) return getBrowserAgentdClient().listApprovedTemplates()
+            return []
+        },
+        listTakeovers: async () => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.listTakeovers()
+            if (isBrowserProduct()) return getBrowserAgentdClient().listAutonomyTakeovers()
+            return []
+        },
+        listUnresolvedOutbound: async () => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.listUnresolvedOutbound()
+            if (!isBrowserProduct()) return []
+            const drafts = await getBrowserAgentdClient().listDrafts(100)
+            return drafts.filter(draft => draft.sendStatus === 'pending' || draft.sendStatus === 'failed').map(draft => ({
+                inboundId: draft.providerEventId,
+                jid: draft.conversationId,
+                content: draft.responseText,
+                providerMessageId: draft.providerMessageId || null,
+                sentAt: draft.updatedAt,
+                status: draft.sendStatus || 'failed',
+                error: draft.sendError || null,
+            }))
+        },
+        listDeliveryHistory: async (limit = 50) => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.listDeliveryHistory(limit)
+            if (!isBrowserProduct()) return []
+            const boundedLimit = Math.min(Math.max(limit, 1), 100)
+            const [drafts, emailEvents] = await Promise.all([
+                getBrowserAgentdClient().listDrafts(boundedLimit),
+                getBrowserAgentdClient().listEmailDeliveryHistory(boundedLimit),
+            ])
+            const whatsappEvents = drafts.filter(draft => draft.sendStatus === 'sent' && draft.providerMessageId).map(draft => ({
+                providerMessageId: draft.providerMessageId as string,
+                channel: 'whatsapp',
+                status: 'sent',
+                eventAt: draft.updatedAt,
+                inboundId: draft.providerEventId,
+            }))
+            return [...whatsappEvents, ...emailEvents].sort((left, right) => right.eventAt - left.eventAt).slice(0, boundedLimit)
+        },
         listEmailAttachments: async (limit = 20) => {
             if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.listEmailAttachments(limit)
             if (isBrowserProduct()) return getBrowserAgentdClient().listEmailAttachments(limit)
@@ -597,20 +729,43 @@ export const electron = {
         },
         retrieveGmailAttachment: async (messageId: string, attachmentId: string, metadata?: { mimeType?: string; name?: string }) => {
             if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.retrieveGmailAttachment(messageId, attachmentId, metadata)
-            if (isBrowserProduct()) return getBrowserAgentdClient().retrieveGmailAttachment(messageId, attachmentId, metadata)
+            if (isBrowserProduct()) {
+                if (messageId.startsWith('imap:')) return getBrowserAgentdClient().getEmailInboundAttachment(messageId, attachmentId)
+                return getBrowserAgentdClient().retrieveGmailAttachment(messageId, attachmentId, metadata)
+            }
             return null
         },
-        listDecisionEvidence: async (limit = 50) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listDecisionEvidence(limit) : [],
-        reviewDecision: async (inboundId: string, label: string, notes = '') => isElectron() && window.electron?.autonomy ? window.electron.autonomy.reviewDecision(inboundId, label, notes) : null,
-        recordConversationOutcome: async (jid: string, revision: number, outcome: string, evidence: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.recordConversationOutcome(jid, revision, outcome, evidence) : null,
+        listDecisionEvidence: async (limit = 50) => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.listDecisionEvidence(limit)
+            if (isBrowserProduct()) return getBrowserAgentdClient().listDecisionEvidence(limit)
+            return []
+        },
+        reviewDecision: async (inboundId: string, label: string, notes = '') => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.reviewDecision(inboundId, label, notes)
+            if (isBrowserProduct()) return getBrowserAgentdClient().reviewDecision(inboundId, label as 'correct' | 'incorrect' | 'unnecessary_escalation' | 'missed_escalation', notes)
+            return null
+        },
+        recordConversationOutcome: async (jid: string, revision: number, outcome: string, evidence: string) => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.recordConversationOutcome(jid, revision, outcome, evidence)
+            if (isBrowserProduct()) return getBrowserAgentdClient().recordConversationOutcome(jid, revision, outcome as 'resolved_agent' | 'resolved_human' | 'escalated' | 'closed_unresolved' | 'open', evidence)
+            return null
+        },
         listDrafts: async () => {
             if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.listDrafts()
             if (!isBrowserProduct()) return []
             const drafts = await getBrowserAgentdClient().listDrafts(50)
             return drafts.filter(draft => draft.status === 'draft' || draft.status === 'approved').map(draft => ({ inboundId: draft.providerEventId, jid: draft.conversationId, content: draft.responseText, contentHash: '', expiresAt: draft.updatedAt + 7 * 24 * 60 * 60 * 1000, status: draft.status, providerMessageId: draft.providerMessageId, sendStatus: draft.sendStatus, sendError: draft.sendError }))
         },
-        usageHistory: async (days = 30) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.usageHistory(days) : [],
-        channelUsage: async (days = 1) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.channelUsage(days) : [],
+        usageHistory: async (days = 30) => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.usageHistory(days)
+            if (isBrowserProduct()) return getBrowserAgentdClient().getAutonomyUsageHistory(days)
+            return []
+        },
+        channelUsage: async (days = 1) => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.channelUsage(days)
+            if (isBrowserProduct()) return getBrowserAgentdClient().getAutonomyChannelUsage(days)
+            return []
+        },
         approveDraft: async (inboundId: string) => {
             if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.approveDraft(inboundId)
             if (!isBrowserProduct()) return null
@@ -623,12 +778,32 @@ export const electron = {
             const draft = (await getBrowserAgentdClient().listDrafts(100, 'approved')).find(item => item.providerEventId === inboundId)
             return draft ? getBrowserAgentdClient().sendWhatsAppDraft(draft.id).then(() => browserAutonomyState()) : null
         },
-        sendApprovedTemplate: async (inboundId: string, name: string, languageCode: string, parameters: string[] = []) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.sendApprovedTemplate(inboundId, name, languageCode, parameters) : null,
-        listNotifications: async () => isElectron() && window.electron?.autonomy ? window.electron.autonomy.listNotifications() : [],
-        ackNotification: async (id: number) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.ackNotification(id) : null,
+        sendApprovedTemplate: async (inboundId: string, name: string, languageCode: string, parameters: string[] = []) => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.sendApprovedTemplate(inboundId, name, languageCode, parameters)
+            if (isBrowserProduct()) return getBrowserAgentdClient().sendApprovedTemplate(inboundId, name, languageCode, parameters).then(() => browserAutonomyState())
+            return null
+        },
+        listNotifications: async () => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.listNotifications()
+            if (isBrowserProduct()) return getBrowserAgentdClient().listAutonomyNotifications()
+            return []
+        },
+        ackNotification: async (id: number) => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.ackNotification(id)
+            if (isBrowserProduct()) return getBrowserAgentdClient().ackAutonomyNotification(id)
+            return null
+        },
         onNotification: (callback: (data: unknown) => void) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.onNotification(callback) : () => {},
-        registerApprovedTemplate: async (name: string, languageCode: string, category: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.registerApprovedTemplate(name, languageCode, category) : null,
-        revokeApprovedTemplate: async (name: string, languageCode: string) => isElectron() && window.electron?.autonomy ? window.electron.autonomy.revokeApprovedTemplate(name, languageCode) : null,
+        registerApprovedTemplate: async (name: string, languageCode: string, category: string) => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.registerApprovedTemplate(name, languageCode, category)
+            if (isBrowserProduct()) return getBrowserAgentdClient().registerApprovedTemplate({ name, languageCode, category })
+            return null
+        },
+        revokeApprovedTemplate: async (name: string, languageCode: string) => {
+            if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.revokeApprovedTemplate(name, languageCode)
+            if (isBrowserProduct()) return getBrowserAgentdClient().revokeApprovedTemplate(name, languageCode)
+            return null
+        },
         setMode: async (mode: string, permission: boolean) => {
             if (isElectron() && window.electron?.autonomy) return window.electron.autonomy.setMode(mode, permission)
             if (!isBrowserProduct()) return null

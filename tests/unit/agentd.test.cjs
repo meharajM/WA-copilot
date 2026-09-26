@@ -122,6 +122,51 @@ test('agentd removes a stale lock left by a crashed owner', async () => {
   fs.rmSync(dataDir, { recursive: true, force: true })
 })
 
+test('agentd persists browser conversation takeovers and blocks only the paused conversation', async () => {
+  const dataDir = makeTempDir('aica-agentd-takeover-')
+  const server = new AgentdServer({ dataDir, secret: 't'.repeat(32), pairingCode: '246801', logger: { log() {} } })
+  const { origin } = await server.start()
+  const pair = await request(origin, 'POST', '/api/v1/pair', { code: '246801' }, { origin })
+  const auth = { origin, cookie: pair.headers['set-cookie'][0].split(';')[0] }
+  const session = { ...auth, 'x-csrf-token': pair.body.csrfToken }
+
+  const paused = await request(origin, 'POST', '/api/v1/autonomy/conversations/customer-1/pause', {}, session)
+  assert.equal(paused.status, 200)
+  assert.equal(paused.body.active, true)
+  assert.equal(paused.body.revision, 0)
+  assert.deepEqual((await request(origin, 'GET', '/api/v1/autonomy/takeovers', undefined, auth)).body.takeovers.map(item => item.jid), ['customer-1'])
+
+  const blocked = await request(origin, 'POST', '/api/v1/whatsapp/events', {
+    channel: 'whatsapp', providerEventId: 'takeover-event-1', conversationId: 'customer-1', payload: { text: 'while owner is handling this' }, draftText: 'must not be admitted',
+  }, session)
+  assert.deepEqual(blocked.body, { accepted: false, paused: true, duplicate: false })
+  const unrelated = await request(origin, 'POST', '/api/v1/whatsapp/events', {
+    channel: 'whatsapp', providerEventId: 'takeover-event-2', conversationId: 'customer-2', payload: { text: 'independent conversation' }, draftText: 'admitted',
+  }, session)
+  assert.equal(unrelated.status, 202)
+  assert.equal(unrelated.body.accepted, true)
+
+  const outcome = await request(origin, 'POST', '/api/v1/autonomy/conversations/customer-1/outcome', { revision: 0, outcome: 'resolved_human', evidence: 'Owner confirmed the issue is resolved.' }, session)
+  assert.deepEqual(outcome.body, { conversationId: 'customer-1', revision: 1, outcome: 'resolved_human', recordedAt: outcome.body.recordedAt })
+  assert.equal((await request(origin, 'POST', '/api/v1/autonomy/conversations/customer-1/outcome', { revision: 0, outcome: 'open', evidence: 'stale' }, session)).status, 409)
+  const resumed = await request(origin, 'POST', '/api/v1/autonomy/conversations/customer-1/resume', {}, session)
+  assert.equal(resumed.status, 200)
+  assert.equal(resumed.body.active, false)
+  const admitted = await request(origin, 'POST', '/api/v1/whatsapp/events', {
+    channel: 'whatsapp', providerEventId: 'takeover-event-3', conversationId: 'customer-1', payload: { text: 'new message after resume' }, draftText: 'admitted after resume',
+  }, session)
+  assert.equal(admitted.status, 202)
+  assert.equal(admitted.body.accepted, true)
+
+  await server.stop()
+  const recovered = new AgentdServer({ dataDir, secret: 't'.repeat(32), pairingCode: '135790', logger: { log() {} } })
+  const recoveredInfo = await recovered.start()
+  const bearer = { authorization: 'Bearer ' + 't'.repeat(32) }
+  assert.deepEqual((await request(recoveredInfo.origin, 'GET', '/api/v1/autonomy/takeovers', undefined, bearer)).body.takeovers, [])
+  await recovered.stop()
+  fs.rmSync(dataDir, { recursive: true, force: true })
+})
+
 test('agentd rate-limits wrong pairing codes without logging secrets', async () => {
   const dataDir = makeTempDir('aica-agentd-pair-limit-')
   const logMessages = []
@@ -200,6 +245,33 @@ test('agentd exposes read-only continuity status without returning credential va
   assert.equal(result.body.credentials.find(credential => credential.key === 'openai_api_key').present, true)
   assert.equal(JSON.stringify(result.body).includes('secret-never-return-this'), false)
   assert.deepEqual(result.body.data, { sessions: 0, messages: 0, knowledgeDocuments: 0, inboundEvents: 0, drafts: 0 })
+  await server.stop()
+  fs.rmSync(dataDir, { recursive: true, force: true })
+})
+
+test('continuity status reflects durable cutover completion and recovery holds', async () => {
+  const dataDir = makeTempDir('aica-agentd-continuity-state-')
+  const server = new AgentdServer({ dataDir, secret: 's'.repeat(32), pairingCode: '135791', logger: { log() {} } })
+  const { origin } = await server.start()
+  const pair = await request(origin, 'POST', '/api/v1/pair', { code: '135791' }, { origin })
+  const session = { origin, cookie: pair.headers['set-cookie'][0].split(';')[0] }
+  const now = Date.now()
+  server.db.prepare(`INSERT INTO settings_persona_cutovers
+    (preview_id, manifest, manifest_hash, scope, target_runtime, state, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)`).run('settings-state', '{}', 'a'.repeat(64), 'settings-persona', 'runtime', 'applied', now)
+  server.db.prepare(`INSERT INTO chat_history_cutovers
+    (preview_id, manifest, manifest_hash, scope, target_runtime, state, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)`).run('chat-state', '{}', 'b'.repeat(64), 'chat-history', 'runtime', 'applied', now + 1)
+  let result = await request(origin, 'GET', '/api/v1/continuity/status', undefined, session)
+  assert.equal(result.status, 200)
+  assert.equal(result.body.migration.state, 'migrated')
+  assert.equal(result.body.stores.find(store => store.id === 'electron-settings').state, 'active')
+  assert.equal(result.body.stores.find(store => store.id === 'electron-persona').state, 'active')
+  assert.equal(result.body.stores.find(store => store.id === 'electron-chat-history').state, 'active')
+  server.db.prepare('UPDATE chat_history_cutovers SET state = ?, updated_at = ? WHERE preview_id = ?').run('needs-recovery', now + 2, 'chat-state')
+  result = await request(origin, 'GET', '/api/v1/continuity/status', undefined, session)
+  assert.equal(result.body.migration.state, 'recovery-required')
+  assert.equal(result.body.stores.find(store => store.id === 'electron-chat-history').state, 'needs-recovery')
   await server.stop()
   fs.rmSync(dataDir, { recursive: true, force: true })
 })
@@ -717,6 +789,199 @@ test('agentd persists authenticated email drafts without renderer storage', asyn
     { ...draft, responseText: 'x'.repeat(32 * 1024 + 1) },
     { ...draft, status: 'sent' },
   ]) assert.equal((await request(origin, 'POST', '/api/v1/email/drafts', invalid, auth)).status, 400)
+  await server.stop()
+  fs.rmSync(dataDir, { recursive: true, force: true })
+})
+
+test('agentd exposes bounded authenticated email delivery history with provider correlation IDs', async () => {
+  const dataDir = makeTempDir('aica-agentd-email-delivery-history-')
+  const secret = 's'.repeat(32)
+  const server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
+  const { origin } = await server.start()
+  const bearer = { authorization: `Bearer ${secret}` }
+  assert.equal((await request(origin, 'GET', '/api/v1/email/delivery-history', undefined, {})).status, 401)
+  const now = Date.now()
+  server.db.prepare('INSERT INTO email_drafts(id,status,payload,created_at,updated_at) VALUES (?,?,?,?,?)').run('email-failed', 'failed', JSON.stringify({ providerMessageId: 'smtp:<aica-failed@localhost>' }), now - 10, now - 10)
+  server.db.prepare('INSERT INTO email_drafts(id,status,payload,created_at,updated_at) VALUES (?,?,?,?,?)').run('email-sent', 'sent', JSON.stringify({ providerMessageId: 'gmail:gmail-sent-1' }), now, now)
+  server.db.prepare('INSERT INTO email_drafts(id,status,payload,created_at,updated_at) VALUES (?,?,?,?,?)').run('email-review', 'approved', '{}', now + 10, now + 10)
+  const history = await request(origin, 'GET', '/api/v1/email/delivery-history?limit=1', undefined, bearer)
+  assert.equal(history.status, 200)
+  assert.deepEqual(history.body.events, [{ providerMessageId: 'gmail:gmail-sent-1', channel: 'email', status: 'sent', eventAt: now, inboundId: 'email-sent' }])
+  const full = await request(origin, 'GET', '/api/v1/email/delivery-history?limit=10', undefined, bearer)
+  assert.deepEqual(full.body.events.map(event => event.providerMessageId), ['gmail:gmail-sent-1', 'smtp:<aica-failed@localhost>'])
+  await server.stop()
+  fs.rmSync(dataDir, { recursive: true, force: true })
+})
+
+test('agentd exposes bounded durable autonomy notifications with acknowledgement', async () => {
+  const dataDir = makeTempDir('aica-agentd-notifications-')
+  const secret = 's'.repeat(32)
+  const server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
+  const { origin } = await server.start()
+  const bearer = { authorization: `Bearer ${secret}` }
+  assert.equal((await request(origin, 'GET', '/api/v1/autonomy/notifications', undefined, {})).status, 401)
+  assert.equal(server.createAutonomyNotification('unsupported', { message: 'ignored' }), false)
+  assert.equal(server.createAutonomyNotification('failure', { channel: 'email', message: 'delivery failed', apiKey: 'never-return-this' }), true)
+  const listed = await request(origin, 'GET', '/api/v1/autonomy/notifications?limit=50', undefined, bearer)
+  assert.equal(listed.status, 200)
+  assert.equal(listed.body.notifications.length, 1)
+  assert.equal(listed.body.notifications[0].kind, 'failure')
+  assert.equal(listed.body.notifications[0].details.includes('[REDACTED]'), true)
+  assert.equal(JSON.stringify(listed.body).includes('never-return-this'), false)
+  const id = listed.body.notifications[0].id
+  assert.deepEqual((await request(origin, 'POST', `/api/v1/autonomy/notifications/${id}/ack`, {}, bearer)).body, { acknowledged: true })
+  assert.deepEqual((await request(origin, 'POST', `/api/v1/autonomy/notifications/${id}/ack`, {}, bearer)).body, { acknowledged: false })
+  assert.deepEqual((await request(origin, 'GET', '/api/v1/autonomy/notifications', undefined, bearer)).body.notifications, [])
+  assert.equal((await request(origin, 'POST', '/api/v1/autonomy/notifications/0/ack', {}, bearer)).status, 400)
+  await server.stop()
+  fs.rmSync(dataDir, { recursive: true, force: true })
+})
+
+test('agentd persists authenticated recovery holds and blocks resume until cleared', async () => {
+  const dataDir = makeTempDir('aica-agentd-recovery-')
+  const secret = 's'.repeat(32)
+  const server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
+  const { origin } = await server.start()
+  const bearer = { authorization: `Bearer ${secret}` }
+  assert.equal((await request(origin, 'GET', '/api/v1/status', undefined, bearer)).body.recoveryMode, false)
+  assert.equal((await request(origin, 'POST', '/api/v1/autonomy/recovery/enter', { reason: 'owner review' }, {})).status, 401)
+  const entered = await request(origin, 'POST', '/api/v1/autonomy/recovery/enter', { reason: 'owner review' }, bearer)
+  assert.deepEqual(entered.body, { recoveryMode: true, paused: true, reason: 'owner review', actor: 'bearer' })
+  const held = await request(origin, 'GET', '/api/v1/status', undefined, bearer)
+  assert.deepEqual({ recoveryMode: held.body.recoveryMode, recoveryReason: held.body.recoveryReason, paused: held.body.paused }, { recoveryMode: true, recoveryReason: 'owner review', paused: true })
+  assert.equal((await request(origin, 'POST', '/api/v1/resume-all', {}, bearer)).status, 409)
+  const cleared = await request(origin, 'POST', '/api/v1/autonomy/recovery/clear', {}, bearer)
+  assert.deepEqual(cleared.body, { recoveryMode: false, paused: true, reason: null, actor: 'bearer' })
+  assert.equal((await request(origin, 'POST', '/api/v1/resume-all', {}, bearer)).body.paused, false)
+  const metrics = await request(origin, 'GET', '/api/v1/autonomy/metrics?days=7', undefined, bearer)
+  assert.equal(metrics.body.recoveryDrills, 1)
+  assert.equal(metrics.body.averageRecoveryTimeMs >= 0, true)
+  await server.stop()
+  fs.rmSync(dataDir, { recursive: true, force: true })
+})
+
+test('agentd derives browser autonomy usage history and channel counts from durable records', async () => {
+  const dataDir = makeTempDir('aica-agentd-usage-')
+  const secret = 's'.repeat(32)
+  const server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
+  const { origin } = await server.start()
+  const bearer = { authorization: `Bearer ${secret}` }
+  assert.equal((await request(origin, 'GET', '/api/v1/autonomy/usage-history', undefined, {})).status, 401)
+  const now = Date.now()
+  server.db.prepare('INSERT INTO chat_sessions(id,title,created_at,updated_at) VALUES (?,?,?,?)').run('usage-session', 'Usage', now, now)
+  server.db.prepare("INSERT INTO chat_generations(request_id,session_id,model,provider,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?)").run('usage-generation', 'usage-session', 'gpt-4o-mini', 'openai', 'completed', now, now)
+  server.db.prepare('INSERT INTO whatsapp_drafts(channel,provider_event_id,conversation_id,response_text,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?)').run('whatsapp', 'usage-event', '+15550000000', 'hello', 'sent', now, now)
+  const draftId = server.db.prepare('SELECT id FROM whatsapp_drafts WHERE provider_event_id = ?').get('usage-event').id
+  server.db.prepare("INSERT INTO whatsapp_outbox(draft_id,status,provider_message_id,attempts,created_at,updated_at) VALUES (?,?,?,?,?,?)").run(draftId, 'sent', 'provider-usage', 1, now, now)
+  server.db.prepare('INSERT INTO email_drafts(id,status,payload,created_at,updated_at) VALUES (?,?,?,?,?)').run('email-usage', 'sent', '{}', now, now)
+  const history = await request(origin, 'GET', '/api/v1/autonomy/usage-history?days=7', undefined, bearer)
+  assert.equal(history.status, 200)
+  assert.equal(history.body.days.length, 1)
+  assert.match(history.body.days[0].day, /^\d{4}-\d{2}-\d{2}$/)
+  assert.deepEqual(history.body.days[0], { day: history.body.days[0].day, llmCalls: 1, outboundMessages: 2, estimatedCost: 0 })
+  const channels = await request(origin, 'GET', '/api/v1/autonomy/channel-usage?days=7', undefined, bearer)
+  assert.equal(channels.status, 200)
+  assert.deepEqual(channels.body.channels, [{ channel: 'whatsapp', amount: 1 }, { channel: 'email', amount: 1 }])
+  await server.stop()
+  fs.rmSync(dataDir, { recursive: true, force: true })
+})
+
+test('agentd exposes browser email policy evidence and durable quality reviews', async () => {
+  const dataDir = makeTempDir('aica-agentd-decision-evidence-')
+  const secret = 's'.repeat(32)
+  const server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
+  const { origin } = await server.start()
+  const bearer = { authorization: `Bearer ${secret}` }
+  assert.equal((await request(origin, 'GET', '/api/v1/autonomy/decision-evidence', undefined, {})).status, 401)
+  const now = Date.now()
+  const draft = {
+    id: 'draft_evidence_1',
+    responseText: 'Please review this request.',
+    originalFrom: 'customer@example.com',
+    originalSubject: 'Support request',
+    replyTo: 'customer@example.com',
+    policyDecision: { action: 'escalate', confidence: 0.4, rationale: 'Sensitive request', hasSensitiveTopic: true, sensitiveTopics: ['billing'] },
+    createdAt: now,
+    status: 'escalated',
+  }
+  server.db.prepare('INSERT INTO email_drafts(id,status,payload,created_at,updated_at) VALUES (?,?,?,?,?)').run(draft.id, draft.status, JSON.stringify(draft), now, now)
+  const listed = await request(origin, 'GET', '/api/v1/autonomy/decision-evidence?limit=20', undefined, bearer)
+  assert.equal(listed.status, 200)
+  assert.deepEqual(listed.body.evidence[0], {
+    inboundId: draft.id,
+    jid: draft.originalFrom,
+    createdAt: now,
+    decision: {
+      grounding: 'unavailable',
+      reason: 'Sensitive request',
+      confidence: 0.4,
+      escalated: true,
+      sensitiveTopic: true,
+      evidence: [],
+    },
+  })
+  const review = await request(origin, 'POST', `/api/v1/autonomy/decision-evidence/${draft.id}/review`, { label: 'correct', notes: 'Owner verified policy result' }, bearer)
+  assert.deepEqual(review.body, { reviewed: true, inboundId: draft.id, label: 'correct' })
+  const reviewed = await request(origin, 'GET', '/api/v1/autonomy/decision-evidence', undefined, bearer)
+  assert.equal(reviewed.body.evidence[0].label, 'correct')
+  assert.equal(reviewed.body.evidence[0].notes, 'Owner verified policy result')
+  const metrics = await request(origin, 'GET', '/api/v1/autonomy/metrics?days=7', undefined, bearer)
+  assert.equal(metrics.body.reviewedDecisions, 1)
+  assert.equal(metrics.body.reviewAccuracy, 1)
+  assert.equal(metrics.body.escalated, 1)
+  assert.equal(metrics.body.groundedDecisionRate, 0)
+  assert.equal((await request(origin, 'POST', `/api/v1/autonomy/decision-evidence/${draft.id}/review`, { label: 'bad' }, bearer)).status, 400)
+  await server.stop()
+  fs.rmSync(dataDir, { recursive: true, force: true })
+})
+
+test('agentd exposes browser WhatsApp policy evidence and durable quality reviews', async () => {
+  const dataDir = makeTempDir('aica-agentd-whatsapp-decision-evidence-')
+  const secret = 'w'.repeat(32)
+  const server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
+  const { origin } = await server.start()
+  const bearer = { authorization: `Bearer ${secret}` }
+  const created = await request(origin, 'POST', '/api/v1/whatsapp/events', {
+    channel: 'whatsapp',
+    providerEventId: 'wa-evidence-1',
+    conversationId: '15551234567@s.whatsapp.net',
+    payload: { text: 'Where is my order?' },
+    draftText: 'I can help with that.',
+    policyDecision: {
+      action: 'send',
+      grounding: 'unavailable',
+      rationale: 'Autonomous WhatsApp response admitted to the durable outbox.',
+    },
+  }, bearer)
+  assert.equal(created.status, 202)
+  const listed = await request(origin, 'GET', '/api/v1/autonomy/decision-evidence?limit=20', undefined, bearer)
+  assert.equal(listed.status, 200)
+  const evidence = listed.body.evidence.find((item) => item.inboundId === `whatsapp_draft_${created.body.draftId}`)
+  assert.deepEqual(evidence, {
+    inboundId: `whatsapp_draft_${created.body.draftId}`,
+    jid: '15551234567@s.whatsapp.net',
+    createdAt: evidence.createdAt,
+    decision: {
+      grounding: 'unavailable',
+      reason: 'Autonomous WhatsApp response admitted to the durable outbox.',
+      escalated: false,
+      evidence: [],
+    },
+  })
+  const review = await request(origin, 'POST', `/api/v1/autonomy/decision-evidence/${evidence.inboundId}/review`, { label: 'correct' }, bearer)
+  assert.deepEqual(review.body, { reviewed: true, inboundId: evidence.inboundId, label: 'correct' })
+  const reviewed = await request(origin, 'GET', '/api/v1/autonomy/decision-evidence', undefined, bearer)
+  assert.equal(reviewed.body.evidence.find((item) => item.inboundId === evidence.inboundId).label, 'correct')
+  const metrics = await request(origin, 'GET', '/api/v1/autonomy/metrics?days=7', undefined, bearer)
+  assert.equal(metrics.body.reviewedDecisions, 1)
+  assert.equal(metrics.body.reviewAccuracy, 1)
+  assert.equal(metrics.body.escalated, 0)
+  assert.equal(metrics.body.groundedDecisionRate, 0)
+  const invalid = await request(origin, 'POST', '/api/v1/whatsapp/events', {
+    channel: 'whatsapp', providerEventId: 'wa-evidence-invalid', conversationId: '15551234567@s.whatsapp.net',
+    payload: {}, draftText: 'bad', policyDecision: { action: 'send', grounding: 'unavailable', rationale: 'ok', secret: 'nope' },
+  }, bearer)
+  assert.equal(invalid.status, 400)
   await server.stop()
   fs.rmSync(dataDir, { recursive: true, force: true })
 })

@@ -150,6 +150,11 @@
 .pilot-facts dd { margin: 5px 0 0; overflow: hidden; color: #dedbd1; font: 14px/1.3 'SF Mono', Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
 .pilot-copy { max-width: 54ch; margin: 14px 0 22px; color: var(--pilot-muted); font-size: 12px; line-height: 1.55; }
 .pilot-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.pilot-toggle-row { display: flex; align-items: flex-start; gap: 10px; margin-top: 16px; color: var(--pilot-muted); font-size: 12px; line-height: 1.45; cursor: pointer; }
+.pilot-toggle-row input { width: 16px; height: 16px; margin-top: 2px; accent-color: var(--pilot-lime); }
+.pilot-toggle-row span { display: grid; gap: 3px; }
+.pilot-toggle-row strong { color: #f3f0e7; font-size: 12px; }
+.pilot-toggle-row small { color: var(--pilot-muted); font-size: 11px; }
 .pilot-actions-tight { margin-top: 18px; }
 .pilot-button { min-height: 38px; padding: 0 14px; border: 1px solid var(--pilot-line); border-radius: 0; color: #d9d6cd; background: transparent; cursor: pointer; font: 600 11px 'Avenir Next', Avenir, system-ui, sans-serif; letter-spacing: .04em; transition: background 160ms ease, border-color 160ms ease, color 160ms ease; }
 .pilot-button:hover:not(:disabled) { border-color: rgba(197, 236, 114, .55); color: var(--pilot-lime); background: rgba(197, 236, 114, .07); }

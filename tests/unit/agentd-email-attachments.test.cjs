@@ -17,6 +17,18 @@ function request(origin, method, pathname, body, headers = {}) {
   })
 }
 
+function requestRaw(origin, method, pathname, headers = {}) {
+  return new Promise((resolve, reject) => {
+    const req = http.request(`${origin}${pathname}`, { method, headers }, res => {
+      const chunks = []
+      res.on('data', chunk => chunks.push(chunk))
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, bytes: Buffer.concat(chunks) }))
+    })
+    req.on('error', reject)
+    req.end()
+  })
+}
+
 test('agentd exposes bounded Gmail attachment metadata and owner inspection through authenticated routes', async () => {
   const dataDir = makeTempDir('aica-agentd-email-attachments-')
   const secret = 'a'.repeat(32)
@@ -85,6 +97,51 @@ test('agentd rejects unsupported or unsafe browser attachment inspection', async
   const auth = { authorization: `Bearer ${secret}` }
   assert.equal((await request(origin, 'POST', '/api/v1/email/attachments/message/attachment', { mimeType: 'application/pdf' }, auth)).status, 409)
   assert.equal(providerCalls, 0)
+  await server.stop()
+  const fs = require('node:fs')
+  fs.rmSync(dataDir, { recursive: true, force: true })
+})
+
+test('agentd stores and serves scanned IMAP inbound image media without exposing paths', async () => {
+  const dataDir = makeTempDir('aica-agentd-imap-media-')
+  const secret = 'm'.repeat(32)
+  const server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
+  const { origin } = await server.start()
+  const auth = { authorization: `Bearer ${secret}` }
+  const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+  const event = {
+    providerEventId: 'imap:support:1', conversationId: 'email::sender@example.test::one',
+    payload: { from: 'sender@example.test', to: 'support@example.test', subject: 'Photo', body: 'See attached', bodyType: 'text', timestamp: 42,
+      attachments: [{ id: 'imap-1', name: 'photo.png', mimeType: 'image/png', size: bytes.length }] },
+  }
+  assert.deepEqual(server.ingestEmailInbound(event, [{ ...event.payload.attachments[0], bytes }]), { accepted: true, duplicate: false, id: 1 })
+  const listed = await request(origin, 'GET', '/api/v1/email/attachments?limit=20', undefined, auth)
+  assert.equal(listed.body.attachments[0].id, 'imap-1')
+  assert.equal(listed.body.attachments[0].messageId, 'imap:support:1')
+  const media = await requestRaw(origin, 'GET', '/api/v1/email/inbound/media/imap%3Asupport%3A1/imap-1', auth)
+  assert.equal(media.status, 200)
+  assert.equal(media.headers['content-type'], 'image/png')
+  assert.equal(media.headers['x-aica-scan-safe'], 'true')
+  assert.deepEqual(media.bytes, bytes)
+  assert.match(String(media.headers['cache-control']), /no-store/)
+  await server.stop()
+  const fs = require('node:fs')
+  fs.rmSync(dataDir, { recursive: true, force: true })
+})
+
+test('agentd keeps unsupported IMAP attachment metadata without wedging inbound ingestion', async () => {
+  const dataDir = makeTempDir('aica-agentd-imap-media-unsupported-')
+  const secret = 'n'.repeat(32)
+  const server = new AgentdServer({ dataDir, secret, logger: { log() {} } })
+  await server.start()
+  const bytes = Buffer.from('not-a-pdf')
+  const event = {
+    providerEventId: 'imap:support:2', conversationId: 'email::sender@example.test::two',
+    payload: { from: 'sender@example.test', to: 'support@example.test', subject: 'File', body: 'See attached', bodyType: 'text', timestamp: 42,
+      attachments: [{ id: 'imap-1', name: 'file.pdf', mimeType: 'application/pdf', size: bytes.length }] },
+  }
+  assert.deepEqual(server.ingestEmailInbound(event, [{ ...event.payload.attachments[0], bytes }]), { accepted: true, duplicate: false, id: 1 })
+  assert.equal(server.db.prepare('SELECT COUNT(*) AS count FROM email_media').get().count, 0)
   await server.stop()
   const fs = require('node:fs')
   fs.rmSync(dataDir, { recursive: true, force: true })
