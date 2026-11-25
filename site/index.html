@@ -1,0 +1,588 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <meta name="theme-color" content="#17372e">
+    <meta name="description" content="A visual, beginner-friendly guide to building an agentic AI application, told through the development history of AIConsumerAgent.">
+    <title>From Bot to Agent System — AIConsumerAgent Field Guide</title>
+    <link rel="stylesheet" href="./style.css">
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to guide</a>
+    <div class="topline">
+      <a class="wordmark" href="#top" aria-label="AIConsumerAgent field guide home">
+        <span class="wordmark-mark" aria-hidden="true">A</span>
+        <span>AIConsumerAgent <span class="wordmark-light">/ field guide</span></span>
+      </a>
+      <a class="source-link" href="https://github.com/meharajM/WA-copilot">View repository <span aria-hidden="true">↗</span></a>
+    </div>
+
+    <main id="main">
+      <section class="hero" id="top" aria-labelledby="hero-title">
+        <div class="hero-copy">
+          <p class="eyebrow"><span class="eyebrow-dot"></span> A practical guide to agentic app development</p>
+          <h1 id="hero-title">From bot to<br><em>agent system.</em></h1>
+          <p class="hero-deck">Follow AIConsumerAgent from its first WhatsApp workflow to a guarded, multi-channel support system. Learn how the parts fit together, why the boundaries matter, and where the code shows each idea.</p>
+          <div class="hero-actions">
+            <a class="button button-lime" href="#journey">Follow the journey</a>
+            <a class="button button-quiet" href="#architecture">See the architecture</a>
+          </div>
+          <p class="snapshot">History reviewed through local commit 2adbc41a · public main snapshot: <a href="https://github.com/meharajM/WA-copilot/commit/1fe1b0de">1fe1b0de · 26 Sep 2026</a></p>
+        </div>
+        <div class="hero-figure">
+          <div class="figure-label"><span>THE WORKING IDEA</span><span>OPENING / 01</span></div>
+          <svg viewBox="0 0 480 350" role="img" aria-labelledby="hero-svg-title hero-svg-desc">
+            <title id="hero-svg-title">A message becomes a checked action</title>
+            <desc id="hero-svg-desc">A customer message flows through context, a model decision, a policy check, and an action that is recorded.</desc>
+            <path class="hero-orbit" d="M55 185 C90 50 360 35 420 165 C462 260 335 323 190 294 C82 272 31 234 55 185Z" fill="none" stroke="#688b76" stroke-width="1.5" stroke-dasharray="4 8"/>
+            <path d="M81 180 C130 135 169 115 209 110 S304 109 355 147" fill="none" stroke="#d9e682" stroke-width="2" stroke-dasharray="4 7"/>
+            <circle cx="82" cy="180" r="7" fill="#d9e682"/>
+            <circle cx="209" cy="110" r="7" fill="#d9e682"/>
+            <circle cx="355" cy="147" r="7" fill="#d9e682"/>
+            <g class="hero-node" transform="translate(26 186)">
+              <rect width="140" height="68" rx="3"/>
+              <text class="hero-node-num" x="14" y="21">01 / INPUT</text>
+              <text class="hero-node-text" x="14" y="45">Customer message</text>
+            </g>
+            <g class="hero-node" transform="translate(145 61)">
+              <rect width="150" height="68" rx="3"/>
+              <text class="hero-node-num" x="14" y="21">02 / THINK</text>
+              <text class="hero-node-text" x="14" y="45">Context + model</text>
+            </g>
+            <g class="hero-node hero-node-accent" transform="translate(307 154)">
+              <rect width="147" height="68" rx="3"/>
+              <text class="hero-node-num" x="14" y="21">03 / CHECK</text>
+              <text class="hero-node-text" x="14" y="45">Policy + action</text>
+            </g>
+            <text class="hero-loop-label" x="109" y="315">USE TOOLS · CHECK THE RESULT · KEEP AN AUDIT TRAIL</text>
+          </svg>
+          <p class="hero-figure-note">A model is one step in the system. The product also needs tools, rules, saved state, and a safe way to recover.</p>
+        </div>
+      </section>
+
+      <nav class="chapter-nav" aria-label="Guide sections">
+        <a href="#start">01 · The idea</a>
+        <a href="#journey">02 · The history</a>
+        <a href="#architecture">03 · The system</a>
+        <a href="#concepts">04 · The concepts</a>
+        <a href="#build">05 · Build method</a>
+        <a href="#learning-path">06 · Read the code</a>
+      </nav>
+
+      <section class="section intro-section" id="start">
+        <div class="section-kicker">START HERE <span>01</span></div>
+        <div class="intro-grid">
+          <div>
+            <h2>An agent is a loop with boundaries.</h2>
+            <p class="lead">A chat model returns text. An agentic app gives a model a job, useful context, and a small set of tools. It checks what the model wants to do, runs an allowed action, reads the result, and either continues or hands control back to a person.</p>
+          </div>
+          <aside class="pull-note">
+            <span class="note-mark" aria-hidden="true">“</span>
+            <p>The model proposes. The application decides what is allowed to happen.</p>
+            <span class="note-byline">A useful rule for every agent feature</span>
+          </aside>
+        </div>
+        <figure class="diagram diagram-paper">
+          <div class="figure-heading">
+            <div>
+              <p class="figure-index">FIGURE 01 · THE AGENT LOOP</p>
+              <h3>Give the model a job. Give the app the control.</h3>
+            </div>
+            <span class="figure-side-label">One request, one checked cycle</span>
+          </div>
+          <div class="diagram-scroll" tabindex="0" aria-label="Scrollable diagram showing the agent work cycle">
+            <svg class="wide-svg" viewBox="0 0 1160 285" role="img" aria-labelledby="loop-title loop-desc">
+              <title id="loop-title">The agent work cycle</title>
+              <desc id="loop-desc">Receive a request, load context, ask the model to choose, check policy, run an allowed tool, then store the result. Tool results may return to the model for another cycle.</desc>
+              <defs>
+                <marker id="arrow-loop" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10Z" fill="#63786c"/></marker>
+                <marker id="arrow-loop-back" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#b95036"/></marker>
+              </defs>
+              <g class="flow-arrows">
+                <path d="M176 103h23" marker-end="url(#arrow-loop)"/>
+                <path d="M369 103h23" marker-end="url(#arrow-loop)"/>
+                <path d="M562 103h23" marker-end="url(#arrow-loop)"/>
+                <path d="M755 103h23" marker-end="url(#arrow-loop)"/>
+                <path d="M948 103h23" marker-end="url(#arrow-loop)"/>
+                <path class="return-path" d="M1060 154v58H475V158" marker-end="url(#arrow-loop-back)"/>
+              </g>
+              <g class="flow-node" transform="translate(14 48)">
+                <rect width="162" height="110"/>
+                <text class="flow-num" x="15" y="26">01 · RECEIVE</text>
+                <text class="flow-title" x="15" y="56">A real request</text>
+                <text class="flow-sub" x="15" y="80">WhatsApp · email · chat</text>
+              </g>
+              <g class="flow-node" transform="translate(207 48)">
+                <rect width="162" height="110"/>
+                <text class="flow-num" x="15" y="26">02 · GROUND</text>
+                <text class="flow-title" x="15" y="56">Load context</text>
+                <text class="flow-sub" x="15" y="80">Persona · history · RAG</text>
+              </g>
+              <g class="flow-node" transform="translate(400 48)">
+                <rect width="162" height="110"/>
+                <text class="flow-num" x="15" y="26">03 · DECIDE</text>
+                <text class="flow-title" x="15" y="56">Model proposes</text>
+                <text class="flow-sub" x="15" y="80">Reply · tool · handoff</text>
+              </g>
+              <g class="flow-node flow-node-check" transform="translate(593 48)">
+                <rect width="162" height="110"/>
+                <text class="flow-num" x="15" y="26">04 · CHECK</text>
+                <text class="flow-title" x="15" y="56">Apply policy</text>
+                <text class="flow-sub" x="15" y="80">Mode · consent · risk</text>
+              </g>
+              <g class="flow-node" transform="translate(786 48)">
+                <rect width="162" height="110"/>
+                <text class="flow-num" x="15" y="26">05 · ACT</text>
+                <text class="flow-title" x="15" y="56">Run one tool</text>
+                <text class="flow-sub" x="15" y="80">Draft · send · retrieve</text>
+              </g>
+              <g class="flow-node flow-node-record" transform="translate(979 48)">
+                <rect width="162" height="110"/>
+                <text class="flow-num" x="15" y="26">06 · REMEMBER</text>
+                <text class="flow-title" x="15" y="56">Save outcome</text>
+                <text class="flow-sub" x="15" y="80">State · evidence · status</text>
+              </g>
+              <text class="flow-return-label" x="592" y="235">TOOL RESULT RETURNS TO THE LOOP · STOP WHEN DONE OR ASK A PERSON</text>
+            </svg>
+          </div>
+          <figcaption>Each step has a job. Keeping the policy check outside the model means a confident answer alone cannot authorize a send.</figcaption>
+        </figure>
+      </section>
+
+      <section class="section journey-section" id="journey">
+        <div class="section-kicker">THE DEVELOPMENT JOURNEY <span>02</span></div>
+        <div class="section-heading-row">
+          <div>
+            <h2>Six months of adding responsibility.</h2>
+            <p class="section-intro">The commit history shows a familiar pattern: first make one workflow useful, then add knowledge and channels, then make actions safe, durable, and supportable.</p>
+          </div>
+          <div class="history-total"><strong>590</strong><span>commits across local and remote refs</span></div>
+        </div>
+
+        <figure class="diagram history-chart">
+          <div class="figure-heading">
+            <div>
+              <p class="figure-index">FIGURE 02 · COMMIT DENSITY</p>
+              <h3>The September migration was the largest chapter.</h3>
+            </div>
+            <span class="figure-side-label">Commits by recorded month</span>
+          </div>
+          <div class="chart-wrap">
+            <svg viewBox="0 0 900 370" role="img" aria-labelledby="history-title history-desc">
+              <title id="history-title">Repository commit counts by month</title>
+              <desc id="history-desc">March 2026 had 22 commits, April 39, May 0, June 0, July 2, August 0, and September 527, for a total of 590 reachable commits.</desc>
+              <g class="chart-labels">
+                <text x="16" y="64">MAR 2026</text>
+                <text x="16" y="104">APR 2026</text>
+                <text x="16" y="144">MAY 2026</text>
+                <text x="16" y="184">JUN 2026</text>
+                <text x="16" y="224">JUL 2026</text>
+                <text x="16" y="264">AUG 2026</text>
+                <text x="16" y="304">SEP 2026</text>
+              </g>
+              <g class="chart-bars">
+                <rect x="142" y="44" width="22" height="24" rx="2"/>
+                <rect x="142" y="84" width="39" height="24" rx="2"/>
+                <rect x="142" y="204" width="3" height="24" rx="2"/>
+                <rect class="bar-focus" x="142" y="284" width="527" height="24" rx="2"/>
+              </g>
+              <g class="chart-counts">
+                <text x="176" y="61">22</text>
+                <text x="193" y="101">39</text>
+                <text x="157" y="141">0</text>
+                <text x="157" y="181">0</text>
+                <text x="157" y="221">2</text>
+                <text x="157" y="261">0</text>
+                <text x="681" y="301">527</text>
+              </g>
+              <line class="chart-axis" x1="142" y1="330" x2="669" y2="330"/>
+              <g class="chart-axis-labels">
+                <text x="140" y="352">0</text>
+                <text x="265" y="352">125</text>
+                <text x="395" y="352">250</text>
+                <text x="527" y="352">375</text>
+                <text x="650" y="352">500+</text>
+              </g>
+              <text class="chart-note" x="726" y="294">89% of all commits</text>
+              <text class="chart-note-small" x="726" y="312">landed during migration</text>
+            </svg>
+          </div>
+          <figcaption>Counts come from <code>git rev-list --all</code> and commit dates in this checkout. Merge commits are included. Two recent local-only commits are counted but are not available in the public repository.</figcaption>
+        </figure>
+
+        <div class="timeline">
+          <article class="timeline-item">
+            <div class="timeline-date"><span>MAR 23–26</span><b>01</b></div>
+            <div class="timeline-content">
+              <p class="timeline-tag">THE FIRST WORKING SLICE</p>
+              <h3>Start with one channel and a real job.</h3>
+              <p>The project became a WhatsApp business assistant with a dashboard. Message queues, a modular channel, and anti-ban controls turned a demo response into a workflow that had to behave over time.</p>
+              <div class="lesson"><strong>Agent lesson</strong><span>Connect one input to one useful outcome before adding more channels or a more elaborate prompt.</span></div>
+              <div class="commit-links">
+                <a href="https://github.com/meharajM/WA-copilot/commit/84ae1266">Initial commit</a>
+                <a href="https://github.com/meharajM/WA-copilot/commit/57b03c15">Business bot + dashboard</a>
+                <a href="https://github.com/meharajM/WA-copilot/commit/1c460961">WhatsApp channel module</a>
+              </div>
+            </div>
+          </article>
+          <article class="timeline-item">
+            <div class="timeline-date"><span>MAR 29–APR 6</span><b>02</b></div>
+            <div class="timeline-content">
+              <p class="timeline-tag">CONTEXT AND RETRIEVAL</p>
+              <h3>Give answers a source and a voice.</h3>
+              <p>Persona settings made business behavior configurable. RAG and MCP-connected knowledge ingestion let the app bring approved business information into a response. Deterministic analytics made operational results easier to inspect.</p>
+              <div class="lesson"><strong>Agent lesson</strong><span>Retrieval can supply relevant facts; policy and citations still need to control what the system claims.</span></div>
+              <div class="commit-links">
+                <a href="https://github.com/meharajM/WA-copilot/commit/0d677cd6">Persona + service refactor</a>
+                <a href="https://github.com/meharajM/WA-copilot/commit/aee576d4">RAG ingestion via MCP</a>
+                <a href="https://github.com/meharajM/WA-copilot/commit/09a9c649">Deterministic analytics</a>
+              </div>
+            </div>
+          </article>
+          <article class="timeline-item">
+            <div class="timeline-date"><span>APR 7–JUL</span><b>03</b></div>
+            <div class="timeline-content">
+              <p class="timeline-tag">MORE CHANNELS, MORE STATE</p>
+              <h3>Make integrations recoverable.</h3>
+              <p>Email added inbox polling, reply drafts, secure account setup, and Gmail OAuth. Sync history was persisted across restarts. Local Gemma models and later channel hardening expanded where inference and delivery could run.</p>
+              <div class="lesson"><strong>Agent lesson</strong><span>Every external channel adds retries, identity, authentication, and duplicate-event problems along with its API.</span></div>
+              <div class="commit-links">
+                <a href="https://github.com/meharajM/WA-copilot/commit/31d57ac8">Email channel</a>
+                <a href="https://github.com/meharajM/WA-copilot/commit/bb5a5860">Persist email sync state</a>
+                <a href="https://github.com/meharajM/WA-copilot/commit/9ea0df61">On-device Gemma</a>
+                <a href="https://github.com/meharajM/WA-copilot/commit/db48fa10">Release hardening</a>
+              </div>
+            </div>
+          </article>
+          <article class="timeline-item">
+            <div class="timeline-date"><span>SEP 9–13</span><b>04</b></div>
+            <div class="timeline-content">
+              <p class="timeline-tag">AUTONOMY WITH EVIDENCE</p>
+              <h3>Let the owner choose how much to automate.</h3>
+              <p>A supervisor, an evaluation matrix, quality metrics, explicit release gates, and data-approval checks moved autonomy into visible, reviewable rules. The system gained observe, draft, and guarded auto-reply modes.</p>
+              <div class="lesson"><strong>Agent lesson</strong><span>Autonomy is a permission level. Make it measurable, reversible, and easy to pause.</span></div>
+              <div class="commit-links">
+                <a href="https://github.com/meharajM/WA-copilot/commit/8af07986">Guarded autonomy supervisor</a>
+                <a href="https://github.com/meharajM/WA-copilot/commit/1eeec2f3">Autonomy evaluation matrix</a>
+                <a href="https://github.com/meharajM/WA-copilot/commit/4ecbfe08">Quality metrics</a>
+                <a href="https://github.com/meharajM/WA-copilot/commit/bf95de28">LLM data approval gate</a>
+              </div>
+            </div>
+          </article>
+          <article class="timeline-item">
+            <div class="timeline-date"><span>SEP 14–21</span><b>05</b></div>
+            <div class="timeline-content">
+              <p class="timeline-tag">A NEW RUNTIME BOUNDARY</p>
+              <h3>Move durable work out of the UI process.</h3>
+              <p>The app shifted toward a browser workspace backed by an independent local service, <code>agentd</code>. State migrations, authenticated APIs, credential boundaries, background supervision, and browser feature parity arrived in small verified slices.</p>
+              <div class="lesson"><strong>Agent lesson</strong><span>A tab can close or reload. Long-running work needs a durable owner, a restart plan, and a single writer.</span></div>
+              <div class="commit-links">
+                <a href="https://github.com/meharajM/WA-copilot/commit/f056d597">Move chat history to agentd</a>
+                <a href="https://github.com/meharajM/WA-copilot/commit/98c31f2d">Browser WhatsApp transport</a>
+                <a href="https://github.com/meharajM/WA-copilot/commit/71ce7023">Browser email auto-reply</a>
+                <a href="https://github.com/meharajM/WA-copilot/commit/380c3f52">Route extension ingress through agentd</a>
+              </div>
+            </div>
+          </article>
+          <article class="timeline-item">
+            <div class="timeline-date"><span>SEP 21–30</span><b>06</b></div>
+            <div class="timeline-content">
+              <p class="timeline-tag">RELEASE AND OPERATIONS</p>
+              <h3>Prove the edges, not only the happy path.</h3>
+              <p>Browser message and media bridges gained explicit limits. Public relay support, Windows service lifecycle controls, upgrade checks, and release evidence made deployment behavior part of the product design.</p>
+              <div class="lesson"><strong>Agent lesson</strong><span>Test restarts, retries, consent, delivery acknowledgements, and upgrade paths as part of the agent—not as cleanup work.</span></div>
+              <div class="commit-links">
+                <a href="https://github.com/meharajM/WA-copilot/commit/cdb00e4f">Bounded WhatsApp media bridge</a>
+                <a href="https://github.com/meharajM/WA-copilot/commit/79d282e5">Authenticated webhook relay</a>
+                <a href="https://github.com/meharajM/WA-copilot/commit/e5cbb409">Safe Windows service enrollment</a>
+                <a href="https://github.com/meharajM/WA-copilot/commit/1fe1b0de">Latest public main snapshot</a>
+              </div>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section class="architecture-section" id="architecture">
+        <div class="section section-compact">
+          <div class="section-kicker section-kicker-light">THE SYSTEM TODAY <span>03</span></div>
+          <div class="section-heading-row">
+            <div>
+              <h2>Separate the workspace from the work.</h2>
+              <p class="section-intro">The current design keeps the product in a browser and gives a local service ownership of durable jobs and channel operations. A small native companion handles operating-system capabilities.</p>
+            </div>
+            <p class="architecture-badge">LOCAL · SINGLE OWNER · OWNER CONTROLLED</p>
+          </div>
+          <figure class="diagram diagram-dark">
+            <div class="figure-heading">
+              <div>
+                <p class="figure-index">FIGURE 03 · RUNTIME BOUNDARIES</p>
+                <h3>Each process receives only the job it needs.</h3>
+              </div>
+              <span class="figure-side-label">As described by current behavior docs</span>
+            </div>
+            <div class="diagram-scroll" tabindex="0" aria-label="Scrollable diagram showing the browser, agentd service, native companion, and provider boundaries">
+              <svg class="wide-svg architecture-svg" viewBox="0 0 1120 470" role="img" aria-labelledby="arch-title arch-desc">
+                <title id="arch-title">AIConsumerAgent runtime boundaries</title>
+                <desc id="arch-desc">The browser hosts the product workspace and agent orchestration. It connects to a local agentd service over an authenticated loopback API. agentd owns durable data, queues, and channel workers. A Tauri companion handles narrow native capabilities and does not host the product UI. Models and integrations connect through bounded adapters.</desc>
+                <defs>
+                  <marker id="arrow-arch" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#d7e276"/></marker>
+                  <marker id="arrow-arch-muted" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#9eb6a8"/></marker>
+                </defs>
+                <g class="arch-lines">
+                  <path d="M438 124h220" marker-end="url(#arrow-arch)"/>
+                  <path d="M660 143H440" marker-end="url(#arrow-arch-muted)"/>
+                  <path d="M800 211v72" marker-end="url(#arrow-arch)"/>
+                  <path d="M430 343h222" marker-end="url(#arrow-arch-muted)"/>
+                </g>
+                <text class="arch-link-label" x="485" y="107">PAIRED SESSION · LOOPBACK API</text>
+                <text class="arch-link-label" x="484" y="165">CHAT · SETTINGS · REVIEW</text>
+                <text class="arch-link-label" x="815" y="253">CHANNEL ADAPTERS</text>
+                <text class="arch-link-label" x="486" y="326">NARROW NATIVE COMMANDS</text>
+                <g class="arch-node arch-browser" transform="translate(42 58)">
+                  <rect width="396" height="152"/>
+                  <text class="arch-eyebrow" x="24" y="31">PRODUCT WORKSPACE</text>
+                  <text class="arch-title" x="24" y="66">Browser + agent loop</text>
+                  <text class="arch-copy" x="24" y="96">Chat · inbox · knowledge · approvals</text>
+                  <text class="arch-copy" x="24" y="121">Orchestration · prompts · bounded tools</text>
+                </g>
+                <g class="arch-node arch-service" transform="translate(660 58)">
+                  <rect width="418" height="152"/>
+                  <text class="arch-eyebrow" x="24" y="31">LOCAL SERVICE</text>
+                  <text class="arch-title" x="24" y="66">agentd</text>
+                  <text class="arch-copy" x="24" y="96">Authenticated API · durable state · queues</text>
+                  <text class="arch-copy" x="24" y="121">Channel workers · credentials · recovery</text>
+                </g>
+                <g class="arch-node arch-native" transform="translate(42 283)">
+                  <rect width="396" height="122"/>
+                  <text class="arch-eyebrow" x="24" y="31">NATIVE COMPANION</text>
+                  <text class="arch-title" x="24" y="66">Tauri host</text>
+                  <text class="arch-copy" x="24" y="94">Keychain · file picker · tray · lifecycle</text>
+                </g>
+                <g class="arch-node arch-adapters" transform="translate(660 283)">
+                  <rect width="418" height="122"/>
+                  <text class="arch-eyebrow" x="24" y="31">BOUNDED ADAPTERS</text>
+                  <text class="arch-title" x="24" y="66">Models · MCP tools · channels</text>
+                  <text class="arch-copy" x="24" y="94">WhatsApp · email · browser bridge · local AI</text>
+                </g>
+                <text class="arch-footnote" x="42" y="444">Provider execution can run in the browser or through a service adapter, depending on the selected provider.</text>
+              </svg>
+            </div>
+            <figcaption>Trust boundaries answer practical questions: which process holds durable state, where credentials live, what survives a tab closing, and which actions need an owner.</figcaption>
+          </figure>
+        </div>
+      </section>
+
+      <section class="section concepts-section" id="concepts">
+        <div class="section-kicker">AGENTIC APP CONCEPTS <span>04</span></div>
+        <div class="section-heading-row">
+          <div>
+            <h2>Find each idea in the code.</h2>
+            <p class="section-intro">These are product engineering concepts. A model call matters, but so do state, permissions, delivery, and proof that the whole path works.</p>
+          </div>
+          <p class="source-key"><span class="key-dot key-built"></span> Built in repo <span class="key-dot key-limited"></span> Limited or gated</p>
+        </div>
+
+        <div class="concept-grid">
+          <article class="concept concept-featured">
+            <div class="concept-top"><span class="concept-number">01</span><span class="status status-built">BUILT</span></div>
+            <h3>Orchestration</h3>
+            <p>Turn a user goal into a controlled cycle of context, model decisions, tools, and results. Keep app state and policy outside the prompt.</p>
+            <a href="https://github.com/meharajM/WA-copilot/blob/main/src/renderer/src/lib/agent/OrchestrationService.ts">Agent orchestration</a>
+            <a href="https://github.com/meharajM/WA-copilot/blob/main/src/main/services/AutonomyWorkflow.ts">Persistent workflow</a>
+          </article>
+          <article class="concept">
+            <div class="concept-top"><span class="concept-number">02</span><span class="status status-built">BUILT</span></div>
+            <h3>Tools and MCP</h3>
+            <p>Give the model narrow capabilities, validate each request, and audit the execution. Do not turn tool use into arbitrary computer access.</p>
+            <a href="https://github.com/meharajM/WA-copilot/blob/main/src/renderer/src/lib/agent/ToolExecutionService.ts">Tool execution</a>
+            <a href="https://github.com/meharajM/WA-copilot/blob/main/src/main/services/McpPolicy.ts">MCP policy</a>
+          </article>
+          <article class="concept">
+            <div class="concept-top"><span class="concept-number">03</span><span class="status status-built">BUILT</span></div>
+            <h3>Knowledge and RAG</h3>
+            <p>Retrieve relevant approved information at answer time. Retrieval improves grounding; it does not prove that a generated answer is true.</p>
+            <a href="https://github.com/meharajM/WA-copilot/blob/main/src/main/rag/RAGService.ts">RAG service</a>
+            <a href="https://github.com/meharajM/WA-copilot/blob/main/src/renderer/src/components/chat/KnowledgeBrowser.tsx">Knowledge browser</a>
+          </article>
+          <article class="concept">
+            <div class="concept-top"><span class="concept-number">04</span><span class="status status-built">BUILT</span></div>
+            <h3>Memory and state</h3>
+            <p>Keep chat history, decisions, queues, delivery status, and recovery data durable. Operational memory is more than adding old messages to a prompt.</p>
+            <a href="https://github.com/meharajM/WA-copilot/blob/main/src/main/services/MemoryService.ts">Memory service</a>
+            <a href="https://github.com/meharajM/WA-copilot/blob/main/agentd/server.cjs">agentd persistence</a>
+          </article>
+          <article class="concept concept-wide">
+            <div class="concept-top"><span class="concept-number">05</span><span class="status status-built">BUILT</span></div>
+            <h3>Policy, approvals, and autonomy</h3>
+            <p>Separate what the model recommends from what the product permits. Observe mode records events, draft mode asks for review, and auto-reply mode still checks consent, sensitivity, configuration, channel rules, and delivery state. Owners can pause or escalate.</p>
+            <a href="https://github.com/meharajM/WA-copilot/blob/main/src/main/services/AutonomyPolicy.ts">Autonomy policy</a>
+            <a href="https://github.com/meharajM/WA-copilot/blob/main/src/main/services/AutonomyDecision.ts">Decision evidence</a>
+            <a href="https://github.com/meharajM/WA-copilot/blob/main/src/main/services/AutonomousSupervisor.ts">Supervisor</a>
+          </article>
+          <article class="concept">
+            <div class="concept-top"><span class="concept-number">06</span><span class="status status-built">BUILT</span></div>
+            <h3>Channel adapters</h3>
+            <p>Normalize incoming events while keeping each provider's consent, authentication, rate, and delivery rules at its boundary.</p>
+            <a href="https://github.com/meharajM/WA-copilot/tree/main/agentd">agentd channel workers</a>
+            <a href="https://github.com/meharajM/WA-copilot/blob/main/docs/omnichannel-inventory.md">Channel inventory</a>
+          </article>
+          <article class="concept concept-wide concept-control">
+            <div class="concept-top"><span class="concept-number">07</span><span class="status status-limited">GATED / LIMITED</span></div>
+            <h3>Evaluation, observability, and recovery</h3>
+            <p>Record decisions and delivery outcomes, evaluate autonomy quality, and test restarts, retries, and migrations. A unit test cannot prove a live provider account, signed release, or customer deployment works.</p>
+            <a href="https://github.com/meharajM/WA-copilot/blob/main/docs/testing.md">Testing guide</a>
+            <a href="https://github.com/meharajM/WA-copilot/blob/main/docs/release-readiness.md">Release gates</a>
+            <a href="https://github.com/meharajM/WA-copilot/blob/main/docs/app-behavior.md">Behavior contract</a>
+          </article>
+        </div>
+
+        <figure class="diagram autonomy-figure">
+          <div class="figure-heading">
+            <div>
+              <p class="figure-index">FIGURE 04 · AUTONOMY IS A SETTING, NOT A PROMPT</p>
+              <h3>Raise independence only when gates are satisfied.</h3>
+            </div>
+            <span class="figure-side-label">Owner can pause at any time</span>
+          </div>
+          <div class="diagram-scroll" tabindex="0" aria-label="Scrollable diagram comparing observe, draft, and auto-reply modes">
+            <svg class="wide-svg autonomy-svg" viewBox="0 0 1000 270" role="img" aria-labelledby="autonomy-title autonomy-desc">
+              <title id="autonomy-title">Three levels of agent autonomy</title>
+              <desc id="autonomy-desc">Observe mode records but never sends. Draft mode creates a reviewable reply. Auto-reply sends only after configured permission and policy gates pass. Each mode can escalate or pause.</desc>
+              <defs>
+                <marker id="arrow-level" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#65796b"/></marker>
+              </defs>
+              <path class="level-path" d="M285 96h80M618 96h80" marker-end="url(#arrow-level)"/>
+              <g class="level-card" transform="translate(18 30)">
+                <rect width="267" height="154"/>
+                <text class="level-step" x="19" y="27">01 · LOWEST AUTONOMY</text>
+                <text class="level-title" x="19" y="61">Observe</text>
+                <text class="level-copy" x="19" y="88">Ingest + record</text>
+                <text class="level-copy" x="19" y="111">No customer send</text>
+                <text class="level-footer" x="19" y="140">SAFE DEFAULT</text>
+              </g>
+              <g class="level-card" transform="translate(365 30)">
+                <rect width="253" height="154"/>
+                <text class="level-step" x="19" y="27">02 · HUMAN REVIEW</text>
+                <text class="level-title" x="19" y="61">Draft</text>
+                <text class="level-copy" x="19" y="88">Prepare a reply</text>
+                <text class="level-copy" x="19" y="111">Owner reviews + sends</text>
+                <text class="level-footer" x="19" y="140">REVIEWABLE DECISION</text>
+              </g>
+              <g class="level-card level-card-auto" transform="translate(698 30)">
+                <rect width="284" height="154"/>
+                <text class="level-step" x="19" y="27">03 · HIGHEST AUTONOMY</text>
+                <text class="level-title" x="19" y="61">Auto-reply</text>
+                <text class="level-copy" x="19" y="88">Send only if gates pass</text>
+                <text class="level-copy" x="19" y="111">Otherwise hold or escalate</text>
+                <text class="level-footer" x="19" y="140">OWNER ENABLES</text>
+              </g>
+              <path class="pause-line" d="M849 203v28H147v-28"/>
+              <text class="pause-label" x="443" y="251">PAUSE · REVIEW · ESCALATE · KEEP AN AUDIT TRAIL</text>
+            </svg>
+          </div>
+          <figcaption>Not all integrations have the same automation level. The app-behavior guide documents which channel paths are available, experimental, or disabled.</figcaption>
+        </figure>
+      </section>
+
+      <section class="section build-section" id="build">
+        <div class="section-kicker">A REPEATABLE BUILD METHOD <span>05</span></div>
+        <div class="section-heading-row">
+          <div>
+            <h2>Build an agent in this order.</h2>
+            <p class="section-intro">The repo's history suggests a practical sequence for a small team. It keeps each new source of uncertainty visible.</p>
+          </div>
+        </div>
+        <div class="build-method">
+          <ol class="build-steps">
+            <li><span>01</span><div><strong>Pick one job.</strong><p>Write the user, trigger, allowed outcome, and handoff condition.</p></div></li>
+            <li><span>02</span><div><strong>Make a vertical slice.</strong><p>Connect one channel to one model response and one user-visible result.</p></div></li>
+            <li><span>03</span><div><strong>Add context and tools.</strong><p>Retrieve approved facts. Expose only actions that the workflow needs.</p></div></li>
+            <li><span>04</span><div><strong>Put policy around action.</strong><p>Check identity, consent, sensitivity, budget, and human-review rules.</p></div></li>
+            <li><span>05</span><div><strong>Persist state and evidence.</strong><p>Save decisions, retries, delivery acknowledgements, and recovery status.</p></div></li>
+            <li><span>06</span><div><strong>Prove the edges.</strong><p>Evaluate quality. Test duplicate events, restart, pause, failures, and upgrades.</p></div></li>
+          </ol>
+          <figure class="diagram feedback-figure">
+            <p class="figure-index">FIGURE 05 · THE IMPROVEMENT LOOP</p>
+            <svg viewBox="0 0 330 390" role="img" aria-labelledby="feedback-title feedback-desc">
+              <title id="feedback-title">Operational evidence improves an agent</title>
+              <desc id="feedback-desc">Real conversations create decisions and delivery evidence. Evaluation reviews the evidence and feeds improvements into prompts, policies, and tests before the next release.</desc>
+              <defs>
+                <marker id="arrow-feedback" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#61766a"/></marker>
+              </defs>
+              <path class="feedback-arrow" d="M166 75v36M252 170h24v89h-24M164 294v31M76 258H51v-88h25" marker-end="url(#arrow-feedback)"/>
+              <g class="feedback-node" transform="translate(73 20)">
+                <rect width="174" height="56"/>
+                <text x="17" y="24">REAL WORKFLOW</text>
+                <text class="feedback-sub" x="17" y="43">request · context · action</text>
+              </g>
+              <g class="feedback-node" transform="translate(73 113)">
+                <rect width="174" height="57"/>
+                <text x="17" y="25">EVIDENCE</text>
+                <text class="feedback-sub" x="17" y="44">decision · delivery · failure</text>
+              </g>
+              <g class="feedback-node feedback-node-accent" transform="translate(73 237)">
+                <rect width="174" height="57"/>
+                <text x="17" y="25">REVIEW + EVALUATE</text>
+                <text class="feedback-sub" x="17" y="44">quality · regressions · gaps</text>
+              </g>
+              <g class="feedback-node" transform="translate(73 326)">
+                <rect width="174" height="56"/>
+                <text x="17" y="24">IMPROVE + RELEASE</text>
+                <text class="feedback-sub" x="17" y="43">policy · tests · workflow</text>
+              </g>
+            </svg>
+          </figure>
+        </div>
+      </section>
+
+      <section class="limits-section">
+        <div class="section section-compact">
+          <div class="section-kicker section-kicker-light">READ THE EVIDENCE CAREFULLY <span>06</span></div>
+          <div class="limits-grid">
+            <div>
+              <h2>Useful lessons.<br><em>Honest limits.</em></h2>
+              <p>This repository is a single-owner, local-first product. It is not proof that a hosted, multi-tenant agent is ready for production.</p>
+            </div>
+            <ul class="limit-list">
+              <li><span class="limit-mark">01</span><span>Some channel automation remains experimental, disabled, or dependent on live-provider checks.</span></li>
+              <li><span class="limit-mark">02</span><span>RAG gives the model material to use; it cannot guarantee a correct answer.</span></li>
+              <li><span class="limit-mark">03</span><span>Passing unit tests does not prove OAuth, webhook delivery, signed packages, or real hardware behavior.</span></li>
+              <li><span class="limit-mark">04</span><span>The repo shows a bounded product agent, not a swarm of cooperating agents.</span></li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section class="section reading-section" id="learning-path">
+        <div class="section-kicker">A SHORT READING PATH <span>07</span></div>
+        <div class="reading-heading">
+          <h2>Go from concept to implementation.</h2>
+          <p>Read these in order. Each page answers one practical question.</p>
+        </div>
+        <div class="reading-list">
+          <a href="https://github.com/meharajM/WA-copilot/blob/main/docs/app-behavior.md"><span>01</span><div><strong>What should the running product do?</strong><small>Behavior contract · user flows and safety preconditions</small></div><b aria-hidden="true">↗</b></a>
+          <a href="https://github.com/meharajM/WA-copilot/blob/main/src/renderer/src/lib/agent/OrchestrationService.ts"><span>02</span><div><strong>How does a model and tool cycle fit together?</strong><small>Orchestration · requests, context, actions, results</small></div><b aria-hidden="true">↗</b></a>
+          <a href="https://github.com/meharajM/WA-copilot/blob/main/src/main/services/AutonomyPolicy.ts"><span>03</span><div><strong>Where is permission enforced?</strong><small>Policy · decisions, review, escalation</small></div><b aria-hidden="true">↗</b></a>
+          <a href="https://github.com/meharajM/WA-copilot/blob/main/agentd/server.cjs"><span>04</span><div><strong>How does the local service keep work durable?</strong><small>Runtime · authenticated API, storage, channel workers</small></div><b aria-hidden="true">↗</b></a>
+          <a href="https://github.com/meharajM/WA-copilot/blob/main/docs/testing.md"><span>05</span><div><strong>How do we know a change is ready?</strong><small>Evidence · tests, live prerequisites, release gates</small></div><b aria-hidden="true">↗</b></a>
+        </div>
+      </section>
+
+      <section class="closing">
+        <div class="closing-mark" aria-hidden="true">A</div>
+        <p class="eyebrow">THE TAKEAWAY</p>
+        <h2>Good agents are built<br>around what they <em>may do.</em></h2>
+        <p>Start with a clear job. Give the model context and narrow tools. Put application rules around every consequential action. Save evidence so people can review, recover, and improve the system.</p>
+        <a class="button button-lime" href="https://github.com/meharajM/WA-copilot">Explore the source repository</a>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <a class="wordmark" href="#top"><span class="wordmark-mark" aria-hidden="true">A</span><span>AIConsumerAgent <span class="wordmark-light">/ field guide</span></span></a>
+      <p>Built from 590 commits in the reviewed checkout · 23 Mar–30 Sep 2026 · public main: <a href="https://github.com/meharajM/WA-copilot/commit/1fe1b0de">1fe1b0de · 26 Sep</a></p>
+      <a class="back-top" href="#top">Back to top ↑</a>
+    </footer>
+  </body>
+</html>

@@ -1,6 +1,41 @@
 <!doctype html>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AICA documentation</title>
-<meta http-equiv="refresh" content="0; url=windows-user-guide.html">
-<p><a href="windows-user-guide.html">Open the AICA Windows user guide</a></p>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Guides for AIConsumerAgent users and developers.">
+    <title>AIConsumerAgent guides</title>
+    <style>
+      :root { color-scheme: light; --ink: #17372e; --paper: #f0f3eb; --rust: #b95036; --muted: #53675b; }
+      * { box-sizing: border-box; }
+      body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px; background: var(--paper); color: var(--ink); font: 17px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      main { width: min(100%, 760px); padding: clamp(28px, 7vw, 64px); border-top: 4px solid var(--rust); background: #f9faf5; }
+      .eyebrow { margin: 0 0 12px; color: var(--rust); font-size: 12px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+      h1 { margin: 0; font: 400 clamp(40px, 8vw, 64px)/1.02 Georgia, "Times New Roman", serif; letter-spacing: -.04em; }
+      .intro { max-width: 560px; margin: 18px 0 32px; color: var(--muted); }
+      nav { display: grid; gap: 12px; }
+      a { display: block; padding: 18px 20px; border: 1px solid #cbd5ca; color: var(--ink); text-decoration: none; }
+      a:hover { border-color: var(--rust); background: #f0f3eb; }
+      a:focus-visible { outline: 3px solid var(--rust); outline-offset: 3px; }
+      strong { display: block; font-size: 17px; }
+      span { display: block; margin-top: 4px; color: var(--muted); font-size: 14px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <p class="eyebrow">AIConsumerAgent · guides</p>
+      <h1>Choose where<br>to begin.</h1>
+      <p class="intro">A practical setup guide for users and a visual development story for people learning how agentic AI applications are built.</p>
+      <nav aria-label="Guides">
+        <a href="learning/">
+          <strong>How this agentic app was built</strong>
+          <span>Explore the commit journey, architecture diagrams, safety controls, and code reading path.</span>
+        </a>
+        <a href="windows-user-guide.html">
+          <strong>Windows user guide</strong>
+          <span>Install the app, pair a browser, and configure the local workspace.</span>
+        </a>
+      </nav>
+    </main>
+  </body>
+</html>

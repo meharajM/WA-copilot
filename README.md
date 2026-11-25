@@ -1,5 +1,7 @@
 # WA-copilot
 
+> **Learn how this app was built:** [Open the visual development guide](https://meharajm.github.io/WA-copilot/learning/), a beginner-friendly tour through the commit history, agent architecture, safety controls, and deployment lessons. For current runtime behavior, see [the behavior contract](docs/app-behavior.md).
+
 ```markdown
 # AIConsumerAgent Self-Hosted – Complete Research + Implementation Blueprint  
 **For AI Coding Agent (March 2026 Edition)**  
