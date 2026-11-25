@@ -14,4 +14,4 @@ The workflow preserves the existing docs site at the repository root and adds th
 
 Update index.html and style.css. Diagrams are inline SVG so they remain crisp, accessible, and dependency-free. The commit chart and timeline summarize all 590 commits reachable from the local and remote refs reviewed for this guide; the source links point to representative commits and current code.
 
-The analysis covers 590 commits reachable in the reviewed checkout through local merge 2adbc41a (2026-09-30). Two local-only commits are counted but are not published to GitHub; links use public main commit 1fe1b0de (2026-09-26). Uncommitted working-tree changes are excluded.
+The analysis covers 590 commits reachable in the reviewed checkout through local merge 2adbc41a (2026-09-30). Two local-only commits are counted but are not published to GitHub; 1fe1b0de (2026-09-26) is the last public app commit before this guide. Uncommitted working-tree changes are excluded.
